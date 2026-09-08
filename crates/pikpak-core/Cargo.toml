@@ -18,6 +18,5 @@ sha1 = "0.10"
 uuid = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]

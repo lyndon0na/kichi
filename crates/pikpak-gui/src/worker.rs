@@ -169,7 +169,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 map.clear();
             }
             {
-                let mut r = st.reserved.lock().unwrap();
+                let mut r = st.reserved.lock().unwrap_or_else(|e| e.into_inner());
                 r.clear();
             }
             let _ = session::clear_session();
@@ -334,7 +334,7 @@ async fn spawn_download(
     let base = crate::format::safe_file_name(&name).unwrap_or_else(|| "download".to_string());
     // 在注册表(避免同名并发)与磁盘(避免覆盖已有文件)中都不冲突时才占用。
     let dest = {
-        let mut reserved = st.reserved.lock().unwrap();
+        let mut reserved = st.reserved.lock().unwrap_or_else(|e| e.into_inner());
         let mut i: u32 = 0;
         loop {
             let cand_name = unique_name(&base, i);
@@ -411,7 +411,7 @@ async fn cleanup_dl(
     dest: &Path,
 ) {
     cancel_map.lock().await.remove(&req_id);
-    let mut r = reserved.lock().unwrap();
+    let mut r = reserved.lock().unwrap_or_else(|e| e.into_inner());
     r.remove(&reserve_key_of(dest));
 }
 

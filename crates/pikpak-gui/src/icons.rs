@@ -73,10 +73,12 @@ impl Canvas {
             painter.add(Shape::closed_line(v, self.stroke(width)));
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn rect_filled(&self, painter: &Painter, x0: f32, y0: f32, x1: f32, y1: f32, radius: f32, c: Color32) {
         let r = Rect::from_min_max(self.p(x0, y0), self.p(x1, y1));
         painter.rect_filled(r, radius, c);
     }
+    #[allow(clippy::too_many_arguments)]
     fn rect_stroke(&self, painter: &Painter, x0: f32, y0: f32, x1: f32, y1: f32, radius: f32, width: f32) {
         let r = Rect::from_min_max(self.p(x0, y0), self.p(x1, y1));
         painter.rect_stroke(r, radius, self.stroke(width), eframe::egui::StrokeKind::Inside);

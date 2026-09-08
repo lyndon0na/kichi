@@ -1,23 +1,23 @@
 use serde::{Deserialize, Deserializer};
 
-/// 兼容 number / string 两种形式的字节数。
-fn de_size<'de, D>(d: D) -> Result<i64, D::Error>
+/// 兼容 number / string / null 三种形式的 i64 值。
+fn de_number<'de, D>(d: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
 {
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum S {
+    enum Num {
         Int(i64),
         Float(f64),
         Str(String),
         Null,
     }
-    match S::deserialize(d)? {
-        S::Int(v) => Ok(v),
-        S::Float(v) => Ok(v as i64),
-        S::Str(s) => Ok(s.trim().parse().unwrap_or(0)),
-        S::Null => Ok(0),
+    match Num::deserialize(d)? {
+        Num::Int(v) => Ok(v),
+        Num::Float(v) => Ok(v as i64),
+        Num::Str(s) => Ok(s.trim().parse().unwrap_or(0)),
+        Num::Null => Ok(0),
     }
 }
 
@@ -29,7 +29,7 @@ pub struct File {
     pub name: String,
     #[serde(default)]
     pub parent_id: Option<String>,
-    #[serde(deserialize_with = "de_size")]
+    #[serde(deserialize_with = "de_number")]
     pub size: i64,
     pub mime_type: Option<String>,
     pub created_time: Option<String>,
@@ -101,15 +101,15 @@ impl<'de> Deserialize<'de> for Quota {
     {
         #[derive(Deserialize)]
         struct Raw {
-            #[serde(default, deserialize_with = "de_str_num")]
+            #[serde(default, deserialize_with = "de_number")]
             limit: i64,
-            #[serde(default, deserialize_with = "de_str_num")]
+            #[serde(default, deserialize_with = "de_number")]
             usage: i64,
-            #[serde(default, deserialize_with = "de_str_num")]
+            #[serde(default, deserialize_with = "de_number")]
             usage_in_trash: i64,
-            #[serde(default, deserialize_with = "de_str_num")]
+            #[serde(default, deserialize_with = "de_number")]
             play_times_limit: i64,
-            #[serde(default, deserialize_with = "de_str_num")]
+            #[serde(default, deserialize_with = "de_number")]
             play_times_usage: i64,
         }
         let r = Raw::deserialize(deserializer)?;
@@ -120,26 +120,6 @@ impl<'de> Deserialize<'de> for Quota {
             play_times_limit: r.play_times_limit,
             play_times_usage: r.play_times_usage,
         })
-    }
-}
-
-fn de_str_num<'de, D>(d: D) -> Result<i64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum N {
-        I(i64),
-        F(f64),
-        S(String),
-        Null,
-    }
-    match N::deserialize(d)? {
-        N::I(v) => Ok(v),
-        N::F(v) => Ok(v as i64),
-        N::S(s) => Ok(s.trim().parse().unwrap_or(0)),
-        N::Null => Ok(0),
     }
 }
 

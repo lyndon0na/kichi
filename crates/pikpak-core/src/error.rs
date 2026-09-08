@@ -1,5 +1,3 @@
-use crate::consts::CLIENT_ID;
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("http 请求失败: {0}")]
@@ -78,10 +76,6 @@ pub const ERROR_CODE_TOKEN_EXPIRED: i64 = 16;
 pub const ERROR_CODE_CAPTCHA_INVALID: i64 = 9;
 pub const ERROR_INVALID_ACCOUNT: &str = "invalid_account_or_password";
 
-pub fn api_err_body() -> ApiErrorBody {
-    ApiErrorBody::default()
-}
-
 /// 根据响应 body 构造 Api 错误。
 pub fn api_error(body: &ApiErrorBody) -> Error {
     let description = if !body.error_description.is_empty() {
@@ -96,10 +90,4 @@ pub fn api_error(body: &ApiErrorBody) -> Error {
         error_code: body.error_code,
         description,
     }
-}
-
-/// 完整 URL(带 client_id 的回调等场景使用)。
-#[allow(dead_code)]
-pub fn url_with_client_id(path: &str) -> String {
-    format!("{}?client_id={CLIENT_ID}", path)
 }

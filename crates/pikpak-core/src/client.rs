@@ -699,9 +699,7 @@ impl PikPakClient {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    let mut s = s.to_string();
-    s.truncate(n.min(s.len()));
-    s
+    s.chars().take(n).collect()
 }
 
 /// 由请求推导 captcha action, 形如 "GET:/drive/v1/files"。

@@ -63,7 +63,17 @@ crates/
 └── pikpak-gui/           # eframe(egui) 桌面应用
     └── src/
         ├── main.rs       # 入口
-        ├── app.rs        # UI：登录 / 侧边栏 / 文件 / 任务 / 下载 / 设置
+        ├── app/          # UI 模块（按职责拆分）
+        │   ├── mod.rs        # App 结构体、初始化、消息处理、业务逻辑
+        │   ├── types.rs      # Page / SortBy / DlJob / DlStatus 等内部类型
+        │   ├── login.rs      # 登录页
+        │   ├── sidebar.rs    # 侧边栏 + 导航 + 账户/配额卡片
+        │   ├── files_page.rs # 文件浏览页 + 文件行渲染
+        │   ├── tasks_page.rs # 离线任务页
+        │   ├── downloads_page.rs # 本地下载页
+        │   ├── settings_page.rs  # 设置页
+        │   ├── dialogs.rs    # 新建文件夹 / 重命名 / 回收站 / 退出确认弹窗
+        │   └── helpers.rs    # 工具函数（字体加载、目录选择、文本裁剪等）
         ├── icons.rs      # 矢量图标库（painter 绘制，不依赖字体字形）
         ├── theme.rs      # 明暗主题配色 / 圆角 / 间距参数
         ├── worker.rs     # 后台 tokio 线程 + channel 通信
@@ -84,7 +94,7 @@ sudo dnf install gcc pkgconf openssl-devel libxkbcommon-devel wayland-devel \
      mesa-libGL mesa-libEGL fontconfig
 ```
 
-还需要一款含中文字体的 TTF（程序会自动探测，常见路径见 `app.rs::install_fonts`）。
+还需要一款含中文字体的 TTF（程序会自动探测，常见路径见 `app/helpers.rs::install_fonts`）。
 
 ```bash
 # 开发运行
