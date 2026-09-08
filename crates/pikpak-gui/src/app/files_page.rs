@@ -150,26 +150,30 @@ fn file_row(
     // 右键菜单
     let f_ctx = f.clone();
     let dbl = row_resp.double_clicked();
-    let rclick = row_resp.clicked();
     let _menu = row_resp.context_menu(|ui| {
         if f_ctx.is_folder() {
             if ui.button("打开").clicked() {
                 actions.push(RowAction::OpenFolder(f_ctx.id.clone(), f_ctx.name.clone()));
+                ui.close_menu();
             }
         } else {
             if ui.button("下载到本地…").clicked() {
                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
+                ui.close_menu();
             }
             if ui.button("打开(预览暂未支持)").clicked() {
                 actions.push(RowAction::OpenFile);
+                ui.close_menu();
             }
         }
         ui.separator();
         if ui.button("重命名").clicked() {
             actions.push(RowAction::Rename(f_ctx.id.clone(), f_ctx.name.clone()));
+            ui.close_menu();
         }
         if ui.button("复制名称").clicked() {
             actions.push(RowAction::CopyName(f_ctx.name.clone()));
+            ui.close_menu();
         }
         ui.separator();
         if ui
@@ -177,6 +181,7 @@ fn file_row(
             .clicked()
         {
             actions.push(RowAction::Trash(f_ctx.id.clone()));
+            ui.close_menu();
         }
     });
 
@@ -185,7 +190,7 @@ fn file_row(
         if f.is_folder() {
             actions.push(RowAction::OpenFolder(f.id.clone(), f.name.clone()));
         }
-    } else if rclick {
+    } else if row_resp.clicked() {
         if ctrl {
             sel = Some(RowSel::Toggle(f.id.clone()));
         } else {
@@ -401,12 +406,20 @@ impl App {
         }
 
         if want_download && !dl_candidates.is_empty() {
-            if let Some(dir) = self.choose_download_dir() {
-                let has_folder = dl_has_folder;
-                self.enqueue_downloads(dl_candidates.clone(), dir);
-                if has_folder {
-                    self.toast_warn("已跳过选中的文件夹(暂不支持整目录下载)");
-                }
+            let dir = if !self.download_dir.is_empty()
+                && std::path::Path::new(&self.download_dir).is_dir()
+            {
+                std::path::PathBuf::from(&self.download_dir)
+            } else {
+                let Some(d) = self.choose_download_dir() else {
+                    return;
+                };
+                d
+            };
+            let has_folder = dl_has_folder;
+            self.enqueue_downloads(dl_candidates.clone(), dir);
+            if has_folder {
+                self.toast_warn("已跳过选中的文件夹(暂不支持整目录下载)");
             }
         }
 

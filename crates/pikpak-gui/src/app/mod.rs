@@ -17,7 +17,7 @@ use pikpak_core::session;
 use pikpak_core::types::{File, Quota, Task};
 
 use crate::msg::{Cmd, Msg};
-use crate::settings;
+use crate::settings::{self, DownloadRecord, DownloadRecordStatus};
 use crate::theme::{self, Theme};
 use crate::worker;
 
@@ -103,7 +103,7 @@ impl App {
                 id: None,
                 label: "我的云盘".into(),
             }],
-            req_id: 0,
+            req_id: 0, // Will be updated after loading history
             selected: HashSet::new(),
             sort_by: SortBy::Name,
             sort_desc: false,
@@ -125,12 +125,41 @@ impl App {
             hidden: HashSet::new(),
             logout_confirm: false,
             download_dir: saved.download_dir.clone(),
-            jobs: BTreeMap::new(),
+            jobs: {
+                let mut jobs = BTreeMap::new();
+                let history = settings::load_download_history();
+                let mut next_id = 0u64;
+                for record in history {
+                    next_id += 1;
+                    let status = match record.status {
+                        DownloadRecordStatus::Done => DlStatus::Done,
+                        DownloadRecordStatus::Cancelled => DlStatus::Cancelled,
+                        DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
+                    };
+                    jobs.insert(
+                        next_id,
+                        DlJob {
+                            name: record.name,
+                            dir: record.dir,
+                            total: record.total,
+                            done: record.done,
+                            status,
+                            speed: 0,
+                            last_done: 0,
+                            last_at: None,
+                        },
+                    );
+                }
+                jobs
+            },
             col_size_w: 100.0,
             col_time_w: 160.0,
             col_dragging: None,
             toast: None,
         };
+
+        // 恢复 req_id 为历史记录中的最大值，避免 ID 冲突
+        app.req_id = app.jobs.keys().max().copied().unwrap_or(0);
 
         match session::load_session() {
             Ok(Some(s)) => {
@@ -290,16 +319,43 @@ impl App {
                         if bytes > 0 && j.total == 0 {
                             j.total = bytes;
                         }
+                        // 保存下载记录到磁盘
+                        settings::append_download_record(DownloadRecord {
+                            name: j.name.clone(),
+                            dir: j.dir.clone(),
+                            total: j.total,
+                            done: j.done,
+                            status: DownloadRecordStatus::Done,
+                            timestamp: Self::chrono_now(),
+                        });
                     }
                 }
                 Msg::DlCancelled { req_id } => {
                     if let Some(j) = self.jobs.get_mut(&req_id) {
                         j.status = DlStatus::Cancelled;
+                        // 保存下载记录到磁盘
+                        settings::append_download_record(DownloadRecord {
+                            name: j.name.clone(),
+                            dir: j.dir.clone(),
+                            total: j.total,
+                            done: j.done,
+                            status: DownloadRecordStatus::Cancelled,
+                            timestamp: Self::chrono_now(),
+                        });
                     }
                 }
                 Msg::DlFailed { req_id, what } => {
                     if let Some(j) = self.jobs.get_mut(&req_id) {
-                        j.status = DlStatus::Failed(what);
+                        j.status = DlStatus::Failed(what.clone());
+                        // 保存下载记录到磁盘
+                        settings::append_download_record(DownloadRecord {
+                            name: j.name.clone(),
+                            dir: j.dir.clone(),
+                            total: j.total,
+                            done: j.done,
+                            status: DownloadRecordStatus::Failed(what),
+                            timestamp: Self::chrono_now(),
+                        });
                     }
                 }
                 Msg::Error { what } => self.toast_err(&what),
@@ -318,6 +374,17 @@ impl App {
     }
     pub(crate) fn toast_err(&mut self, msg: &str) {
         self.toast(msg, self.theme().danger);
+    }
+
+    /// 获取当前时间的 ISO 8601 格式字符串。
+    fn chrono_now() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // 使用简单的 Unix 时间戳作为唯一标识
+        format!("{}", secs)
     }
 
     pub(crate) fn persist_settings(&self) {
@@ -506,24 +573,31 @@ impl App {
         if items.is_empty() {
             return;
         }
-        self.page = Page::Downloads;
-        for (id, name) in items {
+        for (id, name) in &items {
             let req_id = self.alloc_req_id();
             self.jobs
                 .insert(req_id, DlJob::queued(name.clone(), dir.clone()));
             self.send(Cmd::StartDownload {
                 req_id,
-                file_id: id,
-                name,
+                file_id: id.clone(),
+                name: name.clone(),
                 dest_dir: dir.clone(),
             });
         }
+        self.toast_ok(&format!("已加入下载队列 ({} 个文件)", items.len()));
     }
 
-    /// 弹目录选择框并下载单个文件。用于右键菜单/离线任务页。
+    /// 下载单个文件。若已有默认下载目录则直接下载, 否则弹目录选择框。
     pub(crate) fn download_single(&mut self, id: String, name: String) {
-        let Some(dir) = self.choose_download_dir() else {
-            return;
+        let dir = if !self.download_dir.is_empty()
+            && std::path::Path::new(&self.download_dir).is_dir()
+        {
+            std::path::PathBuf::from(&self.download_dir)
+        } else {
+            let Some(d) = self.choose_download_dir() else {
+                return;
+            };
+            d
         };
         self.enqueue_downloads(vec![(id, name)], dir);
     }
