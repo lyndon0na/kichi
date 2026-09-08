@@ -1,0 +1,18 @@
+[package]
+name = "pikpak-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pikpak-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
+[dependencies.eframe]
+version = "0.31"
