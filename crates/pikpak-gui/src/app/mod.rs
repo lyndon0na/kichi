@@ -22,7 +22,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ColDrag, Crumb, DlJob, DlStatus, Page, SortBy};
+use self::types::{ColDrag, Crumb, DlJob, DlStatus, Page, SortBy, ViewMode};
 
 pub struct App {
     tx: Sender<Cmd>,
@@ -54,6 +54,13 @@ pub struct App {
     pub(crate) col_time_w: f32,
     pub(crate) col_dragging: Option<ColDrag>,
 
+    // 视图模式
+    pub(crate) view_mode: ViewMode,
+
+    // Shift+Click 范围选择锚点
+    pub(crate) last_clicked_id: Option<String>,
+    pub(crate) last_clicked_dl: Option<u64>,
+
     // 离线
     pub(crate) offline_url: String,
     pub(crate) offline_name: String,
@@ -79,6 +86,7 @@ pub struct App {
     // 本地下载
     pub(crate) download_dir: String,
     pub(crate) jobs: BTreeMap<u64, DlJob>,
+    pub(crate) selected_dl: HashSet<u64>,
 
     pub(crate) toast: Option<(Color32, String, Instant)>,
 }
@@ -152,9 +160,13 @@ impl App {
                 }
                 jobs
             },
+            selected_dl: HashSet::new(),
             col_size_w: 100.0,
             col_time_w: 160.0,
             col_dragging: None,
+            view_mode: ViewMode::List,
+            last_clicked_id: None,
+            last_clicked_dl: None,
             toast: None,
         };
 
@@ -535,6 +547,27 @@ impl App {
         self.files
             .iter()
             .any(|f| self.selected.contains(&f.id) && f.is_folder())
+    }
+
+    /// 全选下载任务。
+    pub(crate) fn select_all_dl(&mut self) {
+        self.selected_dl = self.jobs.keys().cloned().collect();
+    }
+
+    /// 取消全选下载任务。
+    pub(crate) fn deselect_all_dl(&mut self) {
+        self.selected_dl.clear();
+    }
+
+    /// 反选下载任务。
+    pub(crate) fn invert_selection_dl(&mut self) {
+        for key in self.jobs.keys() {
+            if self.selected_dl.contains(key) {
+                self.selected_dl.remove(key);
+            } else {
+                self.selected_dl.insert(*key);
+            }
+        }
     }
 
     pub(crate) fn alloc_req_id(&mut self) -> u64 {

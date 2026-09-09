@@ -1,12 +1,12 @@
-use eframe::egui::{self, Align, CornerRadius, Frame, Layout, Margin, RichText, Stroke, vec2};
+use eframe::egui::{self, Align, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2};
 
 use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
-use crate::theme::Theme;
+use crate::theme::{mix, Theme};
 
 use super::helpers::open_dir;
-use super::types::{DlJob, DlOp, DlStatus};
+use super::types::{DlJob, DlOp, DlSel, DlStatus};
 use super::App;
 
 /// 下载行状态文案。
@@ -23,9 +23,212 @@ fn status_line(job: &DlJob) -> (egui::Color32, String) {
     }
 }
 
+/// 渲染单个下载任务卡片, 返回操作和选择请求。
+fn dl_card(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    rid: u64,
+    job: &DlJob,
+    is_sel: bool,
+    ctrl: bool,
+    shift: bool,
+) -> (Option<DlOp>, Option<DlSel>) {
+    let mut op: Option<DlOp> = None;
+    let mut sel: Option<DlSel> = None;
+    let w = ui.available_width().max(320.0);
+    let h = 72.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    let painter = ui.painter().clone();
+
+    // 背景
+    let bg = if is_sel {
+        mix(th.card, th.accent, if th.dark { 0.22 } else { 0.12 })
+    } else if resp.hovered() {
+        mix(th.card, th.text, if th.dark { 0.05 } else { 0.03 })
+    } else {
+        th.card
+    };
+    painter.rect_filled(rect, CornerRadius::same(12), bg);
+    painter.rect_stroke(rect, CornerRadius::same(12), Stroke::new(1.0, th.border), egui::StrokeKind::Inside);
+
+    // 选中时左侧 accent 条
+    if is_sel {
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(rect.min.x + 3.0, rect.min.y + 12.0),
+                Pos2::new(rect.min.x + 5.0, rect.max.y - 12.0),
+            ),
+            CornerRadius::same(2),
+            th.accent,
+        );
+    }
+
+    let inner = rect.shrink2(vec2(12.0, 10.0));
+    // 左侧: 文件名 + 状态
+    let left_w = (inner.width() - 120.0).max(120.0);
+    let left_rect = Rect::from_min_max(inner.min, Pos2::new(inner.min.x + left_w, inner.max.y));
+    painter.text(
+        Pos2::new(left_rect.min.x, left_rect.min.y + 2.0),
+        egui::Align2::LEFT_TOP,
+        &job.name,
+        FontId::proportional(13.5),
+        th.text,
+    );
+    let (col, txt) = status_line(job);
+    painter.text(
+        Pos2::new(left_rect.min.x, left_rect.min.y + 20.0),
+        egui::Align2::LEFT_TOP,
+        &txt,
+        FontId::proportional(11.5),
+        col,
+    );
+
+    // 中间: 进度/速度
+    let mid_x = left_rect.max.x + 16.0;
+    let mid_w = inner.width() - left_w - 120.0;
+    if mid_w > 50.0 {
+        match &job.status {
+            DlStatus::Running if job.total > 0 => {
+                let frac = (job.done as f32 / job.total as f32).clamp(0.0, 1.0);
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(mid_x, inner.center().y - 8.0),
+                    Pos2::new(mid_x + mid_w, inner.center().y + 8.0),
+                );
+                // 背景条
+                painter.rect_filled(bar_rect, CornerRadius::same(4), mix(th.text_faint, th.bg, 0.7));
+                // 进度条
+                let fill_w = mid_w * frac;
+                if fill_w > 0.0 {
+                    let fill_rect = Rect::from_min_max(bar_rect.min, Pos2::new(bar_rect.min.x + fill_w, bar_rect.max.y));
+                    painter.rect_filled(fill_rect, CornerRadius::same(4), th.accent);
+                }
+                // 文字
+                painter.text(
+                    Pos2::new(mid_x, inner.center().y + 12.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{} / {}", format::fmt_bytes(job.done as i64), format::fmt_bytes(job.total as i64)),
+                    FontId::proportional(10.5),
+                    th.text_weak,
+                );
+            }
+            DlStatus::Running => {
+                if job.done > 0 {
+                    painter.text(
+                        Pos2::new(mid_x, inner.center().y - 6.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("已接收 {}", format::fmt_bytes(job.done as i64)),
+                        FontId::proportional(11.5),
+                        th.text_weak,
+                    );
+                }
+            }
+            _ => {
+                if job.done > 0 {
+                    painter.text(
+                        Pos2::new(mid_x, inner.center().y - 6.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("已下载 {}", format::fmt_bytes(job.done as i64)),
+                        FontId::proportional(11.5),
+                        th.text_weak,
+                    );
+                }
+            }
+        }
+        if job.speed > 0 && job.status == DlStatus::Running {
+            painter.text(
+                Pos2::new(mid_x, inner.center().y + 10.0),
+                egui::Align2::LEFT_TOP,
+                format!("{} /s", format::fmt_bytes(job.speed as i64)),
+                FontId::proportional(10.5),
+                th.text_faint,
+            );
+        }
+    }
+
+    // 右侧: 按钮区域
+    let right_x = inner.max.x - 100.0;
+    let btn_y = inner.max.y - 24.0;
+    let btn_rect = Rect::from_min_max(
+        Pos2::new(right_x, btn_y),
+        Pos2::new(right_x + 100.0, btn_y + 22.0),
+    );
+
+    match &job.status {
+        DlStatus::Queued | DlStatus::Running => {
+            // 取消按钮
+            let cancel_rect = Rect::from_min_max(
+                Pos2::new(btn_rect.center().x - 20.0, btn_rect.min.y),
+                Pos2::new(btn_rect.center().x + 20.0, btn_rect.max.y),
+            );
+            let cancel_resp = ui.interact(cancel_rect, ui.id().with(("cancel", rid)), egui::Sense::click());
+            painter.rect_filled(cancel_rect, CornerRadius::same(6), if cancel_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
+            painter.text(
+                cancel_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "取消",
+                FontId::proportional(12.0),
+                th.text_weak,
+            );
+            if cancel_resp.clicked() {
+                op = Some(DlOp::Cancel);
+            }
+        }
+        _ => {
+            // 移除按钮
+            let remove_rect = Rect::from_min_max(
+                Pos2::new(btn_rect.min.x, btn_rect.min.y),
+                Pos2::new(btn_rect.center().x - 4.0, btn_rect.max.y),
+            );
+            let remove_resp = ui.interact(remove_rect, ui.id().with(("remove", rid)), egui::Sense::click());
+            painter.rect_filled(remove_rect, CornerRadius::same(6), if remove_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
+            painter.text(
+                remove_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "移除",
+                FontId::proportional(12.0),
+                th.text_weak,
+            );
+            if remove_resp.clicked() {
+                op = Some(DlOp::Remove);
+            }
+            // 打开目录按钮
+            let open_rect = Rect::from_min_max(
+                Pos2::new(btn_rect.center().x + 4.0, btn_rect.min.y),
+                Pos2::new(btn_rect.max.x, btn_rect.max.y),
+            );
+            let open_resp = ui.interact(open_rect, ui.id().with(("open", rid)), egui::Sense::click());
+            painter.rect_filled(open_rect, CornerRadius::same(6), if open_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
+            painter.text(
+                open_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "打开目录",
+                FontId::proportional(12.0),
+                th.text_weak,
+            );
+            if open_resp.clicked() {
+                op = Some(DlOp::OpenDir);
+            }
+        }
+    }
+
+    // 点击处理
+    if resp.clicked() {
+        if shift {
+            sel = Some(DlSel::Range(rid));
+        } else if ctrl {
+            sel = Some(DlSel::Toggle(rid));
+        } else {
+            sel = Some(DlSel::Replace(rid));
+        }
+    }
+
+    (op, sel)
+}
+
 impl App {
     pub(super) fn downloads_page(&mut self, ctx: &egui::Context, th: &Theme) {
         let mut ops: Vec<(u64, DlOp)> = Vec::new();
+        let mut sel_reqs: Vec<DlSel> = Vec::new();
         let running = self
             .jobs
             .values()
@@ -60,7 +263,29 @@ impl App {
                         .color(th.text_weak)
                         .size(12.5),
                 );
-                ui.add_space(14.0);
+                ui.add_space(8.0);
+
+                // 工具栏（仅有任务时显示）
+                if !self.jobs.is_empty() {
+                    ui.horizontal(|ui| {
+                        // 选择操作按钮
+                        if ui.add(egui::Button::new(RichText::new("全选").color(th.text_weak).size(12.5)).frame(false)).clicked() {
+                            self.select_all_dl();
+                        }
+                        if ui.add(egui::Button::new(RichText::new("取消全选").color(th.text_weak).size(12.5)).frame(false)).clicked() {
+                            self.deselect_all_dl();
+                        }
+                        if ui.add(egui::Button::new(RichText::new("反选").color(th.text_weak).size(12.5)).frame(false)).clicked() {
+                            self.invert_selection_dl();
+                        }
+
+                        // 选中计数
+                        if !self.selected_dl.is_empty() {
+                            ui.label(RichText::new(format!("已选 {}/{}", self.selected_dl.len(), self.jobs.len())).color(th.accent).size(12.5));
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
 
                 if self.jobs.is_empty() {
                     ui.centered_and_justified(|ui| {
@@ -85,148 +310,108 @@ impl App {
                     return;
                 }
 
-                let scroll_h = ui.available_height().max(60.0);
+                // 收集可见任务 ID 用于范围选择
+                let dl_ids: Vec<u64> = self.jobs.keys().cloned().collect();
+                let ctrl = ui.input(|i| i.modifiers.ctrl);
+                let shift = ui.input(|i| i.modifiers.shift);
+
+                let scroll_h = ui.available_height() - if !self.selected_dl.is_empty() { 44.0 } else { 0.0 };
                 egui::ScrollArea::vertical()
                     .id_salt("downloads_scroll")
                     .auto_shrink([false, false])
-                    .max_height(scroll_h)
+                    .max_height(scroll_h.max(60.0))
                     .show(ui, |ui| {
-                        let ids: Vec<u64> = self.jobs.keys().cloned().collect();
-                        for rid in ids {
-                            let Some(job) = self.jobs.get(&rid).cloned() else {
+                        for rid in &dl_ids {
+                            let Some(job) = self.jobs.get(rid).cloned() else {
                                 continue;
                             };
-                            let mut op: Option<DlOp> = None;
-                            ui.push_id(rid, |ui| {
-                                egui::Frame::new()
-                                    .fill(th.card)
-                                    .stroke(Stroke::new(1.0, th.border))
-                                    .corner_radius(CornerRadius::same(12))
-                                    .inner_margin(Margin::same(12))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.vertical(|ui| {
-                                                ui.label(
-                                                    RichText::new(&job.name)
-                                                        .strong()
-                                                        .size(13.5)
-                                                        .color(th.text),
-                                                );
-                                                let (col, txt) = status_line(&job);
-                                                ui.label(RichText::new(txt).color(col).size(11.5));
-                                            });
-                                            ui.add_space(10.0);
-                                            ui.vertical(|ui| {
-                                                match &job.status {
-                                                    DlStatus::Running if job.total > 0 => {
-                                                        let frac = (job.done as f32 / job.total as f32)
-                                                            .clamp(0.0, 1.0);
-                                                        ui.add(
-                                                            egui::ProgressBar::new(frac)
-                                                                .desired_width(280.0)
-                                                                .text(format!(
-                                                                    "{} / {}",
-                                                                    format::fmt_bytes(job.done as i64),
-                                                                    format::fmt_bytes(job.total as i64)
-                                                                )),
-                                                        );
-                                                    }
-                                                    DlStatus::Running => {
-                                                        ui.horizontal(|ui| {
-                                                            ui.spinner();
-                                                            if job.done > 0 {
-                                                                ui.label(
-                                                                    RichText::new(format!(
-                                                                        "已接收 {}",
-                                                                        format::fmt_bytes(job.done as i64)
-                                                                    ))
-                                                                    .color(th.text_weak),
-                                                                );
-                                                            } else {
-                                                                ui.label(
-                                                                    RichText::new("连接中…")
-                                                                        .color(th.text_weak),
-                                                                );
-                                                            }
-                                                        });
-                                                    }
-                                                    DlStatus::Done
-                                                    | DlStatus::Cancelled
-                                                    | DlStatus::Queued => {
-                                                        if job.done > 0 {
-                                                            ui.label(
-                                                                RichText::new(format!(
-                                                                    "已下载 {}",
-                                                                    format::fmt_bytes(job.done as i64)
-                                                                ))
-                                                                .color(th.text_weak),
-                                                            );
-                                                        }
-                                                    }
-                                                    DlStatus::Failed(_) => {
-                                                        ui.label(
-                                                            RichText::new("下载未完成, 可移除后重试")
-                                                                .color(th.text_weak),
-                                                        );
-                                                    }
-                                                }
-                                                if job.speed > 0 && job.status == DlStatus::Running {
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "{} /s",
-                                                            format::fmt_bytes(job.speed as i64)
-                                                        ))
-                                                        .color(th.text_weak),
-                                                    );
-                                                }
-                                                if !job.dir.as_os_str().is_empty() {
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "→ {}",
-                                                            job.dir.display()
-                                                        ))
-                                                        .color(th.text_faint)
-                                                        .size(11.0),
-                                                    );
-                                                }
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| match &job.status {
-                                                    DlStatus::Queued | DlStatus::Running => {
-                                                        if ui.button("取消").clicked() {
-                                                            op = Some(DlOp::Cancel);
-                                                        }
-                                                    }
-                                                    _ => {
-                                                        if ui
-                                                            .add(
-                                                                egui::Button::new(
-                                                                    RichText::new("移除")
-                                                                        .color(th.text_weak),
-                                                                ),
-                                                            )
-                                                            .clicked()
-                                                        {
-                                                            op = Some(DlOp::Remove);
-                                                        }
-                                                        if ui.button("打开目录").clicked() {
-                                                            op = Some(DlOp::OpenDir);
-                                                        }
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                            });
+                            let is_sel = self.selected_dl.contains(rid);
+                            let (op, sel) = dl_card(ui, th, *rid, &job, is_sel, ctrl, shift);
                             if let Some(op) = op {
-                                ops.push((rid, op));
+                                ops.push((*rid, op));
                             }
-                            ui.add_space(8.0);
+                            if let Some(sel) = sel {
+                                sel_reqs.push(sel);
+                            }
+                            ui.add_space(6.0);
                         }
                     });
+
+                // 底部批量操作条
+                if !self.selected_dl.is_empty() {
+                    ui.add_space(4.0);
+                    egui::Frame::new()
+                        .fill(th.card)
+                        .stroke(Stroke::new(1.0, th.border))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("已选择 {} 项", self.selected_dl.len())).size(13.0).color(th.text));
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.add(
+                                        egui::Button::new(RichText::new("移除选中").color(th.danger))
+                                            .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .corner_radius(CornerRadius::same(8)),
+                                    ).clicked() {
+                                        for rid in &self.selected_dl {
+                                            ops.push((*rid, DlOp::Remove));
+                                        }
+                                    }
+                                    if ui.add(
+                                        egui::Button::new(RichText::new("取消选中").color(th.text_weak))
+                                            .frame(false),
+                                    ).clicked() {
+                                        self.selected_dl.clear();
+                                    }
+                                });
+                            });
+                        });
+                }
+
+                // 处理选择请求（在 CentralPanel 闭包内，确保 dl_ids 和 ctrl 可见）
+                for sel in sel_reqs {
+                    match sel {
+                        DlSel::Replace(rid) => {
+                            self.selected_dl.clear();
+                            self.selected_dl.insert(rid);
+                            self.last_clicked_dl = Some(rid);
+                        }
+                        DlSel::Toggle(rid) => {
+                            if self.selected_dl.contains(&rid) {
+                                self.selected_dl.remove(&rid);
+                            } else {
+                                self.selected_dl.insert(rid);
+                            }
+                            self.last_clicked_dl = Some(rid);
+                        }
+                        DlSel::Range(rid) => {
+                            if let Some(anchor) = self.last_clicked_dl {
+                                let start_idx = dl_ids.iter().position(|x| *x == anchor).unwrap_or(0);
+                                let end_idx = dl_ids.iter().position(|x| *x == rid).unwrap_or(0);
+                                let (from, to) = if start_idx <= end_idx {
+                                    (start_idx, end_idx)
+                                } else {
+                                    (end_idx, start_idx)
+                                };
+                                if !ctrl {
+                                    self.selected_dl.clear();
+                                }
+                                for i in from..=to {
+                                    self.selected_dl.insert(dl_ids[i]);
+                                }
+                            } else {
+                                self.selected_dl.clear();
+                                self.selected_dl.insert(rid);
+                            }
+                            self.last_clicked_dl = Some(rid);
+                        }
+                    }
+                }
             });
 
+        // 处理操作
         for (rid, op) in ops {
             match op {
                 DlOp::Cancel => self.send(Cmd::CancelDownload { req_id: rid }),
@@ -237,6 +422,7 @@ impl App {
                 }
                 DlOp::Remove => {
                     self.jobs.remove(&rid);
+                    self.selected_dl.remove(&rid);
                 }
             }
         }

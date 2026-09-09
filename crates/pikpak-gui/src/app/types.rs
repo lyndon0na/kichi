@@ -37,6 +37,27 @@ pub(crate) enum RowSel {
     Replace(String),
     /// Ctrl+单击: 在选中/未选中之间切换。
     Toggle(String),
+    /// Shift+单击: 范围选择(从上次点击项到当前项)。
+    Range(String),
+}
+
+/// 下载列表行点击产生的选择请求。
+pub(crate) enum DlSel {
+    /// 普通单击: 只选中该项(替换原选择)。
+    Replace(u64),
+    /// Ctrl+单击: 在选中/未选中之间切换。
+    Toggle(u64),
+    /// Shift+单击: 范围选择。
+    Range(u64),
+}
+
+/// 文件列表视图模式。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum ViewMode {
+    /// 列表视图(表格样式)。
+    List,
+    /// 图标视图(网格缩略图)。
+    Icon,
 }
 
 /// 本地下载任务的 UI 状态。
