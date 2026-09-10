@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -16,6 +17,7 @@ pub(crate) enum SortBy {
     Modified,
 }
 
+#[derive(Clone)]
 pub(crate) struct Crumb {
     pub id: Option<String>,
     pub label: String,
@@ -28,6 +30,8 @@ pub(crate) enum RowAction {
     DownloadFile(String, String),
     CopyName(String),
     Rename(String, String),
+    MoveToFolder(String),
+    CopyToFolder(String),
     Trash(String),
 }
 
@@ -58,6 +62,46 @@ pub(crate) enum ViewMode {
     List,
     /// 图标视图(网格缩略图)。
     Icon,
+}
+
+/// 移动/复制操作的类型。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum MoveMode {
+    Move,
+    Copy,
+}
+
+impl MoveMode {
+    pub fn title(self) -> &'static str {
+        match self {
+            MoveMode::Move => "移动文件到…",
+            MoveMode::Copy => "复制文件到…",
+        }
+    }
+    pub fn verb(self) -> &'static str {
+        match self {
+            MoveMode::Move => "移动",
+            MoveMode::Copy => "复制",
+        }
+    }
+}
+
+/// 「移动/复制到…」的目标目录选择弹窗状态。
+pub(crate) struct MoveDialog {
+    pub mode: MoveMode,
+    /// 本次要操作的源文件 id。
+    pub ids: Vec<String>,
+    /// 源所在目录(目标等于它时表示未移动, 用于禁用确认按钮)。
+    pub src_parent: Option<String>,
+    /// 不可进入的目录(即被选中的源文件夹), 避免把文件夹移/复制进它自己。
+    pub blocked: HashSet<String>,
+    /// 当前浏览路径, 栈顶即目标目录。
+    pub stack: Vec<Crumb>,
+    /// 当前目录下的子文件夹(已剔除自身), 展示在列表中。
+    pub folders: Vec<pikpak_core::types::File>,
+    pub next: Option<String>,
+    pub loading: bool,
+    pub req_id: u64,
 }
 
 /// 本地下载任务的 UI 状态。

@@ -22,7 +22,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ColDrag, Crumb, DlJob, DlStatus, Page, SortBy, ViewMode};
+use self::types::{ColDrag, Crumb, DlJob, DlStatus, MoveDialog, MoveMode, Page, SortBy, ViewMode};
 
 pub struct App {
     tx: Sender<Cmd>,
@@ -77,6 +77,9 @@ pub struct App {
     pub(crate) rename_name: String,
     pub(crate) trash_confirm: Option<Vec<(String, String)>>,
 
+    // 移动/复制目标目录选择弹窗
+    pub(crate) move_dialog: Option<MoveDialog>,
+
     /// 已移入回收站、等待服务端列表同步的 id(本地先行隐藏)。
     pub(crate) hidden: HashSet<String>,
 
@@ -130,6 +133,7 @@ impl App {
             rename_id: None,
             rename_name: String::new(),
             trash_confirm: None,
+            move_dialog: None,
             hidden: HashSet::new(),
             logout_confirm: false,
             download_dir: saved.download_dir.clone(),
@@ -230,6 +234,7 @@ impl App {
                     self.username.clear();
                     self.auth_error = Some(reason);
                     self.jobs.clear();
+                    self.move_dialog = None;
                 }
                 Msg::LoggedOut => {
                     self.username.clear();
@@ -241,6 +246,7 @@ impl App {
                     self.selected.clear();
                     self.hidden.clear();
                     self.jobs.clear();
+                    self.move_dialog = None;
                     self.reset_stack();
                 }
                 Msg::Files {
@@ -278,6 +284,46 @@ impl App {
                 Msg::Trashed => {
                     self.trash_confirm = None;
                     self.selected.clear();
+                    self.refresh_dir();
+                }
+                Msg::FoldersList {
+                    req_id,
+                    parent,
+                    append,
+                    list,
+                } => {
+                    let Some(dlg) = self.move_dialog.as_mut() else {
+                        continue;
+                    };
+                    if dlg.req_id != req_id
+                        || parent != dlg.stack.last().and_then(|c| c.id.clone())
+                    {
+                        continue;
+                    }
+                    dlg.loading = false;
+                    let folders: Vec<File> =
+                        list.files.into_iter().filter(|f| f.is_folder()).collect();
+                    if append {
+                        dlg.folders.extend(folders);
+                    } else {
+                        dlg.folders = folders;
+                    }
+                    dlg.next = list.next_page_token;
+                }
+                Msg::Moved { ids } => {
+                    self.toast_ok("移动成功");
+                    // batchMove 返回后服务端列表未必立即同步, 先把被移走的项从本地
+                    // 隐藏(复用 hidden, 服务端列表不再含该 id 后自动解除), 避免
+                    // 刷新前文件仍显示在原目录。
+                    for id in &ids {
+                        self.selected.remove(id);
+                        self.hidden.insert(id.clone());
+                    }
+                    self.files.retain(|f| !ids.contains(&f.id));
+                    self.refresh_dir();
+                }
+                Msg::Copied => {
+                    self.toast_ok("复制成功");
                     self.refresh_dir();
                 }
                 Msg::OfflineCreated => {
@@ -481,6 +527,154 @@ impl App {
         });
         self.selected.clear();
         self.refresh_dir();
+    }
+
+    /// 把当前选中项以 move/copy 弹窗选择目标目录。空选择时给出提示。
+    pub(crate) fn request_move_copy(&mut self, mode: MoveMode) {
+        let ids: Vec<String> = self.selected.iter().cloned().collect();
+        self.open_move_dialog(mode, ids);
+    }
+
+    /// 打开「移动/复制到…」目标选择弹窗。ids 为空时只提示、不弹窗。
+    pub(crate) fn open_move_dialog(&mut self, mode: MoveMode, ids: Vec<String>) {
+        if ids.is_empty() {
+            self.toast_warn("请先选择要操作的文件");
+            return;
+        }
+        let blocked: HashSet<String> = self
+            .files
+            .iter()
+            .filter(|f| ids.contains(&f.id) && f.is_folder())
+            .map(|f| f.id.clone())
+            .collect();
+        let src_parent = self.current_parent();
+        let stack = self.stack.clone();
+        self.move_dialog = Some(MoveDialog {
+            mode,
+            ids,
+            src_parent,
+            blocked,
+            stack,
+            folders: Vec::new(),
+            next: None,
+            loading: false,
+            req_id: 0,
+        });
+        self.pick_list(false);
+    }
+
+    /// 请求目标目录选择器重新列出当前浏览目录的子文件夹。
+    fn pick_list(&mut self, append: bool) {
+        let cmd = {
+            let Some(dlg) = self.move_dialog.as_mut() else {
+                return;
+            };
+            dlg.req_id += 1;
+            let req_id = dlg.req_id;
+            let parent = dlg.stack.last().and_then(|c| c.id.clone());
+            let token = if append { dlg.next.clone() } else { None };
+            dlg.loading = true;
+            if !append {
+                dlg.folders.clear();
+                dlg.next = None;
+            }
+            Some(Cmd::ListFolders {
+                parent,
+                token,
+                append,
+                req_id,
+            })
+        };
+        if let Some(cmd) = cmd {
+            self.send(cmd);
+        }
+    }
+
+    pub(crate) fn pick_refresh(&mut self) {
+        self.pick_list(false);
+    }
+
+    pub(crate) fn pick_load_more(&mut self) {
+        let has_more = {
+            let Some(dlg) = &self.move_dialog else {
+                return;
+            };
+            dlg.next.is_some()
+        };
+        if has_more {
+            self.pick_list(true);
+        }
+    }
+
+    pub(crate) fn pick_open(&mut self, id: String, name: String) {
+        {
+            let Some(dlg) = self.move_dialog.as_mut() else {
+                return;
+            };
+            // 被选中的源文件夹不可进入, 避免把目录移动/复制进自己。
+            if dlg.blocked.contains(&id) {
+                return;
+            }
+            dlg.stack.push(Crumb {
+                id: Some(id),
+                label: name,
+            });
+        }
+        self.pick_list(false);
+    }
+
+    pub(crate) fn pick_up(&mut self) {
+        {
+            let Some(dlg) = self.move_dialog.as_mut() else {
+                return;
+            };
+            if dlg.stack.len() > 1 {
+                dlg.stack.pop();
+            }
+        }
+        self.pick_list(false);
+    }
+
+    pub(crate) fn pick_jump(&mut self, idx: usize) {
+        {
+            let Some(dlg) = self.move_dialog.as_mut() else {
+                return;
+            };
+            if idx + 1 < dlg.stack.len() {
+                dlg.stack.truncate(idx + 1);
+            }
+        }
+        self.pick_list(false);
+    }
+
+    /// 当前浏览目录是否是源目录(此时移动/复制没有意义)。
+    pub(crate) fn pick_at_source(&self) -> bool {
+        let Some(dlg) = &self.move_dialog else {
+            return false;
+        };
+        dlg.stack.last().and_then(|c| c.id.clone()) == dlg.src_parent
+    }
+
+    /// 把选中项执行到当前浏览目录。
+    pub(crate) fn pick_confirm(&mut self) {
+        let Some(dlg) = self.move_dialog.take() else {
+            return;
+        };
+        let dest = dlg.stack.last().and_then(|c| c.id.clone());
+        match dlg.mode {
+            MoveMode::Move => self.send(Cmd::MoveTo {
+                ids: dlg.ids,
+                dest,
+            }),
+            MoveMode::Copy => self.send(Cmd::CopyTo {
+                ids: dlg.ids,
+                dest,
+            }),
+        }
+    }
+
+    pub(crate) fn close_move_dialog(&mut self) {
+        self.move_dialog = None;
     }
 
     /// 当前目录内过滤后的可见文件(文件夹在前, 组内按当前排序)。

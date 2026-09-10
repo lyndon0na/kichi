@@ -7,7 +7,7 @@ use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
 use super::helpers::truncate_text;
-use super::types::{ColDrag, RowAction, RowSel, SortBy, ViewMode};
+use super::types::{ColDrag, MoveMode, RowAction, RowSel, SortBy, ViewMode};
 use super::App;
 
 /// 文件类型 -> 图标 / 颜色。
@@ -194,6 +194,15 @@ fn file_row(
                 actions.push(RowAction::OpenFile);
                 ui.close_menu();
             }
+        }
+        ui.separator();
+        if ui.button("移动到…").clicked() {
+            actions.push(RowAction::MoveToFolder(f_ctx.id.clone()));
+            ui.close_menu();
+        }
+        if ui.button("复制到…").clicked() {
+            actions.push(RowAction::CopyToFolder(f_ctx.id.clone()));
+            ui.close_menu();
         }
         ui.separator();
         if ui.button("重命名").clicked() {
@@ -453,10 +462,10 @@ impl App {
                             if !sel.is_empty() { self.trash_confirm = Some(sel); }
                         }
                         if btn(ui, "移动", th.text_weak) {
-                            self.toast_warn("移动功能将在后续版本支持");
+                            self.request_move_copy(MoveMode::Move);
                         }
                         if btn(ui, "复制", th.text_weak) {
-                            self.toast_warn("复制功能将在后续版本支持");
+                            self.request_move_copy(MoveMode::Copy);
                         }
 
                         if !self.selected.is_empty() {
@@ -490,6 +499,12 @@ impl App {
                         if single && ui.button("重命名").clicked() {
                             self.rename_id = Some(sel_meta[0].0.clone());
                             self.rename_name = sel_meta[0].1.clone();
+                        }
+                        if ui.button("移动").clicked() {
+                            self.request_move_copy(MoveMode::Move);
+                        }
+                        if ui.button("复制").clicked() {
+                            self.request_move_copy(MoveMode::Copy);
                         }
                         if !dl_candidates.is_empty()
                             && ui
@@ -699,6 +714,15 @@ impl App {
                                             }
                                         }
                                         ui.separator();
+                                        if ui.button("移动到…").clicked() {
+                                            actions.push(RowAction::MoveToFolder(f_ctx.id.clone()));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("复制到…").clicked() {
+                                            actions.push(RowAction::CopyToFolder(f_ctx.id.clone()));
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
                                         if ui.button("重命名").clicked() {
                                             actions.push(RowAction::Rename(f_ctx.id.clone(), f_ctx.name.clone()));
                                             ui.close_menu();
@@ -819,6 +843,12 @@ impl App {
                         RowAction::Rename(id, name) => {
                             self.rename_id = Some(id);
                             self.rename_name = name;
+                        }
+                        RowAction::MoveToFolder(id) => {
+                            self.open_move_dialog(MoveMode::Move, vec![id]);
+                        }
+                        RowAction::CopyToFolder(id) => {
+                            self.open_move_dialog(MoveMode::Copy, vec![id]);
                         }
                         RowAction::Trash(id) => {
                             if let Some(name) = self

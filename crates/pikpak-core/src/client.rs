@@ -444,6 +444,26 @@ impl PikPakClient {
         self.post(&url, &json!({ "ids": ids })).await
     }
 
+    /// 批量把文件/文件夹移动到目标目录(to_parent_id 为空表示移动到根目录)。
+    pub async fn batch_move(
+        &self,
+        ids: &[String],
+        to_parent_id: Option<&str>,
+    ) -> Result<Value, Error> {
+        let url = format!("{API_HOST}/drive/v1/files:batchMove");
+        self.post(&url, &move_copy_body(ids, to_parent_id)).await
+    }
+
+    /// 批量复制文件/文件夹到目标目录。
+    pub async fn batch_copy(
+        &self,
+        ids: &[String],
+        to_parent_id: Option<&str>,
+    ) -> Result<Value, Error> {
+        let url = format!("{API_HOST}/drive/v1/files:batchCopy");
+        self.post(&url, &move_copy_body(ids, to_parent_id)).await
+    }
+
     // ---------- 离线下载 ----------
 
     pub async fn offline_create(
@@ -702,6 +722,17 @@ fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// batchMove / batchCopy 的请求体。目标目录缺省时 `to` 为空对象(表示根目录)。
+fn move_copy_body(ids: &[String], to_parent_id: Option<&str>) -> Value {
+    let mut to = serde_json::Map::new();
+    if let Some(pid) = to_parent_id {
+        if !pid.is_empty() {
+            to.insert("parent_id".into(), pid.into());
+        }
+    }
+    json!({ "ids": ids, "to": Value::Object(to) })
+}
+
 /// 由请求推导 captcha action, 形如 "GET:/drive/v1/files"。
 fn request_action(method: &reqwest::Method, url: &str) -> String {
     let after = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
@@ -792,5 +823,16 @@ mod tests {
         let client = PikPakClient::new("0123456789abcdef0123456789abcdef".into());
         let e = client.refresh_token().await.unwrap_err();
         assert!(e.to_string().contains("缺少 refresh token"));
+    }
+
+    #[test]
+    fn move_copy_body_builds_expected_json() {
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let v = move_copy_body(&ids, Some("target"));
+        assert_eq!(v["ids"], json!(["a", "b"]));
+        assert_eq!(v["to"]["parent_id"], "target");
+        // 缺省目标 -> to 为空对象(表示根目录)。
+        let root = move_copy_body(&ids, None);
+        assert!(root["to"].as_object().unwrap().is_empty());
     }
 }
