@@ -16,6 +16,7 @@ pub(crate) enum SortBy {
     Modified,
 }
 
+#[derive(Clone)]
 pub(crate) struct Crumb {
     pub id: Option<String>,
     pub label: String,

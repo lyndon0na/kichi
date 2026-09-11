@@ -286,6 +286,29 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
+        Cmd::ListFolders { parent, req_id } => {
+            let Some(client) = &st.client else { return };
+            match client.file_list(parent.as_deref(), 100, None).await {
+                Ok(list) => {
+                    let files: Vec<_> = list.files.into_iter().filter(|f| f.is_folder()).collect();
+                    let _ = tx.send(Msg::Folders {
+                        parent,
+                        req_id,
+                        files,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Folders {
+                        parent: parent.clone(),
+                        req_id,
+                        files: Vec::new(),
+                    });
+                    let _ = tx.send(Msg::Error {
+                        what: format!("加载目录失败: {e}"),
+                    });
+                }
+            }
+        }
         Cmd::OfflineRetry { task_id } => {
             let Some(client) = &st.client else { return };
             match client.offline_retry(&task_id).await {

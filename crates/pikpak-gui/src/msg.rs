@@ -53,6 +53,11 @@ pub enum Cmd {
         name: Option<String>,
         parent: Option<String>,
     },
+    /// 列出某目录下的子文件夹(用于离线下载「保存到」网盘目录选择)。
+    ListFolders {
+        parent: Option<String>,
+        req_id: u64,
+    },
     RefreshTasks,
     OfflineRetry {
         task_id: String,
@@ -102,6 +107,12 @@ pub enum Msg {
     OfflineCreated,
     OfflineRetried,
     OfflineDeleted,
+    /// 离线下载目录选择器所需的子文件夹列表。
+    Folders {
+        parent: Option<String>,
+        req_id: u64,
+        files: Vec<pikpak_core::types::File>,
+    },
     Quota(Option<Quota>),
     TasksAll {
         buckets: BTreeMap<String, Vec<Task>>,

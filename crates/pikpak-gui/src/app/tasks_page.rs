@@ -78,26 +78,15 @@ impl App {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("保存到").color(th.text_weak));
-                            let cur = self.current_parent();
-                            let on_cur = self.offline_to_current && cur.is_some();
+                            let label = match &self.offline_dest {
+                                Some((_, name)) => format!("网盘目录 · {name}"),
+                                None => "离线默认目录".to_string(),
+                            };
                             if ui
-                                .selectable_label(!on_cur, "离线默认目录")
+                                .button(RichText::new(format!("{label} ▾")).color(th.accent))
                                 .clicked()
                             {
-                                self.offline_to_current = false;
-                            }
-                            if cur.is_some() {
-                                let top = self
-                                    .stack
-                                    .last()
-                                    .map(|c| c.label.clone())
-                                    .unwrap_or_default();
-                                if ui
-                                    .selectable_label(on_cur, format!("文件页当前目录 · {top}"))
-                                    .clicked()
-                                {
-                                    self.offline_to_current = true;
-                                }
+                                self.open_offline_picker();
                             }
                         });
                     });
@@ -239,11 +228,7 @@ impl App {
                     Some(n.to_string())
                 }
             };
-            let parent = if self.offline_to_current {
-                self.current_parent()
-            } else {
-                None
-            };
+            let parent = self.offline_dest.as_ref().map(|(id, _)| id.clone());
             self.send(Cmd::OfflineCreate { url, name, parent });
         }
         if do_refresh {

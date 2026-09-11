@@ -64,7 +64,14 @@ pub struct App {
     // 离线
     pub(crate) offline_url: String,
     pub(crate) offline_name: String,
-    pub(crate) offline_to_current: bool,
+    /// 离线下载保存到的网盘目录 (id, 名称); None = 离线默认目录。
+    pub(crate) offline_dest: Option<(String, String)>,
+    /// 离线下载「保存到」网盘目录选择器状态。
+    pub(crate) offline_picker_open: bool,
+    pub(crate) offline_picker_stack: Vec<Crumb>,
+    pub(crate) offline_picker_folders: Vec<File>,
+    pub(crate) offline_picker_loading: bool,
+    pub(crate) offline_picker_req: u64,
     pub(crate) buckets: BTreeMap<String, Vec<Task>>,
     pub(crate) tasks_loading: bool,
 
@@ -128,7 +135,15 @@ impl App {
             dir_loading: false,
             offline_url: String::new(),
             offline_name: String::new(),
-            offline_to_current: false,
+            offline_dest: None,
+            offline_picker_open: false,
+            offline_picker_stack: vec![Crumb {
+                id: None,
+                label: "我的云盘".into(),
+            }],
+            offline_picker_folders: Vec::new(),
+            offline_picker_loading: false,
+            offline_picker_req: 0,
             buckets: BTreeMap::new(),
             tasks_loading: false,
             quota: None,
@@ -322,6 +337,13 @@ impl App {
                 }
                 Msg::OfflineRetried => self.send(Cmd::RefreshTasks),
                 Msg::OfflineDeleted => self.send(Cmd::RefreshTasks),
+                Msg::Folders { parent, req_id, files } => {
+                    if req_id != self.offline_picker_req || parent != self.offline_picker_parent() {
+                        continue;
+                    }
+                    self.offline_picker_loading = false;
+                    self.offline_picker_folders = files;
+                }
                 Msg::Quota(quota) => self.quota = quota,
                 Msg::TasksAll { buckets } => {
                     self.buckets = buckets;
@@ -453,6 +475,33 @@ impl App {
 
     pub(crate) fn current_parent(&self) -> Option<String> {
         self.stack.last().and_then(|c| c.id.clone())
+    }
+
+    /// 离线下载目录选择器当前所在目录。
+    pub(crate) fn offline_picker_parent(&self) -> Option<String> {
+        self.offline_picker_stack.last().and_then(|c| c.id.clone())
+    }
+
+    /// 打开离线下载「保存到」网盘目录选择器, 从根目录开始。
+    pub(crate) fn open_offline_picker(&mut self) {
+        self.offline_picker_open = true;
+        self.offline_picker_stack = vec![Crumb {
+            id: None,
+            label: "我的云盘".into(),
+        }];
+        self.offline_picker_list();
+    }
+
+    /// 请求选择器当前目录的子文件夹列表。
+    pub(crate) fn offline_picker_list(&mut self) {
+        self.offline_picker_loading = true;
+        self.offline_picker_folders.clear();
+        self.offline_picker_req += 1;
+        let req_id = self.offline_picker_req;
+        self.send(Cmd::ListFolders {
+            parent: self.offline_picker_parent(),
+            req_id,
+        });
     }
 
     pub(crate) fn reset_stack(&mut self) {
