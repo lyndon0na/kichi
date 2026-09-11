@@ -91,7 +91,7 @@ impl App {
                 ui.add_space(14.0);
 
                 // 任务列表区
-                let scroll_h = ui.available_height().max(80.0);
+                let scroll_h = (ui.available_height() - 36.0).max(80.0);
                 egui::ScrollArea::vertical()
                     .id_salt("tasks_scroll")
                     .auto_shrink([false, false])
@@ -202,17 +202,26 @@ impl App {
                         }
                     });
 
-                // 刷新按钮
-                ui.add_space(10.0);
+                    });
+
+                // 刷新按钮 (固定在滚动区下方, 始终可见可点)
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
+                    let refreshing = self.tasks_refreshing;
+                    let (r, ico) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
                     icons::paint(ui.painter(), r, Glyph::Refresh, th.text_weak);
-                    if ui.add(egui::Button::new(RichText::new("刷新任务").color(th.text_weak)).frame(false)).clicked() {
+                    let ico_clicked = !refreshing && ico.clicked();
+                    let btn = ui.add_enabled(
+                        !refreshing,
+                        egui::Button::new(RichText::new(if refreshing { "正在刷新…" } else { "刷新任务" }).color(th.text_weak)).frame(false),
+                    );
+                    if btn.clicked() || ico_clicked {
                         do_refresh = true;
                     }
-                    let _ = resp;
+                    if refreshing {
+                        ui.add(egui::Spinner::new().size(14.0).color(th.text_weak));
+                    }
                 });
-                    });
             });
 
         if create {
@@ -229,6 +238,7 @@ impl App {
             self.send(Cmd::OfflineCreate { url, name, parent });
         }
         if do_refresh {
+            self.tasks_refreshing = true;
             self.send(Cmd::RefreshTasks);
         }
         if let Some((fid, fname)) = download_target {

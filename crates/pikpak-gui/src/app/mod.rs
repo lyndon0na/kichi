@@ -74,6 +74,8 @@ pub struct App {
     pub(crate) offline_picker_req: u64,
     pub(crate) buckets: BTreeMap<String, Vec<Task>>,
     pub(crate) tasks_loading: bool,
+    /// 用户点击「刷新任务」后的进行中状态, 用于给出可见反馈。
+    pub(crate) tasks_refreshing: bool,
 
     pub(crate) quota: Option<Quota>,
 
@@ -146,6 +148,7 @@ impl App {
             offline_picker_req: 0,
             buckets: BTreeMap::new(),
             tasks_loading: false,
+            tasks_refreshing: false,
             quota: None,
             mkdir_open: false,
             mkdir_name: String::new(),
@@ -346,8 +349,16 @@ impl App {
                 }
                 Msg::Quota(quota) => self.quota = quota,
                 Msg::TasksAll { buckets } => {
-                    self.buckets = buckets;
+                    // 合并而非整体替换: 某个分桶刷新失败时保留其旧数据。
+                    for (phase, tasks) in buckets {
+                        if tasks.is_empty() {
+                            self.buckets.remove(&phase);
+                        } else {
+                            self.buckets.insert(phase, tasks);
+                        }
+                    }
                     self.tasks_loading = false;
+                    self.tasks_refreshing = false;
                 }
                 Msg::DlProgress {
                     req_id,
@@ -426,7 +437,10 @@ impl App {
                         });
                     }
                 }
-                Msg::Error { what } => self.toast_err(&what),
+                Msg::Error { what } => {
+                    self.tasks_refreshing = false;
+                    self.toast_err(&what);
+                }
             }
         }
     }

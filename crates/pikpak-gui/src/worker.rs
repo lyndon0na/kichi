@@ -570,22 +570,16 @@ async fn refresh_quota(st: &WorkerState, tx: &Sender<Msg>) {
 async fn refresh_tasks(st: &WorkerState, tx: &Sender<Msg>) {
     let Some(client) = &st.client else { return };
     let mut buckets: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-    let mut ok = true;
     for phase in OFFLINE_PHASES {
         match client.offline_list_phase(phase, 100, None).await {
             Ok(tasks) => {
                 buckets.insert(phase.to_string(), tasks.tasks);
             }
             Err(e) => {
-                ok = false;
+                // 单个分桶失败时保留旧数据, 不阻断其它分桶的刷新。
                 tracing::debug!("离线任务[{phase}] 刷新失败: {e}");
-                break;
             }
         }
     }
-    if ok {
-        let _ = tx.send(Msg::TasksAll { buckets });
-    } else {
-        tracing::debug!("离线任务批量刷新失败, 已跳过本轮");
-    }
+    let _ = tx.send(Msg::TasksAll { buckets });
 }
