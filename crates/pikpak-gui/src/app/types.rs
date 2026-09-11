@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -17,7 +16,6 @@ pub(crate) enum SortBy {
     Modified,
 }
 
-#[derive(Clone)]
 pub(crate) struct Crumb {
     pub id: Option<String>,
     pub label: String,
@@ -30,8 +28,9 @@ pub(crate) enum RowAction {
     DownloadFile(String, String),
     CopyName(String),
     Rename(String, String),
-    MoveToFolder(String),
-    CopyToFolder(String),
+    CopyItem(String),
+    CutItem(String),
+    PasteInto(String),
     Trash(String),
 }
 
@@ -64,44 +63,24 @@ pub(crate) enum ViewMode {
     Icon,
 }
 
-/// 移动/复制操作的类型。
+/// 剪贴板操作类型。
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub(crate) enum MoveMode {
-    Move,
+pub(crate) enum ClipKind {
+    /// 复制: 粘贴后保留剪贴板内容, 可继续粘贴到别处。
     Copy,
+    /// 剪切: 粘贴成功后清空剪贴板。
+    Cut,
 }
 
-impl MoveMode {
-    pub fn title(self) -> &'static str {
-        match self {
-            MoveMode::Move => "移动文件到…",
-            MoveMode::Copy => "复制文件到…",
-        }
-    }
-    pub fn verb(self) -> &'static str {
-        match self {
-            MoveMode::Move => "移动",
-            MoveMode::Copy => "复制",
-        }
-    }
-}
-
-/// 「移动/复制到…」的目标目录选择弹窗状态。
-pub(crate) struct MoveDialog {
-    pub mode: MoveMode,
-    /// 本次要操作的源文件 id。
+/// 内部文件剪贴板: 复制/剪切选中项, 切换到目标目录后粘贴。
+#[derive(Clone)]
+pub(crate) struct Clipboard {
+    pub kind: ClipKind,
     pub ids: Vec<String>,
-    /// 源所在目录(目标等于它时表示未移动, 用于禁用确认按钮)。
+    /// 源目录, 用于剪切时判断目标是否与原目录相同。
     pub src_parent: Option<String>,
-    /// 不可进入的目录(即被选中的源文件夹), 避免把文件夹移/复制进它自己。
-    pub blocked: HashSet<String>,
-    /// 当前浏览路径, 栈顶即目标目录。
-    pub stack: Vec<Crumb>,
-    /// 当前目录下的子文件夹(已剔除自身), 展示在列表中。
-    pub folders: Vec<pikpak_core::types::File>,
-    pub next: Option<String>,
-    pub loading: bool,
-    pub req_id: u64,
+    /// 展示用描述(单文件为文件名, 多项为 "N 项")。
+    pub label: String,
 }
 
 /// 本地下载任务的 UI 状态。

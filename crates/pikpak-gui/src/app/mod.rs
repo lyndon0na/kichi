@@ -8,7 +8,7 @@ mod sidebar;
 mod tasks_page;
 pub(crate) mod types;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ColDrag, Crumb, DlJob, DlStatus, MoveDialog, MoveMode, Page, SortBy, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DlJob, DlStatus, Page, SortBy, ViewMode};
 
 pub struct App {
     tx: Sender<Cmd>,
@@ -77,11 +77,15 @@ pub struct App {
     pub(crate) rename_name: String,
     pub(crate) trash_confirm: Option<Vec<(String, String)>>,
 
-    // 移动/复制目标目录选择弹窗
-    pub(crate) move_dialog: Option<MoveDialog>,
+    // 复制/剪切剪贴板(在目标目录粘贴)
+    pub(crate) clipboard: Option<Clipboard>,
 
-    /// 已移入回收站、等待服务端列表同步的 id(本地先行隐藏)。
-    pub(crate) hidden: HashSet<String>,
+    /// 移动/复制成功后延迟重列目录的时间点(规避服务端列表最终一致性)。
+    pub(crate) relist_at: Option<Instant>,
+
+    /// 等待服务端列表同步、本地先行隐藏的 id -> 其应隐藏的目录(回收/移出的源目录)。
+    /// 用目录区分, 避免移动后的文件在目标目录里也被隐藏。
+    pub(crate) hidden: HashMap<String, Option<String>>,
 
     // 退出确认
     pub(crate) logout_confirm: bool,
@@ -133,8 +137,9 @@ impl App {
             rename_id: None,
             rename_name: String::new(),
             trash_confirm: None,
-            move_dialog: None,
-            hidden: HashSet::new(),
+            clipboard: None,
+            relist_at: None,
+            hidden: HashMap::new(),
             logout_confirm: false,
             download_dir: saved.download_dir.clone(),
             jobs: {
@@ -234,7 +239,7 @@ impl App {
                     self.username.clear();
                     self.auth_error = Some(reason);
                     self.jobs.clear();
-                    self.move_dialog = None;
+                    self.clipboard = None;
                 }
                 Msg::LoggedOut => {
                     self.username.clear();
@@ -246,7 +251,7 @@ impl App {
                     self.selected.clear();
                     self.hidden.clear();
                     self.jobs.clear();
-                    self.move_dialog = None;
+                    self.clipboard = None;
                     self.reset_stack();
                 }
                 Msg::Files {
@@ -267,9 +272,15 @@ impl App {
                     }
                     self.dir_next = list.next_page_token;
                     if !self.hidden.is_empty() {
+                        // 本次列出的目录就是 `parent`; 该目录里已不再出现的隐藏项
+                        // 说明服务端已完成(回收/移出), 可以解除隐藏。其它目录的
+                        // 隐藏项保持不变, 否则移动后的文件会在目标目录消失。
                         let present: HashSet<String> =
                             self.files.iter().map(|f| f.id.clone()).collect();
-                        self.hidden.retain(|id| present.contains(id));
+                        let listing_parent = parent.clone();
+                        self.hidden.retain(|id, hp| {
+                            *hp != listing_parent || present.contains(id)
+                        });
                     }
                 }
                 Msg::FolderCreated => {
@@ -286,45 +297,22 @@ impl App {
                     self.selected.clear();
                     self.refresh_dir();
                 }
-                Msg::FoldersList {
-                    req_id,
-                    parent,
-                    append,
-                    list,
-                } => {
-                    let Some(dlg) = self.move_dialog.as_mut() else {
-                        continue;
-                    };
-                    if dlg.req_id != req_id
-                        || parent != dlg.stack.last().and_then(|c| c.id.clone())
-                    {
-                        continue;
-                    }
-                    dlg.loading = false;
-                    let folders: Vec<File> =
-                        list.files.into_iter().filter(|f| f.is_folder()).collect();
-                    if append {
-                        dlg.folders.extend(folders);
-                    } else {
-                        dlg.folders = folders;
-                    }
-                    dlg.next = list.next_page_token;
-                }
-                Msg::Moved { ids } => {
+                Msg::Moved { ids, src } => {
                     self.toast_ok("移动成功");
-                    // batchMove 返回后服务端列表未必立即同步, 先把被移走的项从本地
-                    // 隐藏(复用 hidden, 服务端列表不再含该 id 后自动解除), 避免
-                    // 刷新前文件仍显示在原目录。
+                    // batchMove 返回后服务端列表未必立即同步, 先把被移走的项从源
+                    // 目录隐藏(服务端列表不再含该 id 后自动解除), 避免刷新前文件仍
+                    // 显示在原目录; 隐藏按源目录区分, 目标目录里仍会正常显示。
                     for id in &ids {
                         self.selected.remove(id);
-                        self.hidden.insert(id.clone());
+                        self.hidden.insert(id.clone(), src.clone());
                     }
                     self.files.retain(|f| !ids.contains(&f.id));
-                    self.refresh_dir();
+                    self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
                 }
                 Msg::Copied => {
                     self.toast_ok("复制成功");
-                    self.refresh_dir();
+                    // 复制的目标目录当前可能正在展示, 稍后重列以显示新文件。
+                    self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
                 }
                 Msg::OfflineCreated => {
                     self.toast_ok("已提交离线下载");
@@ -529,161 +517,111 @@ impl App {
         self.refresh_dir();
     }
 
-    /// 把当前选中项以 move/copy 弹窗选择目标目录。空选择时给出提示。
-    pub(crate) fn request_move_copy(&mut self, mode: MoveMode) {
-        let ids: Vec<String> = self.selected.iter().cloned().collect();
-        self.open_move_dialog(mode, ids);
-    }
+    // ---------- 复制/剪切/粘贴 ----------
 
-    /// 打开「移动/复制到…」目标选择弹窗。ids 为空时只提示、不弹窗。
-    pub(crate) fn open_move_dialog(&mut self, mode: MoveMode, ids: Vec<String>) {
+    /// 把当前选中项放入剪贴板。
+    pub(crate) fn clip_selection(&mut self, kind: ClipKind) {
+        let ids: Vec<String> = self
+            .files
+            .iter()
+            .filter(|f| self.selected.contains(&f.id))
+            .map(|f| f.id.clone())
+            .collect();
         if ids.is_empty() {
             self.toast_warn("请先选择要操作的文件");
             return;
         }
-        let blocked: HashSet<String> = self
-            .files
-            .iter()
-            .filter(|f| ids.contains(&f.id) && f.is_folder())
-            .map(|f| f.id.clone())
-            .collect();
+        self.set_clipboard(kind, ids);
+    }
+
+    /// 右键单项: 若该项在多选中则操作整个选中集, 否则仅操作该项。
+    pub(crate) fn clip_item(&mut self, kind: ClipKind, id: String) {
+        let ids = if self.selected.contains(&id) && self.selected.len() > 1 {
+            self.files
+                .iter()
+                .filter(|f| self.selected.contains(&f.id))
+                .map(|f| f.id.clone())
+                .collect()
+        } else {
+            vec![id]
+        };
+        self.set_clipboard(kind, ids);
+    }
+
+    fn set_clipboard(&mut self, kind: ClipKind, ids: Vec<String>) {
+        let label = if ids.len() == 1 {
+            self.files
+                .iter()
+                .find(|f| f.id == ids[0])
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| "文件".to_string())
+        } else {
+            format!("{} 项", ids.len())
+        };
         let src_parent = self.current_parent();
-        let stack = self.stack.clone();
-        self.move_dialog = Some(MoveDialog {
-            mode,
+        self.clipboard = Some(Clipboard {
+            kind,
             ids,
             src_parent,
-            blocked,
-            stack,
-            folders: Vec::new(),
-            next: None,
-            loading: false,
-            req_id: 0,
+            label: label.clone(),
         });
-        self.pick_list(false);
-    }
-
-    /// 请求目标目录选择器重新列出当前浏览目录的子文件夹。
-    fn pick_list(&mut self, append: bool) {
-        let cmd = {
-            let Some(dlg) = self.move_dialog.as_mut() else {
-                return;
-            };
-            dlg.req_id += 1;
-            let req_id = dlg.req_id;
-            let parent = dlg.stack.last().and_then(|c| c.id.clone());
-            let token = if append { dlg.next.clone() } else { None };
-            dlg.loading = true;
-            if !append {
-                dlg.folders.clear();
-                dlg.next = None;
-            }
-            Some(Cmd::ListFolders {
-                parent,
-                token,
-                append,
-                req_id,
-            })
+        let act = match kind {
+            ClipKind::Copy => "复制",
+            ClipKind::Cut => "剪切",
         };
-        if let Some(cmd) = cmd {
-            self.send(cmd);
-        }
+        self.toast_ok(&format!("已{act}「{label}」, 进入目标目录后粘贴"));
     }
 
-    pub(crate) fn pick_refresh(&mut self) {
-        self.pick_list(false);
+    /// 粘贴到当前目录。
+    pub(crate) fn paste_clipboard(&mut self) {
+        let dest = self.current_parent();
+        self.paste_into(dest);
     }
 
-    pub(crate) fn pick_load_more(&mut self) {
-        let has_more = {
-            let Some(dlg) = &self.move_dialog else {
-                return;
-            };
-            dlg.next.is_some()
-        };
-        if has_more {
-            self.pick_list(true);
-        }
-    }
-
-    pub(crate) fn pick_open(&mut self, id: String, name: String) {
-        {
-            let Some(dlg) = self.move_dialog.as_mut() else {
-                return;
-            };
-            // 被选中的源文件夹不可进入, 避免把目录移动/复制进自己。
-            if dlg.blocked.contains(&id) {
-                return;
-            }
-            dlg.stack.push(Crumb {
-                id: Some(id),
-                label: name,
-            });
-        }
-        self.pick_list(false);
-    }
-
-    pub(crate) fn pick_up(&mut self) {
-        {
-            let Some(dlg) = self.move_dialog.as_mut() else {
-                return;
-            };
-            if dlg.stack.len() > 1 {
-                dlg.stack.pop();
-            }
-        }
-        self.pick_list(false);
-    }
-
-    pub(crate) fn pick_jump(&mut self, idx: usize) {
-        {
-            let Some(dlg) = self.move_dialog.as_mut() else {
-                return;
-            };
-            if idx + 1 < dlg.stack.len() {
-                dlg.stack.truncate(idx + 1);
-            }
-        }
-        self.pick_list(false);
-    }
-
-    /// 当前浏览目录是否是源目录(此时移动/复制没有意义)。
-    pub(crate) fn pick_at_source(&self) -> bool {
-        let Some(dlg) = &self.move_dialog else {
-            return false;
-        };
-        dlg.stack.last().and_then(|c| c.id.clone()) == dlg.src_parent
-    }
-
-    /// 把选中项执行到当前浏览目录。
-    pub(crate) fn pick_confirm(&mut self) {
-        let Some(dlg) = self.move_dialog.take() else {
+    /// 粘贴到指定目录(None = 根目录)。
+    pub(crate) fn paste_into(&mut self, dest: Option<String>) {
+        let Some(clip) = self.clipboard.clone() else {
+            self.toast_warn("剪贴板为空, 请先复制或剪切");
             return;
         };
-        let dest = dlg.stack.last().and_then(|c| c.id.clone());
-        match dlg.mode {
-            MoveMode::Move => self.send(Cmd::MoveTo {
-                ids: dlg.ids,
-                dest,
-            }),
-            MoveMode::Copy => self.send(Cmd::CopyTo {
-                ids: dlg.ids,
-                dest,
-            }),
+        if let Some(d) = &dest {
+            if clip.ids.contains(d) {
+                self.toast_warn("不能粘贴到被操作的文件夹自身");
+                return;
+            }
+        }
+        if clip.kind == ClipKind::Cut && dest == clip.src_parent {
+            self.toast_warn("已在原目录, 无需粘贴");
+            return;
+        }
+        match clip.kind {
+            ClipKind::Copy => self.send(Cmd::CopyTo { ids: clip.ids, dest }),
+            ClipKind::Cut => {
+                self.send(Cmd::MoveTo {
+                    ids: clip.ids,
+                    dest,
+                    src: clip.src_parent,
+                });
+                // 剪切只生效一次, 粘贴后清空剪贴板。
+                self.clipboard = None;
+            }
         }
     }
 
-    pub(crate) fn close_move_dialog(&mut self) {
-        self.move_dialog = None;
+    /// 某文件是否在当前目录被本地隐藏(等待服务端同步)。
+    pub(crate) fn is_hidden(&self, id: &str) -> bool {
+        let cur = self.current_parent();
+        self.hidden.get(id).is_some_and(|hp| *hp == cur)
     }
 
     /// 当前目录内过滤后的可见文件(文件夹在前, 组内按当前排序)。
     pub(crate) fn visible_rows(&self) -> (Vec<File>, Vec<File>) {
         let kw = self.filter.trim().to_lowercase();
+        let cur = self.current_parent();
         let mut folders: Vec<&File> = Vec::new();
         let mut plain: Vec<&File> = Vec::new();
         for f in &self.files {
-            if self.hidden.contains(&f.id) {
+            if self.hidden.get(&f.id).is_some_and(|hp| *hp == cur) {
                 continue;
             }
             let hit = kw.is_empty() || f.name.to_lowercase().contains(&kw);
@@ -835,6 +773,16 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain();
+
+        // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
+        if let Some(at) = self.relist_at {
+            if Instant::now() >= at {
+                self.relist_at = None;
+                self.refresh_dir();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(150));
+            }
+        }
 
         let th = self.theme();
         theme::configure(ctx, &th);

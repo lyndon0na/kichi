@@ -7,7 +7,7 @@ use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
 use super::helpers::truncate_text;
-use super::types::{ColDrag, MoveMode, RowAction, RowSel, SortBy, ViewMode};
+use super::types::{ClipKind, ColDrag, RowAction, RowSel, SortBy, ViewMode};
 use super::App;
 
 /// 文件类型 -> 图标 / 颜色。
@@ -71,6 +71,7 @@ fn file_row(
     ctrl: bool,
     shift: bool,
     even: bool,
+    has_clip: bool,
     actions: &mut Vec<RowAction>,
     name_x: f32,
     size_left: f32,
@@ -196,12 +197,16 @@ fn file_row(
             }
         }
         ui.separator();
-        if ui.button("移动到…").clicked() {
-            actions.push(RowAction::MoveToFolder(f_ctx.id.clone()));
+        if ui.button("复制").clicked() {
+            actions.push(RowAction::CopyItem(f_ctx.id.clone()));
             ui.close_menu();
         }
-        if ui.button("复制到…").clicked() {
-            actions.push(RowAction::CopyToFolder(f_ctx.id.clone()));
+        if ui.button("剪切").clicked() {
+            actions.push(RowAction::CutItem(f_ctx.id.clone()));
+            ui.close_menu();
+        }
+        if has_clip && f_ctx.is_folder() && ui.button("粘贴到此处").clicked() {
+            actions.push(RowAction::PasteInto(f_ctx.id.clone()));
             ui.close_menu();
         }
         ui.separator();
@@ -279,6 +284,15 @@ impl App {
                     if !sel.is_empty() {
                         self.trash_confirm = Some(sel);
                     }
+                }
+                if i.key_pressed(Key::C) && i.modifiers.ctrl {
+                    self.clip_selection(ClipKind::Copy);
+                }
+                if i.key_pressed(Key::X) && i.modifiers.ctrl {
+                    self.clip_selection(ClipKind::Cut);
+                }
+                if i.key_pressed(Key::V) && i.modifiers.ctrl {
+                    self.paste_clipboard();
                 }
             });
         }
@@ -461,11 +475,21 @@ impl App {
                             let sel = self.selected_names();
                             if !sel.is_empty() { self.trash_confirm = Some(sel); }
                         }
-                        if btn(ui, "移动", th.text_weak) {
-                            self.request_move_copy(MoveMode::Move);
+                        if btn(ui, "粘贴", th.text_weak) {
+                            self.paste_clipboard();
+                        }
+                        if btn(ui, "剪切", th.text_weak) {
+                            self.clip_selection(ClipKind::Cut);
                         }
                         if btn(ui, "复制", th.text_weak) {
-                            self.request_move_copy(MoveMode::Copy);
+                            self.clip_selection(ClipKind::Copy);
+                        }
+                        if let Some(clip) = &self.clipboard {
+                            ui.label(
+                                RichText::new(format!("剪贴板: {}", clip.label))
+                                    .color(th.accent)
+                                    .size(12.5),
+                            );
                         }
 
                         if !self.selected.is_empty() {
@@ -500,11 +524,14 @@ impl App {
                             self.rename_id = Some(sel_meta[0].0.clone());
                             self.rename_name = sel_meta[0].1.clone();
                         }
-                        if ui.button("移动").clicked() {
-                            self.request_move_copy(MoveMode::Move);
-                        }
                         if ui.button("复制").clicked() {
-                            self.request_move_copy(MoveMode::Copy);
+                            self.clip_selection(ClipKind::Copy);
+                        }
+                        if ui.button("剪切").clicked() {
+                            self.clip_selection(ClipKind::Cut);
+                        }
+                        if ui.button("粘贴").clicked() {
+                            self.paste_clipboard();
                         }
                         if !dl_candidates.is_empty()
                             && ui
@@ -598,6 +625,7 @@ impl App {
                 }
 
                 let list_avail_h = inner.max.y - (inner_ui.cursor().min.y) - 4.0;
+
                 egui::ScrollArea::vertical()
                     .id_salt("file_list_scroll")
                     .auto_shrink([false, false])
@@ -605,6 +633,31 @@ impl App {
                     .show(&mut inner_ui, |ui| {
                     ui.set_min_height(list_avail_h.max(40.0));
                     ui.set_width(inner.width());
+
+                    // 目录空白处右键菜单(粘贴 / 新建文件夹 / 刷新)。先于行注册,
+                    // 后续行的右键菜单优先级更高, 空白处才会落到这里。
+                    let bg_resp = ui.interact(
+                        ui.clip_rect(),
+                        ui.id().with("file_list_bg"),
+                        egui::Sense::click(),
+                    );
+                    let has_clip = self.clipboard.is_some();
+                    bg_resp.context_menu(|ui| {
+                        if has_clip && ui.button("粘贴").clicked() {
+                            self.paste_clipboard();
+                            ui.close_menu();
+                        }
+                        if ui.button("新建文件夹").clicked() {
+                            self.mkdir_open = true;
+                            self.mkdir_name.clear();
+                            ui.close_menu();
+                        }
+                        if ui.button("刷新").clicked() {
+                            self.refresh_dir();
+                            ui.close_menu();
+                        }
+                    });
+
                     let ctrl = ui.input(|i| i.modifiers.ctrl);
                     let shift = ui.input(|i| i.modifiers.shift);
                     let mut even = false;
@@ -617,7 +670,7 @@ impl App {
                         // 列表视图
                         for f in &all_files {
                             let is_sel = self.selected.contains(&f.id);
-                            if let Some(sel) = file_row(ui, th, f, is_sel, ctrl, shift, even, &mut actions, cn_x, cs_x, ct_x) {
+                            if let Some(sel) = file_row(ui, th, f, is_sel, ctrl, shift, even, has_clip, &mut actions, cn_x, cs_x, ct_x) {
                                 sel_reqs.push(sel);
                             }
                             even = !even;
@@ -714,12 +767,16 @@ impl App {
                                             }
                                         }
                                         ui.separator();
-                                        if ui.button("移动到…").clicked() {
-                                            actions.push(RowAction::MoveToFolder(f_ctx.id.clone()));
+                                        if ui.button("复制").clicked() {
+                                            actions.push(RowAction::CopyItem(f_ctx.id.clone()));
                                             ui.close_menu();
                                         }
-                                        if ui.button("复制到…").clicked() {
-                                            actions.push(RowAction::CopyToFolder(f_ctx.id.clone()));
+                                        if ui.button("剪切").clicked() {
+                                            actions.push(RowAction::CutItem(f_ctx.id.clone()));
+                                            ui.close_menu();
+                                        }
+                                        if has_clip && f_ctx.is_folder() && ui.button("粘贴到此处").clicked() {
+                                            actions.push(RowAction::PasteInto(f_ctx.id.clone()));
                                             ui.close_menu();
                                         }
                                         ui.separator();
@@ -765,7 +822,7 @@ impl App {
 
                     if self.dir_next.is_some() {
                         ui.add_space(4.0);
-                        ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
                             if ui.button("加载更多").clicked() {
                                 self.load_more();
                             }
@@ -773,13 +830,13 @@ impl App {
                         ui.add_space(2.0);
                     }
                     if self.files.is_empty() && !self.dir_loading {
-                        ui.add_space(20.0);
-                        ui.centered_and_justified(|ui| {
+                        ui.add_space((list_avail_h * 0.3).max(20.0));
+                        ui.vertical_centered(|ui| {
                             ui.label(RichText::new("此文件夹为空").color(th.text_weak));
                         });
                     } else if !self.filter.is_empty() && folders.is_empty() && plain.is_empty() {
-                        ui.add_space(20.0);
-                        ui.centered_and_justified(|ui| {
+                        ui.add_space((list_avail_h * 0.3).max(20.0));
+                        ui.vertical_centered(|ui| {
                             ui.label(
                                 RichText::new(format!("没有匹配「{}」的文件", self.filter))
                                     .color(th.text_weak),
@@ -844,11 +901,14 @@ impl App {
                             self.rename_id = Some(id);
                             self.rename_name = name;
                         }
-                        RowAction::MoveToFolder(id) => {
-                            self.open_move_dialog(MoveMode::Move, vec![id]);
+                        RowAction::CopyItem(id) => {
+                            self.clip_item(ClipKind::Copy, id);
                         }
-                        RowAction::CopyToFolder(id) => {
-                            self.open_move_dialog(MoveMode::Copy, vec![id]);
+                        RowAction::CutItem(id) => {
+                            self.clip_item(ClipKind::Cut, id);
+                        }
+                        RowAction::PasteInto(id) => {
+                            self.paste_into(Some(id));
                         }
                         RowAction::Trash(id) => {
                             if let Some(name) = self
@@ -922,7 +982,7 @@ impl App {
             if all_selected {
                 self.selected.clear();
             } else {
-                let ids: Vec<String> = self.files.iter().filter(|f| !self.hidden.contains(&f.id)).map(|f| f.id.clone()).collect();
+                let ids: Vec<String> = self.files.iter().filter(|f| !self.is_hidden(&f.id)).map(|f| f.id.clone()).collect();
                 for id in ids {
                     self.selected.insert(id);
                 }
@@ -1058,3 +1118,4 @@ impl App {
         }
     }
 }
+

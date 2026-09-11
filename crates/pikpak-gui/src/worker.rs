@@ -244,37 +244,11 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
-        Cmd::ListFolders {
-            parent,
-            token,
-            append,
-            req_id,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client
-                .file_list(parent.as_deref(), 100, token.as_deref())
-                .await
-            {
-                Ok(list) => {
-                    let _ = tx.send(Msg::FoldersList {
-                        req_id,
-                        parent,
-                        append,
-                        list,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("加载目录失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::MoveTo { ids, dest } => {
+        Cmd::MoveTo { ids, dest, src } => {
             let Some(client) = &st.client else { return };
             match client.batch_move(&ids, dest.as_deref()).await {
                 Ok(_) => {
-                    let _ = tx.send(Msg::Moved { ids });
+                    let _ = tx.send(Msg::Moved { ids, src });
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::Error {

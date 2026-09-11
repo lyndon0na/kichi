@@ -36,17 +36,12 @@ pub enum Cmd {
     Trash {
         ids: Vec<String>,
     },
-    /// 移动/复制目标目录选择: 列出某目录的子项(取其中的文件夹)。append=true 表示下一页。
-    ListFolders {
-        parent: Option<String>,
-        token: Option<String>,
-        append: bool,
-        req_id: u64,
-    },
     /// 批量移动选中的文件到目标目录(None = 我的云盘根目录)。
+    /// src 为源目录, 用于移动成功后在源目录本地隐藏(区分目标目录)。
     MoveTo {
         ids: Vec<String>,
         dest: Option<String>,
+        src: Option<String>,
     },
     /// 批量复制选中的文件到目标目录。
     CopyTo {
@@ -99,15 +94,9 @@ pub enum Msg {
     FolderCreated,
     Renamed,
     Trashed,
-    /// 移动/复制目标目录选择器的子文件夹列表。
-    FoldersList {
-        req_id: u64,
-        parent: Option<String>,
-        append: bool,
-        list: FileList,
-    },
     Moved {
         ids: Vec<String>,
+        src: Option<String>,
     },
     Copied,
     OfflineCreated,
