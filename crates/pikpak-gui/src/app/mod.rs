@@ -104,6 +104,9 @@ pub struct App {
     pub(crate) jobs: BTreeMap<u64, DlJob>,
     pub(crate) selected_dl: HashSet<u64>,
 
+    /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
+    pub(crate) preview_pending: Option<(u64, String)>,
+
     pub(crate) toast: Option<(Color32, String, Instant)>,
 }
 
@@ -188,6 +191,7 @@ impl App {
                 jobs
             },
             selected_dl: HashSet::new(),
+            preview_pending: None,
             col_size_w: 100.0,
             col_time_w: 160.0,
             col_dragging: None,
@@ -258,6 +262,7 @@ impl App {
                     self.auth_error = Some(reason);
                     self.jobs.clear();
                     self.clipboard = None;
+                    self.preview_pending = None;
                 }
                 Msg::LoggedOut => {
                     self.username.clear();
@@ -270,6 +275,7 @@ impl App {
                     self.hidden.clear();
                     self.jobs.clear();
                     self.clipboard = None;
+                    self.preview_pending = None;
                     self.reset_stack();
                 }
                 Msg::Files {
@@ -439,6 +445,60 @@ impl App {
                 }
                 Msg::Error { what } => {
                     self.tasks_refreshing = false;
+                    self.toast_err(&what);
+                }
+                Msg::PreviewStream {
+                    req_id,
+                    file_id,
+                    name,
+                    url,
+                    headers,
+                } => {
+                    if self
+                        .preview_pending
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == req_id)
+                    {
+                        self.preview_pending = None;
+                    }
+                    match helpers::play_with_mpv(&name, &url, &headers) {
+                        Ok(()) => self.toast_ok(&format!("正在用 mpv 播放「{name}」")),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            // 未安装 mpv: 回退到「下载后交给系统查看器」。
+                            self.toast_warn("未找到 mpv, 改用系统播放器 (下载后打开)…");
+                            let media_req = self.alloc_req_id();
+                            self.preview_pending = Some((media_req, name.clone()));
+                            self.send(Cmd::Preview {
+                                req_id: media_req,
+                                file_id,
+                                name,
+                                media: false,
+                            });
+                        }
+                        Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
+                    }
+                }
+                Msg::PreviewReady { req_id, name, path } => {
+                    if self
+                        .preview_pending
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == req_id)
+                    {
+                        self.preview_pending = None;
+                    }
+                    match helpers::open_path(&path) {
+                        Ok(()) => self.toast_ok(&format!("已打开「{name}」")),
+                        Err(e) => self.toast_err(&format!("打开文件失败: {e}")),
+                    }
+                }
+                Msg::PreviewFailed { req_id, what } => {
+                    if self
+                        .preview_pending
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == req_id)
+                    {
+                        self.preview_pending = None;
+                    }
                     self.toast_err(&what);
                 }
             }
@@ -828,6 +888,25 @@ impl App {
             d
         };
         self.enqueue_downloads(vec![(id, name)], dir);
+    }
+
+    /// 预览云端文件: 音/视频交给 mpv 流式播放, 其他下载后交给系统查看器。
+    pub(crate) fn open_preview(&mut self, id: String, name: String) {
+        let media = helpers::is_media_file(&name);
+        let req_id = self.alloc_req_id();
+        self.preview_pending = Some((req_id, name.clone()));
+        let hint = if media {
+            "正在解析播放地址…"
+        } else {
+            "正在准备预览文件…"
+        };
+        self.toast(hint, self.theme().accent);
+        self.send(Cmd::Preview {
+            req_id,
+            file_id: id,
+            name,
+            media,
+        });
     }
 }
 

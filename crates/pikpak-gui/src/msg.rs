@@ -79,6 +79,14 @@ pub enum Cmd {
     CancelDownload {
         req_id: u64,
     },
+    /// 预览云端文件。media=true 时仅解析直链交给外部播放器(mpv)流式播放;
+    /// media=false 时先下载到本地缓存再交给系统查看器打开。
+    Preview {
+        req_id: u64,
+        file_id: String,
+        name: String,
+        media: bool,
+    },
 }
 
 /// 后台线程 -> UI 消息。
@@ -134,6 +142,26 @@ pub enum Msg {
     },
     /// 下载失败。
     DlFailed {
+        req_id: u64,
+        what: String,
+    },
+    /// 媒体预览直链已解析, 可交给外部播放器(mpv)流式播放。
+    PreviewStream {
+        req_id: u64,
+        file_id: String,
+        name: String,
+        url: String,
+        /// 访问直链所需的请求头(User-Agent / X-Device-Id / 可选 Bearer)。
+        headers: Vec<(String, String)>,
+    },
+    /// 非媒体文件已下载到本地缓存, 可交给系统查看器打开。
+    PreviewReady {
+        req_id: u64,
+        name: String,
+        path: PathBuf,
+    },
+    /// 预览准备失败(解析直链或下载出错)。
+    PreviewFailed {
         req_id: u64,
         what: String,
     },

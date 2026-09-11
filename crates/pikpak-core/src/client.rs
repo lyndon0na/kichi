@@ -565,6 +565,23 @@ impl PikPakClient {
 
     // ---------- 本地下载 ----------
 
+    /// 返回访问签名直链所需的请求头(User-Agent / X-Device-Id / 可选 Bearer)。
+    /// 供外部播放器(如 mpv `--http-header-fields`)直接流式播放时携带。
+    pub async fn stream_headers(&self) -> Vec<(String, String)> {
+        let (token, _, user_id, _) = self.current_auth().await;
+        let mut headers = vec![
+            (
+                "User-Agent".to_string(),
+                build_user_agent(&self.device_id, &user_id),
+            ),
+            ("X-Device-Id".to_string(), self.device_id.clone()),
+        ];
+        if !token.is_empty() {
+            headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+        }
+        headers
+    }
+
     /// 解析某个文件的下载直链。需先对该 action 做 captcha init, 再取文件详情。
     pub async fn file_download_link(&self, file_id: &str) -> Result<DownloadLink, Error> {
         let id = file_id.trim();

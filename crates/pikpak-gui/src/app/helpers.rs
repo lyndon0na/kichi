@@ -18,6 +18,52 @@ pub(crate) fn open_dir(dir: &std::path::Path) {
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
+/// 用系统默认程序打开一个本地文件(尽量交给系统查看器)。
+pub(crate) fn open_path(path: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+}
+
+/// 用 mpv 流式播放直链, 并携带签名直链所需的请求头。
+pub(crate) fn play_with_mpv(
+    name: &str,
+    url: &str,
+    headers: &[(String, String)],
+) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new("mpv");
+    cmd.arg("--force-window=yes");
+    cmd.arg(format!("--title={name}"));
+    let mut fields: Vec<String> = Vec::new();
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case("user-agent") {
+            // mpv 有独立的 UA 选项, 用 http-header-fields 会重复追加。
+            cmd.arg(format!("--user-agent={v}"));
+        } else {
+            fields.push(format!("{k}: {v}"));
+        }
+    }
+    if !fields.is_empty() {
+        cmd.arg(format!("--http-header-fields={}", fields.join(",")));
+    }
+    cmd.arg("--").arg(url);
+    cmd.spawn().map(|_| ())
+}
+
+/// 判断文件名是否为可用 mpv 播放的音/视频。
+pub(crate) fn is_media_file(name: &str) -> bool {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e): (&str, &str)| e.to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv" | "webm" | "ts" | "rmvb" | "m4v" | "mp3"
+            | "flac" | "wav" | "aac" | "ogg" | "m4a" | "opus" | "ape"
+    )
+}
+
 /// 弹出一个原生目录选择框(独立线程阻塞式调用)。
 pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
     let initial = initial.to_path_buf();
@@ -117,4 +163,24 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
     }
     ctx.set_fonts(fonts);
     loaded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_media_file;
+
+    #[test]
+    fn detects_audio_and_video() {
+        assert!(is_media_file("movie.MKV"));
+        assert!(is_media_file("song.flac"));
+        assert!(is_media_file("clip.mp4"));
+    }
+
+    #[test]
+    fn rejects_non_media() {
+        assert!(!is_media_file("photo.jpg"));
+        assert!(!is_media_file("report.pdf"));
+        assert!(!is_media_file("archive.zip"));
+        assert!(!is_media_file("noext"));
+    }
 }

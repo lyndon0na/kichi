@@ -25,7 +25,7 @@ pub(crate) struct Crumb {
 #[derive(Clone)]
 pub(crate) enum RowAction {
     OpenFolder(String, String),
-    OpenFile,
+    OpenFile(String, String),
     DownloadFile(String, String),
     CopyName(String),
     Rename(String, String),

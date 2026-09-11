@@ -354,6 +354,22 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 flag.store(true, Ordering::Relaxed);
             }
         }
+        Cmd::Preview {
+            req_id,
+            file_id,
+            name,
+            media,
+        } => {
+            let Some(client) = st.client.clone() else { return };
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if media {
+                    preview_stream(&client, &tx, req_id, file_id, name).await;
+                } else {
+                    preview_download(&client, &tx, req_id, file_id, name).await;
+                }
+            });
+        }
     }
 }
 
@@ -362,6 +378,107 @@ fn install_saver(client: &mut PikPakClient) {
         let _ = session::save_session(sess);
     });
     client.set_token_saver(saver);
+}
+
+// ---------------- 文件预览 ----------------
+
+/// 预览缓存目录: `~/.cache/pikpak-linux/preview`(取不到时退回临时目录)。
+fn preview_root() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pikpak-linux")
+        .join("preview")
+}
+
+/// 某文件的本地缓存路径: `<cache>/<file_id>/<文件名>`。
+/// 同一文件重复预览时可直接命中缓存, 不再下载。
+fn preview_cache_path(file_id: &str, name: &str) -> PathBuf {
+    let dir: String = file_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let dir = if dir.is_empty() {
+        "unknown".to_string()
+    } else {
+        dir
+    };
+    let safe = crate::format::safe_file_name(name).unwrap_or_else(|| "preview".to_string());
+    preview_root().join(dir).join(safe)
+}
+
+/// 媒体预览: 解析限时直链后交给 UI, 由外部播放器流式播放。
+async fn preview_stream(
+    client: &PikPakClient,
+    tx: &Sender<Msg>,
+    req_id: u64,
+    file_id: String,
+    name: String,
+) {
+    match client.file_download_link(&file_id).await {
+        Ok(link) => {
+            let headers = client.stream_headers().await;
+            let _ = tx.send(Msg::PreviewStream {
+                req_id,
+                file_id: link.file_id.clone(),
+                name,
+                url: link.url,
+                headers,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::PreviewFailed {
+                req_id,
+                what: format!("解析播放地址失败: {e}"),
+            });
+        }
+    }
+}
+
+/// 非媒体预览: 下载到本地缓存(命中缓存则跳过), 再交给系统查看器打开。
+async fn preview_download(
+    client: &PikPakClient,
+    tx: &Sender<Msg>,
+    req_id: u64,
+    file_id: String,
+    name: String,
+) {
+    let dest = preview_cache_path(&file_id, &name);
+    if dest.exists() {
+        let _ = tx.send(Msg::PreviewReady {
+            req_id,
+            name,
+            path: dest,
+        });
+        return;
+    }
+    let link = match client.file_download_link(&file_id).await {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = tx.send(Msg::PreviewFailed {
+                req_id,
+                what: format!("解析下载地址失败: {e}"),
+            });
+            return;
+        }
+    };
+    match client
+        .download_to(&link, &dest, None, |_, _| {})
+        .await
+    {
+        Ok(_) => {
+            let _ = tx.send(Msg::PreviewReady {
+                req_id,
+                name,
+                path: dest,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::PreviewFailed {
+                req_id,
+                what: format!("准备预览文件失败: {e}"),
+            });
+        }
+    }
 }
 
 // ---------------- 本地下载调度 ----------------

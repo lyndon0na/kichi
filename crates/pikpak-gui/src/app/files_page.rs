@@ -191,8 +191,8 @@ fn file_row(
                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
-            if ui.button("打开(预览暂未支持)").clicked() {
-                actions.push(RowAction::OpenFile);
+            if ui.button("打开 / 预览").clicked() {
+                actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
         }
@@ -235,6 +235,8 @@ fn file_row(
     } else if dbl {
         if f.is_folder() {
             actions.push(RowAction::OpenFolder(f.id.clone(), f.name.clone()));
+        } else {
+            actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
         }
     } else if row_resp.clicked() {
         if shift {
@@ -523,6 +525,12 @@ impl App {
                             self.rename_id = Some(sel_meta[0].0.clone());
                             self.rename_name = sel_meta[0].1.clone();
                         }
+                        if single
+                            && !dl_candidates.is_empty()
+                            && ui.button("打开 / 预览").clicked()
+                        {
+                            self.open_preview(sel_meta[0].0.clone(), sel_meta[0].1.clone());
+                        }
                         if ui.button("复制").clicked() {
                             self.clip_selection(ClipKind::Copy);
                         }
@@ -760,8 +768,8 @@ impl App {
                                                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
                                                 ui.close_menu();
                                             }
-                                            if ui.button("打开(预览暂未支持)").clicked() {
-                                                actions.push(RowAction::OpenFile);
+                                            if ui.button("打开 / 预览").clicked() {
+                                                actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
                                                 ui.close_menu();
                                             }
                                         }
@@ -802,8 +810,12 @@ impl App {
                                     // 复选框点击：始终切换选择
                                     if cb_resp.clicked() {
                                         sel_reqs.push(RowSel::Toggle(f.id.clone()));
-                                    } else if dbl && f.is_folder() {
-                                        actions.push(RowAction::OpenFolder(f.id.clone(), f.name.clone()));
+                                    } else if dbl {
+                                        if f.is_folder() {
+                                            actions.push(RowAction::OpenFolder(f.id.clone(), f.name.clone()));
+                                        } else {
+                                            actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
+                                        }
                                     } else if resp.clicked() {
                                         if shift {
                                             sel_reqs.push(RowSel::Range(f.id.clone()));
@@ -887,9 +899,7 @@ impl App {
                 for action in actions {
                     match action {
                         RowAction::OpenFolder(id, name) => open_folder = Some((id, name)),
-                        RowAction::OpenFile => {
-                            self.toast_warn("文件预览将在后续版本支持");
-                        }
+                        RowAction::OpenFile(id, name) => self.open_preview(id, name),
                         RowAction::DownloadFile(id, name) => self.download_single(id, name),
                         RowAction::CopyName(name) => {
                             let ctx2 = ctx.clone();
