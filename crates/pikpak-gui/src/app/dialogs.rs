@@ -43,6 +43,7 @@ impl App {
                 let name = name.trim().to_string();
                 self.send(Cmd::CreateFolder { name, parent });
             }
+            self.mkdir_name = name;
             self.mkdir_open = !close;
         }
 
@@ -74,6 +75,7 @@ impl App {
                 let name = name.trim().to_string();
                 self.send(Cmd::Rename { id, name });
             }
+            self.rename_name = name;
             if close {
                 self.rename_id = None;
             }
