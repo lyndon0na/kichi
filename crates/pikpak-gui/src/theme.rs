@@ -106,7 +106,8 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.warn_fg_color = theme.warn;
     v.error_fg_color = theme.danger;
     v.selection.bg_fill = theme.accent;
-    v.selection.stroke = Stroke::new(1.0, Color32::TRANSPARENT);
+    // 聚焦中的 TextEdit 边框使用该描边; 不能设为透明, 否则浅色下输入框会与背景融为一体
+    v.selection.stroke = Stroke::new(1.5, theme.accent);
     v.clip_rect_margin = 8.0;
 
     let radius = CornerRadius::same(9);

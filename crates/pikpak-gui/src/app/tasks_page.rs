@@ -82,10 +82,7 @@ impl App {
                                 Some((_, name)) => format!("网盘目录 · {name}"),
                                 None => "离线默认目录".to_string(),
                             };
-                            if ui
-                                .button(RichText::new(format!("{label} ▾")).color(th.accent))
-                                .clicked()
-                            {
+                            if ui.button(RichText::new(label).color(th.accent)).clicked() {
                                 self.open_offline_picker();
                             }
                         });
