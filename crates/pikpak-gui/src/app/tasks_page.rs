@@ -7,6 +7,7 @@ use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
+use super::helpers::input;
 use super::App;
 
 impl App {
@@ -43,7 +44,7 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("链接 / 磁力").color(th.text_weak));
                             let resp = ui.add(
-                                egui::TextEdit::singleline(&mut self.offline_url)
+                                input(&mut self.offline_url)
                                     .desired_width(f32::INFINITY)
                                     .hint_text("magnet:?xt=... 或 https://..."),
                             );
@@ -55,7 +56,7 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("文件名").color(th.text_weak));
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.offline_name)
+                                input(&mut self.offline_name)
                                     .desired_width(280.0)
                                     .hint_text("可选, 留空自动识别"),
                             );

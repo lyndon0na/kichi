@@ -3,6 +3,7 @@ use eframe::egui::{self, CornerRadius, FontId, Frame, Key, Margin, Pos2, RichTex
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
+use super::helpers::input;
 use super::App;
 
 impl App {
@@ -51,20 +52,18 @@ impl App {
                             ui.label(RichText::new("账号").size(12.0).color(th.text_weak));
                             ui.add_space(4.0);
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.login_username)
+                                input(&mut self.login_username)
                                     .desired_width(FW)
-                                    .hint_text("邮箱 / 手机号")
-                                    .margin(egui::Margin::symmetric(10, 7)),
+                                    .hint_text("邮箱 / 手机号"),
                             );
                             ui.add_space(12.0);
                             ui.label(RichText::new("密码").size(12.0).color(th.text_weak));
                             ui.add_space(4.0);
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.login_password)
+                                input(&mut self.login_password)
                                     .desired_width(FW)
                                     .password(true)
-                                    .hint_text("密码")
-                                    .margin(egui::Margin::symmetric(10, 7)),
+                                    .hint_text("密码"),
                             );
 
                             ui.add_space(16.0);

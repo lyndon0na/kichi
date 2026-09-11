@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Key, RichText, Stroke};
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
+use super::helpers::input;
 use super::App;
 
 impl App {
@@ -22,8 +23,8 @@ impl App {
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut name)
-                            .desired_width(260.0)
+                        input(&mut name)
+                            .desired_width(300.0)
                             .hint_text("文件夹名称"),
                     );
                     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -57,7 +58,7 @@ impl App {
                 .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
-                    let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
+                    let resp = ui.add(input(&mut name).desired_width(300.0));
                     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {

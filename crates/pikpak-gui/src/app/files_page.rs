@@ -6,7 +6,7 @@ use crate::format;
 use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
-use super::helpers::truncate_text;
+use super::helpers::{input, truncate_text};
 use super::types::{ClipKind, ColDrag, RowAction, RowSel, SortBy, ViewMode};
 use super::App;
 
@@ -426,10 +426,9 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("筛选").color(th.text_weak).size(12.5));
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
+                        input(&mut self.filter)
                             .desired_width(200.0)
-                            .hint_text("按名称过滤当前目录")
-                            .margin(egui::Margin::symmetric(8, 6)),
+                            .hint_text("按名称过滤当前目录"),
                     );
                     if !self.filter.is_empty()
                         && ui

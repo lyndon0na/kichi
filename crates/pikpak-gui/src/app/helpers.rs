@@ -3,6 +3,14 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontId, Rect, Stroke, vec2};
 
+/// 统一的单行输入框样式: 更舒适的内边距 / 最小高度, 与卡片圆角一致。
+pub(crate) fn input(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text)
+        .margin(egui::Margin::symmetric(12, 9))
+        .min_size(vec2(0.0, 38.0))
+        .font(FontId::proportional(14.0))
+}
+
 pub(crate) fn open_dir(dir: &std::path::Path) {
     if !dir.is_dir() {
         return;
