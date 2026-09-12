@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Key, RichText, Stroke};
+use eframe::egui::{self, Align2, Color32, Key, RichText, Stroke};
 
 use crate::msg::Cmd;
 use crate::theme::Theme;
@@ -270,11 +270,12 @@ impl App {
             self.toast = None;
             return;
         }
+        let cr = self.theme().cr(10);
         egui::Area::new(egui::Id::new("toast"))
             .anchor(Align2::RIGHT_BOTTOM, [-16.0, -16.0])
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style())
-                    .corner_radius(CornerRadius::same(10))
+                    .corner_radius(cr)
                     .show(ui, |ui| {
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {

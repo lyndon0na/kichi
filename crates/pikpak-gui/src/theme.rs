@@ -3,6 +3,8 @@
 
 use eframe::egui::{Color32, Context, CornerRadius, Margin, Stroke, Vec2, Visuals};
 
+use crate::kde::KdeColors;
+
 /// 混合: base 上叠 fg, 透明度 alpha(0..1)。
 pub fn mix(base: Color32, fg: Color32, alpha: f32) -> Color32 {
     let t = alpha.clamp(0.0, 1.0);
@@ -17,6 +19,8 @@ pub fn mix(base: Color32, fg: Color32, alpha: f32) -> Color32 {
 
 pub struct Theme {
     pub dark: bool,
+    /// Breeze 风格(跟随系统 KDE)时启用更方正的圆角与扁平控件。
+    pub breeze: bool,
     /// 品牌强调色。
     pub accent: Color32,
     /// 强调色上的文字(白)。
@@ -43,47 +47,70 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn new(dark: bool) -> Self {
-        if dark {
-            Theme {
-                dark,
-                accent: Color32::from_rgb(108, 132, 255),
-                on_accent: Color32::from_rgb(255, 255, 255),
-                bg: Color32::from_rgb(19, 20, 24),
-                panel: Color32::from_rgb(26, 28, 34),
-                card: Color32::from_rgb(30, 32, 39),
-                hover: Color32::from_rgba_unmultiplied(255, 255, 255, 14),
-                border: Color32::from_rgb(46, 48, 58),
-                text: Color32::from_rgb(236, 238, 244),
-                text_weak: Color32::from_rgb(154, 159, 172),
-                text_faint: Color32::from_rgb(104, 108, 120),
-                ok: Color32::from_rgb(92, 186, 128),
-                warn: Color32::from_rgb(220, 168, 78),
-                danger: Color32::from_rgb(235, 98, 86),
-            }
-        } else {
-            Theme {
-                dark,
-                accent: Color32::from_rgb(74, 96, 230),
-                on_accent: Color32::from_rgb(255, 255, 255),
-                bg: Color32::from_rgb(245, 246, 249),
-                panel: Color32::from_rgb(255, 255, 255),
-                card: Color32::from_rgb(255, 255, 255),
-                hover: Color32::from_rgba_unmultiplied(15, 20, 45, 14),
-                border: Color32::from_rgb(226, 229, 236),
-                text: Color32::from_rgb(28, 30, 35),
-                text_weak: Color32::from_rgb(96, 102, 114),
-                text_faint: Color32::from_rgb(150, 156, 168),
-                ok: Color32::from_rgb(46, 160, 102),
-                warn: Color32::from_rgb(190, 138, 40),
-                danger: Color32::from_rgb(214, 66, 54),
-            }
+    /// 非 KDE 系统下的兜底浅色主题。
+    pub fn fallback() -> Self {
+        Theme {
+            dark: false,
+            breeze: false,
+            accent: Color32::from_rgb(74, 96, 230),
+            on_accent: Color32::from_rgb(255, 255, 255),
+            bg: Color32::from_rgb(245, 246, 249),
+            panel: Color32::from_rgb(255, 255, 255),
+            card: Color32::from_rgb(255, 255, 255),
+            hover: Color32::from_rgba_unmultiplied(15, 20, 45, 14),
+            border: Color32::from_rgb(226, 229, 236),
+            text: Color32::from_rgb(28, 30, 35),
+            text_weak: Color32::from_rgb(96, 102, 114),
+            text_faint: Color32::from_rgb(150, 156, 168),
+            ok: Color32::from_rgb(46, 160, 102),
+            warn: Color32::from_rgb(190, 138, 40),
+            danger: Color32::from_rgb(214, 66, 54),
         }
     }
 
     /// 强调色的弱化打底(供选中/标签等使用)。
     pub fn accent_soft(&self) -> Color32 {
         mix(self.bg, self.accent, if self.dark { 0.16 } else { 0.12 })
+    }
+
+    /// 按风格缩放圆角: Breeze 用小圆角(控件 4 / 卡片 6), 其余沿用原值。
+    pub fn cr(&self, n: i32) -> CornerRadius {
+        let n = n as f32;
+        let v = if self.breeze {
+            if n <= 3.0 {
+                n
+            } else if n <= 10.0 {
+                4.0
+            } else {
+                6.0
+            }
+        } else {
+            n
+        };
+        CornerRadius::same(v.round() as u8)
+    }
+
+    /// 由 KDE 系统配色(kdeglobals)构建, 使外观跟随系统 Breeze 主题。
+    pub fn from_kde(k: &KdeColors) -> Theme {
+        let dark = k.dark;
+        Theme {
+            dark,
+            breeze: true,
+            accent: k.accent,
+            on_accent: k.on_accent,
+            // 页面/侧栏用窗口色, 卡片/列表用视图色, 贴近 Breeze 的层次。
+            bg: k.window_bg,
+            panel: k.window_bg,
+            card: k.view_bg,
+            hover: mix(k.window_bg, k.window_fg, if dark { 0.10 } else { 0.07 }),
+            border: mix(k.window_bg, k.window_fg, if dark { 0.24 } else { 0.14 }),
+            text: k.window_fg,
+            text_weak: k.inactive,
+            text_faint: mix(k.window_fg, k.window_bg, 0.55),
+            ok: k.positive,
+            warn: k.neutral,
+            danger: k.negative,
+        }
     }
 }
 
@@ -97,8 +124,8 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.override_text_color = Some(theme.text);
     v.panel_fill = theme.panel;
     v.window_fill = theme.card;
-    v.window_corner_radius = CornerRadius::same(14);
-    v.menu_corner_radius = CornerRadius::same(8);
+    v.window_corner_radius = theme.cr(14);
+    v.menu_corner_radius = theme.cr(8);
     v.window_stroke = Stroke::new(1.0, theme.border);
     v.faint_bg_color = mix(theme.bg, theme.text, if theme.dark { 0.035 } else { 0.03 });
     v.code_bg_color = mix(theme.bg, theme.text, if theme.dark { 0.08 } else { 0.05 });
@@ -110,7 +137,7 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.selection.stroke = Stroke::new(1.5, theme.accent);
     v.clip_rect_margin = 8.0;
 
-    let radius = CornerRadius::same(9);
+    let radius = theme.cr(9);
     v.widgets.noninteractive.corner_radius = radius;
     v.widgets.inactive.corner_radius = radius;
     v.widgets.hovered.corner_radius = radius;
@@ -135,6 +162,22 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.widgets.hovered.bg_fill = mix(theme.bg, theme.text, if theme.dark { 0.12 } else { 0.06 });
     v.widgets.active.bg_fill = mix(theme.bg, theme.text, if theme.dark { 0.16 } else { 0.09 });
 
+    if theme.breeze {
+        // Breeze: 按钮为浅色底 + 细边框, 悬停/按下用强调色淡染, 不用高饱和填充。
+        let base = theme.card;
+        v.widgets.noninteractive.weak_bg_fill = base;
+        v.widgets.inactive.weak_bg_fill = base;
+        v.widgets.inactive.bg_fill = base;
+        v.widgets.hovered.weak_bg_fill = mix(base, theme.accent, if theme.dark { 0.24 } else { 0.14 });
+        v.widgets.hovered.bg_fill = mix(base, theme.accent, if theme.dark { 0.24 } else { 0.14 });
+        v.widgets.active.weak_bg_fill = mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
+        v.widgets.active.bg_fill = mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme.border);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, mix(theme.border, theme.accent, 0.5));
+        v.widgets.active.bg_stroke = Stroke::new(1.0, theme.accent);
+        v.faint_bg_color = mix(base, theme.text, if theme.dark { 0.05 } else { 0.035 });
+    }
+
     ctx.set_visuals(v);
 
     let mut style = (*ctx.style()).clone();
@@ -144,5 +187,15 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     style.spacing.window_margin = Margin::same(14);
     style.spacing.menu_margin = Margin::same(8);
     style.spacing.indent = 14.0;
+    if theme.breeze {
+        // Breeze 控件更紧凑, 滚动条细而圆润。
+        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+        style.spacing.button_padding = Vec2::new(10.0, 5.0);
+        style.spacing.scroll.bar_width = 8.0;
+        style.spacing.scroll.handle_min_length = 24.0;
+        style.spacing.scroll.bar_inner_margin = 2.0;
+        style.spacing.scroll.bar_outer_margin = 2.0;
+        style.spacing.scroll.floating = false;
+    }
     ctx.set_style(style);
 }

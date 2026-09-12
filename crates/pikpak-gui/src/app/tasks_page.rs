@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align, CornerRadius, Frame, Key, Layout, Margin, RichText, Stroke, vec2};
+use eframe::egui::{self, Align, Frame, Key, Layout, Margin, RichText, Stroke, vec2};
 
 use pikpak_core::types::{task_file_id, task_id, task_name, task_size};
 
@@ -29,14 +29,14 @@ impl App {
                     ui.label(RichText::new("离线下载").size(19.0).strong().color(th.text));
                 });
                 ui.add_space(4.0);
-                ui.label(RichText::new("将磁力 / 直链先转存到云端, 完成后在「网盘文件」中查看。").color(th.text_weak).size(12.5));
+                ui.label(RichText::new("将磁力 / 直链先转存到云端, 完成后在「我的文件」中查看。").color(th.text_weak).size(12.5));
                 ui.add_space(14.0);
 
                 // 新建离线下载卡片
                 egui::Frame::new()
                     .fill(th.card)
                     .stroke(Stroke::new(1.0, th.border))
-                    .corner_radius(CornerRadius::same(14))
+                    .corner_radius(th.cr(14))
                     .inner_margin(Margin::same(16))
                     .show(ui, |ui| {
                         ui.label(RichText::new("新建离线下载").size(14.0).strong().color(th.text));
@@ -68,7 +68,7 @@ impl App {
                                     egui::Button::new(RichText::new("提交下载").color(th.on_accent))
                                         .fill(th.accent)
                                         .stroke(Stroke::NONE)
-                                        .corner_radius(CornerRadius::same(8)),
+                                        .corner_radius(th.cr(8)),
                                 )
                                 .clicked()
                             {
@@ -111,7 +111,7 @@ impl App {
                 egui::Frame::new()
                     .fill(th.card)
                     .stroke(Stroke::new(1.0, th.border))
-                    .corner_radius(CornerRadius::same(14))
+                    .corner_radius(th.cr(14))
                     .inner_margin(Margin::symmetric(14, 8))
                     .show(ui, |ui| {
                         let mut any = false;
@@ -156,7 +156,7 @@ impl App {
                                                             egui::Button::new(RichText::new("下载").color(th.accent))
                                                                 .fill(th.accent_soft())
                                                                 .stroke(Stroke::NONE)
-                                                                .corner_radius(CornerRadius::same(7)),
+                                                                .corner_radius(th.cr(7)),
                                                         )
                                                         .clicked()
                                                 {

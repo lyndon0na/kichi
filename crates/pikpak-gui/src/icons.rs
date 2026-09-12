@@ -31,6 +31,14 @@ pub enum Glyph {
     Refresh,
     /// 退出(门)
     Logout,
+    /// 搜索(放大镜)
+    Search,
+    /// 关闭 / 清除(叉)
+    Close,
+    /// 分享(节点连线)
+    Share,
+    /// 回收站(垃圾桶)
+    Trash,
 }
 
 /// 为方便描线, 生成画布坐标闭包。
@@ -102,6 +110,10 @@ pub fn paint(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::Transfer => transfer(painter, &c),
         Glyph::Refresh => refresh(painter, &c),
         Glyph::Logout => logout(painter, &c),
+        Glyph::Search => search(painter, &c),
+        Glyph::Close => close(painter, &c),
+        Glyph::Share => share(painter, &c),
+        Glyph::Trash => trash(painter, &c),
     }
 }
 
@@ -249,4 +261,40 @@ fn logout(painter: &Painter, c: &Canvas) {
     c.polyline(painter, &[[5.0, 2.6], [2.6, 2.6], [2.6, 13.4], [5.0, 13.4]], 1.4);
     c.polyline(painter, &[[8.0, 5.0], [11.0, 8.0], [8.0, 11.0]], 1.5);
     c.polyline(painter, &[[5.0, 8.0], [11.0, 8.0]], 1.5);
+}
+
+fn search(painter: &Painter, c: &Canvas) {
+    // 镜片 + 手柄
+    painter.circle(c.p(7.0, 7.0), c.s * 0.30, Color32::TRANSPARENT, c.stroke(1.5));
+    painter.line_segment([c.p(9.4, 9.4), c.p(13.2, 13.2)], c.stroke(1.6));
+}
+
+fn close(painter: &Painter, c: &Canvas) {
+    painter.line_segment([c.p(4.6, 4.6), c.p(11.4, 11.4)], c.stroke(1.6));
+    painter.line_segment([c.p(11.4, 4.6), c.p(4.6, 11.4)], c.stroke(1.6));
+}
+
+fn share(painter: &Painter, c: &Canvas) {
+    // 右侧两个节点 + 左侧一个节点, 三线相连。
+    let a = c.p(11.8, 4.2);
+    let b = c.p(4.2, 8.0);
+    let d = c.p(11.8, 11.8);
+    painter.line_segment([b, a], c.stroke(1.4));
+    painter.line_segment([b, d], c.stroke(1.4));
+    painter.circle_filled(a, c.s * 0.11, c.color);
+    painter.circle_filled(b, c.s * 0.11, c.color);
+    painter.circle_filled(d, c.s * 0.11, c.color);
+}
+
+fn trash(painter: &Painter, c: &Canvas) {
+    // 桶盖 + 提手
+    c.polyline(painter, &[[3.2, 4.4], [12.8, 4.4]], 1.5);
+    c.polyline(painter, &[[6.4, 4.4], [6.9, 2.6], [9.1, 2.6], [9.6, 4.4]], 1.4);
+    // 桶身
+    c.polyline(painter, &[[4.6, 4.4], [5.3, 13.6]], 1.4);
+    c.polyline(painter, &[[11.4, 4.4], [10.7, 13.6]], 1.4);
+    c.polyline(painter, &[[5.3, 13.6], [10.7, 13.6]], 1.4);
+    // 内部竖纹
+    c.polyline(painter, &[[6.9, 6.6], [7.1, 11.4]], 1.2);
+    c.polyline(painter, &[[9.1, 6.6], [8.9, 11.4]], 1.2);
 }

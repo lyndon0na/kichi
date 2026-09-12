@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, FontId, Rect, Stroke, vec2};
+use eframe::egui::{self, Color32, FontId, vec2};
 
 /// 统一的单行输入框样式: 更舒适的内边距 / 最小高度, 与卡片圆角一致。
 pub(crate) fn input(text: &mut String) -> egui::TextEdit<'_> {
@@ -120,21 +120,6 @@ pub(crate) fn truncate_text(
         chars[..lo].iter().collect::<String>() + ell
     };
     painter.layout_no_wrap(out, font, color)
-}
-
-/// 绘制日/月切换的小图标。
-pub(crate) fn draw_sun_moon(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let c = rect.center();
-    let r = rect.width() * 0.24;
-    painter.circle_filled(c, r, color);
-    for i in 0..8 {
-        let a = std::f32::consts::TAU * (i as f32) / 8.0;
-        let d0 = rect.width() * 0.36;
-        let d1 = rect.width() * 0.46;
-        let p0 = c + vec2(a.cos(), a.sin()) * d0;
-        let p1 = c + vec2(a.cos(), a.sin()) * d1;
-        painter.line_segment([p0, p1], Stroke::new(1.6, color));
-    }
 }
 
 pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {

@@ -1,11 +1,12 @@
 mod dialogs;
-mod downloads_page;
 mod files_page;
 mod helpers;
+mod library_page;
 mod login;
 mod settings_page;
 mod sidebar;
 mod tasks_page;
+mod transfers_page;
 pub(crate) mod types;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -16,13 +17,14 @@ use eframe::egui::{self, Color32};
 use pikpak_core::session;
 use pikpak_core::types::{File, Quota, Task};
 
+use crate::kde;
 use crate::msg::{Cmd, Msg};
 use crate::settings::{self, DownloadRecord, DownloadRecordStatus};
 use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DlJob, DlStatus, Page, SortBy, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DlJob, DlStatus, Page, SortBy, TransferTab, ViewMode};
 
 pub struct App {
     tx: Sender<Cmd>,
@@ -34,9 +36,14 @@ pub struct App {
     pub(crate) login_username: String,
     pub(crate) login_password: String,
     pub(crate) auth_error: Option<String>,
-    pub(crate) dark: bool,
+    /// 系统(KDE)配色; 非 KDE 时为 None。
+    pub(crate) kde_colors: Option<kde::KdeColors>,
+    /// 上次轮询系统主题的时间。
+    pub(crate) kde_checked: Instant,
 
     pub(crate) page: Page,
+    /// 传输任务页当前分栏(上传 / 下载)。
+    pub(crate) transfer_tab: TransferTab,
 
     // 文件浏览
     pub(crate) stack: Vec<Crumb>,
@@ -58,7 +65,6 @@ pub struct App {
     pub(crate) view_mode: ViewMode,
 
     // Shift+Click 范围选择锚点
-    pub(crate) last_clicked_id: Option<String>,
     pub(crate) last_clicked_dl: Option<u64>,
 
     // 离线
@@ -124,8 +130,10 @@ impl App {
             login_username: saved.username.clone(),
             login_password: String::new(),
             auth_error: None,
-            dark: saved.dark,
+            kde_colors: kde::load(),
+            kde_checked: Instant::now(),
             page: Page::Files,
+            transfer_tab: TransferTab::Download,
             stack: vec![Crumb {
                 id: None,
                 label: "我的云盘".into(),
@@ -196,7 +204,6 @@ impl App {
             col_time_w: 160.0,
             col_dragging: None,
             view_mode: ViewMode::List,
-            last_clicked_id: None,
             last_clicked_dl: None,
             toast: None,
         };
@@ -235,7 +242,10 @@ impl App {
     }
 
     pub(crate) fn theme(&self) -> Theme {
-        Theme::new(self.dark)
+        match &self.kde_colors {
+            Some(k) => Theme::from_kde(k),
+            None => Theme::fallback(),
+        }
     }
 
     pub(crate) fn send(&self, cmd: Cmd) {
@@ -537,14 +547,25 @@ impl App {
         };
         settings::save(&settings::Settings {
             username: name,
-            dark: self.dark,
             download_dir: self.download_dir.clone(),
         });
     }
 
-    pub(crate) fn toggle_theme(&mut self) {
-        self.dark = !self.dark;
-        self.persist_settings();
+    /// 定期重读 kdeglobals, 让系统换主题后应用即时更新。
+    fn poll_system_theme(&mut self) {
+        if self.kde_checked.elapsed() < Duration::from_millis(1500) {
+            return;
+        }
+        self.kde_checked = Instant::now();
+        let fresh = kde::load();
+        let changed = match (&self.kde_colors, &fresh) {
+            (Some(a), Some(b)) => a.accent != b.accent || a.dark != b.dark || a.view_bg != b.view_bg,
+            (None, Some(_)) | (Some(_), None) => true,
+            (None, None) => false,
+        };
+        if changed {
+            self.kde_colors = fresh;
+        }
     }
 
     pub(crate) fn current_parent(&self) -> Option<String> {
@@ -731,12 +752,6 @@ impl App {
         }
     }
 
-    /// 某文件是否在当前目录被本地隐藏(等待服务端同步)。
-    pub(crate) fn is_hidden(&self, id: &str) -> bool {
-        let cur = self.current_parent();
-        self.hidden.get(id).is_some_and(|hp| *hp == cur)
-    }
-
     /// 当前目录内过滤后的可见文件(文件夹在前, 组内按当前排序)。
     pub(crate) fn visible_rows(&self) -> (Vec<File>, Vec<File>) {
         let kw = self.filter.trim().to_lowercase();
@@ -915,6 +930,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain();
+        self.poll_system_theme();
 
         // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
         if let Some(at) = self.relist_at {

@@ -4,9 +4,18 @@ use std::time::Instant;
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum Page {
     Files,
+    Shares,
+    Trash,
     Tasks,
-    Downloads,
+    Transfers,
     Settings,
+}
+
+/// 传输任务页的上传/下载分栏。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum TransferTab {
+    Upload,
+    Download,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
@@ -33,16 +42,6 @@ pub(crate) enum RowAction {
     CutItem(String),
     PasteInto(String),
     Trash(String),
-}
-
-/// 行点击产生的选择请求。
-pub(crate) enum RowSel {
-    /// 普通单击: 只选中该项(替换原选择)。
-    Replace(String),
-    /// Ctrl+单击: 在选中/未选中之间切换。
-    Toggle(String),
-    /// Shift+单击: 范围选择(从上次点击项到当前项)。
-    Range(String),
 }
 
 /// 下载列表行点击产生的选择请求。

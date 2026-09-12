@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2};
+use eframe::egui::{self, Align, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, Stroke, vec2};
 
 use pikpak_core::types::Quota;
 
@@ -6,7 +6,7 @@ use crate::format;
 use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
-use super::helpers::{draw_sun_moon, truncate_text};
+use super::helpers::truncate_text;
 use super::types::{DlStatus, Page};
 use super::App;
 
@@ -28,8 +28,10 @@ impl App {
 
         match self.page {
             Page::Files => self.files_page(ctx, th),
+            Page::Shares => self.placeholder_page(ctx, th, Glyph::Share, "我的分享", "暂无分享内容"),
+            Page::Trash => self.placeholder_page(ctx, th, Glyph::Trash, "回收站", "回收站为空"),
             Page::Tasks => self.tasks_page(ctx, th),
-            Page::Downloads => self.downloads_page(ctx, th),
+            Page::Transfers => self.transfers_page(ctx, th),
             Page::Settings => self.settings_page(ctx, th),
         }
     }
@@ -48,30 +50,43 @@ impl App {
         let (rect, resp) =
             ui.allocate_exact_size(vec2(ui.available_width(), height), egui::Sense::click());
 
-        let bg = if selected {
-            mix(th.panel, th.accent, if th.dark { 0.24 } else { 0.13 })
-        } else if resp.hovered() {
-            mix(th.panel, th.text, if th.dark { 0.08 } else { 0.06 })
-        } else {
-            egui::Color32::TRANSPARENT
-        };
         let painter = ui.painter().clone();
-        painter.rect_filled(rect, CornerRadius::same(9), bg);
-        if selected {
-            painter.rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(rect.min.x + 4.0, rect.min.y + (height - 18.0) / 2.0),
-                    Pos2::new(rect.min.x + 6.0, rect.min.y + (height + 18.0) / 2.0),
-                ),
-                CornerRadius::same(1),
-                th.accent,
-            );
+        if selected && th.breeze {
+            // Breeze: 选中项为强调色实底 + 前景色。
+            painter.rect_filled(rect, th.cr(6), th.accent);
+        } else {
+            let bg = if selected {
+                mix(th.panel, th.accent, if th.dark { 0.24 } else { 0.13 })
+            } else if resp.hovered() {
+                mix(th.panel, th.text, if th.dark { 0.08 } else { 0.06 })
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            painter.rect_filled(rect, th.cr(9), bg);
+            if selected {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(rect.min.x + 4.0, rect.min.y + (height - 18.0) / 2.0),
+                        Pos2::new(rect.min.x + 6.0, rect.min.y + (height + 18.0) / 2.0),
+                    ),
+                    th.cr(1),
+                    th.accent,
+                );
+            }
         }
         let icon_rect =
             Rect::from_center_size(Pos2::new(rect.min.x + 20.0, rect.center().y), vec2(18.0, 18.0));
-        let icon_color = if selected { th.accent } else { th.text_weak };
+        let icon_color = if selected {
+            if th.breeze { th.on_accent } else { th.accent }
+        } else {
+            th.text_weak
+        };
         icons::paint(&painter, icon_rect, glyph, icon_color);
-        let txt_color = if selected { th.text } else { th.text_weak };
+        let txt_color = if selected {
+            if th.breeze { th.on_accent } else { th.text }
+        } else {
+            th.text_weak
+        };
         let txt = painter.layout_no_wrap(
             label.to_string(),
             FontId::proportional(14.0),
@@ -84,14 +99,19 @@ impl App {
         );
         if let Some(n) = badge {
             let s = format!("{n}");
-            let g = painter.layout_no_wrap(s, FontId::proportional(11.0), egui::Color32::WHITE);
+            let (badge_bg, badge_fg) = if selected && th.breeze {
+                (th.on_accent, th.accent)
+            } else {
+                (mix(th.panel, th.accent, 0.9), egui::Color32::WHITE)
+            };
+            let g = painter.layout_no_wrap(s, FontId::proportional(11.0), badge_fg);
             let w = (g.size().x + 14.0).max(17.0);
             let r = Rect::from_min_size(
                 Pos2::new(rect.right() - w - 8.0, rect.center().y - 9.0),
                 vec2(w, 18.0),
             );
-            painter.rect_filled(r, CornerRadius::same(9), mix(th.panel, th.accent, 0.9));
-            painter.galley(Pos2::new(r.center().x - g.size().x / 2.0, r.min.y + 3.0), g, egui::Color32::WHITE);
+            painter.rect_filled(r, th.cr(9), badge_bg);
+            painter.galley(Pos2::new(r.center().x - g.size().x / 2.0, r.min.y + 3.0), g, badge_fg);
         }
         resp.clicked()
     }
@@ -102,7 +122,7 @@ impl App {
         let (brect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), egui::Sense::hover());
         let bp = ui.painter().clone();
         let logo = Rect::from_center_size(Pos2::new(brect.min.x + 18.0, brect.center().y), vec2(30.0, 30.0));
-        bp.rect_filled(logo, CornerRadius::same(9), th.accent);
+        bp.rect_filled(logo, th.cr(9), th.accent);
         let ltxt = bp.layout_no_wrap(
             "P".into(),
             FontId::proportional(17.0),
@@ -126,24 +146,6 @@ impl App {
         );
         bp.galley(Pos2::new(brect.min.x + 42.0, brect.min.y + 24.0), sub, th.text_faint);
 
-        // 主题切换
-        let theme_btn = Rect::from_min_size(
-            Pos2::new(brect.right() - 34.0, brect.center().y - 17.0),
-            vec2(28.0, 28.0),
-        );
-        let tresp = ui.interact(theme_btn, ui.id().with("theme_toggle"), egui::Sense::click());
-        let tb = if tresp.hovered() {
-            mix(th.panel, th.text, if th.dark { 0.12 } else { 0.1 })
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        bp.rect_filled(theme_btn, CornerRadius::same(7), tb);
-        let sun = !self.dark;
-        draw_sun_moon(&bp, theme_btn, if sun { egui::Color32::from_rgb(226, 162, 54) } else { egui::Color32::from_rgb(140, 150, 190) });
-        if tresp.clicked() {
-            self.toggle_theme();
-        }
-
         ui.add_space(18.0);
 
         // ---------- 主导航 ----------
@@ -155,22 +157,26 @@ impl App {
         .iter()
         .map(|p| self.buckets.get(*p).map(|v| v.len()).unwrap_or(0))
         .sum::<usize>();
+        let active_dl = self
+            .jobs
+            .values()
+            .filter(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
+            .count();
 
         let mut nav: Option<Page> = None;
-        if self.nav_item(
-            ui,
-            th,
-            Glyph::Folder,
-            "网盘文件",
-            self.page == Page::Files,
-            None,
-        ) {
+        if self.nav_item(ui, th, Glyph::Folder, "我的文件", self.page == Page::Files, None) {
             nav = Some(Page::Files);
+        }
+        if self.nav_item(ui, th, Glyph::Share, "我的分享", self.page == Page::Shares, None) {
+            nav = Some(Page::Shares);
+        }
+        if self.nav_item(ui, th, Glyph::Trash, "回收站", self.page == Page::Trash, None) {
+            nav = Some(Page::Trash);
         }
         if self.nav_item(
             ui,
             th,
-            Glyph::Transfer,
+            Glyph::Download,
             "离线下载",
             self.page == Page::Tasks,
             (running > 0).then_some(running),
@@ -180,45 +186,18 @@ impl App {
         if self.nav_item(
             ui,
             th,
-            Glyph::Gear,
-            "设置",
-            self.page == Page::Settings,
-            None,
+            Glyph::Transfer,
+            "传输任务",
+            self.page == Page::Transfers,
+            (active_dl > 0).then_some(active_dl),
         ) {
+            nav = Some(Page::Transfers);
+        }
+        if self.nav_item(ui, th, Glyph::Gear, "设置", self.page == Page::Settings, None) {
             nav = Some(Page::Settings);
         }
         if let Some(p) = nav {
             self.page = p;
-        }
-
-        // 本地下载(常驻入口, 有进行中任务时显示角标)
-        {
-            ui.add_space(6.0);
-            let active = self
-                .jobs
-                .values()
-                .filter(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
-                .count();
-            let done = self.jobs.len().saturating_sub(active);
-            let clicked = self.nav_item(
-                ui,
-                th,
-                Glyph::Download,
-                "本地下载",
-                self.page == Page::Downloads,
-                (active > 0).then_some(active),
-            );
-            if clicked {
-                self.page = Page::Downloads;
-            }
-            if !self.jobs.is_empty() && active == 0 && done > 0 {
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new("全部任务已完成, 点击可查看")
-                        .color(th.text_faint)
-                        .size(11.0),
-                );
-            }
         }
 
         // ---------- 底部: 存储配额 + 账户 ----------
@@ -238,7 +217,7 @@ impl App {
         let (rect, resp) =
             ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::click());
         let painter = ui.painter().clone();
-        painter.rect_filled(rect, CornerRadius::same(10), egui::Color32::TRANSPARENT);
+        painter.rect_filled(rect, th.cr(10), egui::Color32::TRANSPARENT);
         let initial = username
             .chars()
             .next()
@@ -249,7 +228,7 @@ impl App {
         let g = painter.layout_no_wrap(initial, FontId::proportional(14.0), th.accent);
         painter.galley(Pos2::new(av.center().x - g.size().x / 2.0, av.center().y - g.size().y / 2.0), g, th.accent);
         let name_rect = Rect::from_min_max(Pos2::new(rect.min.x + 42.0, rect.min.y + 4.0), Pos2::new(rect.right() - 44.0, rect.max.y - 4.0));
-        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x + 42.0, rect.min.y + 5.0), Pos2::new(rect.right() - 40.0, rect.max.y - 5.0)), CornerRadius::same(8), egui::Color32::TRANSPARENT);
+        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x + 42.0, rect.min.y + 5.0), Pos2::new(rect.right() - 40.0, rect.max.y - 5.0)), th.cr(8), egui::Color32::TRANSPARENT);
         let uname = truncate_text(&painter, username, name_rect.width(), FontId::proportional(13.5), th.text);
         painter.galley(Pos2::new(name_rect.min.x, rect.center().y - uname.size().y / 2.0), uname, th.text);
         let out_rect = Rect::from_center_size(Pos2::new(rect.right() - 17.0, rect.center().y), vec2(24.0, 24.0));
@@ -290,12 +269,12 @@ impl App {
             Pos2::new(inner.min.x, inner.min.y + 22.0),
             Pos2::new(inner.right(), inner.min.y + 26.0),
         );
-        painter.rect_filled(bar, CornerRadius::same(2), mix(th.bg, th.text, if th.dark { 0.12 } else { 0.1 }));
+        painter.rect_filled(bar, th.cr(2), mix(th.bg, th.text, if th.dark { 0.12 } else { 0.1 }));
         if frac > 0.0 {
             let fw = (bar.width() * frac).max(3.0);
             painter.rect_filled(
                 Rect::from_min_size(bar.min, vec2(fw, bar.height())),
-                CornerRadius::same(2),
+                th.cr(2),
                 th.accent,
             );
         }

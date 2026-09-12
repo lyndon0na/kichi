@@ -1,6 +1,7 @@
 mod app;
 mod format;
 mod icons;
+mod kde;
 mod msg;
 mod settings;
 mod theme;

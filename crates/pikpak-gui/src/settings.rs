@@ -5,8 +5,6 @@ use std::path::PathBuf;
 pub struct Settings {
     #[serde(default)]
     pub username: String,
-    #[serde(default)]
-    pub dark: bool,
     /// 上一次选择的本地下载目录(可空)。
     #[serde(default)]
     pub download_dir: String,

@@ -1,12 +1,12 @@
-use eframe::egui::{self, Align, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2};
+use eframe::egui::{self, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2};
 
 use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
-use super::helpers::open_dir;
-use super::types::{DlJob, DlOp, DlSel, DlStatus};
+use super::helpers::{open_dir, truncate_text};
+use super::types::{DlJob, DlOp, DlSel, DlStatus, TransferTab};
 use super::App;
 
 /// 下载行状态文案。
@@ -48,8 +48,8 @@ fn dl_card(
     } else {
         th.card
     };
-    painter.rect_filled(rect, CornerRadius::same(12), bg);
-    painter.rect_stroke(rect, CornerRadius::same(12), Stroke::new(1.0, th.border), egui::StrokeKind::Inside);
+    painter.rect_filled(rect, th.cr(12), bg);
+    painter.rect_stroke(rect, th.cr(12), Stroke::new(1.0, th.border), egui::StrokeKind::Inside);
 
     // 选中时左侧 accent 条
     if is_sel {
@@ -58,30 +58,20 @@ fn dl_card(
                 Pos2::new(rect.min.x + 3.0, rect.min.y + 12.0),
                 Pos2::new(rect.min.x + 5.0, rect.max.y - 12.0),
             ),
-            CornerRadius::same(2),
+            th.cr(2),
             th.accent,
         );
     }
 
     let inner = rect.shrink2(vec2(12.0, 10.0));
-    // 左侧: 文件名 + 状态
+    // 左侧: 文件名 + 状态(超长截断, 避免溢出到进度/按钮区域)
     let left_w = (inner.width() - 120.0).max(120.0);
     let left_rect = Rect::from_min_max(inner.min, Pos2::new(inner.min.x + left_w, inner.max.y));
-    painter.text(
-        Pos2::new(left_rect.min.x, left_rect.min.y + 2.0),
-        egui::Align2::LEFT_TOP,
-        &job.name,
-        FontId::proportional(13.5),
-        th.text,
-    );
+    let name_g = truncate_text(&painter, &job.name, left_rect.width(), FontId::proportional(13.5), th.text);
+    painter.galley(Pos2::new(left_rect.min.x, left_rect.min.y + 2.0), name_g, th.text);
     let (col, txt) = status_line(job);
-    painter.text(
-        Pos2::new(left_rect.min.x, left_rect.min.y + 20.0),
-        egui::Align2::LEFT_TOP,
-        &txt,
-        FontId::proportional(11.5),
-        col,
-    );
+    let status_g = truncate_text(&painter, &txt, left_rect.width(), FontId::proportional(11.5), col);
+    painter.galley(Pos2::new(left_rect.min.x, left_rect.min.y + 20.0), status_g, col);
 
     // 中间: 进度/速度
     let mid_x = left_rect.max.x + 16.0;
@@ -95,12 +85,12 @@ fn dl_card(
                     Pos2::new(mid_x + mid_w, inner.center().y + 8.0),
                 );
                 // 背景条
-                painter.rect_filled(bar_rect, CornerRadius::same(4), mix(th.text_faint, th.bg, 0.7));
+                painter.rect_filled(bar_rect, th.cr(4), mix(th.text_faint, th.bg, 0.7));
                 // 进度条
                 let fill_w = mid_w * frac;
                 if fill_w > 0.0 {
                     let fill_rect = Rect::from_min_max(bar_rect.min, Pos2::new(bar_rect.min.x + fill_w, bar_rect.max.y));
-                    painter.rect_filled(fill_rect, CornerRadius::same(4), th.accent);
+                    painter.rect_filled(fill_rect, th.cr(4), th.accent);
                 }
                 // 文字
                 painter.text(
@@ -161,7 +151,7 @@ fn dl_card(
                 Pos2::new(btn_rect.center().x + 20.0, btn_rect.max.y),
             );
             let cancel_resp = ui.interact(cancel_rect, ui.id().with(("cancel", rid)), egui::Sense::click());
-            painter.rect_filled(cancel_rect, CornerRadius::same(6), if cancel_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
+            painter.rect_filled(cancel_rect, th.cr(6), if cancel_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
             painter.text(
                 cancel_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -180,7 +170,7 @@ fn dl_card(
                 Pos2::new(btn_rect.center().x - 4.0, btn_rect.max.y),
             );
             let remove_resp = ui.interact(remove_rect, ui.id().with(("remove", rid)), egui::Sense::click());
-            painter.rect_filled(remove_rect, CornerRadius::same(6), if remove_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
+            painter.rect_filled(remove_rect, th.cr(6), if remove_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
             painter.text(
                 remove_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -197,7 +187,7 @@ fn dl_card(
                 Pos2::new(btn_rect.max.x, btn_rect.max.y),
             );
             let open_resp = ui.interact(open_rect, ui.id().with(("open", rid)), egui::Sense::click());
-            painter.rect_filled(open_rect, CornerRadius::same(6), if open_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
+            painter.rect_filled(open_rect, th.cr(6), if open_resp.hovered() { th.hover } else { egui::Color32::TRANSPARENT });
             painter.text(
                 open_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -226,7 +216,22 @@ fn dl_card(
 }
 
 impl App {
-    pub(super) fn downloads_page(&mut self, ctx: &egui::Context, th: &Theme) {
+    /// 传输任务页顶部的「上传 / 下载」分栏按钮。
+    fn transfer_tab_button(&mut self, ui: &mut egui::Ui, th: &Theme, tab: TransferTab, label: &str) {
+        let selected = self.transfer_tab == tab;
+        let text = RichText::new(label)
+            .size(13.0)
+            .color(if selected { th.on_accent } else { th.text_weak });
+        let btn = egui::Button::new(text)
+            .fill(if selected { th.accent } else { egui::Color32::TRANSPARENT })
+            .stroke(Stroke::new(1.0, if selected { th.accent } else { th.border }))
+            .corner_radius(th.cr(8));
+        if ui.add(btn).clicked() {
+            self.transfer_tab = tab;
+        }
+    }
+
+    pub(super) fn transfers_page(&mut self, ctx: &egui::Context, th: &Theme) {
         let mut ops: Vec<(u64, DlOp)> = Vec::new();
         let mut sel_reqs: Vec<DlSel> = Vec::new();
         let running = self
@@ -241,9 +246,40 @@ impl App {
                 // 标题行
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::hover());
-                    icons::paint(ui.painter(), r, Glyph::Download, th.accent);
-                    ui.label(RichText::new("本地下载").size(19.0).strong().color(th.text));
-                    let done = self.jobs.len().saturating_sub(running);
+                    icons::paint(ui.painter(), r, Glyph::Transfer, th.accent);
+                    ui.label(RichText::new("传输任务").size(19.0).strong().color(th.text));
+                });
+                ui.add_space(10.0);
+
+                // 上传 / 下载 分栏
+                ui.horizontal(|ui| {
+                    self.transfer_tab_button(ui, th, TransferTab::Upload, "上传");
+                    self.transfer_tab_button(ui, th, TransferTab::Download, "下载");
+                });
+                ui.add_space(10.0);
+
+                // -------- 上传(占位, 功能待实现) --------
+                if self.transfer_tab == TransferTab::Upload {
+                    ui.add_space((ui.available_height() * 0.25).max(60.0));
+                    ui.vertical_centered(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(60.0, 60.0), egui::Sense::hover());
+                        icons::paint(ui.painter(), r, Glyph::Transfer, th.text_faint);
+                        ui.add_space(12.0);
+                        ui.label(RichText::new("暂无上传任务").color(th.text_weak).size(14.0));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("上传功能正在开发中").color(th.text_faint).size(12.0));
+                    });
+                    return;
+                }
+
+                // -------- 下载 --------
+                let done = self.jobs.len().saturating_sub(running);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("文件保存在本地下载目录, 可前往「设置」修改。")
+                            .color(th.text_weak)
+                            .size(12.5),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if !self.jobs.is_empty() {
                             ui.label(
@@ -257,12 +293,6 @@ impl App {
                         }
                     });
                 });
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("文件保存在本地下载目录, 可前往「设置」修改。")
-                        .color(th.text_weak)
-                        .size(12.5),
-                );
                 ui.add_space(8.0);
 
                 // 工具栏（仅有任务时显示）
@@ -298,10 +328,10 @@ impl App {
                             th.text_faint,
                         );
                         ui.add_space(10.0);
-                        ui.label(RichText::new("暂无本地下载任务").color(th.text_weak).size(14.0));
+                        ui.label(RichText::new("暂无下载任务").color(th.text_weak).size(14.0));
                         ui.add_space(4.0);
                         ui.label(
-                            RichText::new("在「网盘文件」中选择文件, 右键或底部操作条下载到本地")
+                            RichText::new("在「我的文件」中选择文件后下载到本地")
                                 .color(th.text_faint)
                                 .size(12.0),
                         );
@@ -343,7 +373,7 @@ impl App {
                     egui::Frame::new()
                         .fill(th.card)
                         .stroke(Stroke::new(1.0, th.border))
-                        .corner_radius(CornerRadius::same(8))
+                        .corner_radius(th.cr(8))
                         .inner_margin(Margin::symmetric(12, 8))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
@@ -353,7 +383,7 @@ impl App {
                                         egui::Button::new(RichText::new("移除选中").color(th.danger))
                                             .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
                                             .fill(egui::Color32::TRANSPARENT)
-                                            .corner_radius(CornerRadius::same(8)),
+                                            .corner_radius(th.cr(8)),
                                     ).clicked() {
                                         for rid in &self.selected_dl {
                                             ops.push((*rid, DlOp::Remove));

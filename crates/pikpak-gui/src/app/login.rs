@@ -1,4 +1,4 @@
-use eframe::egui::{self, CornerRadius, FontId, Frame, Key, Margin, Pos2, RichText, Stroke, vec2};
+use eframe::egui::{self, FontId, Frame, Key, Margin, Pos2, RichText, Stroke, vec2};
 
 use crate::msg::Cmd;
 use crate::theme::Theme;
@@ -20,7 +20,7 @@ impl App {
                     let (r, _) = ui.allocate_exact_size(vec2(62.0, 62.0), egui::Sense::hover());
                     let lp = ui.painter().clone();
                     let rr = r;
-                    lp.rect_filled(rr, CornerRadius::same(16), th.accent);
+                    lp.rect_filled(rr, th.cr(16), th.accent);
                     let g = lp.layout_no_wrap("P".into(), FontId::proportional(32.0), th.on_accent);
                     lp.galley(
                         Pos2::new(rr.center().x - g.size().x / 2.0, rr.center().y - g.size().y / 2.0 - 1.0),
@@ -45,7 +45,7 @@ impl App {
                     egui::Frame::new()
                         .fill(th.card)
                         .stroke(Stroke::new(1.0, th.border))
-                        .corner_radius(CornerRadius::same(14))
+                        .corner_radius(th.cr(14))
                         .inner_margin(Margin::same(20))
                         .show(ui, |ui| {
                             ui.set_width(FW);
@@ -75,7 +75,7 @@ impl App {
                             )
                             .fill(th.accent)
                             .stroke(Stroke::NONE)
-                            .corner_radius(CornerRadius::same(10))
+                            .corner_radius(th.cr(10))
                             .min_size(vec2(FW, 38.0));
                             let btn_resp = ui.add_enabled(ok || enter, btn);
                             if (btn_resp.clicked() || (enter && ok)) && !self.auth_checking {
