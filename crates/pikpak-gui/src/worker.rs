@@ -360,12 +360,13 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             file_id,
             name,
             media,
+            subtitles,
         } => {
             let Some(client) = st.client.clone() else { return };
             let tx = tx.clone();
             tokio::spawn(async move {
                 if media {
-                    preview_stream(&client, &tx, req_id, file_id, name).await;
+                    preview_stream(&client, &tx, req_id, file_id, name, subtitles).await;
                 } else {
                     preview_download(&client, &tx, req_id, file_id, name).await;
                 }
@@ -408,22 +409,25 @@ fn preview_cache_path(file_id: &str, name: &str) -> PathBuf {
 }
 
 /// 媒体预览: 解析限时直链后交给 UI, 由外部播放器流式播放。
+/// 同集外挂字幕会先下载到本地缓存, 一并交给播放器挂载。
 async fn preview_stream(
     client: &PikPakClient,
     tx: &Sender<Msg>,
     req_id: u64,
     file_id: String,
     name: String,
+    subtitles: Vec<(String, String)>,
 ) {
+    let subs = prepare_subtitles(client, &subtitles).await;
     match client.file_download_link(&file_id).await {
         Ok(link) => {
             let headers = client.stream_headers().await;
             let _ = tx.send(Msg::PreviewStream {
                 req_id,
-                file_id: link.file_id.clone(),
                 name,
                 url: link.url,
                 headers,
+                subs,
             });
         }
         Err(e) => {
@@ -433,6 +437,33 @@ async fn preview_stream(
             });
         }
     }
+}
+
+/// 下载同集外挂字幕到预览缓存, 返回本地路径。
+/// 尽力而为: 单条失败(解析直链或下载出错)时跳过, 不影响视频播放。
+async fn prepare_subtitles(
+    client: &PikPakClient,
+    subtitles: &[(String, String)],
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for (id, name) in subtitles {
+        let dest = preview_cache_path(id, name);
+        if dest.exists() {
+            paths.push(dest);
+            continue;
+        }
+        let Ok(link) = client.file_download_link(id).await else {
+            continue;
+        };
+        if client
+            .download_to(&link, &dest, None, |_, _| {})
+            .await
+            .is_ok()
+        {
+            paths.push(dest);
+        }
+    }
+    paths
 }
 
 /// 非媒体预览: 下载到本地缓存(命中缓存则跳过), 再交给系统查看器打开。

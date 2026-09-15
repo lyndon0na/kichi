@@ -470,10 +470,10 @@ impl App {
                 }
                 Msg::PreviewStream {
                     req_id,
-                    file_id,
                     name,
                     url,
                     headers,
+                    subs,
                 } => {
                     if self
                         .preview_pending
@@ -482,19 +482,11 @@ impl App {
                     {
                         self.preview_pending = None;
                     }
-                    match helpers::play_with_mpv(&name, &url, &headers) {
+                    match helpers::play_with_mpv(&name, &url, &headers, &subs) {
                         Ok(()) => self.toast_ok(&format!("正在用 mpv 播放「{name}」")),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            // 未安装 mpv: 回退到「下载后交给系统查看器」。
-                            self.toast_warn("未找到 mpv, 改用系统播放器 (下载后打开)…");
-                            let media_req = self.alloc_req_id();
-                            self.preview_pending = Some((media_req, name.clone()));
-                            self.send(Cmd::Preview {
-                                req_id: media_req,
-                                file_id,
-                                name,
-                                media: false,
-                            });
+                            // 音视频流式播放依赖 mpv, 缺失时只提示, 不下载回退。
+                            self.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
                         }
                         Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
                     }
@@ -1055,6 +1047,20 @@ impl App {
         let media = helpers::is_media_file(&name);
         let req_id = self.alloc_req_id();
         self.preview_pending = Some((req_id, name.clone()));
+        // 同目录下的同集字幕, 播放时一并挂载(仅媒体预览需要)。
+        let subtitles: Vec<(String, String)> = if media {
+            self.files
+                .iter()
+                .filter(|f| {
+                    !f.is_folder()
+                        && helpers::is_subtitle_file(&f.name)
+                        && helpers::subtitle_of(&name, &f.name)
+                })
+                .map(|f| (f.id.clone(), f.name.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let hint = if media {
             "正在解析播放地址…"
         } else {
@@ -1066,6 +1072,7 @@ impl App {
             file_id: id,
             name,
             media,
+            subtitles,
         });
     }
 }

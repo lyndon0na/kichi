@@ -27,10 +27,12 @@ pub(crate) fn open_path(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 /// 用 mpv 流式播放直链, 并携带签名直链所需的请求头。
+/// `subs` 为同集外挂字幕的本地路径, 会作为 `--sub-file` 挂载。
 pub(crate) fn play_with_mpv(
     name: &str,
     url: &str,
     headers: &[(String, String)],
+    subs: &[PathBuf],
 ) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("mpv");
     cmd.arg("--force-window=yes");
@@ -47,21 +49,57 @@ pub(crate) fn play_with_mpv(
     if !fields.is_empty() {
         cmd.arg(format!("--http-header-fields={}", fields.join(",")));
     }
+    // 附多个字幕时优先选中文字幕, 找不到再退回默认(通常英文)。
+    cmd.arg("--slang=zh-Hans,zh-CN,zh-Hant,zh-TW,chs,cht,sc,tc,chi,zh,en");
+    for sub in subs {
+        cmd.arg(format!("--sub-file={}", sub.display()));
+    }
     cmd.arg("--").arg(url);
     cmd.spawn().map(|_| ())
 }
 
+/// 可用 mpv 播放的音/视频扩展名(小写, 单点维护)。
+const MEDIA_EXTS: &[&str] = &[
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "ts", "rmvb", "m4v", "m2ts", "mpg", "mpeg",
+    "mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "ape",
+];
+
+/// 常见字幕扩展名(小写, 单点维护)。
+const SUBTITLE_EXTS: &[&str] = &["ass", "ssa", "srt", "sub", "vtt", "sbv", "sup"];
+
+/// 取小写扩展名(最后一段), 无扩展名时为空串。
+fn ext_lower(name: &str) -> String {
+    name.rsplit_once('.')
+        .map(|(_, e): (&str, &str)| e.to_lowercase())
+        .unwrap_or_default()
+}
+
 /// 判断文件名是否为可用 mpv 播放的音/视频。
 pub(crate) fn is_media_file(name: &str) -> bool {
-    let ext = name
-        .rsplit_once('.')
-        .map(|(_, e): (&str, &str)| e.to_lowercase())
-        .unwrap_or_default();
-    matches!(
-        ext.as_str(),
-        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv" | "webm" | "ts" | "rmvb" | "m4v" | "mp3"
-            | "flac" | "wav" | "aac" | "ogg" | "m4a" | "opus" | "ape"
-    )
+    MEDIA_EXTS.contains(&ext_lower(name).as_str())
+}
+
+/// 判断文件名是否为常见字幕格式。
+pub(crate) fn is_subtitle_file(name: &str) -> bool {
+    SUBTITLE_EXTS.contains(&ext_lower(name).as_str())
+}
+
+/// 判断字幕是否与某视频同集: 去掉扩展名后与视频名相同(忽略大小写), 或以视频名为前缀
+/// 且其后紧跟非字母数字分隔符(如 `.sc.ass` / `_chs.srt` / `.zh-CN.ass`)。
+pub(crate) fn subtitle_of(video: &str, sub: &str) -> bool {
+    let (Some((vstem, _)), Some((sstem, _))) =
+        (video.rsplit_once('.'), sub.rsplit_once('.'))
+    else {
+        return false;
+    };
+    let vstem = vstem.to_lowercase();
+    let sstem = sstem.to_lowercase();
+    if sstem == vstem {
+        return true;
+    }
+    sstem
+        .strip_prefix(&vstem)
+        .is_some_and(|rest| rest.chars().next().is_some_and(|c| !c.is_alphanumeric()))
 }
 
 /// 弹出一个原生目录选择框(独立线程阻塞式调用)。
@@ -152,7 +190,7 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_media_file;
+    use super::{is_media_file, is_subtitle_file, subtitle_of};
 
     #[test]
     fn detects_audio_and_video() {
@@ -167,5 +205,34 @@ mod tests {
         assert!(!is_media_file("report.pdf"));
         assert!(!is_media_file("archive.zip"));
         assert!(!is_media_file("noext"));
+    }
+
+    #[test]
+    fn detects_subtitles() {
+        assert!(is_subtitle_file("x.ass"));
+        assert!(is_subtitle_file("x.SRT"));
+        assert!(is_subtitle_file("x.zh-CN.vtt"));
+        assert!(!is_subtitle_file("x.mkv"));
+        assert!(!is_subtitle_file("x.txt"));
+    }
+
+    #[test]
+    fn matches_same_episode_subtitles() {
+        let video = "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].mkv";
+        assert!(subtitle_of(video, "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].sc.ass"));
+        assert!(subtitle_of(video, "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].ass"));
+        assert!(subtitle_of("ep01.mkv", "ep01.chs.srt"));
+        assert!(subtitle_of("ep01.mkv", "ep01-CN.ass"));
+        // 忽略大小写, 且多字节文件名不 panic。
+        assert!(subtitle_of("Show.EP01.mkv", "show.ep01.ass"));
+        assert!(subtitle_of("动画.01.mkv", "动画.01.chs.ass"));
+    }
+
+    #[test]
+    fn rejects_other_episode_or_unrelated() {
+        assert!(!subtitle_of("ep01.mkv", "ep010.ass"));
+        assert!(!subtitle_of("ep01.mkv", "ep02.ass"));
+        assert!(!subtitle_of("ep01.mkv", "extra.ass"));
+        assert!(!subtitle_of("ep01.mkv", "noext"));
     }
 }

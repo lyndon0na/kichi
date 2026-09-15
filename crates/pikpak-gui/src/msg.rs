@@ -81,11 +81,13 @@ pub enum Cmd {
     },
     /// 预览云端文件。media=true 时仅解析直链交给外部播放器(mpv)流式播放;
     /// media=false 时先下载到本地缓存再交给系统查看器打开。
+    /// `subtitles` 为同集字幕 (file_id, 文件名), 仅媒体预览使用。
     Preview {
         req_id: u64,
         file_id: String,
         name: String,
         media: bool,
+        subtitles: Vec<(String, String)>,
     },
 }
 
@@ -156,11 +158,12 @@ pub enum Msg {
     /// 媒体预览直链已解析, 可交给外部播放器(mpv)流式播放。
     PreviewStream {
         req_id: u64,
-        file_id: String,
         name: String,
         url: String,
         /// 访问直链所需的请求头(User-Agent / X-Device-Id / 可选 Bearer)。
         headers: Vec<(String, String)>,
+        /// 已下载到本地的同集外挂字幕路径。
+        subs: Vec<PathBuf>,
     },
     /// 非媒体文件已下载到本地缓存, 可交给系统查看器打开。
     PreviewReady {
