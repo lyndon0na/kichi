@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use pikpak_core::session;
-use pikpak_core::types::{File, Quota, Task};
+use pikpak_core::types::{File, FileList, Quota, Task};
 
 use crate::kde;
 use crate::msg::{Cmd, Msg};
@@ -24,7 +24,12 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DlJob, DlStatus, Page, SortBy, TransferTab, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlJob, DlStatus, Page, SortBy, TransferTab, ViewMode};
+
+/// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
+const DIR_TTL: Duration = Duration::from_secs(60);
+/// 目录缓存上限, 超出按 LRU 淘汰(不淘汰当前目录)。
+const DIR_CACHE_CAP: usize = 64;
 
 pub struct App {
     tx: Sender<Cmd>,
@@ -55,6 +60,10 @@ pub struct App {
     pub(crate) files: Vec<File>,
     pub(crate) dir_next: Option<String>,
     pub(crate) dir_loading: bool,
+    /// 目录列表缓存: 目录 id -> 已加载内容(None = 根目录)。命中时导航不再发请求。
+    pub(crate) dir_cache: HashMap<Option<String>, DirEntry>,
+    /// 正在进行的首屏请求: 目录 id -> 请求 id, 用于避免重复的 revalidate。
+    pub(crate) dir_inflight: HashMap<Option<String>, u64>,
 
     // 列宽 (名称列 = 剩余空间)
     pub(crate) col_size_w: f32,
@@ -146,6 +155,8 @@ impl App {
             files: Vec::new(),
             dir_next: None,
             dir_loading: false,
+            dir_cache: HashMap::new(),
+            dir_inflight: HashMap::new(),
             offline_url: String::new(),
             offline_name: String::new(),
             offline_dest: None,
@@ -273,6 +284,8 @@ impl App {
                     self.jobs.clear();
                     self.clipboard = None;
                     self.preview_pending = None;
+                    self.dir_cache.clear();
+                    self.dir_inflight.clear();
                 }
                 Msg::LoggedOut => {
                     self.username.clear();
@@ -282,6 +295,8 @@ impl App {
                     self.buckets.clear();
                     self.files.clear();
                     self.selected.clear();
+                    self.dir_cache.clear();
+                    self.dir_inflight.clear();
                     self.hidden.clear();
                     self.jobs.clear();
                     self.clipboard = None;
@@ -294,44 +309,25 @@ impl App {
                     append,
                     list,
                 } => {
-                    if self.req_id != req_id || parent != self.current_parent() {
-                        continue;
-                    }
-                    self.dir_loading = false;
-                    if append {
-                        self.files.extend(list.files);
-                    } else {
-                        self.files = list.files;
-                        self.selected.clear();
-                    }
-                    self.dir_next = list.next_page_token;
-                    if !self.hidden.is_empty() {
-                        // 本次列出的目录就是 `parent`; 该目录里已不再出现的隐藏项
-                        // 说明服务端已完成(回收/移出), 可以解除隐藏。其它目录的
-                        // 隐藏项保持不变, 否则移动后的文件会在目标目录消失。
-                        let present: HashSet<String> =
-                            self.files.iter().map(|f| f.id.clone()).collect();
-                        let listing_parent = parent.clone();
-                        self.hidden.retain(|id, hp| {
-                            *hp != listing_parent || present.contains(id)
-                        });
-                    }
+                    // 响应按 parent 路由进缓存; 即使已切换到别的目录, 迟到的
+                    // 响应也能正确落位, 下次进入该目录即可命中。
+                    self.apply_files(parent, req_id, append, list);
                 }
                 Msg::FolderCreated => {
                     self.toast_ok("新建文件夹成功");
-                    self.refresh_dir();
+                    self.reload_dir();
                 }
                 Msg::Renamed => {
                     self.rename_id = None;
                     self.toast_ok("重命名成功");
-                    self.refresh_dir();
+                    self.reload_dir();
                 }
                 Msg::Trashed => {
                     self.trash_confirm = None;
                     self.selected.clear();
-                    self.refresh_dir();
+                    self.reload_dir();
                 }
-                Msg::Moved { ids, src } => {
+                Msg::Moved { ids, src, dest } => {
                     self.toast_ok("移动成功");
                     // batchMove 返回后服务端列表未必立即同步, 先把被移走的项从源
                     // 目录隐藏(服务端列表不再含该 id 后自动解除), 避免刷新前文件仍
@@ -340,12 +336,18 @@ impl App {
                         self.selected.remove(id);
                         self.hidden.insert(id.clone(), src.clone());
                     }
+                    // 同步更新源目录缓存, 并对目标目录作废缓存, 稍后重列。
+                    if let Some(entry) = self.dir_cache.get_mut(&src) {
+                        entry.files.retain(|f| !ids.contains(&f.id));
+                    }
                     self.files.retain(|f| !ids.contains(&f.id));
+                    self.dir_cache.remove(&dest);
                     self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
                 }
-                Msg::Copied => {
+                Msg::Copied { dest } => {
                     self.toast_ok("复制成功");
                     // 复制的目标目录当前可能正在展示, 稍后重列以显示新文件。
+                    self.dir_cache.remove(&dest);
                     self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
                 }
                 Msg::OfflineCreated => {
@@ -452,6 +454,15 @@ impl App {
                             timestamp: Self::chrono_now(),
                         });
                     }
+                }
+                Msg::FilesFailed { parent, what } => {
+                    // 结束该目录的加载态并释放在途登记; 若仍停留在该目录,
+                    // 无缓存数据时会显示空目录提示, 而非一直转圈。
+                    self.dir_inflight.remove(&parent);
+                    if parent == self.current_parent() {
+                        self.dir_loading = false;
+                    }
+                    self.toast_err(&what);
                 }
                 Msg::Error { what } => {
                     self.tasks_refreshing = false;
@@ -609,47 +620,182 @@ impl App {
     }
 
     pub(crate) fn reset_browse(&mut self) {
+        self.dir_cache.clear();
+        self.dir_inflight.clear();
         self.reset_stack();
+        self.selected.clear();
+        self.fetch_dir(None);
+    }
+
+    /// 发送一次 ListFiles 并登记在途请求(首屏才登记, 用于去重)。
+    fn send_list(&mut self, parent: Option<String>, token: Option<String>, append: bool) {
         self.req_id += 1;
-        let req = self.req_id;
+        let req_id = self.req_id;
+        if !append {
+            self.dir_inflight.insert(parent.clone(), req_id);
+        }
         self.send(Cmd::ListFiles {
-            parent: None,
-            token: None,
-            append: false,
-            req_id: req,
+            parent,
+            token,
+            append,
+            req_id,
         });
     }
 
-    pub(crate) fn refresh_dir(&mut self) {
-        self.req_id += 1;
-        let req = self.req_id;
-        let parent = self.current_parent();
+    /// 冷加载: 清空视图并显示加载态。
+    fn fetch_dir(&mut self, parent: Option<String>) {
         self.files.clear();
         self.dir_next = None;
         self.dir_loading = true;
+        self.send_list(parent, None, false);
+    }
+
+    /// 静默校正: 保留当前视图(继续展示旧数据), 仅后台刷新缓存。
+    /// 该目录已有在途请求时跳过, 避免重复请求。
+    fn revalidate_dir(&mut self, parent: Option<String>) {
+        if self.dir_inflight.contains_key(&parent) {
+            return;
+        }
+        self.send_list(parent, None, false);
+    }
+
+    /// 打开当前目录。命中且新鲜则同帧渲染、零请求; 命中但过期先展示旧数据
+    /// 再后台静默校正; 未命中才冷加载。
+    pub(crate) fn show_dir(&mut self) {
         self.selected.clear();
-        self.send(Cmd::ListFiles {
-            parent,
-            token: None,
-            append: false,
-            req_id: req,
-        });
+        let parent = self.current_parent();
+        let cached = self
+            .dir_cache
+            .get(&parent)
+            .map(|e| (e.files.clone(), e.next_token.clone(), e.fetched_at.elapsed()));
+        match cached {
+            Some((files, next, age)) => {
+                self.files = files;
+                self.dir_next = next;
+                self.dir_loading = false;
+                if let Some(entry) = self.dir_cache.get_mut(&parent) {
+                    entry.last_used = Instant::now();
+                }
+                if age > DIR_TTL {
+                    self.revalidate_dir(parent);
+                }
+            }
+            None if self.dir_inflight.contains_key(&parent) => {
+                // 已有请求在途: 保持加载态等待, 不重复发起。
+                self.files.clear();
+                self.dir_next = None;
+                self.dir_loading = true;
+            }
+            None => self.fetch_dir(parent),
+        }
+    }
+
+    /// 强制重新加载当前目录(F5 / 刷新按钮), 清空视图并显示加载态。
+    pub(crate) fn refresh_dir(&mut self) {
+        let parent = self.current_parent();
+        self.dir_cache.remove(&parent);
+        self.selected.clear();
+        self.fetch_dir(parent);
+    }
+
+    /// 变更后就地作废缓存并静默重列当前目录: 保留现有列表(避免闪烁),
+    /// 后台重新拉取以反映增删改。
+    fn reload_dir(&mut self) {
+        let parent = self.current_parent();
+        self.dir_cache.remove(&parent);
+        self.selected.clear();
+        self.send_list(parent, None, false);
+    }
+
+    /// 把一次 ListFiles 响应写入缓存, 并在其属于当前目录时同步到可见列表。
+    /// `entry.req` 保证乱序到达的旧响应不会覆盖新数据。
+    fn apply_files(&mut self, parent: Option<String>, req_id: u64, append: bool, list: FileList) {
+        let is_current = parent == self.current_parent();
+        {
+            let entry = self.dir_cache.entry(parent.clone()).or_default();
+            if req_id < entry.req {
+                return;
+            }
+            entry.req = req_id;
+            entry.fetched_at = Instant::now();
+            entry.last_used = entry.fetched_at;
+            if append {
+                let ids: HashSet<String> = entry.files.iter().map(|f| f.id.clone()).collect();
+                for f in list.files {
+                    if !ids.contains(&f.id) {
+                        entry.files.push(f);
+                    }
+                }
+            } else {
+                entry.files = list.files;
+            }
+            entry.next_token = list.next_page_token;
+        }
+        if !append && self.dir_inflight.get(&parent) == Some(&req_id) {
+            self.dir_inflight.remove(&parent);
+        }
+
+        if is_current {
+            self.dir_loading = false;
+            if let Some(entry) = self.dir_cache.get(&parent) {
+                if entry.req == req_id {
+                    self.files = entry.files.clone();
+                    self.dir_next = entry.next_token.clone();
+                }
+            }
+            if !append {
+                self.selected.clear();
+            }
+        }
+
+        // 服务端列表已更新: 解除该目录中不再出现的隐藏项(最终一致性收敛)。
+        if !self.hidden.is_empty() {
+            let present: HashSet<String> = if is_current {
+                self.files.iter().map(|f| f.id.clone()).collect()
+            } else if let Some(entry) = self.dir_cache.get(&parent) {
+                entry.files.iter().map(|f| f.id.clone()).collect()
+            } else {
+                HashSet::new()
+            };
+            let listing_parent = parent.clone();
+            self.hidden.retain(|id, hp| {
+                *hp != listing_parent || present.contains(id)
+            });
+        }
+
+        self.evict_dir_cache();
+    }
+
+    /// 缓存超限时按 LRU 淘汰, 跳过当前目录。
+    fn evict_dir_cache(&mut self) {
+        if self.dir_cache.len() <= DIR_CACHE_CAP {
+            return;
+        }
+        let current = self.current_parent();
+        let mut keys: Vec<(Option<String>, Instant)> = self
+            .dir_cache
+            .iter()
+            .map(|(k, e)| (k.clone(), e.last_used))
+            .collect();
+        keys.sort_by_key(|(_, t)| *t);
+        for (k, _) in keys {
+            if self.dir_cache.len() <= DIR_CACHE_CAP {
+                break;
+            }
+            if k == current {
+                continue;
+            }
+            self.dir_cache.remove(&k);
+        }
     }
 
     pub(crate) fn load_more(&mut self) {
         if self.dir_next.is_none() {
             return;
         }
-        self.req_id += 1;
-        let req = self.req_id;
         let parent = self.current_parent();
         let token = self.dir_next.clone();
-        self.send(Cmd::ListFiles {
-            parent,
-            token,
-            append: true,
-            req_id: req,
-        });
+        self.send_list(parent, token, true);
     }
 
     pub(crate) fn goto_folder(&mut self, id: &str, name: &str) {
@@ -657,8 +803,7 @@ impl App {
             id: Some(id.to_string()),
             label: name.to_string(),
         });
-        self.selected.clear();
-        self.refresh_dir();
+        self.show_dir();
     }
 
     // ---------- 复制/剪切/粘贴 ----------
@@ -933,10 +1078,12 @@ impl eframe::App for App {
         self.poll_system_theme();
 
         // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
+        // 用静默校正而非强制刷新, 避免清空列表导致闪烁。
         if let Some(at) = self.relist_at {
             if Instant::now() >= at {
                 self.relist_at = None;
-                self.refresh_dir();
+                let parent = self.current_parent();
+                self.revalidate_dir(parent);
             } else {
                 ctx.request_repaint_after(Duration::from_millis(150));
             }
@@ -947,7 +1094,11 @@ impl eframe::App for App {
 
         if self.auth_checking {
             ctx.request_repaint_after(Duration::from_millis(120));
-        } else if self.has_active_downloads() {
+        } else if self.has_active_downloads()
+            || self.dir_loading
+            || !self.dir_inflight.is_empty()
+        {
+            // 目录请求在途(含后台静默校正)时加快轮询, 让结果尽快呈现。
             ctx.request_repaint_after(Duration::from_millis(80));
         } else {
             ctx.request_repaint_after(Duration::from_millis(600));

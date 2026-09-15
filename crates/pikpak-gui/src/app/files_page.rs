@@ -648,11 +648,11 @@ impl App {
 
         if up {
             self.stack.pop();
-            self.refresh_dir();
+            self.show_dir();
         }
         if let Some(i) = jumped {
             self.stack.truncate(i + 1);
-            self.refresh_dir();
+            self.show_dir();
         }
         if mkdir {
             self.mkdir_open = true;

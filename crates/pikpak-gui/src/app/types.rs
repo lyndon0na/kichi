@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use pikpak_core::types::File;
+
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum Page {
     Files,
@@ -29,6 +31,31 @@ pub(crate) enum SortBy {
 pub(crate) struct Crumb {
     pub id: Option<String>,
     pub label: String,
+}
+
+/// 目录缓存条目: 某目录已加载的文件列表与分页游标。
+pub(crate) struct DirEntry {
+    pub files: Vec<File>,
+    pub next_token: Option<String>,
+    /// 最近一次写入对应的请求 id, 用于丢弃乱序到达的旧响应。
+    pub req: u64,
+    /// 最近一次成功加载的时间, 用于 TTL 新鲜度判定。
+    pub fetched_at: Instant,
+    /// 最近一次访问时间, 用于 LRU 淘汰。
+    pub last_used: Instant,
+}
+
+impl Default for DirEntry {
+    fn default() -> Self {
+        let now = Instant::now();
+        Self {
+            files: Vec::new(),
+            next_token: None,
+            req: 0,
+            fetched_at: now,
+            last_used: now,
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -104,14 +104,22 @@ pub enum Msg {
         append: bool,
         list: FileList,
     },
+    /// 列出目录失败; 带上 parent 以便精确结束加载态并释放在途登记。
+    FilesFailed {
+        parent: Option<String>,
+        what: String,
+    },
     FolderCreated,
     Renamed,
     Trashed,
     Moved {
         ids: Vec<String>,
         src: Option<String>,
+        dest: Option<String>,
     },
-    Copied,
+    Copied {
+        dest: Option<String>,
+    },
     OfflineCreated,
     OfflineRetried,
     OfflineDeleted,

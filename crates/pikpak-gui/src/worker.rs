@@ -199,7 +199,8 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                     });
                 }
                 Err(e) => {
-                    let _ = tx.send(Msg::Error {
+                    let _ = tx.send(Msg::FilesFailed {
+                        parent,
                         what: format!("加载文件列表失败: {e}"),
                     });
                 }
@@ -248,7 +249,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             let Some(client) = &st.client else { return };
             match client.batch_move(&ids, dest.as_deref()).await {
                 Ok(_) => {
-                    let _ = tx.send(Msg::Moved { ids, src });
+                    let _ = tx.send(Msg::Moved { ids, src, dest });
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::Error {
@@ -261,7 +262,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             let Some(client) = &st.client else { return };
             match client.batch_copy(&ids, dest.as_deref()).await {
                 Ok(_) => {
-                    let _ = tx.send(Msg::Copied);
+                    let _ = tx.send(Msg::Copied { dest });
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::Error {

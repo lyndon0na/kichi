@@ -122,6 +122,9 @@ impl App {
                     self.hidden.insert(id.clone(), src.clone());
                     self.selected.remove(id);
                 }
+                if let Some(entry) = self.dir_cache.get_mut(&src) {
+                    entry.files.retain(|f| !ids.contains(&f.id));
+                }
                 self.files.retain(|f| !ids.contains(&f.id));
                 self.send(Cmd::Trash { ids });
             }
