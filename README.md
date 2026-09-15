@@ -111,6 +111,19 @@ cargo build --release -p pikpak-gui
 cargo test --workspace
 ```
 
+### 桌面图标（KDE / Wayland）
+
+Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗口 `app_id` 匹配已安装的
+`.desktop` 与图标主题。运行一次安装脚本即可：
+
+```bash
+./packaging/install-icon.sh   # 安装到 ~/.local/share 并刷新图标/菜单缓存
+```
+
+脚本会写入 `pikpak-linux.desktop` 与 hicolor 图标（SVG 源文件位于
+`assets/pikpak-linux.svg`）。应用启动时已声明 `app_id = "pikpak-linux"`，
+重启应用后任务栏/窗口即显示新图标。
+
 ## 配置与数据
 
 | 文件 | 作用 |

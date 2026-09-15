@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PikPak Linux
+Name[zh_CN]=PikPak Linux
+GenericName=Cloud Storage Client
+GenericName[zh_CN]=云盘客户端
+Comment=PikPak cloud drive client for Linux
+Comment[zh_CN]=PikPak 云盘 Linux 客户端（非官方）
+Exec=pikpak-gui
+Icon=pikpak-linux
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=pikpak;cloud;drive;download;magnet;云盘;
+StartupNotify=true
+StartupWMClass=pikpak-linux
