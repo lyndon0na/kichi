@@ -230,31 +230,50 @@ fn gear(painter: &Painter, c: &Canvas) {
 }
 
 fn transfer(painter: &Painter, c: &Canvas) {
-    // 双向上/下箭头
-    c.polyline(painter, &[[5.2, 2.6], [8.0, 6.0], [10.8, 2.6]], 1.6);
-    c.polyline(painter, &[[8.0, 5.6], [8.0, 13.2]], 1.6);
-    c.polyline(painter, &[[10.8, 13.4], [8.0, 10.0], [5.2, 13.4]], 1.6);
+    // 上传/下载: 左侧实心下箭头 + 右侧实心上箭头
+    c.polyline(painter, &[[5.5, 2.6], [5.5, 11.2]], 1.6);
+    c.polygon(
+        painter,
+        &[[3.9, 10.9], [7.1, 10.9], [5.5, 13.6]],
+        Some(c.color),
+        1.0,
+    );
+    c.polyline(painter, &[[10.5, 13.4], [10.5, 4.8]], 1.6);
+    c.polygon(
+        painter,
+        &[[12.1, 5.1], [8.9, 5.1], [10.5, 2.4]],
+        Some(c.color),
+        1.0,
+    );
 }
 
 fn refresh(painter: &Painter, c: &Canvas) {
-    // 顺滑圆弧(顶部留缺口) + 末端箭头
+    // 顺时针圆弧(右上留缺口) + 末端实心箭头
     let center = c.p(8.0, 8.0);
     let r = c.s * 0.30;
-    let gap = 0.95;
-    let start = -std::f32::consts::FRAC_PI_2 + gap / 2.0;
-    let sweep = std::f32::consts::TAU - gap;
-    let n = 40;
+    // 屏幕坐标: 0rad = 向右, 顺时针为正(y 向下)。
+    let start = -0.5f32;
+    let end = std::f32::consts::PI * 1.5; // 正上方
+    let sweep = end - start;
+    let n = 48;
     let mut pts: Vec<Pos2> = Vec::with_capacity(n + 1);
     for i in 0..=n {
         let a = start + sweep * (i as f32) / (n as f32);
         pts.push(center + egui::vec2(a.cos(), a.sin()) * r);
     }
     painter.add(Shape::line(pts, c.stroke(1.8)));
-    // 缺口末端处的箭头(顺时针)
-    let ea = start + sweep;
-    let tip = center + egui::vec2(ea.cos(), ea.sin()) * r;
-    let tangent = egui::vec2(-ea.sin(), ea.cos());
-    painter.arrow(tip, tangent * (c.s * 0.32), c.stroke(1.8));
+
+    // 末端箭头: 沿圆弧切线方向(顺时针)的实心三角
+    let dir = egui::vec2(end.cos(), end.sin());
+    let tan = egui::vec2(-end.sin(), end.cos());
+    let base = center + dir * r;
+    let tip = base + tan * (c.s * 0.17);
+    let w = dir * (c.s * 0.09);
+    painter.add(Shape::convex_polygon(
+        vec![tip, base + w, base - w],
+        c.color,
+        Stroke::NONE,
+    ));
 }
 
 fn logout(painter: &Painter, c: &Canvas) {
