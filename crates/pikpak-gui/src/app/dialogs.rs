@@ -183,6 +183,12 @@ impl App {
                     });
                 });
             if confirmed {
+                // 显式退出登录时一并清除密钥环里保存的密码, 避免下次启动又自动登录。
+                if !self.username.is_empty() {
+                    self.send(Cmd::ForgetPassword {
+                        username: self.username.clone(),
+                    });
+                }
                 self.send(Cmd::Logout);
             }
             if close {

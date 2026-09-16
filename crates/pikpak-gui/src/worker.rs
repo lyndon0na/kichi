@@ -10,6 +10,7 @@ use pikpak_core::download::part_path;
 use pikpak_core::{session, Error, PikPakClient};
 use tokio::sync::Semaphore;
 
+use crate::credentials;
 use crate::msg::{Cmd, Msg, QualityOption};
 
 pub struct Worker {
@@ -97,27 +98,35 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
 async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
     match cmd {
         Cmd::Login { username, password } => {
-            let device_id = pikpak_core::captcha::generate_device_id();
-            let mut client = PikPakClient::new(device_id.clone());
-            install_saver(&mut client);
-            match client.login(&username, &password).await {
-                Ok(sess) => {
-                    if let Err(e) = session::save_session(&sess) {
-                        let _ = tx.send(Msg::Error {
-                            what: e.to_string(),
-                        });
-                    }
-                    st.client = Some(Arc::new(client));
-                    let _ = tx.send(Msg::LoginOk { username });
-                    refresh_quota(st, tx).await;
-                    refresh_tasks(st, tx).await;
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("登录失败: {e}"),
-                    });
+            do_login(st, tx, username, password).await;
+        }
+        Cmd::AutoLogin { username } => {
+            // 密钥环读取是阻塞的 D-Bus 调用, 放到阻塞线程池执行。
+            let lookup = {
+                let username = username.clone();
+                tokio::task::spawn_blocking(move || credentials::load(&username))
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            match lookup {
+                Some(password) => do_login(st, tx, username, password).await,
+                None => {
+                    let _ = tx.send(Msg::AutoLoginUnavailable);
                 }
             }
+        }
+        Cmd::RememberPassword { username, password } => {
+            let err = tokio::task::spawn_blocking(move || credentials::save(&username, &password))
+                .await
+                .ok()
+                .and_then(|r| r.err());
+            if let Some(what) = err {
+                let _ = tx.send(Msg::Error { what });
+            }
+        }
+        Cmd::ForgetPassword { username } => {
+            let _ = tokio::task::spawn_blocking(move || credentials::delete(&username)).await;
         }
         Cmd::Resume {
             device_id,
@@ -143,6 +152,12 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                     let _ = tx.send(Msg::LoginOk { username });
                     refresh_quota(st, tx).await;
                     refresh_tasks(st, tx).await;
+                }
+                // refresh token 已过期/被吊销: 明确要求重新登录。
+                Err(Error::AuthExpired(what)) => {
+                    let _ = tx.send(Msg::SessionInvalid {
+                        reason: format!("登录已过期: {what}"),
+                    });
                 }
                 // 只有服务端明确判定凭据失效(API 错误)才强制重新登录;
                 // 其余(网络/解析等)先保留本地会话, 由后台周期刷新自动重试。
@@ -381,6 +396,29 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             let tx = tx.clone();
             tokio::spawn(async move {
                 preview_qualities(&client, &tx, file_id, subtitles).await;
+            });
+        }
+    }
+}
+
+/// 账号密码登录的公共实现(手动登录与密钥环自动登录共用)。
+async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, password: String) {
+    let device_id = pikpak_core::captcha::generate_device_id();
+    let mut client = PikPakClient::new(device_id.clone());
+    install_saver(&mut client);
+    match client.login(&username, &password).await {
+        Ok(sess) => {
+            if let Err(e) = session::save_session(&sess) {
+                let _ = tx.send(Msg::Error { what: e.to_string() });
+            }
+            st.client = Some(Arc::new(client));
+            let _ = tx.send(Msg::LoginOk { username });
+            refresh_quota(st, tx).await;
+            refresh_tasks(st, tx).await;
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::LoginFailed {
+                what: format!("登录失败: {e}"),
             });
         }
     }

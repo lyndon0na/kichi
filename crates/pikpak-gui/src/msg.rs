@@ -17,6 +17,19 @@ pub enum Cmd {
         username: String,
         password: String,
     },
+    /// 用系统密钥环里保存的密码自动登录。
+    AutoLogin {
+        username: String,
+    },
+    /// 把账号密码写入系统密钥环(记住密码)。
+    RememberPassword {
+        username: String,
+        password: String,
+    },
+    /// 从系统密钥环删除已保存的密码。
+    ForgetPassword {
+        username: String,
+    },
     /// 用磁盘上的会话恢复登录。
     Resume {
         device_id: String,
@@ -109,6 +122,12 @@ pub enum Msg {
     LoginOk {
         username: String,
     },
+    /// 登录失败(手动或密钥环自动登录)。
+    LoginFailed {
+        what: String,
+    },
+    /// 自动登录不可用(密钥环未保存密码或不可用), 应回落到登录表单。
+    AutoLoginUnavailable,
     LoggedOut,
     SessionInvalid {
         reason: String,

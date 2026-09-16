@@ -8,6 +8,9 @@ pub struct Settings {
     /// 上一次选择的本地下载目录(可空)。
     #[serde(default)]
     pub download_dir: String,
+    /// 是否把密码保存到系统密钥环, 用于自动登录。
+    #[serde(default)]
+    pub remember_password: bool,
 }
 
 /// 下载记录状态（仅保存已完成/取消/失败的）。

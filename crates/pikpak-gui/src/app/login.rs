@@ -66,6 +66,15 @@ impl App {
                                     .hint_text("密码"),
                             );
 
+                            ui.add_space(10.0);
+                            let remember = ui.checkbox(
+                                &mut self.remember_password,
+                                RichText::new("记住密码").size(13.0).color(th.text_weak),
+                            );
+                            if remember.changed() {
+                                self.persist_settings();
+                            }
+
                             ui.add_space(16.0);
                             let ok = !self.login_username.trim().is_empty()
                                 && !self.login_password.is_empty();
@@ -81,6 +90,9 @@ impl App {
                             if (btn_resp.clicked() || (enter && ok)) && !self.auth_checking {
                                 let username = self.login_username.trim().to_string();
                                 let password = std::mem::take(&mut self.login_password);
+                                if self.remember_password {
+                                    self.pending_remember = Some(password.clone());
+                                }
                                 self.auth_error = None;
                                 self.auth_checking = true;
                                 self.send(Cmd::Login { username, password });

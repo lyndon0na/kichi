@@ -1,4 +1,5 @@
 mod app;
+mod credentials;
 mod format;
 mod icons;
 mod kde;

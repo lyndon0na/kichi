@@ -41,6 +41,10 @@ pub struct App {
     pub(crate) login_username: String,
     pub(crate) login_password: String,
     pub(crate) auth_error: Option<String>,
+    /// 是否把密码保存到系统密钥环以自动登录。
+    pub(crate) remember_password: bool,
+    /// 手动登录成功后待写入密钥环的密码。
+    pub(crate) pending_remember: Option<String>,
     /// 系统(KDE)配色; 非 KDE 时为 None。
     pub(crate) kde_colors: Option<kde::KdeColors>,
     /// 上次轮询系统主题的时间。
@@ -145,6 +149,8 @@ impl App {
             login_username: saved.username.clone(),
             login_password: String::new(),
             auth_error: None,
+            remember_password: saved.remember_password,
+            pending_remember: None,
             kde_colors: kde::load(),
             kde_checked: Instant::now(),
             page: Page::Files,
@@ -246,13 +252,16 @@ impl App {
                     username: s.username,
                 });
             }
-            Ok(None) => {}
+            Ok(None) => app.auto_login_if_possible(),
             Err(e) => {
+                // 会话文件损坏/无法读取: 清掉以免每次启动都报错, 再尝试密钥环自动登录。
+                let _ = session::clear_session();
                 app.toast = Some((
                     Color32::from_rgb(200, 90, 60),
                     e.to_string(),
                     Instant::now(),
-                ))
+                ));
+                app.auto_login_if_possible();
             }
         }
         if !font_loaded && app.toast.is_none() {
@@ -283,12 +292,35 @@ impl App {
                     self.username = username;
                     self.auth_checking = false;
                     self.auth_error = None;
+                    // 记住密码: 手动登录成功后写入密钥环; 未勾选则清除旧条目。
+                    if self.remember_password {
+                        if let Some(pw) = self.pending_remember.take() {
+                            self.send(Cmd::RememberPassword {
+                                username: self.username.clone(),
+                                password: pw,
+                            });
+                        }
+                    } else {
+                        self.pending_remember = None;
+                        self.send(Cmd::ForgetPassword {
+                            username: self.username.clone(),
+                        });
+                    }
                     self.buckets.clear();
                     self.quota = None;
                     self.reset_browse();
                     self.send(Cmd::RefreshQuota);
                     self.send(Cmd::RefreshTasks);
                     self.persist_settings();
+                }
+                Msg::LoginFailed { what } => {
+                    self.auth_checking = false;
+                    self.auth_error = Some(what);
+                    self.username.clear();
+                    self.pending_remember = None;
+                }
+                Msg::AutoLoginUnavailable => {
+                    self.auth_checking = false;
                 }
                 Msg::SessionInvalid { reason } => {
                     self.auth_checking = false;
@@ -303,11 +335,16 @@ impl App {
                     self.quality_inflight.clear();
                     self.dir_cache.clear();
                     self.dir_inflight.clear();
+                    // 登录态失效: 若保存过密码则尝试自动重登。
+                    self.auto_login_if_possible();
                 }
                 Msg::LoggedOut => {
                     self.username.clear();
                     self.auth_checking = false;
                     self.auth_error = None;
+                    self.remember_password = false;
+                    self.pending_remember = None;
+                    self.persist_settings();
                     self.quota = None;
                     self.buckets.clear();
                     self.files.clear();
@@ -589,7 +626,19 @@ impl App {
         settings::save(&settings::Settings {
             username: name,
             download_dir: self.download_dir.clone(),
+            remember_password: self.remember_password,
         });
+    }
+
+    /// 若开启了「记住密码」且有账号, 用密钥环里保存的密码尝试自动登录。
+    /// 密钥环不可用或没有条目时, worker 会回一条 `AutoLoginUnavailable` 以结束加载态。
+    pub(crate) fn auto_login_if_possible(&mut self) {
+        let username = self.login_username.trim().to_string();
+        if self.remember_password && !username.is_empty() {
+            self.auth_checking = true;
+            self.auth_error = None;
+            self.send(Cmd::AutoLogin { username });
+        }
     }
 
     /// 定期重读 kdeglobals, 让系统换主题后应用即时更新。

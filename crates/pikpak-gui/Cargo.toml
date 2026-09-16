@@ -13,6 +13,7 @@ dirs = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+keyring = "4.2.0"
 
 [dependencies.eframe]
 version = "0.31"
