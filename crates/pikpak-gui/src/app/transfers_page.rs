@@ -611,8 +611,8 @@ impl App {
                                 if !ctrl {
                                     self.selected_dl.clear();
                                 }
-                                for i in from..=to {
-                                    self.selected_dl.insert(dl_ids[i]);
+                                for id in &dl_ids[from..=to] {
+                                    self.selected_dl.insert(*id);
                                 }
                             } else {
                                 self.selected_dl.clear();

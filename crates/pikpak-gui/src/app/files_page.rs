@@ -219,6 +219,7 @@ fn play_menu(
 }
 
 /// 列表行; 返回勾选变更的 id(仅点击复选框时)。
+#[allow(clippy::too_many_arguments)]
 fn file_row(
     ui: &mut egui::Ui,
     th: &Theme,
@@ -882,7 +883,7 @@ impl App {
                         let gap = 8.0;
                         let avail_w = inner.width();
                         let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
-                        let total_rows = (all_files.len() + cols - 1) / cols;
+                        let total_rows = all_files.len().div_ceil(cols);
                         for row in 0..total_rows {
                             ui.horizontal(|ui| {
                                 ui.add_space(4.0);
@@ -1253,7 +1254,7 @@ impl App {
         );
         let h1_resp = ui.interact(h1_rect, ui.id().with("col_drag_1"), egui::Sense::drag());
         let h1_active = h1_resp.hovered() || h1_resp.is_pointer_button_down_on()
-            || self.col_dragging.as_ref().map_or(false, |d| d.handle == 1);
+            || self.col_dragging.as_ref().is_some_and(|d| d.handle == 1);
         if h1_active {
             painter.rect_filled(
                 Rect::from_center_size(
@@ -1281,7 +1282,7 @@ impl App {
         );
         let h2_resp = ui.interact(h2_rect, ui.id().with("col_drag_2"), egui::Sense::drag());
         let h2_active = h2_resp.hovered() || h2_resp.is_pointer_button_down_on()
-            || self.col_dragging.as_ref().map_or(false, |d| d.handle == 2);
+            || self.col_dragging.as_ref().is_some_and(|d| d.handle == 2);
         if h2_active {
             painter.rect_filled(
                 Rect::from_center_size(
