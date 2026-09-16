@@ -43,6 +43,8 @@ pub enum Glyph {
     Plus,
     /// 向右的层级箭头(面包屑分隔)
     ChevronRight,
+    /// 打开/外链(开口方框 + 右上箭头)
+    OpenExternal,
 }
 
 /// 为方便描线, 生成画布坐标闭包。
@@ -120,6 +122,7 @@ pub fn paint(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::Trash => trash(painter, &c),
         Glyph::Plus => plus(painter, &c),
         Glyph::ChevronRight => chevron_right(painter, &c),
+        Glyph::OpenExternal => open_external(painter, &c),
     }
 }
 
@@ -331,4 +334,17 @@ fn plus(painter: &Painter, c: &Canvas) {
 
 fn chevron_right(painter: &Painter, c: &Canvas) {
     c.polyline(painter, &[[6.2, 4.2], [10.0, 8.0], [6.2, 11.8]], 1.6);
+}
+
+fn open_external(painter: &Painter, c: &Canvas) {
+    // 开口方框(右上留口) + 指向右上的箭头
+    c.polyline(
+        painter,
+        &[[9.4, 3.8], [3.8, 3.8], [3.8, 12.2], [12.2, 12.2], [12.2, 6.6]],
+        1.5,
+    );
+    // 箭头杆
+    c.polyline(painter, &[[8.0, 8.0], [13.0, 3.0]], 1.5);
+    // 箭头头部
+    c.polyline(painter, &[[9.2, 3.0], [13.0, 3.0], [13.0, 6.8]], 1.5);
 }

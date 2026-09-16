@@ -130,8 +130,8 @@ fn dl_card(
 
     // 布局: [复选框] [名称/状态] [进度] [按钮]
     const CB_W: f32 = 26.0;
-    // 预留最宽按钮组(3 个)的宽度, 保证各卡片列对齐。
-    const BTN_W: f32 = 184.0;
+    // 预留最宽按钮组(3 个图标)的宽度, 保证各卡片列对齐。
+    const BTN_W: f32 = 92.0;
     const GAP: f32 = 16.0;
     let content_x = inner.min.x + CB_W;
     let right_start = inner.max.x - BTN_W;
@@ -211,44 +211,45 @@ fn dl_card(
         }
     }
 
-    // 右侧: 操作按钮(右对齐, 统一预留宽度保证各卡片列对齐)
-    let mut btns: Vec<(&str, DlOp)> = Vec::new();
+    // 右侧: 图标操作按钮(右对齐, 统一预留宽度保证各卡片列对齐)
+    let mut btns: Vec<(Glyph, &str, DlOp)> = Vec::new();
     match &job.status {
-        DlStatus::Queued | DlStatus::Running => btns.push(("取消", DlOp::Cancel)),
+        DlStatus::Queued | DlStatus::Running => {
+            btns.push((Glyph::Close, "取消下载", DlOp::Cancel))
+        }
         DlStatus::Done => {
-            btns.push(("打开", DlOp::OpenFile));
-            btns.push(("打开目录", DlOp::OpenDir));
-            btns.push(("移除", DlOp::Remove));
+            btns.push((Glyph::OpenExternal, "打开文件", DlOp::OpenFile));
+            btns.push((Glyph::Folder, "打开所在目录", DlOp::OpenDir));
+            btns.push((Glyph::Trash, "从列表移除", DlOp::Remove));
         }
         DlStatus::Failed(_) => {
             if !job.file_id.is_empty() {
-                btns.push(("重试", DlOp::Retry));
+                btns.push((Glyph::Refresh, "重试下载", DlOp::Retry));
             }
-            btns.push(("打开目录", DlOp::OpenDir));
-            btns.push(("移除", DlOp::Remove));
+            btns.push((Glyph::Folder, "打开所在目录", DlOp::OpenDir));
+            btns.push((Glyph::Trash, "从列表移除", DlOp::Remove));
         }
     }
 
-    let btn_w = 56.0;
-    let btn_h = 24.0;
-    let btn_y = inner.center().y - btn_h / 2.0;
+    let btn_sz = 28.0;
+    let btn_gap = 4.0;
+    let btn_y = inner.center().y - btn_sz / 2.0;
     let mut bx = inner.max.x;
-    for (label, dop) in btns.into_iter().rev() {
-        let rect = Rect::from_min_max(Pos2::new(bx - btn_w, btn_y), Pos2::new(bx, btn_y + btn_h));
-        bx -= btn_w + 8.0;
-        let bresp = ui.interact(rect, ui.id().with(("dl_btn", rid, label)), egui::Sense::click());
+    for (glyph, tip, dop) in btns.into_iter().rev() {
+        let rect = Rect::from_min_max(Pos2::new(bx - btn_sz, btn_y), Pos2::new(bx, btn_y + btn_sz));
+        bx -= btn_sz + btn_gap;
+        let bresp = ui.interact(rect, ui.id().with(("dl_btn", rid, tip)), egui::Sense::click());
         if bresp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             painter.rect_filled(rect, th.cr(6), th.hover);
         }
-        let color = if label == "移除" { th.danger } else { th.text_weak };
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            FontId::proportional(12.0),
-            color,
-        );
+        let color = if glyph == Glyph::Trash {
+            th.danger
+        } else {
+            th.text_weak
+        };
+        icons::paint(&painter, rect.shrink(6.0), glyph, color);
+        let bresp = bresp.on_hover_text(tip);
         if bresp.clicked() {
             op = Some(dop);
         }
