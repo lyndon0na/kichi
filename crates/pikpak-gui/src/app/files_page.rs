@@ -64,6 +64,45 @@ impl App {
     }
 }
 
+/// 矢量图标 + 文字按钮(替代带符号字形的普通按钮)。
+fn icon_button(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    glyph: Glyph,
+    label: &str,
+    fg: egui::Color32,
+    fill: egui::Color32,
+    stroke: Stroke,
+) -> egui::Response {
+    let font = FontId::proportional(14.0);
+    let text_g = ui.painter().layout_no_wrap(label.to_string(), font, fg);
+    let pad = 12.0f32;
+    let icon = 16.0f32;
+    let gap = 6.0f32;
+    let w = pad * 2.0 + icon + gap + text_g.size().x;
+    let h = 30.0f32;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    let painter = ui.painter().clone();
+    let fill = if resp.hovered() {
+        mix(fill, th.text, if th.dark { 0.08 } else { 0.04 })
+    } else {
+        fill
+    };
+    painter.rect_filled(rect, th.cr(8), fill);
+    painter.rect_stroke(rect, th.cr(8), stroke, egui::StrokeKind::Inside);
+    let icon_rect = Rect::from_center_size(
+        Pos2::new(rect.min.x + pad + icon / 2.0, rect.center().y),
+        vec2(icon, icon),
+    );
+    icons::paint(&painter, icon_rect, glyph, fg);
+    painter.galley(
+        Pos2::new(rect.min.x + pad + icon + gap, rect.center().y - text_g.size().y / 2.0),
+        text_g,
+        fg,
+    );
+    resp
+}
+
 /// 面包屑导航: 宽度不足时从左侧省略中间层级, 始终保留当前目录(必要时截断)。
 /// 返回被点击的层级索引。
 fn breadcrumbs(ui: &mut egui::Ui, th: &Theme, crumbs: &[Crumb], budget: f32) -> Option<usize> {
@@ -112,14 +151,17 @@ fn breadcrumbs(ui: &mut egui::Ui, th: &Theme, crumbs: &[Crumb], budget: f32) -> 
     let mut clicked = None;
     if start > 0 {
         let (er, _) = ui.allocate_exact_size(vec2(ell_w, row_h), egui::Sense::hover());
-        painter.text(er.center(), egui::Align2::CENTER_CENTER, "…", font.clone(), th.text_faint);
+        let ec = er.center();
+        for dx in [-4.0f32, 0.0, 4.0] {
+            painter.circle_filled(Pos2::new(ec.x + dx, ec.y), 1.4, th.text_faint);
+        }
         let (sr, _) = ui.allocate_exact_size(vec2(sep, row_h), egui::Sense::hover());
-        painter.text(sr.center(), egui::Align2::CENTER_CENTER, "›", font.clone(), th.text_faint);
+        icons::paint(&painter, Rect::from_center_size(sr.center(), vec2(11.0, 11.0)), Glyph::ChevronRight, th.text_faint);
     }
     for i in start..n {
         if i > start {
             let (sr, _) = ui.allocate_exact_size(vec2(sep, row_h), egui::Sense::hover());
-            painter.text(sr.center(), egui::Align2::CENTER_CENTER, "›", font.clone(), th.text_faint);
+            icons::paint(&painter, Rect::from_center_size(sr.center(), vec2(11.0, 11.0)), Glyph::ChevronRight, th.text_faint);
         }
         let last = i == n - 1;
         let (rect, resp) = ui.allocate_exact_size(vec2(widths[i], row_h), egui::Sense::click());
@@ -520,14 +562,16 @@ impl App {
 
                             ui.add_space(4.0);
                             // 新建文件夹
-                            if ui
-                                .add(
-                                    egui::Button::new(RichText::new("＋ 新建文件夹").color(th.accent))
-                                        .fill(th.accent_soft())
-                                        .stroke(Stroke::new(1.0, mix(th.accent, th.bg, 0.4)))
-                                        .corner_radius(th.cr(8)),
-                                )
-                                .clicked()
+                            if icon_button(
+                                ui,
+                                th,
+                                Glyph::Plus,
+                                "新建文件夹",
+                                th.accent,
+                                th.accent_soft(),
+                                Stroke::new(1.0, mix(th.accent, th.bg, 0.4)),
+                            )
+                            .clicked()
                             {
                                 mkdir = true;
                             }

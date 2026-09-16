@@ -1,13 +1,35 @@
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, Color32, Key, RichText, Stroke};
+use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, RichText, Stroke, vec2};
 
+use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
-use super::helpers::input;
+use super::helpers::{input, truncate_text};
 use super::types::Crumb;
 use super::App;
+
+/// 目录选择器里的一行文件夹(矢量文件夹图标 + 名称, 超长截断)。
+fn folder_row(ui: &mut egui::Ui, th: &Theme, name: &str) -> bool {
+    let h = 30.0;
+    let w = ui.available_width().max(120.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    let painter = ui.painter().clone();
+    if resp.hovered() {
+        painter.rect_filled(rect, th.cr(6), th.hover);
+    }
+    let icon_rect =
+        Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), vec2(18.0, 18.0));
+    icons::paint(&painter, icon_rect, Glyph::Folder, Color32::from_rgb(232, 178, 84));
+    let g = truncate_text(&painter, name, rect.width() - 34.0, FontId::proportional(13.5), th.text);
+    painter.galley(
+        Pos2::new(rect.min.x + 32.0, rect.center().y - g.size().y / 2.0),
+        g,
+        th.text,
+    );
+    resp.clicked()
+}
 
 impl App {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context, th: &Theme) {
@@ -217,9 +239,10 @@ impl App {
                                 });
                             } else {
                                 for f in &folders {
-                                    if ui.selectable_label(false, format!("📁  {}", f.name)).clicked() {
+                                    if folder_row(ui, th, &f.name) {
                                         enter = Some((f.id.clone(), f.name.clone()));
                                     }
+                                    ui.add_space(2.0);
                                 }
                             }
                         });
@@ -282,7 +305,9 @@ impl App {
                     .show(ui, |ui| {
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("● ").color(color));
+                            let (dr, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(dr.center(), 3.5, color);
+                            ui.add_space(2.0);
                             ui.label(RichText::new(msg).color(color));
                         });
                         ui.add_space(2.0);

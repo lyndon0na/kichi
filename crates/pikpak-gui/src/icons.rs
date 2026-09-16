@@ -39,6 +39,10 @@ pub enum Glyph {
     Share,
     /// 回收站(垃圾桶)
     Trash,
+    /// 加号(新建)
+    Plus,
+    /// 向右的层级箭头(面包屑分隔)
+    ChevronRight,
 }
 
 /// 为方便描线, 生成画布坐标闭包。
@@ -114,6 +118,8 @@ pub fn paint(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::Close => close(painter, &c),
         Glyph::Share => share(painter, &c),
         Glyph::Trash => trash(painter, &c),
+        Glyph::Plus => plus(painter, &c),
+        Glyph::ChevronRight => chevron_right(painter, &c),
     }
 }
 
@@ -316,4 +322,13 @@ fn trash(painter: &Painter, c: &Canvas) {
     // 内部竖纹
     c.polyline(painter, &[[6.9, 6.6], [7.1, 11.4]], 1.2);
     c.polyline(painter, &[[9.1, 6.6], [8.9, 11.4]], 1.2);
+}
+
+fn plus(painter: &Painter, c: &Canvas) {
+    painter.line_segment([c.p(8.0, 3.4), c.p(8.0, 12.6)], c.stroke(1.8));
+    painter.line_segment([c.p(3.4, 8.0), c.p(12.6, 8.0)], c.stroke(1.8));
+}
+
+fn chevron_right(painter: &Painter, c: &Canvas) {
+    c.polyline(painter, &[[6.2, 4.2], [10.0, 8.0], [6.2, 11.8]], 1.6);
 }
