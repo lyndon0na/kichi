@@ -139,6 +139,8 @@ pub(crate) struct DlJob {
     pub speed: u64,
     pub last_done: u64,
     pub last_at: Option<Instant>,
+    /// 完成/失败时间(unix 秒); 进行中为 None。
+    pub at: Option<u64>,
 }
 
 impl DlJob {
@@ -154,6 +156,7 @@ impl DlJob {
             speed: 0,
             last_done: 0,
             last_at: None,
+            at: None,
         }
     }
 }

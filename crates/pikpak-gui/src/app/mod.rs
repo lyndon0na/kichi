@@ -228,6 +228,7 @@ impl App {
                             speed: 0,
                             last_done: 0,
                             last_at: None,
+                            at: (record.at != 0).then_some(record.at),
                         },
                     );
                 }
@@ -529,6 +530,7 @@ impl App {
                         // 保存下载记录到磁盘
                         let rec_id = Self::chrono_now();
                         j.record_id = rec_id.clone();
+                        j.at = Some(crate::format::now_unix());
                         settings::append_download_record(DownloadRecord {
                             file_id: j.file_id.clone(),
                             name: j.name.clone(),
@@ -536,6 +538,7 @@ impl App {
                             total: j.total,
                             done: j.done,
                             status: DownloadRecordStatus::Done,
+                            at: j.at.unwrap_or(0),
                             timestamp: rec_id,
                         });
                     }
@@ -554,6 +557,7 @@ impl App {
                         // 保存下载记录到磁盘
                         let rec_id = Self::chrono_now();
                         j.record_id = rec_id.clone();
+                        j.at = Some(crate::format::now_unix());
                         settings::append_download_record(DownloadRecord {
                             file_id: j.file_id.clone(),
                             name: j.name.clone(),
@@ -561,6 +565,7 @@ impl App {
                             total: j.total,
                             done: j.done,
                             status: DownloadRecordStatus::Failed(what),
+                            at: j.at.unwrap_or(0),
                             timestamp: rec_id,
                         });
                     }

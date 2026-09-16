@@ -79,6 +79,7 @@ fn paint_checkbox(painter: &egui::Painter, th: &Theme, rect: Rect, state: CheckS
 }
 
 /// 渲染单个下载任务卡片, 返回操作和选择请求。
+#[allow(clippy::too_many_arguments)]
 fn dl_card(
     ui: &mut egui::Ui,
     th: &Theme,
@@ -87,6 +88,7 @@ fn dl_card(
     is_sel: bool,
     ctrl: bool,
     shift: bool,
+    now: u64,
 ) -> (Option<DlOp>, Option<DlSel>) {
     let mut op: Option<DlOp> = None;
     let mut sel: Option<DlSel> = None;
@@ -138,28 +140,40 @@ fn dl_card(
     );
     let cb_clicked = cb_resp.clicked();
 
-    // 布局: [复选框] [名称/状态] [进度] [按钮]
+    // 布局: [复选框] [名称/状态/目录] [进度] [按钮]
     const CB_W: f32 = 26.0;
     // 预留最宽按钮组(3 个图标)的宽度, 保证各卡片列对齐。
     const BTN_W: f32 = 92.0;
-    const GAP: f32 = 16.0;
     let content_x = inner.min.x + CB_W;
     let right_start = inner.max.x - BTN_W;
-    let avail = (right_start - content_x - GAP).max(0.0);
-    let left_w = (avail * 0.5).max(80.0);
-    let left_rect = Rect::from_min_max(
-        Pos2::new(content_x, inner.min.y),
-        Pos2::new(content_x + left_w, inner.max.y),
-    );
-    let name_g = truncate_text(&painter, &job.name, left_rect.width(), FontId::proportional(13.5), th.text);
-    painter.galley(Pos2::new(left_rect.min.x, left_rect.min.y + 2.0), name_g, th.text);
-    let (col, txt) = status_line(job);
-    let status_g = truncate_text(&painter, &txt, left_rect.width(), FontId::proportional(11.5), col);
-    painter.galley(Pos2::new(left_rect.min.x, left_rect.min.y + 20.0), status_g, col);
+    let left_w = ((right_start - content_x - 16.0) * 0.46).max(120.0);
 
-    // 中间: 进度/速度
-    let mid_x = left_rect.max.x + GAP;
-    let mid_w = (right_start - GAP) - mid_x;
+    let name_g = truncate_text(&painter, &job.name, left_w, FontId::proportional(13.5), th.text);
+    painter.galley(Pos2::new(content_x, inner.min.y + 1.0), name_g, th.text);
+    let (col, mut txt) = status_line(job);
+    if let Some(at) = job.at {
+        let rel = format::fmt_rel(now, at);
+        if !rel.is_empty() {
+            txt = format!("{txt} · {rel}");
+        }
+    }
+    let status_g = truncate_text(&painter, &txt, left_w, FontId::proportional(11.5), col);
+    painter.galley(Pos2::new(content_x, inner.min.y + 18.0), status_g, col);
+    let dest = job.dir.to_string_lossy();
+    if !dest.is_empty() {
+        let dg = truncate_text(
+            &painter,
+            &format!("→ {dest}"),
+            left_w,
+            FontId::proportional(10.5),
+            th.text_faint,
+        );
+        painter.galley(Pos2::new(content_x, inner.min.y + 35.0), dg, th.text_faint);
+    }
+
+    // 中间: 进度 / 速度 / ETA
+    let mid_x = content_x + left_w + 14.0;
+    let mid_w = (right_start - 14.0 - mid_x).max(0.0);
     if mid_w > 40.0 {
         match &job.status {
             DlStatus::Running if job.total > 0 => {
@@ -181,6 +195,10 @@ fn dl_card(
                 );
                 if job.speed > 0 {
                     info.push_str(&format!("   {}/s", format::fmt_bytes(job.speed as i64)));
+                    let eta = format::fmt_eta(job.total.saturating_sub(job.done), job.speed);
+                    if !eta.is_empty() {
+                        info.push_str(&format!("   剩余 {eta}"));
+                    }
                 }
                 painter.text(
                     Pos2::new(mid_x, inner.center().y + 6.0),
@@ -542,6 +560,27 @@ impl App {
         }
     }
 
+    /// 从列表移除一个下载任务(运行中的取消; 其余删除行与历史记录)。
+    fn remove_download_job(&mut self, rid: u64) {
+        let running = self
+            .jobs
+            .get(&rid)
+            .map(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
+            .unwrap_or(false);
+        if running {
+            self.send(Cmd::CancelDownload { req_id: rid });
+            return;
+        }
+        if let Some(job) = self.jobs.get(&rid) {
+            settings::remove_download_record(&job.record_id, &job.file_id, &job.name, &job.dir);
+        }
+        self.jobs.remove(&rid);
+        self.selected_dl.remove(&rid);
+        if self.last_clicked_dl == Some(rid) {
+            self.last_clicked_dl = None;
+        }
+    }
+
     /// 上传列表的状态筛选按钮。
     fn ul_filter_button(&mut self, ui: &mut egui::Ui, th: &Theme, filter: UlFilter, label: &str) {
         let selected = self.ul_filter == filter;
@@ -656,18 +695,19 @@ impl App {
         ui.add_space(8.0);
 
         if self.ul_jobs.is_empty() {
-            ui.add_space((ui.available_height() * 0.25).max(60.0));
-            ui.vertical_centered(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(60.0, 60.0), egui::Sense::hover());
+            ui.centered_and_justified(|ui| {
+                ui.add_space(60.0);
+                let (r, _) = ui.allocate_exact_size(vec2(64.0, 64.0), egui::Sense::hover());
                 icons::paint(ui.painter(), r, Glyph::Upload, th.text_faint);
-                ui.add_space(12.0);
+                ui.add_space(10.0);
                 ui.label(RichText::new("暂无上传任务").color(th.text_weak).size(14.0));
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("在「我的文件」点「上传文件」, 或点右上角按钮")
+                    RichText::new("在「我的文件」中选择文件后上传, 或点右上角「上传文件」")
                         .color(th.text_faint)
                         .size(12.0),
                 );
+                ui.add_space(60.0);
             });
             return;
         }
@@ -675,9 +715,6 @@ impl App {
         // 筛选 + 汇总 + 全选 + 清除已完成
         let now = format::now_unix();
         let mut clear_done = false;
-        let mut batch_retry: Vec<u64> = Vec::new();
-        let mut batch_remove: Vec<u64> = Vec::new();
-        let mut cancel_sel = false;
         ui.horizontal(|ui| {
             let total = self.ul_jobs.len();
             let active = self
@@ -738,8 +775,22 @@ impl App {
                         }
                     }
                 }
-                ui.add_space(6.0);
+                ui.add_space(12.0);
                 ui.label(RichText::new("全选").color(th.text_weak).size(12.5));
+                ui.add_space(12.0);
+                if vis_selected > 0 {
+                    ui.label(
+                        RichText::new(format!("已选 {vis_selected}/{vis_total}"))
+                            .color(th.accent)
+                            .size(12.5),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!("共 {vis_total} 个"))
+                            .color(th.text_faint)
+                            .size(12.5),
+                    );
+                }
                 ui.add_space(12.0);
                 let (sum_done, sum_total, speed) =
                     self.ul_jobs.values().fold((0u64, 0u64, 0u64), |(d, t, s), j| {
@@ -764,82 +815,8 @@ impl App {
                 }
             });
         });
+        ui.add_space(4.0);
 
-        // 批量操作条
-        if !self.selected_ul.is_empty() {
-            let retryable: Vec<u64> = self
-                .selected_ul
-                .iter()
-                .copied()
-                .filter(|rid| {
-                    self.ul_jobs
-                        .get(rid)
-                        .map(|j| matches!(j.status, UlStatus::Failed(_)))
-                        .unwrap_or(false)
-                })
-                .collect();
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("已选择 {} 项", self.selected_ul.len()))
-                        .size(13.0)
-                        .color(th.text),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("移除选中").color(th.danger))
-                                .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
-                                .fill(egui::Color32::TRANSPARENT)
-                                .corner_radius(th.cr(8)),
-                        )
-                        .clicked()
-                    {
-                        batch_remove = self.selected_ul.iter().copied().collect();
-                    }
-                    if !retryable.is_empty()
-                        && ui
-                            .add(
-                                egui::Button::new(RichText::new("重试选中").color(th.on_accent))
-                                    .fill(th.accent)
-                                    .stroke(Stroke::NONE)
-                                    .corner_radius(th.cr(8)),
-                            )
-                            .clicked()
-                    {
-                        batch_retry = retryable.clone();
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("取消选中").color(th.text_weak))
-                                .frame(false),
-                        )
-                        .clicked()
-                    {
-                        cancel_sel = true;
-                    }
-                });
-            });
-            ui.add_space(2.0);
-        }
-
-        if cancel_sel {
-            self.selected_ul.clear();
-            self.ul_last_clicked = None;
-        }
-        if !batch_remove.is_empty() {
-            for rid in batch_remove {
-                self.remove_upload_job(rid);
-            }
-            self.selected_ul.clear();
-            self.ul_last_clicked = None;
-        }
-        if !batch_retry.is_empty() {
-            for rid in batch_retry {
-                self.retry_upload_job(rid);
-            }
-            self.selected_ul.clear();
-            self.ul_last_clicked = None;
-        }
         if clear_done {
             let done_ids: Vec<u64> = self
                 .ul_jobs
@@ -870,8 +847,9 @@ impl App {
             .id_salt("uploads_scroll")
             .auto_shrink([false, false])
             .max_height(scroll_h.max(60.0))
-            .show(ui, |ui| {
-                for &rid in &ids {
+            .show_rows(ui, DL_CARD_H, ids.len(), |ui, range| {
+                for i in range {
+                    let rid = ids[i];
                     let Some(job) = self.ul_jobs.get(&rid) else {
                         continue;
                     };
@@ -939,6 +917,7 @@ impl App {
     pub(super) fn transfers_page(&mut self, ctx: &egui::Context, th: &Theme) {
         let mut ops: Vec<(u64, DlOp)> = Vec::new();
         let mut sel_reqs: Vec<DlSel> = Vec::new();
+        let mut clear_done = false;
 
         // 底部批量操作条: 底部面板保证布局高度正确; 用页面同色铺底避免露出窗口
         // 底色, 顶部加一条分隔线, 整体是单层扁平工具条, 不再有嵌套盒子。
@@ -1036,6 +1015,89 @@ impl App {
                 });
         }
 
+        // 上传页底部批量操作条(与下载页一致)
+        if self.transfer_tab == TransferTab::Upload && !self.selected_ul.is_empty() {
+            egui::TopBottomPanel::bottom("ul_action_bar")
+                .frame(Frame::new().fill(th.bg).inner_margin(Margin {
+                    left: 20,
+                    right: 20,
+                    top: 0,
+                    bottom: 0,
+                }))
+                .show(ctx, |ui| {
+                    let top = ui.max_rect().min.y;
+                    ui.painter().hline(
+                        ui.max_rect().x_range(),
+                        top,
+                        Stroke::new(1.0, th.border),
+                    );
+                    ui.add_space(8.0);
+                    let retryable: Vec<u64> = self
+                        .selected_ul
+                        .iter()
+                        .copied()
+                        .filter(|rid| {
+                            self.ul_jobs
+                                .get(rid)
+                                .map(|j| matches!(j.status, UlStatus::Failed(_)))
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    let selected: Vec<u64> = self.selected_ul.iter().copied().collect();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("已选择 {} 项", selected.len()))
+                                .size(13.0)
+                                .color(th.text),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("移除选中").color(th.danger))
+                                        .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .corner_radius(th.cr(8)),
+                                )
+                                .clicked()
+                            {
+                                for rid in selected.iter().copied() {
+                                    self.remove_upload_job(rid);
+                                }
+                            }
+                            if !retryable.is_empty()
+                                && ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("重试选中").color(th.on_accent),
+                                        )
+                                        .fill(th.accent)
+                                        .stroke(Stroke::NONE)
+                                        .corner_radius(th.cr(8)),
+                                    )
+                                    .clicked()
+                            {
+                                for rid in retryable.iter().copied() {
+                                    self.retry_upload_job(rid);
+                                }
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("取消选中").color(th.text_weak),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                self.selected_ul.clear();
+                                self.ul_last_clicked = None;
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                });
+        }
+
         egui::CentralPanel::default()
             .frame(Frame::new().fill(th.bg).inner_margin(Margin { left: 20, right: 20, top: 16, bottom: 12 }))
             .show(ctx, |ui| {
@@ -1067,6 +1129,26 @@ impl App {
                             .color(th.text_weak)
                             .size(12.5),
                     );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("打开下载目录").color(th.text_weak))
+                                    .stroke(Stroke::new(1.0, th.border))
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .corner_radius(th.cr(8)),
+                            )
+                            .clicked()
+                        {
+                            let dir = if !self.download_dir.is_empty()
+                                && std::path::Path::new(&self.download_dir).is_dir()
+                            {
+                                std::path::PathBuf::from(&self.download_dir)
+                            } else {
+                                dirs::download_dir().unwrap_or_default()
+                            };
+                            open_dir(&dir);
+                        }
+                    });
                 });
                 ui.add_space(8.0);
 
@@ -1112,20 +1194,17 @@ impl App {
                         };
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if vis_selected > 0 {
-                                ui.label(
-                                    RichText::new(format!("已选 {vis_selected}/{vis_total}"))
-                                        .color(th.accent)
-                                        .size(12.5),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new(format!("共 {vis_total} 个"))
-                                        .color(th.text_faint)
-                                        .size(12.5),
-                                );
+                            if done_c > 0
+                                && ui
+                                    .add(
+                                        egui::Button::new(RichText::new("清除已完成").color(th.text_weak))
+                                            .frame(false),
+                                    )
+                                    .clicked()
+                            {
+                                clear_done = true;
                             }
-                            ui.add_space(12.0);
+                            ui.add_space(10.0);
                             let (cb_rect, cb_resp) =
                                 ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::click());
                             paint_checkbox(ui.painter(), th, cb_rect, master, cb_resp.hovered());
@@ -1142,6 +1221,42 @@ impl App {
                             }
                             ui.add_space(6.0);
                             ui.label(RichText::new("全选").color(th.text_weak).size(12.5));
+                            ui.add_space(12.0);
+                            if vis_selected > 0 {
+                                ui.label(
+                                    RichText::new(format!("已选 {vis_selected}/{vis_total}"))
+                                        .color(th.accent)
+                                        .size(12.5),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(format!("共 {vis_total} 个"))
+                                        .color(th.text_faint)
+                                        .size(12.5),
+                                );
+                            }
+                            ui.add_space(12.0);
+                            let (sum_done, sum_total, speed) =
+                                self.jobs.values().fold((0u64, 0u64, 0u64), |(d, t, s), j| {
+                                    let sp = if matches!(j.status, DlStatus::Running) {
+                                        j.speed
+                                    } else {
+                                        0
+                                    };
+                                    (d + j.done, t + j.total, s + sp)
+                                });
+                            if sum_total > 0 {
+                                let pct = (sum_done as f32 / sum_total as f32 * 100.0).round() as u32;
+                                let mut agg = format!(
+                                    "整体 {pct}% · {}/{}",
+                                    format::fmt_bytes(sum_done as i64),
+                                    format::fmt_bytes(sum_total as i64)
+                                );
+                                if speed > 0 {
+                                    agg.push_str(&format!(" · {}/s", format::fmt_bytes(speed as i64)));
+                                }
+                                ui.label(RichText::new(agg).color(th.text_faint).size(12.0));
+                            }
                         });
                     });
                     ui.add_space(4.0);
@@ -1183,6 +1298,7 @@ impl App {
 
                 let ctrl = ui.input(|i| i.modifiers.ctrl);
                 let shift = ui.input(|i| i.modifiers.shift);
+                let now = format::now_unix();
 
                 let scroll_h = ui.available_height();
                 egui::ScrollArea::vertical()
@@ -1196,7 +1312,7 @@ impl App {
                                 continue;
                             };
                             let is_sel = self.selected_dl.contains(&rid);
-                            let (op, sel) = dl_card(ui, th, rid, job, is_sel, ctrl, shift);
+                            let (op, sel) = dl_card(ui, th, rid, job, is_sel, ctrl, shift, now);
                             if let Some(op) = op {
                                 ops.push((rid, op));
                             }
@@ -1248,6 +1364,17 @@ impl App {
             });
 
         // 处理操作
+        if clear_done {
+            let done_ids: Vec<u64> = self
+                .jobs
+                .iter()
+                .filter(|(_, j)| j.status == DlStatus::Done)
+                .map(|(id, _)| *id)
+                .collect();
+            for rid in done_ids {
+                self.remove_download_job(rid);
+            }
+        }
         for (rid, op) in ops {
             match op {
                 DlOp::Cancel => self.send(Cmd::CancelDownload { req_id: rid }),

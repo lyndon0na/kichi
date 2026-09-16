@@ -32,6 +32,9 @@ pub struct DownloadRecord {
     pub total: u64,
     pub done: u64,
     pub status: DownloadRecordStatus,
+    /// 完成/失败时间(unix 秒)。
+    #[serde(default)]
+    pub at: u64,
     /// ISO 8601 时间戳。
     pub timestamp: String,
 }
