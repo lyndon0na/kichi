@@ -8,6 +8,7 @@ pub mod download;
 pub mod error;
 pub mod session;
 pub mod types;
+pub mod upload;
 
 pub use client::PikPakClient;
 pub use error::Error;

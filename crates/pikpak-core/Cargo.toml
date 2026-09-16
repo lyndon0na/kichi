@@ -15,8 +15,12 @@ reqwest = { workspace = true }
 futures-util = { workspace = true }
 md-5 = { workspace = true }
 sha1 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+httpdate = "1"
 uuid = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]

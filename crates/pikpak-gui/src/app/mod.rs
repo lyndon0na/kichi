@@ -19,12 +19,12 @@ use pikpak_core::types::{File, FileList, Quota, Task};
 
 use crate::kde;
 use crate::msg::{Cmd, Msg};
-use crate::settings::{self, DownloadRecord, DownloadRecordStatus};
+use crate::settings::{self, DownloadRecord, DownloadRecordStatus, UploadRecord, UploadRecordStatus};
 use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, UlJob, UlStatus, ViewMode};
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
@@ -123,6 +123,11 @@ pub struct App {
     pub(crate) jobs: BTreeMap<u64, DlJob>,
     pub(crate) selected_dl: HashSet<u64>,
     pub(crate) dl_filter: DlFilter,
+
+    // 本地上传
+    pub(crate) ul_jobs: BTreeMap<u64, UlJob>,
+    /// 进行中的异步文件选择 (目标目录, 结果通道), 避免阻塞 UI 线程。
+    pub(crate) upload_pick: Option<(Option<String>, std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>)>,
 
     /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
     pub(crate) preview_pending: Option<(u64, String)>,
@@ -227,6 +232,35 @@ impl App {
             },
             selected_dl: HashSet::new(),
             dl_filter: DlFilter::All,
+            ul_jobs: {
+                let mut ul = BTreeMap::new();
+                let mut next_id = 0u64;
+                // 历史按最新在前存储, 倒序分配 id 使 id 随时间递增。
+                for record in settings::load_upload_history().into_iter().rev() {
+                    let status = match record.status {
+                        UploadRecordStatus::Done => UlStatus::Done,
+                        UploadRecordStatus::Failed(what) => UlStatus::Failed(what),
+                    };
+                    next_id += 1;
+                    ul.insert(
+                        next_id,
+                        UlJob {
+                            local_path: record.local_path,
+                            name: record.name,
+                            parent: record.parent,
+                            total: record.total,
+                            done: record.done,
+                            status,
+                            speed: 0,
+                            last_done: 0,
+                            last_at: None,
+                            record_id: record.timestamp,
+                        },
+                    );
+                }
+                ul
+            },
+            upload_pick: None,
             preview_pending: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
@@ -239,7 +273,13 @@ impl App {
         };
 
         // 恢复 req_id 为历史记录中的最大值，避免 ID 冲突
-        app.req_id = app.jobs.keys().max().copied().unwrap_or(0);
+        app.req_id = app
+            .jobs
+            .keys()
+            .chain(app.ul_jobs.keys())
+            .max()
+            .copied()
+            .unwrap_or(0);
 
         match session::load_session() {
             Ok(Some(s)) => {
@@ -512,6 +552,87 @@ impl App {
                             timestamp: rec_id,
                         });
                     }
+                }
+                Msg::UlProgress {
+                    req_id,
+                    total,
+                    done,
+                } => {
+                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+                        if j.status == UlStatus::Queued {
+                            j.status = UlStatus::Running;
+                        }
+                        if total > 0 {
+                            j.total = total;
+                        }
+                        let now = Instant::now();
+                        if let Some(at) = j.last_at {
+                            let dt = now.duration_since(at).as_secs_f64();
+                            if dt > 0.0 && done >= j.last_done {
+                                let inst = ((done - j.last_done) as f64 / dt) as u64;
+                                j.speed = if j.speed == 0 {
+                                    inst
+                                } else {
+                                    ((j.speed as f64) * 0.6 + inst as f64 * 0.4) as u64
+                                };
+                            }
+                        }
+                        j.last_at = Some(now);
+                        j.last_done = done;
+                        if done > j.done {
+                            j.done = done;
+                        }
+                    }
+                }
+                Msg::UlFinished { req_id } => {
+                    let parent = self.ul_jobs.get_mut(&req_id).map(|j| {
+                        j.status = UlStatus::Done;
+                        if j.total > 0 {
+                            j.done = j.total;
+                        }
+                        // 写入上传历史。
+                        let rec_id = Self::chrono_now();
+                        j.record_id = rec_id.clone();
+                        settings::append_upload_record(UploadRecord {
+                            local_path: j.local_path.clone(),
+                            name: j.name.clone(),
+                            parent: j.parent.clone(),
+                            total: j.total,
+                            done: j.done,
+                            status: UploadRecordStatus::Done,
+                            timestamp: rec_id,
+                        });
+                        j.parent.clone()
+                    });
+                    if let Some(parent) = parent {
+                        // 上传完成后目标目录内容已变, 作废缓存并按需刷新。
+                        self.dir_cache.remove(&parent);
+                        if parent == self.current_parent() {
+                            self.reload_dir();
+                        }
+                    }
+                    self.toast_ok("上传完成");
+                }
+                Msg::UlCancelled { req_id } => {
+                    self.ul_jobs.remove(&req_id);
+                }
+                Msg::UlFailed { req_id, what } => {
+                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+                        j.status = UlStatus::Failed(what.clone());
+                        // 写入上传历史。
+                        let rec_id = Self::chrono_now();
+                        j.record_id = rec_id.clone();
+                        settings::append_upload_record(UploadRecord {
+                            local_path: j.local_path.clone(),
+                            name: j.name.clone(),
+                            parent: j.parent.clone(),
+                            total: j.total,
+                            done: j.done,
+                            status: UploadRecordStatus::Failed(what.clone()),
+                            timestamp: rec_id,
+                        });
+                    }
+                    self.toast_err(&format!("上传失败: {what}"));
                 }
                 Msg::FilesFailed { parent, what } => {
                     // 结束该目录的加载态并释放在途登记; 若仍停留在该目录,
@@ -1120,6 +1241,67 @@ impl App {
         self.enqueue_downloads(vec![(id, name)], dir);
     }
 
+    /// 逐个提交上传任务到给定网盘目录(None = 根目录)。
+    pub(crate) fn enqueue_upload(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        parent: Option<String>,
+    ) {
+        let mut n = 0usize;
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let req_id = self.alloc_req_id();
+            self.ul_jobs
+                .insert(req_id, UlJob::queued(path.clone(), name, parent.clone()));
+            self.send(Cmd::StartUpload {
+                req_id,
+                path,
+                parent: parent.clone(),
+            });
+            n += 1;
+        }
+        if n > 0 {
+            self.toast_ok(&format!("已加入上传队列 ({n} 个文件)"));
+        }
+    }
+
+    /// 选择本地文件并上传到当前网盘目录(异步弹框, 不阻塞 UI)。
+    pub(crate) fn upload_here(&mut self) {
+        // 已在选择中时忽略重复点击。
+        if self.upload_pick.is_some() {
+            return;
+        }
+        let start = std::env::current_dir().unwrap_or_default();
+        let parent = self.current_parent();
+        self.upload_pick = Some((parent, helpers::pick_files_async(&start)));
+    }
+
+    /// 每帧检查异步文件选择结果; 选好后按当时的目标目录入队上传。
+    fn poll_file_picker(&mut self) {
+        let Some((parent, rx)) = &self.upload_pick else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(files) => {
+                let parent = parent.clone();
+                self.upload_pick = None;
+                if !files.is_empty() {
+                    self.enqueue_upload(files, parent);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.upload_pick = None;
+            }
+        }
+    }
+
     /// 当前目录下与 `name` 同集的外挂字幕 (id, 文件名)。
     fn episode_subtitles(&self, name: &str) -> Vec<(String, String)> {
         self.files
@@ -1200,6 +1382,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain();
+        self.poll_file_picker();
         self.poll_system_theme();
 
         // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
@@ -1221,6 +1404,9 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(120));
         } else if !self.quality_inflight.is_empty() {
             // 清晰度解析中, 加快轮询让「播放」子菜单尽快展开选项。
+            ctx.request_repaint_after(Duration::from_millis(100));
+        } else if self.upload_pick.is_some() {
+            // 文件选择进行中, 加快轮询以尽快取回结果。
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.has_active_downloads()
             || self.dir_loading

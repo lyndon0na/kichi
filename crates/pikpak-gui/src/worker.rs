@@ -34,13 +34,18 @@ pub fn spawn() -> Worker {
 /// 本地下载的并发上限与单任务最大下载尝试次数。
 const DL_CONCURRENCY: usize = 3;
 const DL_MAX_ATTEMPTS: u32 = 5;
+/// 本地上传的并发上限与单任务最大尝试次数。
+const UL_CONCURRENCY: usize = 2;
+const UL_MAX_ATTEMPTS: u32 = 5;
 
 struct WorkerState {
     client: Option<Arc<PikPakClient>>,
-    /// 下载取消开关, 按 req_id 索引; 任务结束后自行移除。
+    /// 下载/上传取消开关, 按 req_id 索引; 任务结束后自行移除。
     cancel: Arc<tokio::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
-    /// 并发信号量, 超出上限的任务阻塞在 acquire 上排队。
+    /// 下载并发信号量, 超出上限的任务阻塞在 acquire 上排队。
     sem: Arc<Semaphore>,
+    /// 上传并发信号量。
+    ul_sem: Arc<Semaphore>,
     /// 已占用的目标文件名集合(键: "目录\0文件名"), 用于同名去重。
     reserved: Arc<Mutex<HashSet<String>>>,
 }
@@ -67,10 +72,12 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
         client: None,
         cancel: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         sem: Arc::new(Semaphore::new(DL_CONCURRENCY)),
+        ul_sem: Arc::new(Semaphore::new(UL_CONCURRENCY)),
         reserved: Arc::new(Mutex::new(HashSet::new())),
     };
     let mut tick = 0u64;
 
+    tracing::info!("后台 worker 已启动");
     loop {
         let msg = rx.recv_timeout(Duration::from_millis(800));
 
@@ -146,15 +153,18 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             install_saver(&mut client);
             client.set_session(&sess).await;
             let client = Arc::new(client);
+            tracing::info!("尝试恢复登录态");
             match client.quota().await {
                 Ok(_) => {
                     st.client = Some(client);
+                    tracing::info!("恢复登录态成功");
                     let _ = tx.send(Msg::LoginOk { username });
                     refresh_quota(st, tx).await;
                     refresh_tasks(st, tx).await;
                 }
                 // refresh token 已过期/被吊销: 明确要求重新登录。
                 Err(Error::AuthExpired(what)) => {
+                    tracing::warn!("会话失效(需重新登录): {what}");
                     let _ = tx.send(Msg::SessionInvalid {
                         reason: format!("登录已过期: {what}"),
                     });
@@ -162,12 +172,14 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 // 只有服务端明确判定凭据失效(API 错误)才强制重新登录;
                 // 其余(网络/解析等)先保留本地会话, 由后台周期刷新自动重试。
                 Err(e @ Error::Api { .. }) => {
+                    tracing::warn!("会话失效: {e}");
                     let _ = tx.send(Msg::SessionInvalid {
                         reason: format!("登录已过期: {e}"),
                     });
                 }
                 Err(e) => {
                     st.client = Some(client);
+                    tracing::warn!("会话暂不可用, 将自动重试: {e}");
                     let _ = tx.send(Msg::LoginOk { username });
                     let _ = tx.send(Msg::Error {
                         what: format!("会话暂不可用, 稍后自动重试: {e}"),
@@ -371,6 +383,19 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 flag.store(true, Ordering::Relaxed);
             }
         }
+        Cmd::StartUpload {
+            req_id,
+            path,
+            parent,
+        } => {
+            spawn_upload(st, tx, req_id, path, parent).await;
+        }
+        Cmd::CancelUpload { req_id } => {
+            let map = st.cancel.lock().await;
+            if let Some(flag) = map.get(&req_id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
         Cmd::Preview {
             req_id,
             file_id,
@@ -406,17 +431,20 @@ async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, pass
     let device_id = pikpak_core::captcha::generate_device_id();
     let mut client = PikPakClient::new(device_id.clone());
     install_saver(&mut client);
+    tracing::info!("开始登录: {username}");
     match client.login(&username, &password).await {
         Ok(sess) => {
             if let Err(e) = session::save_session(&sess) {
                 let _ = tx.send(Msg::Error { what: e.to_string() });
             }
             st.client = Some(Arc::new(client));
+            tracing::info!("登录成功: {username}");
             let _ = tx.send(Msg::LoginOk { username });
             refresh_quota(st, tx).await;
             refresh_tasks(st, tx).await;
         }
         Err(e) => {
+            tracing::warn!("登录失败: {e}");
             let _ = tx.send(Msg::LoginFailed {
                 what: format!("登录失败: {e}"),
             });
@@ -670,6 +698,7 @@ async fn spawn_download(
 
         match outcome {
             Ok(bytes) => {
+                tracing::info!("下载完成 req={req_id} ({bytes} 字节)");
                 let _ = msg_tx.send(Msg::DlFinished { req_id, bytes });
             }
             Err(e) => {
@@ -678,6 +707,7 @@ async fn spawn_download(
                     discard_part(&dest);
                     let _ = msg_tx.send(Msg::DlCancelled { req_id });
                 } else {
+                    tracing::warn!("下载失败 req={req_id}: {e}");
                     let _ = msg_tx.send(Msg::DlFailed {
                         req_id,
                         what: e.to_string(),
@@ -793,6 +823,135 @@ fn reserve_key_of(dest: &Path) -> String {
         .unwrap_or_default();
     let dir = dest.parent().unwrap_or(Path::new(""));
     reserve_key(dir, &name)
+}
+
+// ---------------- 本地上传调度 ----------------
+
+/// 注册一个上传任务并 spawn 后台协程。
+async fn spawn_upload(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    req_id: u64,
+    path: PathBuf,
+    parent: Option<String>,
+) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    st.cancel.lock().await.insert(req_id, cancel.clone());
+    let cancel_map = st.cancel.clone();
+    let sem = st.ul_sem.clone();
+    let msg_tx = tx.clone();
+
+    tokio::spawn(async move {
+        let permit = sem.acquire().await.ok();
+        if cancel.load(Ordering::Relaxed) {
+            cancel_map.lock().await.remove(&req_id);
+            let _ = msg_tx.send(Msg::UlCancelled { req_id });
+            drop(permit);
+            return;
+        }
+        // 先推一条 0 进度, 让 UI 从"排队中"进入"运行/解析中"。
+        let _ = msg_tx.send(Msg::UlProgress {
+            req_id,
+            total: 0,
+            done: 0,
+        });
+        let outcome =
+            run_upload(&client, &msg_tx, req_id, &path, parent.as_deref(), cancel.clone()).await;
+        cancel_map.lock().await.remove(&req_id);
+        drop(permit);
+
+        match outcome {
+            Ok(()) => {
+                tracing::info!("上传完成 req={req_id}");
+                let _ = msg_tx.send(Msg::UlFinished { req_id });
+            }
+            Err(_) if cancel.load(Ordering::Relaxed) => {
+                tracing::info!("上传已取消 req={req_id}");
+                let _ = msg_tx.send(Msg::UlCancelled { req_id });
+            }
+            Err(e) => {
+                tracing::warn!("上传失败 req={req_id}: {e}");
+                let _ = msg_tx.send(Msg::UlFailed {
+                    req_id,
+                    what: e.to_string(),
+                });
+            }
+        }
+    });
+}
+
+/// 上传主流程: 算 gcid → 创建票据(秒传则结束) → OSS 分片;
+/// 直链/传输的瞬时错误按退避重试, 每次重试重新创建票据。
+async fn run_upload(
+    client: &PikPakClient,
+    tx: &Sender<Msg>,
+    req_id: u64,
+    path: &Path,
+    parent: Option<&str>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), Error> {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| Error::msg("无法获取文件名"))?;
+    let size = tokio::fs::metadata(path).await?.len();
+
+    // gcid 需要完整读取文件, 放到阻塞线程池。
+    let hash_path = path.to_path_buf();
+    let hash = tokio::task::spawn_blocking(move || pikpak_core::upload::file_gcid(&hash_path))
+        .await
+        .map_err(|e| Error::msg(format!("gcid 计算失败: {e}")))??;
+
+    let tx2 = tx.clone();
+    let mut last_send = Instant::now();
+    let mut on_progress = move |done: u64, total: u64| {
+        let now = Instant::now();
+        if done == 0 || now.duration_since(last_send) >= Duration::from_millis(150) {
+            last_send = now;
+            let _ = tx2.send(Msg::UlProgress {
+                req_id,
+                total,
+                done,
+            });
+        }
+    };
+
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+
+        let ticket = match client.upload_create(&name, parent, size, &hash).await {
+            Ok(t) => t,
+            Err(e) => {
+                if cancel.load(Ordering::Relaxed) || attempt >= UL_MAX_ATTEMPTS || !e.is_transient() {
+                    return Err(e);
+                }
+                tokio::time::sleep(download_backoff(attempt - 1)).await;
+                continue;
+            }
+        };
+        if ticket.completed {
+            return Ok(());
+        }
+        let Some(oss) = ticket.oss else {
+            return Err(Error::msg("服务端未返回上传上下文"));
+        };
+        match client
+            .upload_oss(&oss, path, Some(cancel.clone()), &mut on_progress)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if cancel.load(Ordering::Relaxed) || attempt >= UL_MAX_ATTEMPTS || !e.is_transient() {
+                    return Err(e);
+                }
+                tokio::time::sleep(download_backoff(attempt - 1)).await;
+            }
+        }
+    }
 }
 
 async fn refresh_quota(st: &WorkerState, tx: &Sender<Msg>) {

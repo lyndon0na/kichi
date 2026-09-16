@@ -478,6 +478,7 @@ impl App {
         let mut up = false;
         let mut jumped: Option<usize> = None;
         let mut mkdir = false;
+        let mut upload = false;
         let mut refresh = false;
         let mut want_download = false;
         let mut clear_clip = false;
@@ -601,6 +602,22 @@ impl App {
                                 refresh = true;
                             }
                             rresp.on_hover_text("刷新 (F5)");
+
+                            ui.add_space(4.0);
+                            // 上传文件
+                            if icon_button(
+                                ui,
+                                th,
+                                Glyph::Upload,
+                                "上传文件",
+                                th.text_weak,
+                                egui::Color32::TRANSPARENT,
+                                Stroke::new(1.0, th.border),
+                            )
+                            .clicked()
+                            {
+                                upload = true;
+                            }
 
                             ui.add_space(4.0);
                             // 新建文件夹
@@ -756,6 +773,9 @@ impl App {
         if refresh {
             self.refresh_dir();
         }
+        if upload {
+            self.upload_here();
+        }
 
         // 处理顶部栏产生的操作
         if clear_clip {
@@ -846,6 +866,10 @@ impl App {
                     bg_resp.context_menu(|ui| {
                         if has_clip && ui.button("粘贴").clicked() {
                             self.paste_clipboard();
+                            ui.close_menu();
+                        }
+                        if ui.button("上传文件").clicked() {
+                            self.upload_here();
                             ui.close_menu();
                         }
                         if ui.button("新建文件夹").clicked() {

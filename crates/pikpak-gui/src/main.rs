@@ -3,6 +3,7 @@ mod credentials;
 mod format;
 mod icons;
 mod kde;
+mod logging;
 mod msg;
 mod settings;
 mod theme;
@@ -11,6 +12,7 @@ mod worker;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    logging::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("PikPak Linux")

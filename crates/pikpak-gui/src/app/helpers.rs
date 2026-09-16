@@ -104,8 +104,35 @@ pub(crate) fn subtitle_of(video: &str, sub: &str) -> bool {
         .is_some_and(|rest| rest.chars().next().is_some_and(|c| !c.is_alphanumeric()))
 }
 
-/// 弹出一个原生目录选择框(独立线程阻塞式调用)。
-pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
+/// 运行系统文件对话框命令。
+///
+/// 返回 `Some(paths)` 表示命令可用并已执行(用户取消时为 `Some(空)`);
+/// 返回 `None` 表示该命令不存在, 应尝试下一个后端。
+fn run_dialog(cmd: &str, args: &[std::ffi::OsString]) -> Option<Vec<PathBuf>> {
+    let out = match std::process::Command::new(cmd).args(args).output() {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!("调用 {cmd} 失败: {e}");
+            return Some(Vec::new());
+        }
+    };
+    if !out.status.success() {
+        // 用户取消。
+        return Some(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(
+        text.lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
+}
+
+/// 用 rfd(portal) 兜底弹目录框(阻塞)。
+fn pick_folder_rfd(initial: &std::path::Path) -> Option<PathBuf> {
     let initial = initial.to_path_buf();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -123,6 +150,99 @@ pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
     .join()
     .ok()
     .flatten()
+}
+
+/// 弹出一个原生目录选择框(阻塞式)。
+///
+/// 优先用 `kdialog`/`zenity`(可靠、子进程对话框), 都没有时回退 rfd(portal)。
+pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
+    let dir = initial.to_string_lossy().to_string();
+    if let Some(v) = run_dialog(
+        "kdialog",
+        &[
+            std::ffi::OsString::from("--getexistingdirectory"),
+            dir.clone().into(),
+        ],
+    ) {
+        return v.into_iter().next();
+    }
+    if let Some(v) = run_dialog(
+        "zenity",
+        &[
+            std::ffi::OsString::from("--file-selection"),
+            std::ffi::OsString::from("--directory"),
+            format!("--filename={dir}/").into(),
+        ],
+    ) {
+        return v.into_iter().next();
+    }
+    pick_folder_rfd(initial)
+}
+
+/// 多选文件(阻塞), 供后台线程调用。
+fn pick_files_blocking(initial: &std::path::Path) -> Vec<PathBuf> {
+    let dir = initial.to_string_lossy().to_string();
+    if let Some(v) = run_dialog(
+        "kdialog",
+        &[
+            std::ffi::OsString::from("--getopenfilename"),
+            std::ffi::OsString::from("--multiple"),
+            std::ffi::OsString::from("--separate-output"),
+            dir.clone().into(),
+        ],
+    ) {
+        tracing::debug!("文件选择: kdialog 选中 {} 个", v.len());
+        return v;
+    }
+    if let Some(v) = run_dialog(
+        "zenity",
+        &[
+            std::ffi::OsString::from("--file-selection"),
+            std::ffi::OsString::from("--multiple"),
+            std::ffi::OsString::from("--separator=\n"),
+            format!("--filename={dir}/").into(),
+        ],
+    ) {
+        tracing::debug!("文件选择: zenity 选中 {} 个", v.len());
+        return v;
+    }
+    tracing::debug!("文件选择: 回退 rfd(portal)");
+    // rfd(portal) 兜底。
+    let initial = initial.to_path_buf();
+    let handles = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        rt.block_on(async move {
+            rfd::AsyncFileDialog::new()
+                .set_directory(&initial)
+                .pick_files()
+                .await
+        })
+    })
+    .join()
+    .ok()
+    .flatten();
+    handles
+        .map(|hs| hs.into_iter().map(|h| h.path().to_path_buf()).collect())
+        .unwrap_or_default()
+}
+
+/// 异步弹出原生多选文件框。
+///
+/// 对话框在独立线程执行, 选完的结果通过返回的 receiver 送达;
+/// 不阻塞 UI 线程。
+pub(crate) fn pick_files_async(
+    initial: &std::path::Path,
+) -> std::sync::mpsc::Receiver<Vec<PathBuf>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let initial = initial.to_path_buf();
+    std::thread::spawn(move || {
+        let files = pick_files_blocking(&initial);
+        let _ = tx.send(files);
+    });
+    rx
 }
 
 /// 在文字长度受限时做简单裁剪(带省略号)。

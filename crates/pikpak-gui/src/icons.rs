@@ -21,6 +21,8 @@ pub enum Glyph {
     File,
     /// 下载(箭头落盘)
     Download,
+    /// 上传(箭头出盘)
+    Upload,
     /// 上级 / 返回(朝上箭头)
     Up,
     /// 设置(齿轮)
@@ -111,6 +113,7 @@ pub fn paint(painter: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::File => doc(painter, &c, false),
         Glyph::Archive => archive(painter, &c),
         Glyph::Download => download(painter, &c),
+        Glyph::Upload => upload(painter, &c),
         Glyph::Up => chevron(painter, &c),
         Glyph::Gear => gear(painter, &c),
         Glyph::Transfer => transfer(painter, &c),
@@ -213,6 +216,13 @@ fn archive(painter: &Painter, c: &Canvas) {
 fn download(painter: &Painter, c: &Canvas) {
     c.polyline(painter, &[[8.0, 2.6], [8.0, 10.2]], 1.7);
     c.polyline(painter, &[[4.4, 6.9], [8.0, 11.2], [11.6, 6.9]], 1.7);
+    c.polyline(painter, &[[3.4, 13.4], [12.6, 13.4]], 1.7);
+}
+
+fn upload(painter: &Painter, c: &Canvas) {
+    // 箭头朝上 + 底部托盘
+    c.polyline(painter, &[[8.0, 13.0], [8.0, 5.4]], 1.7);
+    c.polyline(painter, &[[4.4, 9.1], [8.0, 4.8], [11.6, 9.1]], 1.7);
     c.polyline(painter, &[[3.4, 13.4], [12.6, 13.4]], 1.7);
 }
 

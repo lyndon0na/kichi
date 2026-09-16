@@ -7,7 +7,7 @@ use crate::settings;
 use crate::theme::{mix, Theme};
 
 use super::helpers::{open_dir, open_path, truncate_text};
-use super::types::{DlFilter, DlJob, DlOp, DlSel, DlStatus, TransferTab};
+use super::types::{DlFilter, DlJob, DlOp, DlSel, DlStatus, TransferTab, UlJob, UlOp, UlStatus};
 use super::App;
 
 /// 下载卡片固定高度(虚拟滚动要求逐行等高)。
@@ -20,6 +20,16 @@ fn status_line(job: &DlJob) -> (egui::Color32, String) {
         DlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "下载中".into()),
         DlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
         DlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
+    }
+}
+
+/// 上传行状态文案。
+fn upload_status_line(job: &UlJob) -> (egui::Color32, String) {
+    match &job.status {
+        UlStatus::Queued => (egui::Color32::from_gray(150), "排队中".into()),
+        UlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "上传中".into()),
+        UlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
+        UlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
     }
 }
 
@@ -305,6 +315,227 @@ impl App {
         }
     }
 
+    /// 传输任务页「上传」分栏。
+    fn upload_tab(&mut self, ui: &mut egui::Ui, th: &Theme) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("上传本地文件到当前网盘目录。")
+                    .color(th.text_weak)
+                    .size(12.5),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("上传文件").color(th.on_accent))
+                            .fill(th.accent)
+                            .stroke(Stroke::NONE)
+                            .corner_radius(th.cr(8)),
+                    )
+                    .clicked()
+                {
+                    self.upload_here();
+                }
+            });
+        });
+        ui.add_space(8.0);
+
+        if self.ul_jobs.is_empty() {
+            ui.add_space((ui.available_height() * 0.25).max(60.0));
+            ui.vertical_centered(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(60.0, 60.0), egui::Sense::hover());
+                icons::paint(ui.painter(), r, Glyph::Upload, th.text_faint);
+                ui.add_space(12.0);
+                ui.label(RichText::new("暂无上传任务").color(th.text_weak).size(14.0));
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("在「我的文件」点「上传文件」, 或点右上角按钮")
+                        .color(th.text_faint)
+                        .size(12.0),
+                );
+            });
+            return;
+        }
+
+        let mut ops: Vec<(u64, UlOp)> = Vec::new();
+        egui::ScrollArea::vertical()
+            .id_salt("uploads_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let ids: Vec<u64> = self.ul_jobs.keys().copied().collect();
+                for rid in ids {
+                    let Some(job) = self.ul_jobs.get(&rid) else {
+                        continue;
+                    };
+                    let w = ui.available_width().max(320.0);
+                    let (rect, _) =
+                        ui.allocate_exact_size(vec2(w, DL_CARD_H), egui::Sense::hover());
+                    let painter = ui.painter().clone();
+                    painter.rect_filled(rect, th.cr(12), th.card);
+                    painter.rect_stroke(
+                        rect,
+                        th.cr(12),
+                        Stroke::new(1.0, th.border),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    let inner = rect.shrink2(vec2(12.0, 10.0));
+                    let left_w = (inner.width() * 0.42).max(120.0);
+                    let name_g = truncate_text(
+                        &painter,
+                        &job.name,
+                        left_w,
+                        FontId::proportional(13.5),
+                        th.text,
+                    );
+                    painter.galley(Pos2::new(inner.min.x, inner.min.y + 2.0), name_g, th.text);
+                    let (col, txt) = upload_status_line(job);
+                    let st_g = truncate_text(&painter, &txt, left_w, FontId::proportional(11.5), col);
+                    painter.galley(Pos2::new(inner.min.x, inner.min.y + 20.0), st_g, col);
+
+                    // 进度 / 速率
+                    let mid_x = inner.min.x + left_w + 16.0;
+                    let right_start = inner.max.x - 96.0;
+                    let mid_w = (right_start - mid_x - 16.0).max(0.0);
+                    if mid_w > 40.0 {
+                        match &job.status {
+                            UlStatus::Running if job.total > 0 => {
+                                let frac = (job.done as f32 / job.total as f32).clamp(0.0, 1.0);
+                                let bar = Rect::from_min_max(
+                                    Pos2::new(mid_x, inner.center().y - 10.0),
+                                    Pos2::new(mid_x + mid_w, inner.center().y + 2.0),
+                                );
+                                painter.rect_filled(bar, th.cr(3), mix(th.text_faint, th.bg, 0.7));
+                                if frac > 0.0 {
+                                    painter.rect_filled(
+                                        Rect::from_min_max(
+                                            bar.min,
+                                            Pos2::new(bar.min.x + mid_w * frac, bar.max.y),
+                                        ),
+                                        th.cr(3),
+                                        th.accent,
+                                    );
+                                }
+                                let mut info = format!(
+                                    "{} / {}",
+                                    format::fmt_bytes(job.done as i64),
+                                    format::fmt_bytes(job.total as i64)
+                                );
+                                if job.speed > 0 {
+                                    info.push_str(&format!(
+                                        "   {}/s",
+                                        format::fmt_bytes(job.speed as i64)
+                                    ));
+                                }
+                                painter.text(
+                                    Pos2::new(mid_x, inner.center().y + 6.0),
+                                    egui::Align2::LEFT_TOP,
+                                    info,
+                                    FontId::proportional(10.5),
+                                    th.text_weak,
+                                );
+                            }
+                            UlStatus::Running => {
+                                let info = if job.done > 0 {
+                                    format!("已上传 {}", format::fmt_bytes(job.done as i64))
+                                } else {
+                                    "计算哈希 / 连接中…".to_string()
+                                };
+                                painter.text(
+                                    Pos2::new(mid_x, inner.center().y - 7.0),
+                                    egui::Align2::LEFT_TOP,
+                                    info,
+                                    FontId::proportional(11.5),
+                                    th.text_weak,
+                                );
+                            }
+                            _ => {
+                                if job.done > 0 {
+                                    painter.text(
+                                        Pos2::new(mid_x, inner.center().y - 7.0),
+                                        egui::Align2::LEFT_TOP,
+                                        format!("已上传 {}", format::fmt_bytes(job.done as i64)),
+                                        FontId::proportional(11.5),
+                                        th.text_weak,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // 图标操作按钮(右对齐)
+                    let mut btns: Vec<(Glyph, &str, UlOp)> = Vec::new();
+                    match &job.status {
+                        UlStatus::Queued | UlStatus::Running => {
+                            btns.push((Glyph::Close, "取消上传", UlOp::Cancel))
+                        }
+                        UlStatus::Failed(_) => {
+                            btns.push((Glyph::Refresh, "重试上传", UlOp::Retry));
+                            btns.push((Glyph::Trash, "从列表移除", UlOp::Remove));
+                        }
+                        UlStatus::Done => {
+                            btns.push((Glyph::Trash, "从列表移除", UlOp::Remove))
+                        }
+                    }
+                    let btn_sz = 28.0;
+                    let btn_gap = 4.0;
+                    let btn_y = inner.center().y - btn_sz / 2.0;
+                    let mut bx = inner.max.x;
+                    for (glyph, tip, op) in btns.into_iter().rev() {
+                        let r = Rect::from_min_max(
+                            Pos2::new(bx - btn_sz, btn_y),
+                            Pos2::new(bx, btn_y + btn_sz),
+                        );
+                        bx -= btn_sz + btn_gap;
+                        let bresp = ui.interact(
+                            r,
+                            ui.id().with(("ul_btn", rid, tip)),
+                            egui::Sense::click(),
+                        );
+                        if bresp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            painter.rect_filled(r, th.cr(6), th.hover);
+                        }
+                        let color = if glyph == Glyph::Trash {
+                            th.danger
+                        } else {
+                            th.text_weak
+                        };
+                        icons::paint(&painter, r.shrink(6.0), glyph, color);
+                        if bresp.on_hover_text(tip).clicked() {
+                            ops.push((rid, op));
+                        }
+                    }
+                }
+            });
+
+        for (rid, op) in ops {
+            match op {
+                UlOp::Cancel => self.send(Cmd::CancelUpload { req_id: rid }),
+                UlOp::Remove => {
+                    if let Some(job) = self.ul_jobs.get(&rid) {
+                        settings::remove_upload_record(&job.record_id, &job.local_path, &job.name);
+                    }
+                    self.ul_jobs.remove(&rid);
+                }
+                UlOp::Retry => {
+                    let info = self.ul_jobs.get(&rid).map(|j| {
+                        (
+                            j.local_path.clone(),
+                            j.parent.clone(),
+                            j.record_id.clone(),
+                            j.name.clone(),
+                        )
+                    });
+                    if let Some((path, parent, rec_id, name)) = info {
+                        settings::remove_upload_record(&rec_id, &path, &name);
+                        self.ul_jobs.remove(&rid);
+                        self.enqueue_upload(vec![path], parent);
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn transfers_page(&mut self, ctx: &egui::Context, th: &Theme) {
         let mut ops: Vec<(u64, DlOp)> = Vec::new();
         let mut sel_reqs: Vec<DlSel> = Vec::new();
@@ -423,17 +654,9 @@ impl App {
                 });
                 ui.add_space(10.0);
 
-                // -------- 上传(占位, 功能待实现) --------
+                // -------- 上传 --------
                 if self.transfer_tab == TransferTab::Upload {
-                    ui.add_space((ui.available_height() * 0.25).max(60.0));
-                    ui.vertical_centered(|ui| {
-                        let (r, _) = ui.allocate_exact_size(vec2(60.0, 60.0), egui::Sense::hover());
-                        icons::paint(ui.painter(), r, Glyph::Transfer, th.text_faint);
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("暂无上传任务").color(th.text_weak).size(14.0));
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("上传功能正在开发中").color(th.text_faint).size(12.0));
-                    });
+                    self.upload_tab(ui, th);
                     return;
                 }
 

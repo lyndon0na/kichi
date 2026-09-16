@@ -189,6 +189,57 @@ impl DlFilter {
     }
 }
 
+/// 本地上传任务的状态。
+#[derive(Clone, PartialEq)]
+pub(crate) enum UlStatus {
+    Queued,
+    Running,
+    Done,
+    Failed(String),
+}
+
+/// 本地上传任务 (上传到网盘某目录)。
+#[derive(Clone)]
+pub(crate) struct UlJob {
+    pub local_path: PathBuf,
+    pub name: String,
+    /// 目标网盘目录 (None = 根目录)。
+    pub parent: Option<String>,
+    pub total: u64,
+    pub done: u64,
+    pub status: UlStatus,
+    /// 估算速率(bytes/s)。
+    pub speed: u64,
+    pub last_done: u64,
+    pub last_at: Option<Instant>,
+    /// 上传历史记录的唯一标识(历史记录或完成后填充)。
+    pub record_id: String,
+}
+
+impl UlJob {
+    pub fn queued(path: PathBuf, name: String, parent: Option<String>) -> Self {
+        UlJob {
+            local_path: path,
+            name,
+            parent,
+            total: 0,
+            done: 0,
+            status: UlStatus::Queued,
+            speed: 0,
+            last_done: 0,
+            last_at: None,
+            record_id: String::new(),
+        }
+    }
+}
+
+/// 上传任务行级操作。
+pub(crate) enum UlOp {
+    Cancel,
+    Retry,
+    Remove,
+}
+
 /// 列拖拽状态。
 pub(crate) struct ColDrag {
     /// 拖拽的是哪条分割线 (1 = 名称|大小, 2 = 大小|修改时间)

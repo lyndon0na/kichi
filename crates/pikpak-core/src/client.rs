@@ -1,10 +1,11 @@
+use std::io::SeekFrom;
 use std::path::Path as StdPath;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::captcha::{build_user_agent, captcha_sign, now_ms};
@@ -16,12 +17,16 @@ use crate::error::{
 };
 use crate::session::Session;
 use crate::types::*;
+use crate::upload::{self, OssContext, UploadTicket};
 
 /// 写入缓冲的落盘阈值: 每攒够这么多字节 flush 一次磁盘。
 const FLUSH_INTERVAL: u64 = 8 * 1024 * 1024;
 
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
     (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+/// OSS 请求使用的 User-Agent(沿用可用的阿里云 SDK 风格)。
+const OSS_UA: &str = "aliyun-sdk-android/2.9.5";
 
 #[derive(Default)]
 struct Auth {
@@ -180,6 +185,7 @@ impl PikPakClient {
 
             if !status.is_success() && err_body.error_code == 0 && err_body.error.is_empty() {
                 let text = String::from_utf8_lossy(&bytes).to_string();
+                tracing::debug!("HTTP {}: {}", status.as_u16(), truncate(&text, 200));
                 return Err(Error::Msg(format!(
                     "HTTP {}: {}",
                     status.as_u16(),
@@ -193,6 +199,7 @@ impl PikPakClient {
                     && attempt == 0
                     && !token.is_empty()
                 {
+                    tracing::info!("access token 过期, 正在自动续期");
                     self.refresh_token().await?;
                     attempt += 1;
                     continue;
@@ -200,6 +207,7 @@ impl PikPakClient {
                 // captcha token 失效/不匹配: 按本次请求的 action 重新初始化后再试。
                 if recover && err_body.error_code == ERROR_CODE_CAPTCHA_INVALID && attempt == 0 {
                     let action = request_action(&method, url);
+                    tracing::debug!("captcha 失效, 按 action={action} 重新初始化");
                     if self.captcha_init(&action, None).await.is_ok() {
                         attempt += 1;
                         continue;
@@ -208,6 +216,12 @@ impl PikPakClient {
                 if err_body.error == ERROR_INVALID_ACCOUNT {
                     return Err(Error::msg("账号或密码错误"));
                 }
+                tracing::debug!(
+                    "API 错误: code={} error={} ({})",
+                    err_body.error_code,
+                    err_body.error,
+                    err_body.error_description
+                );
                 return Err(api_error(&err_body));
             }
             if !err_body.error.is_empty() {
@@ -329,6 +343,15 @@ impl PikPakClient {
         let bytes = resp.bytes().await?;
         let err_body: ApiErrorBody = serde_json::from_slice(&bytes).unwrap_or_default();
         if err_body.error_code != 0 || !err_body.error.is_empty() {
+            tracing::warn!(
+                "续期失败(code={}): {}",
+                err_body.error_code,
+                if err_body.error_description.is_empty() {
+                    &err_body.error
+                } else {
+                    &err_body.error_description
+                }
+            );
             // refresh token 过期/被吊销: 归为登录态失效, 交由上层要求重新登录。
             return Err(Error::AuthExpired(if err_body.error_description.is_empty() {
                 err_body.error
@@ -340,6 +363,7 @@ impl PikPakClient {
         let user_id = token.sub.clone().unwrap_or_default();
         self.update_tokens(&token.access_token, &token.refresh_token, &user_id)
             .await;
+        tracing::info!("登录态续期成功");
         Ok(())
     }
 
@@ -809,6 +833,200 @@ impl PikPakClient {
         }
         tokio::fs::rename(&part, dest).await?;
         Ok(downloaded)
+    }
+
+    // ---------- 本地上传 ----------
+
+    /// 创建上传票据(`POST /drive/v1/files`)。
+    ///
+    /// `hash` 为 gcid(会转大写); 返回 `UploadTicket`, 若 `completed` 则秒传命中,
+    /// 否则用返回的 OSS 上下文做分片上传。captcha 的 code9 恢复由 `request_inner` 处理。
+    pub async fn upload_create(
+        &self,
+        name: &str,
+        parent_id: Option<&str>,
+        size: u64,
+        hash: &str,
+    ) -> Result<UploadTicket, Error> {
+        let url = format!("{API_HOST}/drive/v1/files");
+        let mut body = serde_json::Map::new();
+        body.insert("kind".into(), "drive#file".into());
+        body.insert("name".into(), name.into());
+        body.insert("size".into(), size.to_string().into());
+        body.insert("hash".into(), hash.to_ascii_uppercase().into());
+        body.insert("upload_type".into(), "UPLOAD_TYPE_RESUMABLE".into());
+        body.insert(
+            "objProvider".into(),
+            json!({ "provider": "UPLOAD_TYPE_UNKNOWN" }),
+        );
+        if let Some(pid) = parent_id {
+            if !pid.is_empty() {
+                body.insert("parent_id".into(), pid.into());
+            }
+        }
+        let value = self.post(&url, &Value::Object(body)).await?;
+        Ok(UploadTicket::from_response(&value))
+    }
+
+    /// 把本地文件按 OSS 分片上传。需要已由 `upload_create` 得到 `oss` 上下文。
+    ///
+    /// `cancel` 置位时在分片边界中止; `on_progress(已传字节, 总大小)` 每片回调一次。
+    /// 返回已上传字节数。分片为顺序上传, 任一步出错由调用方决定是否整体重试。
+    pub async fn upload_oss<F>(
+        &self,
+        oss: &OssContext,
+        path: &StdPath,
+        cancel: Option<Arc<AtomicBool>>,
+        mut on_progress: F,
+    ) -> Result<u64, Error>
+    where
+        F: FnMut(u64, u64) + Send,
+    {
+        let mut file = tokio::fs::File::open(path).await?;
+        let size = file.metadata().await?.len();
+        let chunk = upload::upload_chunk_size(size);
+        let total_parts = if size == 0 { 1 } else { size.div_ceil(chunk) };
+
+        let upload_id = self.oss_initiate(oss).await?;
+        let mut etags: Vec<String> = Vec::with_capacity(total_parts as usize);
+        let mut done = 0u64;
+
+        for part in 1..=total_parts {
+            if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(Error::msg("上传已取消"));
+            }
+            let offset = (part - 1) * chunk;
+            let len = (size.saturating_sub(offset)).min(chunk) as usize;
+            let mut buf = vec![0u8; len];
+            if len > 0 {
+                file.seek(SeekFrom::Start(offset)).await?;
+                file.read_exact(&mut buf).await?;
+            }
+            let etag = self.oss_upload_part(oss, &upload_id, part, buf).await?;
+            etags.push(etag);
+            done += len as u64;
+            on_progress(done, size);
+        }
+
+        self.oss_complete(oss, &upload_id, &etags).await?;
+        Ok(done)
+    }
+
+    /// 初始化 OSS 分片上传, 返回 `UploadId`。
+    async fn oss_initiate(&self, oss: &OssContext) -> Result<String, Error> {
+        let query = "uploads";
+        let date = upload::http_date_now();
+        let auth = upload::oss_authorization("POST", &date, oss, query);
+        let url = format!("https://{}/{}?uploads", oss.endpoint.trim_end_matches('/'), oss.key);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Date", &date)
+            .header("Content-Type", "application/octet-stream")
+            .header("x-oss-security-token", &oss.security_token)
+            .header("Authorization", auth)
+            .header("User-Agent", OSS_UA)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(Error::HttpStatus {
+                status: status.as_u16(),
+                body: truncate(&text, 200),
+            });
+        }
+        upload::extract_xml_tag(&text, "UploadId")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::msg("OSS 初始化响应缺少 UploadId"))
+    }
+
+    /// 上传一个分片, 返回其 ETag(不含引号)。
+    async fn oss_upload_part(
+        &self,
+        oss: &OssContext,
+        upload_id: &str,
+        part_number: u64,
+        data: Vec<u8>,
+    ) -> Result<String, Error> {
+        let query = format!("partNumber={part_number}&uploadId={upload_id}");
+        let date = upload::http_date_now();
+        let auth = upload::oss_authorization("PUT", &date, oss, &query);
+        let url = format!(
+            "https://{}/{}?{query}",
+            oss.endpoint.trim_end_matches('/'),
+            oss.key
+        );
+        let resp = self
+            .http
+            .put(&url)
+            .header("Date", &date)
+            .header("Content-Type", "application/octet-stream")
+            .header("x-oss-security-token", &oss.security_token)
+            .header("Authorization", auth)
+            .header("User-Agent", OSS_UA)
+            .body(data)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::HttpStatus {
+                status: status.as_u16(),
+                body: truncate(&text, 200),
+            });
+        }
+        resp.headers()
+            .get("ETag")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::msg("OSS 分片响应缺少 ETag"))
+    }
+
+    /// 完成 OSS 分片上传。
+    async fn oss_complete(
+        &self,
+        oss: &OssContext,
+        upload_id: &str,
+        etags: &[String],
+    ) -> Result<(), Error> {
+        let query = format!("uploadId={upload_id}");
+        let date = upload::http_date_now();
+        let auth = upload::oss_authorization("POST", &date, oss, &query);
+        let url = format!(
+            "https://{}/{}?{query}",
+            oss.endpoint.trim_end_matches('/'),
+            oss.key
+        );
+        let body = upload::complete_multipart_body(etags);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Date", &date)
+            .header("Content-Type", "application/octet-stream")
+            .header("x-oss-security-token", &oss.security_token)
+            .header("Authorization", auth)
+            .header("User-Agent", OSS_UA)
+            .body(body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(Error::HttpStatus {
+                status: status.as_u16(),
+                body: truncate(&text, 200),
+            });
+        }
+        // OSS 失败时也可能返回 200 + <Error> 体, 简单探测一下。
+        if text.contains("<Error>") && !text.contains("<ETag>") && !text.contains("<CompleteMultipartUploadResult") {
+            return Err(Error::msg(format!(
+                "OSS 完成分片失败: {}",
+                truncate(&text, 200)
+            )));
+        }
+        Ok(())
     }
 }
 

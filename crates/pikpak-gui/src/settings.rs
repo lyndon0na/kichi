@@ -100,6 +100,80 @@ pub fn remove_download_record(
     }
 }
 
+/// 上传记录状态(仅保存已完成/失败的)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum UploadRecordStatus {
+    Done,
+    Failed(String),
+}
+
+/// 单条上传历史记录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadRecord {
+    pub local_path: PathBuf,
+    pub name: String,
+    /// 目标网盘目录 (None = 根目录)。
+    #[serde(default)]
+    pub parent: Option<String>,
+    pub total: u64,
+    pub done: u64,
+    pub status: UploadRecordStatus,
+    /// 唯一标识(纳秒时间戳字符串)。
+    pub timestamp: String,
+}
+
+fn upload_history_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("pikpak-linux").join("uploads.json"))
+}
+
+pub fn load_upload_history() -> Vec<UploadRecord> {
+    let Some(p) = upload_history_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(p) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_upload_history(records: &[UploadRecord]) {
+    let Some(p) = upload_history_path() else {
+        return;
+    };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(records) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+pub fn append_upload_record(record: UploadRecord) {
+    let mut history = load_upload_history();
+    // 最新的在最上面。
+    history.insert(0, record);
+    if history.len() > 200 {
+        history.truncate(200);
+    }
+    save_upload_history(&history);
+}
+
+/// 从上传历史中移除一条记录(优先按唯一标识精确匹配)。
+pub fn remove_upload_record(rec_id: &str, local_path: &std::path::Path, name: &str) {
+    let mut history = load_upload_history();
+    let idx = if !rec_id.is_empty() {
+        history.iter().position(|r| r.timestamp == rec_id)
+    } else {
+        history
+            .iter()
+            .position(|r| r.name == name && r.local_path == local_path)
+    };
+    if let Some(i) = idx {
+        history.remove(i);
+        save_upload_history(&history);
+    }
+}
+
 fn path() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("pikpak-linux").join("settings.json"))
 }

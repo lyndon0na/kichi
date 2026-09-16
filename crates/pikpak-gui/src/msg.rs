@@ -100,6 +100,16 @@ pub enum Cmd {
     CancelDownload {
         req_id: u64,
     },
+    /// 把本地文件上传到网盘目录 parent(None = 根目录)。
+    StartUpload {
+        req_id: u64,
+        path: PathBuf,
+        parent: Option<String>,
+    },
+    /// 取消某个上传任务。
+    CancelUpload {
+        req_id: u64,
+    },
     /// 预览云端文件。media=true 时仅解析直链交给外部播放器(mpv)流式播放;
     /// media=false 时先下载到本地缓存再交给系统查看器打开。
     /// `subtitles` 为同集字幕 (file_id, 文件名), 仅媒体预览使用。
@@ -184,6 +194,25 @@ pub enum Msg {
     },
     /// 下载失败。
     DlFailed {
+        req_id: u64,
+        what: String,
+    },
+    /// 上传进度。total 未知时为 0。
+    UlProgress {
+        req_id: u64,
+        total: u64,
+        done: u64,
+    },
+    /// 上传完成。
+    UlFinished {
+        req_id: u64,
+    },
+    /// 上传被取消。
+    UlCancelled {
+        req_id: u64,
+    },
+    /// 上传失败。
+    UlFailed {
         req_id: u64,
         what: String,
     },

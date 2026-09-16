@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 dirs = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 keyring = "4.2.0"
 
