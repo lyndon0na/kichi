@@ -58,10 +58,11 @@ pub fn save_download_history(records: &[DownloadRecord]) {
 
 pub fn append_download_record(record: DownloadRecord) {
     let mut history = load_download_history();
-    history.push(record);
+    // 插入到最前面, 最新的在最上面
+    history.insert(0, record);
     // 保留最近 200 条记录
     if history.len() > 200 {
-        history = history.split_off(history.len() - 200);
+        history.truncate(200);
     }
     save_download_history(&history);
 }
