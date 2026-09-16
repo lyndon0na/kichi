@@ -274,6 +274,66 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
+        Cmd::ListTrash {
+            token,
+            append,
+            req_id,
+        } => {
+            let Some(client) = &st.client else { return };
+            match client.trash_list(100, token.as_deref()).await {
+                Ok(list) => {
+                    let _ = tx.send(Msg::TrashList {
+                        req_id,
+                        append,
+                        list,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::TrashFailed {
+                        what: format!("加载回收站失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::Untrash { ids } => {
+            let Some(client) = &st.client else { return };
+            match client.batch_untrash(&ids).await {
+                Ok(_) => {
+                    let _ = tx.send(Msg::TrashRestored { ids });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error {
+                        what: format!("还原失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::DeleteTrash { ids } => {
+            let Some(client) = &st.client else { return };
+            match client.batch_delete(&ids).await {
+                Ok(_) => {
+                    let _ = tx.send(Msg::TrashDeleted { ids });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error {
+                        what: format!("彻底删除失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::EmptyTrash => {
+            let Some(client) = &st.client else { return };
+            match client.empty_trash().await {
+                Ok(()) => {
+                    let _ = tx.send(Msg::TrashEmptied);
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error {
+                        what: format!("清空回收站失败: {e}"),
+                    });
+                }
+            }
+        }
         Cmd::MoveTo { ids, dest, src } => {
             let Some(client) = &st.client else { return };
             match client.batch_move(&ids, dest.as_deref()).await {

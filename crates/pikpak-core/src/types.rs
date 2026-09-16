@@ -59,6 +59,8 @@ pub struct File {
     pub created_time: Option<String>,
     pub modified_time: Option<String>,
     pub user_modified_time: Option<String>,
+    /// 移入回收站的时间(仅回收站条目有值, 服务端字段名 delete_time)。
+    pub delete_time: Option<String>,
     pub trashed: bool,
     pub starred: bool,
     pub phase: Option<String>,

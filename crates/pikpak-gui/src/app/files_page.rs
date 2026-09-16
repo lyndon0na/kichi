@@ -11,7 +11,7 @@ use super::types::{ClipKind, ColDrag, Crumb, QualityMenuState, RowAction, SortBy
 use super::App;
 
 /// 文件类型 -> 图标 / 颜色。
-fn file_visual(f: &File) -> (Glyph, egui::Color32) {
+pub(super) fn file_visual(f: &File) -> (Glyph, egui::Color32) {
     let light_gray = egui::Color32::from_rgb(120, 126, 140);
     if f.is_folder() {
         return (Glyph::Folder, egui::Color32::from_rgb(232, 178, 84));

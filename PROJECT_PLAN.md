@@ -51,6 +51,10 @@ PikPak Linux 客户端开发计划与进展记录。
 - [x] M10 分享：文件页选中项创建分享链接（有效期 / 提取码可选）；
       「我的分享」页列出、复制链接 / 提取码、取消分享、分页；
       接口 `share`（创建）/ `share/list` / `share:batchDelete`
+- [x] M11 回收站：`parent_id=*` + `trashed.eq=true` 列出已删除项（分页，全局跨目录）；
+      右上「清空回收站」调用 `files/trash:empty`（服务端一次清空）；
+      勾选批量 / 单行「还原」（`files:batchUntrash`）与「彻底删除」（`files:batchDelete`，二次确认）；
+      列表 SWR 缓存，还原 / 删除后即时移除并刷新配额与目录缓存
 
 ## 四、现状（功能清单）
 
@@ -75,6 +79,9 @@ PikPak Linux 客户端开发计划与进展记录。
   「我的分享」页列出已创建分享（公开/私密/失效状态、文件数、有效期、浏览/转存数、创建时间），
   复制链接 / 链接+提取码、单条或勾选批量取消、在浏览器打开、分页加载，列表 SWR 缓存；
   创建成功后弹框展示链接与提取码并一键复制 / 在浏览器打开
+- 回收站：「我的文件」删除的项在此列出（左图标 + 名称 + 大小/删除时间，分页加载、SWR 缓存）；
+  单行或勾选批量「还原」（回到原目录）与「彻底删除」（二次确认，不可恢复）；
+  右上「清空回收站」；操作成功即时移除并刷新配额与目录缓存
 - 离线下载：磁力/直链转存，等待/下载/完成/失败分桶展示与自动轮询
 - 失败重试、删除任务、整组清空、保存目录可选
 - 本地下载：文件页选中/右键、离线「已完成」任务一键下载；`.part`+Range 断点续传、
@@ -90,7 +97,6 @@ PikPak Linux 客户端开发计划与进展记录。
 
 ### 未实现 / 已知边界
 - 分享转存（打开他人分享链接并保存到我的云盘）/ 搜索
-- 回收站页面为占位：可移入回收站，但暂不支持在应用内浏览 / 还原
 - 图标（网格）视图使用文件类型图标，暂不加载真实缩略图
 - 本地整目录下载(会跳过文件夹)
 - 离线任务长列表翻页；任务字段为防御式解析，展示信息有限
@@ -146,9 +152,9 @@ UI 每次帧 `try_recv` 收敛消息，操作即时性由点击 → 发送 → �
   无条目时静默回落到登录表单。密码不写入任何配置文件。
 
 ## 六、质量
-- `cargo test --workspace`：核心库 26 项测试 + GUI 11 项通过（加签 golden 向量、JSON 解析、
+- `cargo test --workspace`：核心库 27 项测试 + GUI 11 项通过（加签 golden 向量、JSON 解析、
   token 边界、直链解析回退、清晰度解析、文件名净化、batchMove/batchCopy 请求体、媒体类型识别、
-  分享列表 / 创建响应解析）
+  分享列表 / 创建响应解析、回收站 trashed 过滤条件）
 - `cargo check --workspace` / `cargo clippy --workspace --all-targets`：零 warning
 - 真机验证：登录、自动续期、目录加载、离线任务查询（用户账户实测）；本地下载链路
   依据社区逆向实现, 直链字段以 `web_content_link` 优先, 采用防御式解析降低变更风险
@@ -160,7 +166,7 @@ UI 每次帧 `try_recv` 收敛消息，操作即时性由点击 → 发送 → �
 2. **分享 / 回收站**：
    - [已完成] 生成自己的分享链接 + 「我的分享」管理（创建 / 列出 / 复制 / 取消）
    - 分享转存：mypikpak 分享链接解析与保存（`share` / `share/detail` / `share/restore`）
-   - 回收站浏览 / 还原 / 彻底删除
+   - [已完成] 回收站浏览 / 还原 / 彻底删除（含清空）
    —— 端点见第九节 6)
 3. **体验继续**：真实缩略图、本地整目录下载(递归)、任务详情进度、全局搜索
 4. **分发**：完善 `desktop` 文件与图标、rpm/AppImage 打包、发布构建 CI
@@ -234,4 +240,5 @@ UI 每次帧 `try_recv` 收敛消息，操作即时性由点击 → 发送 → �
 - 转存：`POST /drive/v1/share/restore` `{share_id, pass_code_token, file_ids, to:{parent_id}}` → `restore_status` / `restore_task_id`
 - 创建分享：`POST /drive/v1/share` `{file_ids, share_to, expiration_days, pass_code_option}`
 - 我的分享：`GET /drive/v1/share/list`；删除：`POST /drive/v1/share:batchDelete`
-- 回收站：`file_list` filters `trashed.eq=true`；`files:batchUntrash` / `files:batchDelete`
+- 回收站：`GET /drive/v1/files?parent_id=*&filters={"trashed":{"eq":true}}`（全局跨目录，必须带 `parent_id=*`）；
+  还原 `files:batchUntrash`；彻底删除 `files:batchDelete`；清空 `PATCH /drive/v1/files/trash:empty`

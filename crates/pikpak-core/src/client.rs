@@ -441,12 +441,39 @@ impl PikPakClient {
         size: usize,
         next_page_token: Option<&str>,
     ) -> Result<FileList, Error> {
+        let filters = default_file_filters();
+        self.file_list_filtered(filters, parent_id, size, next_page_token)
+            .await
+    }
+
+    /// 列出回收站内容(filters `trashed.eq=true`)。
+    ///
+    /// 注意: 回收站是跨目录的全局列表, 必须显式传 `parent_id=*`(官方客户端行为),
+    /// 否则服务端按当前目录过滤, 会返回空列表。
+    pub async fn trash_list(
+        &self,
+        size: usize,
+        next_page_token: Option<&str>,
+    ) -> Result<FileList, Error> {
+        let filters = trashed_file_filters();
+        self.file_list_filtered(filters, Some("*"), size, next_page_token)
+            .await
+    }
+
+    /// 按给定 filters 列出文件(分页)。
+    async fn file_list_filtered(
+        &self,
+        filters: Value,
+        parent_id: Option<&str>,
+        size: usize,
+        next_page_token: Option<&str>,
+    ) -> Result<FileList, Error> {
         let url = format!("{API_HOST}/drive/v1/files");
         let mut query: Vec<(&str, String)> = vec![
             ("thumbnail_size", "SIZE_MEDIUM".into()),
             ("limit", size.to_string()),
             ("with_audit", "true".into()),
-            ("filters", default_file_filters().to_string()),
+            ("filters", filters.to_string()),
         ];
         if let Some(pid) = parent_id {
             if !pid.is_empty() {
@@ -518,6 +545,25 @@ impl PikPakClient {
     ) -> Result<Value, Error> {
         let url = format!("{API_HOST}/drive/v1/files:batchCopy");
         self.post(&url, &move_copy_body(ids, to_parent_id)).await
+    }
+
+    /// 批量从回收站还原。
+    pub async fn batch_untrash(&self, ids: &[String]) -> Result<Value, Error> {
+        let url = format!("{API_HOST}/drive/v1/files:batchUntrash");
+        self.post(&url, &json!({ "ids": ids })).await
+    }
+
+    /// 批量彻底删除(不可恢复, 仅对回收站内文件有效)。
+    pub async fn batch_delete(&self, ids: &[String]) -> Result<Value, Error> {
+        let url = format!("{API_HOST}/drive/v1/files:batchDelete");
+        self.post(&url, &json!({ "ids": ids })).await
+    }
+
+    /// 服务端「清空回收站」: 一次清空全部内容(无请求体)。
+    pub async fn empty_trash(&self) -> Result<(), Error> {
+        let url = format!("{API_HOST}/drive/v1/files/trash:empty");
+        self.request(reqwest::Method::PATCH, &url, None, &[]).await?;
+        Ok(())
     }
 
     // ---------- 离线下载 ----------
@@ -1254,6 +1300,14 @@ mod tests {
         // 缺省目标 -> to 为空对象(表示根目录)。
         let root = move_copy_body(&ids, None);
         assert!(root["to"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn trashed_filters_mark_trash() {
+        let f = trashed_file_filters();
+        assert_eq!(f["trashed"]["eq"], json!(true));
+        // 回收站列表不应混入 phase 过滤(被删的目录/未完成项也要能列出)。
+        assert!(f.get("phase").is_none());
     }
 
     #[test]

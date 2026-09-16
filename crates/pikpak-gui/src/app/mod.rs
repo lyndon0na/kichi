@@ -1,13 +1,13 @@
 mod dialogs;
 mod files_page;
 mod helpers;
-mod library_page;
 mod login;
 mod settings_page;
 mod shares_page;
 mod sidebar;
 mod tasks_page;
 mod transfers_page;
+mod trash_page;
 pub(crate) mod types;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -31,6 +31,8 @@ use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob
 const DIR_TTL: Duration = Duration::from_secs(60);
 /// 「我的分享」列表新鲜期: 进入页面时命中则不发请求。
 const SHARES_TTL: Duration = Duration::from_secs(60);
+/// 回收站列表新鲜期。
+const TRASH_TTL: Duration = Duration::from_secs(60);
 /// 目录缓存上限, 超出按 LRU 淘汰(不淘汰当前目录)。
 const DIR_CACHE_CAP: usize = 64;
 
@@ -161,6 +163,20 @@ pub struct App {
     pub(crate) share_result: Option<ShareResult>,
     /// 取消分享确认 (share_id, 标题)。
     pub(crate) share_delete_confirm: Option<Vec<(String, String)>>,
+
+    // 回收站
+    pub(crate) trash: Vec<File>,
+    pub(crate) trash_next: Option<String>,
+    pub(crate) trash_loading: bool,
+    /// 最近一次回收站列表请求的 id, 用于丢弃乱序的旧响应。
+    pub(crate) trash_req: u64,
+    pub(crate) trash_selected: HashSet<String>,
+    /// 最近一次成功加载回收站的时间, 用于 SWR 新鲜度判定。
+    pub(crate) trash_fetched_at: Option<Instant>,
+    /// 彻底删除确认 (id, name)。
+    pub(crate) trash_delete_confirm: Option<Vec<(String, String)>>,
+    /// 清空回收站确认。
+    pub(crate) trash_empty_confirm: bool,
 
     pub(crate) toast: Option<(Color32, String, Instant)>,
 }
@@ -310,6 +326,14 @@ impl App {
             share_need_password: false,
             share_result: None,
             share_delete_confirm: None,
+            trash: Vec::new(),
+            trash_next: None,
+            trash_loading: false,
+            trash_req: 0,
+            trash_selected: HashSet::new(),
+            trash_fetched_at: None,
+            trash_delete_confirm: None,
+            trash_empty_confirm: false,
             col_size_w: 100.0,
             col_time_w: 160.0,
             col_dragging: None,
@@ -422,6 +446,7 @@ impl App {
                     self.dir_cache.clear();
                     self.dir_inflight.clear();
                     self.clear_share_state();
+                    self.clear_trash_state();
                     // 登录态失效: 若保存过密码则尝试自动重登。
                     self.auto_login_if_possible();
                 }
@@ -448,6 +473,7 @@ impl App {
                     self.quality_inflight.clear();
                     self.reset_stack();
                     self.clear_share_state();
+                    self.clear_trash_state();
                 }
                 Msg::Files {
                     parent,
@@ -471,7 +497,63 @@ impl App {
                 Msg::Trashed => {
                     self.trash_confirm = None;
                     self.selected.clear();
+                    // 回收站内容已变, 作废缓存。
+                    self.trash_fetched_at = None;
                     self.reload_dir();
+                }
+                Msg::TrashList {
+                    req_id,
+                    append,
+                    list,
+                } => {
+                    if req_id != self.trash_req {
+                        continue;
+                    }
+                    self.trash_loading = false;
+                    self.trash_fetched_at = Some(Instant::now());
+                    self.trash_next = list.next_page_token;
+                    if append {
+                        let known: HashSet<String> =
+                            self.trash.iter().map(|f| f.id.clone()).collect();
+                        for f in list.files {
+                            if !known.contains(&f.id) {
+                                self.trash.push(f);
+                            }
+                        }
+                    } else {
+                        self.trash = list.files;
+                    }
+                }
+                Msg::TrashFailed { what } => {
+                    self.trash_loading = false;
+                    self.toast_err(&what);
+                }
+                Msg::TrashRestored { ids } => {
+                    self.trash.retain(|f| !ids.contains(&f.id));
+                    self.trash_selected.retain(|id| !ids.contains(id));
+                    self.trash_delete_confirm = None;
+                    self.trash_empty_confirm = false;
+                    // 还原可能回到被删时的原目录, 作废目录缓存以便下次重新加载。
+                    self.dir_cache.clear();
+                    self.send(Cmd::RefreshQuota);
+                    self.toast_ok(&format!("已还原 {} 项", ids.len()));
+                }
+                Msg::TrashDeleted { ids } => {
+                    self.trash.retain(|f| !ids.contains(&f.id));
+                    self.trash_selected.retain(|id| !ids.contains(id));
+                    self.trash_delete_confirm = None;
+                    self.trash_empty_confirm = false;
+                    self.send(Cmd::RefreshQuota);
+                    self.toast_ok(&format!("已彻底删除 {} 项", ids.len()));
+                }
+                Msg::TrashEmptied => {
+                    self.trash.clear();
+                    self.trash_next = None;
+                    self.trash_selected.clear();
+                    self.trash_delete_confirm = None;
+                    self.trash_empty_confirm = false;
+                    self.send(Cmd::RefreshQuota);
+                    self.toast_ok("回收站已清空");
                 }
                 Msg::Moved { ids, src, dest } => {
                     self.toast_ok("移动成功");
@@ -1702,6 +1784,68 @@ impl App {
         };
         self.open_share_dialog(targets);
     }
+
+    // ---------- 回收站 ----------
+
+    /// 清空回收站相关状态(退出登录 / 会话失效时调用)。
+    pub(crate) fn clear_trash_state(&mut self) {
+        self.trash.clear();
+        self.trash_next = None;
+        self.trash_loading = false;
+        self.trash_req = 0;
+        self.trash_selected.clear();
+        self.trash_fetched_at = None;
+        self.trash_delete_confirm = None;
+        self.trash_empty_confirm = false;
+    }
+
+    /// 进入回收站页面: 缓存新鲜则零请求, 否则刷新。
+    pub(crate) fn enter_trash(&mut self) {
+        let fresh = self
+            .trash_fetched_at
+            .is_some_and(|t| t.elapsed() < TRASH_TTL);
+        if !fresh {
+            self.refresh_trash();
+        }
+    }
+
+    /// 请求刷新回收站首页列表(保留旧数据, 仅置加载态)。
+    pub(crate) fn refresh_trash(&mut self) {
+        self.trash_loading = true;
+        self.trash_next = None;
+        self.trash_selected.clear();
+        self.trash_req += 1;
+        let req_id = self.trash_req;
+        self.send(Cmd::ListTrash {
+            token: None,
+            append: false,
+            req_id,
+        });
+    }
+
+    /// 加载回收站下一页。
+    pub(crate) fn load_more_trash(&mut self) {
+        let Some(token) = self.trash_next.clone() else {
+            return;
+        };
+        self.trash_loading = true;
+        self.trash_req += 1;
+        let req_id = self.trash_req;
+        self.send(Cmd::ListTrash {
+            token: Some(token),
+            append: true,
+            req_id,
+        });
+    }
+
+    /// 回收站选中项 (id, name)。
+    pub(crate) fn trash_selected_names(&self) -> Vec<(String, String)> {
+        self.trash
+            .iter()
+            .filter(|f| self.trash_selected.contains(&f.id))
+            .map(|f| (f.id.clone(), f.name.clone()))
+            .collect()
+    }
 }
 
 // ================= 主循环 =================
@@ -1739,6 +1883,7 @@ impl eframe::App for App {
             || self.dir_loading
             || !self.dir_inflight.is_empty()
             || self.shares_loading
+            || self.trash_loading
         {
             // 目录请求在途(含后台静默校正)时加快轮询, 让结果尽快呈现。
             ctx.request_repaint_after(Duration::from_millis(80));

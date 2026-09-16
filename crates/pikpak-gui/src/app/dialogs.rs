@@ -507,6 +507,93 @@ impl App {
                 self.share_delete_confirm = None;
             }
         }
+
+        if let Some(items) = self.trash_delete_confirm.clone() {
+            let ids: Vec<String> = items.iter().map(|(id, _)| id.clone()).collect();
+            let mut confirmed = false;
+            let mut close = false;
+            egui::Window::new("彻底删除")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if items.len() == 1 {
+                        ui.label(format!("确定彻底删除「{}」吗?", items[0].1));
+                    } else {
+                        ui.label(format!("确定彻底删除这 {} 项吗?", items.len()));
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("彻底删除后无法恢复。")
+                            .color(th.danger)
+                            .size(12.0),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("彻底删除").color(Color32::WHITE))
+                                    .fill(th.danger)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            confirmed = true;
+                            close = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if confirmed {
+                self.send(Cmd::DeleteTrash { ids });
+                // 等待后台 TrashDeleted 回执后再关闭，避免请求失败时丢失确认框。
+            } else if close {
+                self.trash_delete_confirm = None;
+            }
+        }
+
+        if self.trash_empty_confirm {
+            let mut confirmed = false;
+            let mut close = false;
+            egui::Window::new("清空回收站")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("确定清空回收站吗?");
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("回收站中的全部文件将被彻底删除, 无法恢复。")
+                            .color(th.danger)
+                            .size(12.0),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("清空").color(Color32::WHITE))
+                                    .fill(th.danger)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            confirmed = true;
+                            close = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if confirmed {
+                self.send(Cmd::EmptyTrash);
+                // 等待后台 TrashEmptied 回执后再关闭。
+            } else if close {
+                self.trash_empty_confirm = false;
+            }
+        }
     }
 
     pub(super) fn draw_toast(&mut self, ctx: &egui::Context) {

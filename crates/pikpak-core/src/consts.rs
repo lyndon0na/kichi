@@ -41,6 +41,13 @@ pub fn default_file_filters() -> serde_json::Value {
     })
 }
 
+/// 回收站文件过滤条件(trashed=true)。
+pub fn trashed_file_filters() -> serde_json::Value {
+    serde_json::json!({
+        "trashed": { "eq": true },
+    })
+}
+
 /// 离线任务全部可能的状态。
 pub const OFFLINE_PHASES: [&str; 4] = [
     "PHASE_TYPE_PENDING",

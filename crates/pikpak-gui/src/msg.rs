@@ -57,6 +57,22 @@ pub enum Cmd {
     Trash {
         ids: Vec<String>,
     },
+    /// 列出回收站内容。append=true 表示加载下一页。
+    ListTrash {
+        token: Option<String>,
+        append: bool,
+        req_id: u64,
+    },
+    /// 从回收站还原选中项。
+    Untrash {
+        ids: Vec<String>,
+    },
+    /// 从回收站彻底删除选中项(不可恢复)。
+    DeleteTrash {
+        ids: Vec<String>,
+    },
+    /// 清空整个回收站(服务端一次完成)。
+    EmptyTrash,
     /// 批量移动选中的文件到目标目录(None = 我的云盘根目录)。
     /// src 为源目录, 用于移动成功后在源目录本地隐藏(区分目标目录)。
     MoveTo {
@@ -180,6 +196,26 @@ pub enum Msg {
     FolderCreated,
     Renamed,
     Trashed,
+    /// 回收站列表。
+    TrashList {
+        req_id: u64,
+        append: bool,
+        list: FileList,
+    },
+    /// 加载回收站失败。
+    TrashFailed {
+        what: String,
+    },
+    /// 回收站还原成功(带 id 以便即时移除)。
+    TrashRestored {
+        ids: Vec<String>,
+    },
+    /// 回收站彻底删除成功(带 id 以便即时移除)。
+    TrashDeleted {
+        ids: Vec<String>,
+    },
+    /// 回收站已清空。
+    TrashEmptied,
     Moved {
         ids: Vec<String>,
         src: Option<String>,
