@@ -1,11 +1,10 @@
-use std::io::SeekFrom;
 use std::path::Path as StdPath;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use futures_util::StreamExt;
+use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::captcha::{build_user_agent, captcha_sign, now_ms};
@@ -17,7 +16,7 @@ use crate::error::{
 };
 use crate::session::Session;
 use crate::types::*;
-use crate::upload::{self, OssContext, UploadTicket};
+use crate::upload::{self, OssContext, OssUploadState, UploadTicket};
 
 /// 写入缓冲的落盘阈值: 每攒够这么多字节 flush 一次磁盘。
 const FLUSH_INTERVAL: u64 = 8 * 1024 * 1024;
@@ -27,6 +26,9 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 /// OSS 请求使用的 User-Agent(沿用可用的阿里云 SDK 风格)。
 const OSS_UA: &str = "aliyun-sdk-android/2.9.5";
+
+/// OSS 分片并发的分片数。
+const OSS_UPLOAD_CONCURRENCY: usize = 4;
 
 #[derive(Default)]
 struct Auth {
@@ -472,6 +474,21 @@ impl PikPakClient {
         self.post(&url, &Value::Object(body)).await
     }
 
+    /// 新建文件夹并返回其 id。
+    pub async fn create_folder_id(
+        &self,
+        name: &str,
+        parent_id: Option<&str>,
+    ) -> Result<String, Error> {
+        let v = self.create_folder(name, parent_id).await?;
+        v.get("file")
+            .and_then(|f| f.get("id"))
+            .and_then(|i| i.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::msg("创建文件夹响应缺少 id"))
+    }
+
     pub async fn rename(&self, id: &str, new_name: &str) -> Result<Value, Error> {
         let url = format!("{API_HOST}/drive/v1/files/{id}");
         let body = json!({ "name": new_name });
@@ -868,52 +885,79 @@ impl PikPakClient {
         Ok(UploadTicket::from_response(&value))
     }
 
-    /// 把本地文件按 OSS 分片上传。需要已由 `upload_create` 得到 `oss` 上下文。
+    /// 把本地文件按 OSS 分片上传(并发 + 续传)。
     ///
-    /// `cancel` 置位时在分片边界中止; `on_progress(已传字节, 总大小)` 每片回调一次。
-    /// 返回已上传字节数。分片为顺序上传, 任一步出错由调用方决定是否整体重试。
+    /// 需要已由 `upload_create` 得到 `oss` 上下文, 并由 `oss_initiate` 得到 `upload_id`。
+    /// `state` 保存已成功分片的 ETag; 重试时传入同一 `state` 即可跳过已上传分片。
+    /// `cancel` 置位时分片边界中止; `on_progress(已传字节, 总大小)` 随分片完成回调。
     pub async fn upload_oss<F>(
         &self,
         oss: &OssContext,
+        upload_id: &str,
         path: &StdPath,
         cancel: Option<Arc<AtomicBool>>,
-        mut on_progress: F,
+        state: &mut OssUploadState,
+        on_progress: &mut F,
     ) -> Result<u64, Error>
     where
         F: FnMut(u64, u64) + Send,
     {
-        let mut file = tokio::fs::File::open(path).await?;
-        let size = file.metadata().await?.len();
+        let size = tokio::fs::metadata(path).await?.len();
         let chunk = upload::upload_chunk_size(size);
         let total_parts = if size == 0 { 1 } else { size.div_ceil(chunk) };
+        let missing: Vec<u64> = (1..=total_parts)
+            .filter(|p| !state.etags.contains_key(p))
+            .collect();
 
-        let upload_id = self.oss_initiate(oss).await?;
-        let mut etags: Vec<String> = Vec::with_capacity(total_parts as usize);
-        let mut done = 0u64;
+        let done = Arc::new(AtomicU64::new(state.uploaded_bytes(chunk, size)));
+        let cb = Arc::new(std::sync::Mutex::new(on_progress));
+        let path = path.to_path_buf();
+        let cancel2 = cancel.clone();
 
-        for part in 1..=total_parts {
-            if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
-                return Err(Error::msg("上传已取消"));
+        let results = stream::iter(missing.into_iter().map(|part| {
+            let path = path.clone();
+            let cancel = cancel2.clone();
+            let cb = cb.clone();
+            let done = done.clone();
+            async move {
+                if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return Err(Error::msg("上传已取消"));
+                }
+                let offset = (part - 1) * chunk;
+                let len = upload::part_len(part, chunk, size) as usize;
+                let buf = tokio::task::spawn_blocking(move || read_file_range(&path, offset, len))
+                    .await
+                    .map_err(|e| Error::msg(format!("读取待上传分片失败: {e}")))??;
+                let etag = self.oss_upload_part(oss, upload_id, part, buf).await?;
+                let now = done.fetch_add(len as u64, Ordering::Relaxed) + len as u64;
+                if let Ok(mut g) = cb.lock() {
+                    (*g)(now, size);
+                }
+                Ok::<(u64, String), Error>((part, etag))
             }
-            let offset = (part - 1) * chunk;
-            let len = (size.saturating_sub(offset)).min(chunk) as usize;
-            let mut buf = vec![0u8; len];
-            if len > 0 {
-                file.seek(SeekFrom::Start(offset)).await?;
-                file.read_exact(&mut buf).await?;
-            }
-            let etag = self.oss_upload_part(oss, &upload_id, part, buf).await?;
-            etags.push(etag);
-            done += len as u64;
-            on_progress(done, size);
+        }))
+        .buffered(OSS_UPLOAD_CONCURRENCY);
+
+        let mut stream = std::pin::pin!(results);
+        while let Some(res) = stream.next().await {
+            let (part, etag) = res?;
+            state.etags.insert(part, etag);
         }
 
-        self.oss_complete(oss, &upload_id, &etags).await?;
-        Ok(done)
+        if let Ok(mut g) = cb.lock() {
+            (*g)(size, size);
+        }
+
+        let mut ordered: Vec<(u64, String)> =
+            state.etags.iter().map(|(p, e)| (*p, e.clone())).collect();
+        ordered.sort_by_key(|(p, _)| *p);
+        let etags: Vec<String> = ordered.into_iter().map(|(_, e)| e).collect();
+        self.oss_complete(oss, upload_id, &etags).await?;
+        Ok(size)
     }
 
     /// 初始化 OSS 分片上传, 返回 `UploadId`。
-    async fn oss_initiate(&self, oss: &OssContext) -> Result<String, Error> {
+    pub async fn oss_initiate(&self, oss: &OssContext) -> Result<String, Error> {
         let query = "uploads";
         let date = upload::http_date_now();
         let auth = upload::oss_authorization("POST", &date, oss, query);
@@ -1032,6 +1076,18 @@ impl PikPakClient {
 
 fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+/// 读取文件的一个字节区间(供分片上传在阻塞线程中调用)。
+fn read_file_range(path: &StdPath, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; len];
+    if len > 0 {
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_exact(&mut buf)?;
+    }
+    Ok(buf)
 }
 
 /// batchMove / batchCopy 的请求体。目标目录缺省时 `to` 为空对象(表示根目录)。

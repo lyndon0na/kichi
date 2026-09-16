@@ -106,6 +106,12 @@ pub enum Cmd {
         path: PathBuf,
         parent: Option<String>,
     },
+    /// 把本地目录递归上传到网盘目录 parent(None = 根目录)。
+    StartUploadDir {
+        req_id: u64,
+        path: PathBuf,
+        parent: Option<String>,
+    },
     /// 取消某个上传任务。
     CancelUpload {
         req_id: u64,
@@ -206,6 +212,13 @@ pub enum Msg {
     /// 上传完成。
     UlFinished {
         req_id: u64,
+    },
+    /// 目录上传的子文件计数/当前文件。
+    UlFiles {
+        req_id: u64,
+        done: u32,
+        total: u32,
+        current: String,
     },
     /// 上传被取消。
     UlCancelled {

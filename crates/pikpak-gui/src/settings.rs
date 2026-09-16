@@ -118,6 +118,9 @@ pub struct UploadRecord {
     pub total: u64,
     pub done: u64,
     pub status: UploadRecordStatus,
+    /// 是否为目录递归上传。
+    #[serde(default)]
+    pub is_dir: bool,
     /// 唯一标识(纳秒时间戳字符串)。
     pub timestamp: String,
 }

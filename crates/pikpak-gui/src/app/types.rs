@@ -214,6 +214,13 @@ pub(crate) struct UlJob {
     pub last_at: Option<Instant>,
     /// 上传历史记录的唯一标识(历史记录或完成后填充)。
     pub record_id: String,
+    /// 是否为目录递归上传。
+    pub is_dir: bool,
+    /// 目录上传的已完成/总文件数。
+    pub files_done: u32,
+    pub files_total: u32,
+    /// 目录上传当前文件。
+    pub current: String,
 }
 
 impl UlJob {
@@ -229,7 +236,17 @@ impl UlJob {
             last_done: 0,
             last_at: None,
             record_id: String::new(),
+            is_dir: false,
+            files_done: 0,
+            files_total: 0,
+            current: String::new(),
         }
+    }
+
+    pub fn queued_dir(path: PathBuf, name: String, parent: Option<String>) -> Self {
+        let mut job = Self::queued(path, name, parent);
+        job.is_dir = true;
+        job
     }
 }
 

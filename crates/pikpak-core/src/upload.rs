@@ -62,6 +62,26 @@ pub fn upload_chunk_size(size: u64) -> u64 {
     size.div_ceil(MAX_PARTS).max(MIN_CHUNK)
 }
 
+/// 某个分片负责的字节数(最后一片可能不足)。
+pub fn part_len(part: u64, chunk: u64, size: u64) -> u64 {
+    let offset = (part - 1) * chunk;
+    size.saturating_sub(offset).min(chunk)
+}
+
+/// OSS 分片上传的跨次重试状态: 保存已成功分片的 ETag (part_number -> etag)。
+/// 同一个 `upload_id` 内续传时用它跳过已上传的分片。
+#[derive(Debug, Default)]
+pub struct OssUploadState {
+    pub etags: std::collections::HashMap<u64, String>,
+}
+
+impl OssUploadState {
+    /// 已上传分片对应的字节数合计。
+    pub fn uploaded_bytes(&self, chunk: u64, size: u64) -> u64 {
+        self.etags.keys().map(|p| part_len(*p, chunk, size)).sum()
+    }
+}
+
 /// 创建上传票据后从响应解析出的上传信息。
 #[derive(Debug, Clone)]
 pub struct UploadTicket {
@@ -274,6 +294,19 @@ mod tests {
         let oss = pending.oss.unwrap();
         assert_eq!(oss.endpoint, "oss.example.com");
         assert_eq!(oss.key, "k");
+    }
+
+    #[test]
+    fn part_len_and_uploaded_bytes() {
+        assert_eq!(part_len(1, 5, 12), 5);
+        assert_eq!(part_len(2, 5, 12), 5);
+        assert_eq!(part_len(3, 5, 12), 2);
+        assert_eq!(part_len(1, 5, 0), 0);
+
+        let mut st = OssUploadState::default();
+        st.etags.insert(1, "e1".into());
+        st.etags.insert(2, "e2".into());
+        assert_eq!(st.uploaded_bytes(5, 12), 10);
     }
 
     #[test]

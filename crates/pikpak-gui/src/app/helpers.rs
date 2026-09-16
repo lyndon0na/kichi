@@ -152,10 +152,8 @@ fn pick_folder_rfd(initial: &std::path::Path) -> Option<PathBuf> {
     .flatten()
 }
 
-/// 弹出一个原生目录选择框(阻塞式)。
-///
-/// 优先用 `kdialog`/`zenity`(可靠、子进程对话框), 都没有时回退 rfd(portal)。
-pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
+/// 目录选择(阻塞), 供同步调用与后台线程使用。返回空表示取消。
+fn pick_dir_blocking(initial: &std::path::Path) -> Vec<PathBuf> {
     let dir = initial.to_string_lossy().to_string();
     if let Some(v) = run_dialog(
         "kdialog",
@@ -164,7 +162,7 @@ pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
             dir.clone().into(),
         ],
     ) {
-        return v.into_iter().next();
+        return v;
     }
     if let Some(v) = run_dialog(
         "zenity",
@@ -174,9 +172,26 @@ pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
             format!("--filename={dir}/").into(),
         ],
     ) {
-        return v.into_iter().next();
+        return v;
     }
-    pick_folder_rfd(initial)
+    pick_folder_rfd(initial).into_iter().collect()
+}
+
+/// 弹出一个原生目录选择框(阻塞式)。
+pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
+    pick_dir_blocking(initial).into_iter().next()
+}
+
+/// 异步弹出目录选择框(0 或 1 个路径)。
+pub(crate) fn pick_dir_async(
+    initial: &std::path::Path,
+) -> std::sync::mpsc::Receiver<Vec<PathBuf>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let initial = initial.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(pick_dir_blocking(&initial));
+    });
+    rx
 }
 
 /// 多选文件(阻塞), 供后台线程调用。

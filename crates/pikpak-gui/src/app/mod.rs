@@ -126,8 +126,12 @@ pub struct App {
 
     // 本地上传
     pub(crate) ul_jobs: BTreeMap<u64, UlJob>,
-    /// 进行中的异步文件选择 (目标目录, 结果通道), 避免阻塞 UI 线程。
-    pub(crate) upload_pick: Option<(Option<String>, std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>)>,
+    /// 进行中的异步选择 (是否目录, 目标目录, 结果通道), 避免阻塞 UI 线程。
+    pub(crate) upload_pick: Option<(
+        bool,
+        Option<String>,
+        std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+    )>,
 
     /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
     pub(crate) preview_pending: Option<(u64, String)>,
@@ -255,6 +259,10 @@ impl App {
                             last_done: 0,
                             last_at: None,
                             record_id: record.timestamp,
+                            is_dir: record.is_dir,
+                            files_done: 0,
+                            files_total: 0,
+                            current: String::new(),
                         },
                     );
                 }
@@ -584,6 +592,21 @@ impl App {
                         }
                     }
                 }
+                Msg::UlFiles {
+                    req_id,
+                    done,
+                    total,
+                    current,
+                } => {
+                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+                        j.files_done = done;
+                        j.files_total = total;
+                        j.current = current;
+                        if j.status == UlStatus::Queued {
+                            j.status = UlStatus::Running;
+                        }
+                    }
+                }
                 Msg::UlFinished { req_id } => {
                     let parent = self.ul_jobs.get_mut(&req_id).map(|j| {
                         j.status = UlStatus::Done;
@@ -600,6 +623,7 @@ impl App {
                             total: j.total,
                             done: j.done,
                             status: UploadRecordStatus::Done,
+                            is_dir: j.is_dir,
                             timestamp: rec_id,
                         });
                         j.parent.clone()
@@ -629,6 +653,7 @@ impl App {
                             total: j.total,
                             done: j.done,
                             status: UploadRecordStatus::Failed(what.clone()),
+                            is_dir: j.is_dir,
                             timestamp: rec_id,
                         });
                     }
@@ -1279,20 +1304,84 @@ impl App {
         }
         let start = std::env::current_dir().unwrap_or_default();
         let parent = self.current_parent();
-        self.upload_pick = Some((parent, helpers::pick_files_async(&start)));
+        self.upload_pick = Some((false, parent, helpers::pick_files_async(&start)));
     }
 
-    /// 每帧检查异步文件选择结果; 选好后按当时的目标目录入队上传。
+    /// 选择本地文件夹并递归上传到当前网盘目录(异步弹框, 不阻塞 UI)。
+    pub(crate) fn upload_dir_here(&mut self) {
+        if self.upload_pick.is_some() {
+            return;
+        }
+        let start = std::env::current_dir().unwrap_or_default();
+        let parent = self.current_parent();
+        self.upload_pick = Some((true, parent, helpers::pick_dir_async(&start)));
+    }
+
+    /// 处理拖拽到窗口的本地文件/文件夹(上传到当前网盘目录)。
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        let parent = self.current_parent();
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for f in dropped {
+            let Some(p) = f.path else { continue };
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.is_file() {
+                files.push(p);
+            }
+        }
+        if !files.is_empty() {
+            self.enqueue_upload(files, parent.clone());
+        }
+        for d in dirs {
+            self.enqueue_upload_dir(d, parent.clone());
+        }
+    }
+
+    /// 拖拽悬停时显示落点提示。
+    fn drop_overlay(&self, ctx: &egui::Context) {
+        let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if !hovering {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("drop_overlay"),
+        ));
+        painter.rect_filled(screen, 0.0, Color32::from_black_alpha(90));
+        painter.text(
+            screen.center(),
+            egui::Align2::CENTER_CENTER,
+            "松开鼠标: 上传到当前目录",
+            egui::FontId::proportional(20.0),
+            Color32::WHITE,
+        );
+    }
+
+    /// 每帧检查异步选择结果; 选好后按当时的目标目录入队。
     fn poll_file_picker(&mut self) {
-        let Some((parent, rx)) = &self.upload_pick else {
+        let Some((is_dir, parent, rx)) = &self.upload_pick else {
             return;
         };
+        let is_dir = *is_dir;
         match rx.try_recv() {
-            Ok(files) => {
+            Ok(paths) => {
                 let parent = parent.clone();
                 self.upload_pick = None;
-                if !files.is_empty() {
-                    self.enqueue_upload(files, parent);
+                if paths.is_empty() {
+                    return;
+                }
+                if is_dir {
+                    for p in paths {
+                        self.enqueue_upload_dir(p, parent.clone());
+                    }
+                } else {
+                    self.enqueue_upload(paths, parent);
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -1300,6 +1389,30 @@ impl App {
                 self.upload_pick = None;
             }
         }
+    }
+
+    /// 提交目录递归上传任务。
+    pub(crate) fn enqueue_upload_dir(
+        &mut self,
+        path: std::path::PathBuf,
+        parent: Option<String>,
+    ) {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name.is_empty() {
+            return;
+        }
+        let req_id = self.alloc_req_id();
+        self.ul_jobs
+            .insert(req_id, UlJob::queued_dir(path.clone(), name, parent.clone()));
+        self.send(Cmd::StartUploadDir {
+            req_id,
+            path,
+            parent,
+        });
+        self.toast_ok("已加入上传队列 (文件夹)");
     }
 
     /// 当前目录下与 `name` 同集的外挂字幕 (id, 文件名)。
@@ -1423,8 +1536,10 @@ impl eframe::App for App {
             return;
         }
 
+        self.handle_dropped_files(ctx);
         self.app_shell(ctx, &th);
         self.dialogs(ctx, &th);
         self.draw_toast(ctx);
+        self.drop_overlay(ctx);
     }
 }

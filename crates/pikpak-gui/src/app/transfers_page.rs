@@ -335,6 +335,17 @@ impl App {
                 {
                     self.upload_here();
                 }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("上传文件夹").color(th.text_weak))
+                            .stroke(Stroke::new(1.0, th.border))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .corner_radius(th.cr(8)),
+                    )
+                    .clicked()
+                {
+                    self.upload_dir_here();
+                }
             });
         });
         ui.add_space(8.0);
@@ -389,6 +400,11 @@ impl App {
                     );
                     painter.galley(Pos2::new(inner.min.x, inner.min.y + 2.0), name_g, th.text);
                     let (col, txt) = upload_status_line(job);
+                    let txt = if job.is_dir && job.files_total > 0 {
+                        format!("{txt} · 文件 {}/{}", job.files_done, job.files_total)
+                    } else {
+                        txt
+                    };
                     let st_g = truncate_text(&painter, &txt, left_w, FontId::proportional(11.5), col);
                     painter.galley(Pos2::new(inner.min.x, inner.min.y + 20.0), st_g, col);
 
@@ -435,7 +451,13 @@ impl App {
                                 );
                             }
                             UlStatus::Running => {
-                                let info = if job.done > 0 {
+                                let info = if job.is_dir {
+                                    if job.current.is_empty() {
+                                        "准备中…".to_string()
+                                    } else {
+                                        job.current.clone()
+                                    }
+                                } else if job.done > 0 {
                                     format!("已上传 {}", format::fmt_bytes(job.done as i64))
                                 } else {
                                     "计算哈希 / 连接中…".to_string()
@@ -524,12 +546,17 @@ impl App {
                             j.parent.clone(),
                             j.record_id.clone(),
                             j.name.clone(),
+                            j.is_dir,
                         )
                     });
-                    if let Some((path, parent, rec_id, name)) = info {
+                    if let Some((path, parent, rec_id, name, is_dir)) = info {
                         settings::remove_upload_record(&rec_id, &path, &name);
                         self.ul_jobs.remove(&rid);
-                        self.enqueue_upload(vec![path], parent);
+                        if is_dir {
+                            self.enqueue_upload_dir(path, parent);
+                        } else {
+                            self.enqueue_upload(vec![path], parent);
+                        }
                     }
                 }
             }

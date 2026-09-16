@@ -64,45 +64,6 @@ impl App {
     }
 }
 
-/// 矢量图标 + 文字按钮(替代带符号字形的普通按钮)。
-fn icon_button(
-    ui: &mut egui::Ui,
-    th: &Theme,
-    glyph: Glyph,
-    label: &str,
-    fg: egui::Color32,
-    fill: egui::Color32,
-    stroke: Stroke,
-) -> egui::Response {
-    let font = FontId::proportional(14.0);
-    let text_g = ui.painter().layout_no_wrap(label.to_string(), font, fg);
-    let pad = 12.0f32;
-    let icon = 16.0f32;
-    let gap = 6.0f32;
-    let w = pad * 2.0 + icon + gap + text_g.size().x;
-    let h = 30.0f32;
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
-    let painter = ui.painter().clone();
-    let fill = if resp.hovered() {
-        mix(fill, th.text, if th.dark { 0.08 } else { 0.04 })
-    } else {
-        fill
-    };
-    painter.rect_filled(rect, th.cr(8), fill);
-    painter.rect_stroke(rect, th.cr(8), stroke, egui::StrokeKind::Inside);
-    let icon_rect = Rect::from_center_size(
-        Pos2::new(rect.min.x + pad + icon / 2.0, rect.center().y),
-        vec2(icon, icon),
-    );
-    icons::paint(&painter, icon_rect, glyph, fg);
-    painter.galley(
-        Pos2::new(rect.min.x + pad + icon + gap, rect.center().y - text_g.size().y / 2.0),
-        text_g,
-        fg,
-    );
-    resp
-}
-
 /// 面包屑导航: 宽度不足时从左侧省略中间层级, 始终保留当前目录(必要时截断)。
 /// 返回被点击的层级索引。
 fn breadcrumbs(ui: &mut egui::Ui, th: &Theme, crumbs: &[Crumb], budget: f32) -> Option<usize> {
@@ -479,6 +440,7 @@ impl App {
         let mut jumped: Option<usize> = None;
         let mut mkdir = false;
         let mut upload = false;
+        let mut upload_dir = false;
         let mut refresh = false;
         let mut want_download = false;
         let mut clear_clip = false;
@@ -507,7 +469,7 @@ impl App {
                     ui.set_min_height(Self::HEAD_H);
 
                     // 左侧区域限制在右侧控件之外, 面包屑/计数超长时截断, 避免溢出重叠。
-                    let right_reserve = 460.0;
+                    let right_reserve = 360.0;
                     let left_w = (ui.available_width() - right_reserve).max(140.0);
                     ui.allocate_ui_with_layout(
                         vec2(left_w, Self::HEAD_H),
@@ -604,36 +566,39 @@ impl App {
                             rresp.on_hover_text("刷新 (F5)");
 
                             ui.add_space(4.0);
-                            // 上传文件
-                            if icon_button(
-                                ui,
-                                th,
-                                Glyph::Upload,
-                                "上传文件",
-                                th.text_weak,
-                                egui::Color32::TRANSPARENT,
-                                Stroke::new(1.0, th.border),
-                            )
-                            .clicked()
-                            {
-                                upload = true;
-                            }
+                            // 上传菜单(上传文件 / 上传文件夹)
+                            ui.menu_button(
+                                RichText::new("上传").size(13.0).color(th.text_weak),
+                                |ui| {
+                                    if ui.button("上传文件").clicked() {
+                                        upload = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("上传文件夹").clicked() {
+                                        upload_dir = true;
+                                        ui.close_menu();
+                                    }
+                                },
+                            );
 
                             ui.add_space(4.0);
-                            // 新建文件夹
-                            if icon_button(
-                                ui,
-                                th,
-                                Glyph::Plus,
-                                "新建文件夹",
-                                th.accent,
-                                th.accent_soft(),
-                                Stroke::new(1.0, mix(th.accent, th.bg, 0.4)),
-                            )
-                            .clicked()
-                            {
+                            // 新建文件夹(矢量图标 + 悬浮提示)
+                            let (pr, presp) =
+                                ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
+                            ui.painter().rect_filled(
+                                pr,
+                                th.cr(8),
+                                if presp.hovered() {
+                                    th.accent_soft()
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                },
+                            );
+                            icons::paint(ui.painter(), pr.shrink(7.0), Glyph::Plus, th.accent);
+                            if presp.clicked() {
                                 mkdir = true;
                             }
+                            presp.on_hover_text("新建文件夹");
 
                             ui.add_space(6.0);
                             // 视图切换
@@ -776,6 +741,9 @@ impl App {
         if upload {
             self.upload_here();
         }
+        if upload_dir {
+            self.upload_dir_here();
+        }
 
         // 处理顶部栏产生的操作
         if clear_clip {
@@ -870,6 +838,10 @@ impl App {
                         }
                         if ui.button("上传文件").clicked() {
                             self.upload_here();
+                            ui.close_menu();
+                        }
+                        if ui.button("上传文件夹").clicked() {
+                            self.upload_dir_here();
                             ui.close_menu();
                         }
                         if ui.button("新建文件夹").clicked() {
