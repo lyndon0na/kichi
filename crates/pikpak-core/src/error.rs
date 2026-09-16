@@ -24,6 +24,10 @@ pub enum Error {
     #[error("{0}")]
     Transient(String),
 
+    /// 登录态已失效(refresh token 过期/被吊销), 需要重新登录。
+    #[error("登录已过期: {0}")]
+    AuthExpired(String),
+
     #[error("{0}")]
     Msg(String),
 }

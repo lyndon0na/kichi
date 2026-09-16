@@ -28,6 +28,7 @@ struct Auth {
     access_token: String,
     refresh_token: String,
     user_id: String,
+    username: String,
     captcha_token: Option<String>,
 }
 
@@ -37,6 +38,8 @@ pub struct PikPakClient {
     http: reqwest::Client,
     device_id: String,
     auth: Mutex<Auth>,
+    /// 续期单飞: 保证同一时刻只有一个请求在刷新 token, 避免并发刷新与重复写盘。
+    refresh_lock: Mutex<()>,
     on_tokens: Option<TokenSaver>,
 }
 
@@ -50,6 +53,7 @@ impl PikPakClient {
             http,
             device_id,
             auth: Mutex::new(Auth::default()),
+            refresh_lock: Mutex::new(()),
             on_tokens: None,
         }
     }
@@ -63,6 +67,7 @@ impl PikPakClient {
         a.access_token = session.access_token.clone();
         a.refresh_token = session.refresh_token.clone();
         a.user_id = session.user_id.clone();
+        a.username = session.username.clone();
     }
 
     pub fn device_id(&self) -> &str {
@@ -79,26 +84,27 @@ impl PikPakClient {
         )
     }
 
-    fn save_tokens(&self, access: &str, refresh: &str, user_id: &str) {
+    fn save_tokens(&self, access: &str, refresh: &str, user_id: &str, username: &str) {
         if let Some(saver) = &self.on_tokens {
             saver(&Session {
                 device_id: self.device_id.clone(),
                 access_token: access.to_string(),
                 refresh_token: refresh.to_string(),
                 user_id: user_id.to_string(),
-                username: String::new(),
+                username: username.to_string(),
             });
         }
     }
 
     async fn update_tokens(&self, access: &str, refresh: &str, user_id: &str) {
-        {
+        let username = {
             let mut a = self.auth.lock().await;
             a.access_token = access.to_string();
             a.refresh_token = refresh.to_string();
             a.user_id = user_id.to_string();
-        }
-        self.save_tokens(access, refresh, user_id);
+            a.username.clone()
+        };
+        self.save_tokens(access, refresh, user_id, &username);
     }
 
     fn ua(&self, has_captcha: bool) -> &'static str {
@@ -262,6 +268,8 @@ impl PikPakClient {
         let token: TokenResponse = serde_json::from_value(resp)
             .map_err(|e| Error::Msg(format!("登录响应解析失败: {e}")))?;
         let user_id = token.sub.clone().unwrap_or_default();
+        // 先写入账号名, 使续期/持久化时不会丢失。
+        self.auth.lock().await.username = username.to_string();
         self.update_tokens(&token.access_token, &token.refresh_token, &user_id)
             .await;
 
@@ -281,19 +289,28 @@ impl PikPakClient {
             a.access_token = session.access_token.clone();
             a.refresh_token = session.refresh_token.clone();
             a.user_id = session.user_id.clone();
+            a.username = session.username.clone();
         }
         self.save_tokens(
             &session.access_token,
             &session.refresh_token,
             &session.user_id,
+            &session.username,
         );
         Ok(())
     }
 
     pub async fn refresh_token(&self) -> Result<(), Error> {
-        let (_, refresh, _, _) = self.current_auth().await;
+        // 续期单飞: 进入时记录当前 access token, 加锁后若已被其它请求刷新则直接复用,
+        // 避免并发请求同时刷新并重复写盘。
+        let seen = self.current_auth().await.0;
+        let _guard = self.refresh_lock.lock().await;
+        let (token, refresh, _, _) = self.current_auth().await;
+        if token != seen {
+            return Ok(());
+        }
         if refresh.is_empty() {
-            return Err(Error::msg("缺少 refresh token"));
+            return Err(Error::AuthExpired("缺少 refresh token".into()));
         }
         let url = format!("{USER_HOST}/v1/auth/token");
         let body = json!({
@@ -312,14 +329,12 @@ impl PikPakClient {
         let bytes = resp.bytes().await?;
         let err_body: ApiErrorBody = serde_json::from_slice(&bytes).unwrap_or_default();
         if err_body.error_code != 0 || !err_body.error.is_empty() {
-            return Err(Error::msg(format!(
-                "刷新登录态失败(请重新登录): {}",
-                if err_body.error_description.is_empty() {
-                    err_body.error
-                } else {
-                    err_body.error_description
-                }
-            )));
+            // refresh token 过期/被吊销: 归为登录态失效, 交由上层要求重新登录。
+            return Err(Error::AuthExpired(if err_body.error_description.is_empty() {
+                err_body.error
+            } else {
+                err_body.error_description
+            }));
         }
         let token: TokenResponse = serde_json::from_slice(&bytes)?;
         let user_id = token.sub.clone().unwrap_or_default();
