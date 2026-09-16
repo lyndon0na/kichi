@@ -24,7 +24,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, ViewMode};
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
@@ -118,6 +118,7 @@ pub struct App {
     pub(crate) download_dir: String,
     pub(crate) jobs: BTreeMap<u64, DlJob>,
     pub(crate) selected_dl: HashSet<u64>,
+    pub(crate) dl_filter: DlFilter,
 
     /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
     pub(crate) preview_pending: Option<(u64, String)>,
@@ -191,7 +192,8 @@ impl App {
                 let mut jobs = BTreeMap::new();
                 let history = settings::load_download_history();
                 let mut next_id = 0u64;
-                for record in history {
+                // 历史文件按最新在前存储; 倒序分配 id, 使 id 随时间递增(旧的 id 小)。
+                for record in history.into_iter().rev() {
                     next_id += 1;
                     let status = match record.status {
                         DownloadRecordStatus::Done => DlStatus::Done,
@@ -201,6 +203,7 @@ impl App {
                     jobs.insert(
                         next_id,
                         DlJob {
+                            file_id: record.file_id,
                             name: record.name,
                             dir: record.dir,
                             total: record.total,
@@ -215,6 +218,7 @@ impl App {
                 jobs
             },
             selected_dl: HashSet::new(),
+            dl_filter: DlFilter::All,
             preview_pending: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
@@ -289,6 +293,8 @@ impl App {
                     self.username.clear();
                     self.auth_error = Some(reason);
                     self.jobs.clear();
+                    self.selected_dl.clear();
+                    self.last_clicked_dl = None;
                     self.clipboard = None;
                     self.preview_pending = None;
                     self.quality_cache.clear();
@@ -308,6 +314,8 @@ impl App {
                     self.dir_inflight.clear();
                     self.hidden.clear();
                     self.jobs.clear();
+                    self.selected_dl.clear();
+                    self.last_clicked_dl = None;
                     self.clipboard = None;
                     self.preview_pending = None;
                     self.quality_cache.clear();
@@ -429,6 +437,7 @@ impl App {
                         }
                         // 保存下载记录到磁盘
                         settings::append_download_record(DownloadRecord {
+                            file_id: j.file_id.clone(),
                             name: j.name.clone(),
                             dir: j.dir.clone(),
                             total: j.total,
@@ -443,6 +452,7 @@ impl App {
                         j.status = DlStatus::Cancelled;
                         // 保存下载记录到磁盘
                         settings::append_download_record(DownloadRecord {
+                            file_id: j.file_id.clone(),
                             name: j.name.clone(),
                             dir: j.dir.clone(),
                             total: j.total,
@@ -457,6 +467,7 @@ impl App {
                         j.status = DlStatus::Failed(what.clone());
                         // 保存下载记录到磁盘
                         settings::append_download_record(DownloadRecord {
+                            file_id: j.file_id.clone(),
                             name: j.name.clone(),
                             dir: j.dir.clone(),
                             total: j.total,
@@ -985,25 +996,16 @@ impl App {
             .any(|f| self.selected.contains(&f.id) && f.is_folder())
     }
 
-    /// 全选下载任务。
-    pub(crate) fn select_all_dl(&mut self) {
-        self.selected_dl = self.jobs.keys().cloned().collect();
-    }
-
-    /// 取消全选下载任务。
-    pub(crate) fn deselect_all_dl(&mut self) {
-        self.selected_dl.clear();
-    }
-
-    /// 反选下载任务。
-    pub(crate) fn invert_selection_dl(&mut self) {
-        for key in self.jobs.keys() {
-            if self.selected_dl.contains(key) {
-                self.selected_dl.remove(key);
-            } else {
-                self.selected_dl.insert(*key);
-            }
-        }
+    /// 当前筛选下可见的任务 id, 按最新在前排序。
+    pub(crate) fn visible_dl_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| self.dl_filter.matches(j))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        ids
     }
 
     pub(crate) fn alloc_req_id(&mut self) -> u64 {
@@ -1045,7 +1047,7 @@ impl App {
         for (id, name) in &items {
             let req_id = self.alloc_req_id();
             self.jobs
-                .insert(req_id, DlJob::queued(name.clone(), dir.clone()));
+                .insert(req_id, DlJob::queued(id.clone(), name.clone(), dir.clone()));
             self.send(Cmd::StartDownload {
                 req_id,
                 file_id: id.clone(),

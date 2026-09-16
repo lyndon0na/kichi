@@ -21,6 +21,9 @@ pub enum DownloadRecordStatus {
 /// 单条下载历史记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRecord {
+    /// 云端文件 id(旧记录可能缺失, 用于重试)。
+    #[serde(default)]
+    pub file_id: String,
     pub name: String,
     pub dir: PathBuf,
     pub total: u64,
@@ -65,6 +68,24 @@ pub fn append_download_record(record: DownloadRecord) {
         history.truncate(200);
     }
     save_download_history(&history);
+}
+
+/// 从下载历史中移除与给定任务匹配的最新一条记录。
+/// 仅删除列表记录, 不触碰已下载到本地的文件。
+pub fn remove_download_record(file_id: &str, name: &str, dir: &std::path::Path) {
+    let mut history = load_download_history();
+    // 优先按 file_id 精确匹配, 否则回退到 名称+目录; history 最新在前, 移除最新一条。
+    let idx = history.iter().position(|r| {
+        if !file_id.is_empty() && !r.file_id.is_empty() {
+            r.file_id == file_id
+        } else {
+            r.name == name && r.dir == dir
+        }
+    });
+    if let Some(i) = idx {
+        history.remove(i);
+        save_download_history(&history);
+    }
 }
 
 fn path() -> Option<std::path::PathBuf> {

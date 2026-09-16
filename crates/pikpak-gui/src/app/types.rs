@@ -127,6 +127,8 @@ pub(crate) enum DlStatus {
 
 #[derive(Clone)]
 pub(crate) struct DlJob {
+    /// 云端文件 id, 用于失败/取消后重试(历史记录可能为空)。
+    pub file_id: String,
     pub name: String,
     pub dir: PathBuf,
     pub total: u64,
@@ -139,8 +141,9 @@ pub(crate) struct DlJob {
 }
 
 impl DlJob {
-    pub fn queued(name: String, dir: PathBuf) -> Self {
+    pub fn queued(file_id: String, name: String, dir: PathBuf) -> Self {
         DlJob {
+            file_id,
             name,
             dir,
             total: 0,
@@ -157,7 +160,31 @@ impl DlJob {
 pub(crate) enum DlOp {
     Cancel,
     OpenDir,
+    /// 用系统默认程序打开已下载的本地文件。
+    OpenFile,
+    /// 重新下载(仅本地会话内、已知云端 id 的任务可用)。
+    Retry,
     Remove,
+}
+
+/// 下载列表的状态筛选。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum DlFilter {
+    All,
+    Active,
+    Done,
+    Failed,
+}
+
+impl DlFilter {
+    pub fn matches(&self, job: &DlJob) -> bool {
+        match self {
+            DlFilter::All => true,
+            DlFilter::Active => matches!(job.status, DlStatus::Queued | DlStatus::Running),
+            DlFilter::Done => job.status == DlStatus::Done,
+            DlFilter::Failed => matches!(job.status, DlStatus::Failed(_)),
+        }
+    }
 }
 
 /// 列拖拽状态。
