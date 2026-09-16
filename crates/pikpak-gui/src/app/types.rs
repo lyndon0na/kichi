@@ -205,6 +205,8 @@ pub(crate) struct UlJob {
     pub name: String,
     /// 目标网盘目录 (None = 根目录)。
     pub parent: Option<String>,
+    /// 目标目录的层级快照 (id, label), 用于展示与「在网盘中打开」。
+    pub dest_stack: Vec<(Option<String>, String)>,
     pub total: u64,
     pub done: u64,
     pub status: UlStatus,
@@ -221,14 +223,31 @@ pub(crate) struct UlJob {
     pub files_total: u32,
     /// 目录上传当前文件。
     pub current: String,
+    /// 完成/失败时间(unix 秒); 进行中为 None。
+    pub at: Option<u64>,
 }
 
 impl UlJob {
-    pub fn queued(path: PathBuf, name: String, parent: Option<String>) -> Self {
+    /// 目标网盘路径展示, 如 "我的云盘 / 视频"。
+    pub fn dest_label(&self) -> String {
+        self.dest_stack
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+
+    pub fn queued(
+        path: PathBuf,
+        name: String,
+        parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
+    ) -> Self {
         UlJob {
             local_path: path,
             name,
             parent,
+            dest_stack,
             total: 0,
             done: 0,
             status: UlStatus::Queued,
@@ -240,11 +259,17 @@ impl UlJob {
             files_done: 0,
             files_total: 0,
             current: String::new(),
+            at: None,
         }
     }
 
-    pub fn queued_dir(path: PathBuf, name: String, parent: Option<String>) -> Self {
-        let mut job = Self::queued(path, name, parent);
+    pub fn queued_dir(
+        path: PathBuf,
+        name: String,
+        parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
+    ) -> Self {
+        let mut job = Self::queued(path, name, parent, dest_stack);
         job.is_dir = true;
         job
     }
@@ -255,7 +280,37 @@ pub(crate) enum UlOp {
     Cancel,
     Retry,
     Remove,
+    /// 在「我的文件」中打开该上传的目标目录。
+    OpenInDrive,
 }
+
+/// 上传列表的状态筛选。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum UlFilter {
+    All,
+    Active,
+    Done,
+    Failed,
+}
+
+impl UlFilter {
+    pub fn matches(&self, job: &UlJob) -> bool {
+        match self {
+            UlFilter::All => true,
+            UlFilter::Active => matches!(job.status, UlStatus::Queued | UlStatus::Running),
+            UlFilter::Done => job.status == UlStatus::Done,
+            UlFilter::Failed => matches!(job.status, UlStatus::Failed(_)),
+        }
+    }
+}
+
+/// 进行中的异步文件/目录选择: (是否目录, 目标目录 id, 目标路径快照, 结果通道)。
+pub(crate) type UploadPick = (
+    bool,
+    Option<String>,
+    Vec<(Option<String>, String)>,
+    std::sync::mpsc::Receiver<Vec<PathBuf>>,
+);
 
 /// 列拖拽状态。
 pub(crate) struct ColDrag {

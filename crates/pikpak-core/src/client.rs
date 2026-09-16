@@ -872,6 +872,8 @@ impl PikPakClient {
         body.insert("size".into(), size.to_string().into());
         body.insert("hash".into(), hash.to_ascii_uppercase().into());
         body.insert("upload_type".into(), "UPLOAD_TYPE_RESUMABLE".into());
+        // folder_type 必须为 NORMAL, 否则根目录上传会被服务端放进默认的「My Upload」。
+        body.insert("folder_type".into(), "NORMAL".into());
         body.insert(
             "objProvider".into(),
             json!({ "provider": "UPLOAD_TYPE_UNKNOWN" }),

@@ -115,12 +115,18 @@ pub struct UploadRecord {
     /// 目标网盘目录 (None = 根目录)。
     #[serde(default)]
     pub parent: Option<String>,
+    /// 目标目录层级快照 (id, label), 用于展示与导航。
+    #[serde(default)]
+    pub dest_stack: Vec<(Option<String>, String)>,
     pub total: u64,
     pub done: u64,
     pub status: UploadRecordStatus,
     /// 是否为目录递归上传。
     #[serde(default)]
     pub is_dir: bool,
+    /// 完成/失败时间(unix 秒)。
+    #[serde(default)]
+    pub at: u64,
     /// 唯一标识(纳秒时间戳字符串)。
     pub timestamp: String,
 }

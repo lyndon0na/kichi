@@ -67,6 +67,49 @@ pub fn safe_file_name(name: &str) -> Option<String> {
     Some(base.to_string())
 }
 
+/// 当前 unix 秒。
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 依据剩余字节与速率估算剩余时间, 形如 "12s" / "3m20s" / "1h05m"; 速率未知时为空。
+pub fn fmt_eta(remaining: u64, speed: u64) -> String {
+    if speed == 0 {
+        return String::new();
+    }
+    fmt_duration(remaining / speed)
+}
+
+/// 相对时间: "刚刚" / "3 分钟前" / "2 小时前" / "3 天前"; at 为 0 或未来时为空。
+pub fn fmt_rel(now: u64, at: u64) -> String {
+    if at == 0 || now < at {
+        return String::new();
+    }
+    let d = now - at;
+    if d < 60 {
+        "刚刚".into()
+    } else if d < 3600 {
+        format!("{} 分钟前", d / 60)
+    } else if d < 86400 {
+        format!("{} 小时前", d / 3600)
+    } else {
+        format!("{} 天前", d / 86400)
+    }
+}
+
+fn fmt_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::safe_file_name;
@@ -93,5 +136,19 @@ mod tests {
         assert_eq!(safe_file_name(".."), None);
         assert_eq!(safe_file_name("."), None);
         assert_eq!(safe_file_name("/"), None);
+    }
+
+    #[test]
+    fn etas_and_relative_times() {
+        assert_eq!(super::fmt_eta(0, 0), "");
+        assert_eq!(super::fmt_eta(120, 10), "12s");
+        assert_eq!(super::fmt_eta(200, 1), "3m20s");
+        assert_eq!(super::fmt_eta(3600 * 2, 1), "2h00m");
+
+        assert_eq!(super::fmt_rel(100, 0), "");
+        assert_eq!(super::fmt_rel(100, 100), "刚刚");
+        assert_eq!(super::fmt_rel(1000, 100), "15 分钟前");
+        assert_eq!(super::fmt_rel(100 + 7200, 100), "2 小时前");
+        assert_eq!(super::fmt_rel(100 + 86400 * 3, 100), "3 天前");
     }
 }

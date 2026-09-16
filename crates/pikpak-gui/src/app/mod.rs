@@ -24,7 +24,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, UlJob, UlStatus, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode};
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
@@ -126,12 +126,11 @@ pub struct App {
 
     // 本地上传
     pub(crate) ul_jobs: BTreeMap<u64, UlJob>,
-    /// 进行中的异步选择 (是否目录, 目标目录, 结果通道), 避免阻塞 UI 线程。
-    pub(crate) upload_pick: Option<(
-        bool,
-        Option<String>,
-        std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
-    )>,
+    pub(crate) selected_ul: HashSet<u64>,
+    pub(crate) ul_filter: UlFilter,
+    pub(crate) ul_last_clicked: Option<u64>,
+    /// 进行中的异步选择 (是否目录, 目标目录, 目标路径展示, 结果通道), 避免阻塞 UI 线程。
+    pub(crate) upload_pick: Option<UploadPick>,
 
     /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
     pub(crate) preview_pending: Option<(u64, String)>,
@@ -252,6 +251,7 @@ impl App {
                             local_path: record.local_path,
                             name: record.name,
                             parent: record.parent,
+                            dest_stack: record.dest_stack,
                             total: record.total,
                             done: record.done,
                             status,
@@ -263,11 +263,15 @@ impl App {
                             files_done: 0,
                             files_total: 0,
                             current: String::new(),
+                            at: (record.at != 0).then_some(record.at),
                         },
                     );
                 }
                 ul
             },
+            selected_ul: HashSet::new(),
+            ul_filter: UlFilter::All,
+            ul_last_clicked: None,
             upload_pick: None,
             preview_pending: None,
             quality_cache: HashMap::new(),
@@ -616,14 +620,17 @@ impl App {
                         // 写入上传历史。
                         let rec_id = Self::chrono_now();
                         j.record_id = rec_id.clone();
+                        j.at = Some(crate::format::now_unix());
                         settings::append_upload_record(UploadRecord {
                             local_path: j.local_path.clone(),
                             name: j.name.clone(),
                             parent: j.parent.clone(),
+                            dest_stack: j.dest_stack.clone(),
                             total: j.total,
                             done: j.done,
                             status: UploadRecordStatus::Done,
                             is_dir: j.is_dir,
+                            at: j.at.unwrap_or(0),
                             timestamp: rec_id,
                         });
                         j.parent.clone()
@@ -639,6 +646,10 @@ impl App {
                 }
                 Msg::UlCancelled { req_id } => {
                     self.ul_jobs.remove(&req_id);
+                    self.selected_ul.remove(&req_id);
+                    if self.ul_last_clicked == Some(req_id) {
+                        self.ul_last_clicked = None;
+                    }
                 }
                 Msg::UlFailed { req_id, what } => {
                     if let Some(j) = self.ul_jobs.get_mut(&req_id) {
@@ -646,14 +657,17 @@ impl App {
                         // 写入上传历史。
                         let rec_id = Self::chrono_now();
                         j.record_id = rec_id.clone();
+                        j.at = Some(crate::format::now_unix());
                         settings::append_upload_record(UploadRecord {
                             local_path: j.local_path.clone(),
                             name: j.name.clone(),
                             parent: j.parent.clone(),
+                            dest_stack: j.dest_stack.clone(),
                             total: j.total,
                             done: j.done,
                             status: UploadRecordStatus::Failed(what.clone()),
                             is_dir: j.is_dir,
+                            at: j.at.unwrap_or(0),
                             timestamp: rec_id,
                         });
                     }
@@ -806,6 +820,23 @@ impl App {
 
     pub(crate) fn current_parent(&self) -> Option<String> {
         self.stack.last().and_then(|c| c.id.clone())
+    }
+
+    /// 当前目录的层级快照 (id, label), 用于上传目标记录与导航。
+    pub(crate) fn current_stack_pairs(&self) -> Vec<(Option<String>, String)> {
+        self.stack
+            .iter()
+            .map(|c| (c.id.clone(), c.label.clone()))
+            .collect()
+    }
+
+    /// 当前上传筛选下可见的任务 id(按 map 顺序)。
+    pub(crate) fn visible_ul_ids(&self) -> Vec<u64> {
+        self.ul_jobs
+            .iter()
+            .filter(|(_, j)| self.ul_filter.matches(j))
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// 离线下载目录选择器当前所在目录。
@@ -1271,6 +1302,7 @@ impl App {
         &mut self,
         paths: Vec<std::path::PathBuf>,
         parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
     ) {
         let mut n = 0usize;
         for path in paths {
@@ -1282,8 +1314,10 @@ impl App {
                 continue;
             }
             let req_id = self.alloc_req_id();
-            self.ul_jobs
-                .insert(req_id, UlJob::queued(path.clone(), name, parent.clone()));
+            self.ul_jobs.insert(
+                req_id,
+                UlJob::queued(path.clone(), name, parent.clone(), dest_stack.clone()),
+            );
             self.send(Cmd::StartUpload {
                 req_id,
                 path,
@@ -1304,7 +1338,8 @@ impl App {
         }
         let start = std::env::current_dir().unwrap_or_default();
         let parent = self.current_parent();
-        self.upload_pick = Some((false, parent, helpers::pick_files_async(&start)));
+        let stack = self.current_stack_pairs();
+        self.upload_pick = Some((false, parent, stack, helpers::pick_files_async(&start)));
     }
 
     /// 选择本地文件夹并递归上传到当前网盘目录(异步弹框, 不阻塞 UI)。
@@ -1314,7 +1349,8 @@ impl App {
         }
         let start = std::env::current_dir().unwrap_or_default();
         let parent = self.current_parent();
-        self.upload_pick = Some((true, parent, helpers::pick_dir_async(&start)));
+        let stack = self.current_stack_pairs();
+        self.upload_pick = Some((true, parent, stack, helpers::pick_dir_async(&start)));
     }
 
     /// 处理拖拽到窗口的本地文件/文件夹(上传到当前网盘目录)。
@@ -1324,6 +1360,7 @@ impl App {
             return;
         }
         let parent = self.current_parent();
+        let stack = self.current_stack_pairs();
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         let mut dirs: Vec<std::path::PathBuf> = Vec::new();
         for f in dropped {
@@ -1335,10 +1372,10 @@ impl App {
             }
         }
         if !files.is_empty() {
-            self.enqueue_upload(files, parent.clone());
+            self.enqueue_upload(files, parent.clone(), stack.clone());
         }
         for d in dirs {
-            self.enqueue_upload_dir(d, parent.clone());
+            self.enqueue_upload_dir(d, parent.clone(), stack.clone());
         }
     }
 
@@ -1365,23 +1402,24 @@ impl App {
 
     /// 每帧检查异步选择结果; 选好后按当时的目标目录入队。
     fn poll_file_picker(&mut self) {
-        let Some((is_dir, parent, rx)) = &self.upload_pick else {
+        let Some((is_dir, parent, stack, rx)) = &self.upload_pick else {
             return;
         };
         let is_dir = *is_dir;
         match rx.try_recv() {
             Ok(paths) => {
                 let parent = parent.clone();
+                let stack = stack.clone();
                 self.upload_pick = None;
                 if paths.is_empty() {
                     return;
                 }
                 if is_dir {
                     for p in paths {
-                        self.enqueue_upload_dir(p, parent.clone());
+                        self.enqueue_upload_dir(p, parent.clone(), stack.clone());
                     }
                 } else {
-                    self.enqueue_upload(paths, parent);
+                    self.enqueue_upload(paths, parent, stack);
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -1396,6 +1434,7 @@ impl App {
         &mut self,
         path: std::path::PathBuf,
         parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
     ) {
         let name = path
             .file_name()
@@ -1405,8 +1444,10 @@ impl App {
             return;
         }
         let req_id = self.alloc_req_id();
-        self.ul_jobs
-            .insert(req_id, UlJob::queued_dir(path.clone(), name, parent.clone()));
+        self.ul_jobs.insert(
+            req_id,
+            UlJob::queued_dir(path.clone(), name, parent.clone(), dest_stack),
+        );
         self.send(Cmd::StartUploadDir {
             req_id,
             path,
