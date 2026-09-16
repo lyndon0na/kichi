@@ -9,7 +9,7 @@ use pikpak_core::consts::OFFLINE_PHASES;
 use pikpak_core::{session, Error, PikPakClient};
 use tokio::sync::Semaphore;
 
-use crate::msg::{Cmd, Msg};
+use crate::msg::{Cmd, Msg, QualityOption};
 
 pub struct Worker {
     pub tx: Sender<Cmd>,
@@ -372,6 +372,16 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             });
         }
+        Cmd::PreviewQualities {
+            file_id,
+            subtitles,
+        } => {
+            let Some(client) = st.client.clone() else { return };
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                preview_qualities(&client, &tx, file_id, subtitles).await;
+            });
+        }
     }
 }
 
@@ -421,7 +431,7 @@ async fn preview_stream(
     let subs = prepare_subtitles(client, &subtitles).await;
     match client.file_download_link(&file_id).await {
         Ok(link) => {
-            let headers = client.stream_headers().await;
+            let headers = client.stream_headers(&link.url).await;
             let _ = tx.send(Msg::PreviewStream {
                 req_id,
                 name,
@@ -434,6 +444,41 @@ async fn preview_stream(
             let _ = tx.send(Msg::PreviewFailed {
                 req_id,
                 what: format!("解析播放地址失败: {e}"),
+            });
+        }
+    }
+}
+
+/// 解析媒体文件的可用清晰度列表, 连同同集字幕一起交给 UI 供选择。
+async fn preview_qualities(
+    client: &PikPakClient,
+    tx: &Sender<Msg>,
+    file_id: String,
+    subtitles: Vec<(String, String)>,
+) {
+    let subs = prepare_subtitles(client, &subtitles).await;
+    match client.media_variants(&file_id).await {
+        Ok(variants) => {
+            // 每个清晰度单独探测所需请求头(通常 2~4 项)。
+            let mut qualities = Vec::with_capacity(variants.len());
+            for v in variants {
+                let headers = client.stream_headers(&v.url).await;
+                qualities.push(QualityOption {
+                    label: v.label,
+                    url: v.url,
+                    headers,
+                });
+            }
+            let _ = tx.send(Msg::PreviewQualities {
+                file_id,
+                qualities,
+                subs,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::QualitiesFailed {
+                file_id,
+                what: format!("获取清晰度失败: {e}"),
             });
         }
     }

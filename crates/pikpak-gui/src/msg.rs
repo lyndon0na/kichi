@@ -2,6 +2,14 @@ use pikpak_core::types::{FileList, Quota, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// 一个可选择的清晰度: 标签、限时直链, 以及播放时服务端接受的请求头。
+#[derive(Clone)]
+pub struct QualityOption {
+    pub label: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+}
+
 /// UI -> 后台线程 指令。
 pub enum Cmd {
     /// 账号密码登录。
@@ -89,6 +97,11 @@ pub enum Cmd {
         media: bool,
         subtitles: Vec<(String, String)>,
     },
+    /// 解析媒体文件可用清晰度, 供预览时选择画质。
+    PreviewQualities {
+        file_id: String,
+        subtitles: Vec<(String, String)>,
+    },
 }
 
 /// 后台线程 -> UI 消息。
@@ -170,6 +183,18 @@ pub enum Msg {
         req_id: u64,
         name: String,
         path: PathBuf,
+    },
+    /// 媒体文件可用清晰度列表已解析。原画在前, 每项自带解析好的请求头。
+    PreviewQualities {
+        file_id: String,
+        qualities: Vec<QualityOption>,
+        /// 已下载到本地的同集外挂字幕路径。
+        subs: Vec<PathBuf>,
+    },
+    /// 清晰度解析失败(供「播放」子菜单结束加载态)。
+    QualitiesFailed {
+        file_id: String,
+        what: String,
     },
     /// 预览准备失败(解析直链或下载出错)。
     PreviewFailed {

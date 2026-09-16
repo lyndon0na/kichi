@@ -6,8 +6,8 @@ use crate::format;
 use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
-use super::helpers::truncate_text;
-use super::types::{ClipKind, ColDrag, Crumb, RowAction, SortBy, ViewMode};
+use super::helpers::{is_media_file, truncate_text};
+use super::types::{ClipKind, ColDrag, Crumb, QualityMenuState, RowAction, SortBy, ViewMode};
 use super::App;
 
 /// 文件类型 -> 图标 / 颜色。
@@ -182,6 +182,42 @@ fn breadcrumbs(ui: &mut egui::Ui, th: &Theme, crumbs: &[Crumb], budget: f32) -> 
     clicked
 }
 
+/// 「播放」子菜单: 原画直达 + 已解析出的清晰度。
+/// 子菜单打开时会请求(若尚未缓存)该文件的清晰度列表。
+fn play_menu(
+    ui: &mut egui::Ui,
+    id: &str,
+    name: &str,
+    state: QualityMenuState<'_>,
+    actions: &mut Vec<RowAction>,
+) {
+    actions.push(RowAction::FetchQualities(id.to_string(), name.to_string()));
+    ui.menu_button("播放", |ui| match state {
+        QualityMenuState::Loading => {
+            if ui.button("原画（直接播放）").clicked() {
+                actions.push(RowAction::OpenFile(id.to_string(), name.to_string()));
+                ui.close_menu();
+            }
+            ui.add_enabled(false, egui::Button::new("加载清晰度…"));
+        }
+        QualityMenuState::Ready(r) if !r.options.is_empty() => {
+            for opt in &r.options {
+                if ui.button(&opt.label).clicked() {
+                    actions.push(RowAction::PlayOption(id.to_string(), opt.clone()));
+                    ui.close_menu();
+                }
+            }
+        }
+        QualityMenuState::Ready(_) => {
+            if ui.button("原画（直接播放）").clicked() {
+                actions.push(RowAction::OpenFile(id.to_string(), name.to_string()));
+                ui.close_menu();
+            }
+            ui.add_enabled(false, egui::Button::new("无可用清晰度"));
+        }
+    });
+}
+
 /// 列表行; 返回勾选变更的 id(仅点击复选框时)。
 fn file_row(
     ui: &mut egui::Ui,
@@ -190,6 +226,7 @@ fn file_row(
     is_sel: bool,
     even: bool,
     has_clip: bool,
+    quality: QualityMenuState<'_>,
     actions: &mut Vec<RowAction>,
     name_x: f32,
     size_left: f32,
@@ -327,7 +364,9 @@ fn file_row(
                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
-            if ui.button("打开 / 预览").clicked() {
+            if is_media_file(&f_ctx.name) {
+                play_menu(ui, &f_ctx.id, &f_ctx.name, quality, actions);
+            } else if ui.button("打开").clicked() {
                 actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
@@ -444,6 +483,8 @@ impl App {
         let mut ask_rename = false;
         let mut ask_preview = false;
         let mut ask_trash = false;
+        // 各菜单/操作栏产生的行级操作, 统一在最后处理。
+        let mut actions: Vec<RowAction> = Vec::new();
 
         // 当前可见行统计(过滤后)与选中项信息, 供顶部栏与选中栏使用。
         let (folders, plain) = self.visible_rows();
@@ -666,12 +707,21 @@ impl App {
                             {
                                 ask_rename = true;
                             }
-                            if show_open
-                                && ui
-                                    .add(egui::Button::new(RichText::new("打开 / 预览").color(th.text_weak)))
+                            if show_open {
+                                let id = sel_meta[0].0.clone();
+                                let name = sel_meta[0].1.clone();
+                                if is_media_file(&name) {
+                                    let quality = match self.quality_cache.get(&id) {
+                                        Some(r) => QualityMenuState::Ready(r),
+                                        None => QualityMenuState::Loading,
+                                    };
+                                    play_menu(ui, &id, &name, quality, &mut actions);
+                                } else if ui
+                                    .add(egui::Button::new(RichText::new("打开").color(th.text_weak)))
                                     .clicked()
-                            {
-                                ask_preview = true;
+                                {
+                                    ask_preview = true;
+                                }
                             }
                             if !dl_candidates.is_empty()
                                 && ui
@@ -741,7 +791,6 @@ impl App {
 
         // -------- 文件列表 --------
         let mut open_folder: Option<(String, String)> = None;
-        let mut actions: Vec<RowAction> = Vec::new();
         let mut sel_reqs: Vec<String> = Vec::new();
 
         egui::CentralPanel::default()
@@ -817,7 +866,11 @@ impl App {
                         // 列表视图
                         for f in &all_files {
                             let is_sel = self.selected.contains(&f.id);
-                            if let Some(id) = file_row(ui, th, f, is_sel, even, has_clip, &mut actions, cn_x, cs_x, ct_x) {
+                            let quality = match self.quality_cache.get(&f.id) {
+                                Some(r) => QualityMenuState::Ready(r),
+                                None => QualityMenuState::Loading,
+                            };
+                            if let Some(id) = file_row(ui, th, f, is_sel, even, has_clip, quality, &mut actions, cn_x, cs_x, ct_x) {
                                 sel_reqs.push(id);
                             }
                             even = !even;
@@ -838,6 +891,10 @@ impl App {
                                     if idx >= all_files.len() { break; }
                                     let f = all_files[idx];
                                     let is_sel = self.selected.contains(&f.id);
+                                    let quality = match self.quality_cache.get(&f.id) {
+                                        Some(r) => QualityMenuState::Ready(r),
+                                        None => QualityMenuState::Loading,
+                                    };
                                     let (rect, resp) = ui.allocate_exact_size(vec2(card_w, card_h), egui::Sense::click());
                                     let painter = ui.painter().clone();
 
@@ -926,7 +983,9 @@ impl App {
                                                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
                                                 ui.close_menu();
                                             }
-                                            if ui.button("打开 / 预览").clicked() {
+                                            if is_media_file(&f_ctx.name) {
+                                                play_menu(ui, &f_ctx.id, &f_ctx.name, quality, &mut actions);
+                                            } else if ui.button("打开").clicked() {
                                                 actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
                                                 ui.close_menu();
                                             }
@@ -1019,6 +1078,8 @@ impl App {
                     match action {
                         RowAction::OpenFolder(id, name) => open_folder = Some((id, name)),
                         RowAction::OpenFile(id, name) => self.open_preview(id, name),
+                        RowAction::FetchQualities(id, name) => self.fetch_qualities(id, name),
+                        RowAction::PlayOption(id, opt) => self.play_option(id, opt),
                         RowAction::DownloadFile(id, name) => self.download_single(id, name),
                         RowAction::CopyName(name) => {
                             let ctx2 = ctx.clone();

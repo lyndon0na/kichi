@@ -36,6 +36,8 @@ pub(crate) fn play_with_mpv(
 ) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("mpv");
     cmd.arg("--force-window=yes");
+    // 直链直接交给 ffmpeg 播放即可, 关闭 ytdl 钩子(否则会对直链跑 youtube-dl)。
+    cmd.arg("--ytdl=no");
     cmd.arg(format!("--title={name}"));
     let mut fields: Vec<String> = Vec::new();
     for (k, v) in headers {

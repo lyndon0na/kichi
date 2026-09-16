@@ -24,7 +24,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlJob, DlStatus, Page, SortBy, TransferTab, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, ViewMode};
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
@@ -122,6 +122,11 @@ pub struct App {
     /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
     pub(crate) preview_pending: Option<(u64, String)>,
 
+    /// 已解析的媒体文件清晰度缓存(file_id -> 清晰度+字幕)。
+    pub(crate) quality_cache: HashMap<String, QualityReady>,
+    /// 正在解析清晰度的文件 id。
+    pub(crate) quality_inflight: HashSet<String>,
+
     pub(crate) toast: Option<(Color32, String, Instant)>,
 }
 
@@ -211,6 +216,8 @@ impl App {
             },
             selected_dl: HashSet::new(),
             preview_pending: None,
+            quality_cache: HashMap::new(),
+            quality_inflight: HashSet::new(),
             col_size_w: 100.0,
             col_time_w: 160.0,
             col_dragging: None,
@@ -284,6 +291,8 @@ impl App {
                     self.jobs.clear();
                     self.clipboard = None;
                     self.preview_pending = None;
+                    self.quality_cache.clear();
+                    self.quality_inflight.clear();
                     self.dir_cache.clear();
                     self.dir_inflight.clear();
                 }
@@ -301,6 +310,8 @@ impl App {
                     self.jobs.clear();
                     self.clipboard = None;
                     self.preview_pending = None;
+                    self.quality_cache.clear();
+                    self.quality_inflight.clear();
                     self.reset_stack();
                 }
                 Msg::Files {
@@ -503,6 +514,24 @@ impl App {
                         Ok(()) => self.toast_ok(&format!("已打开「{name}」")),
                         Err(e) => self.toast_err(&format!("打开文件失败: {e}")),
                     }
+                }
+                Msg::PreviewQualities {
+                    file_id,
+                    qualities,
+                    subs,
+                } => {
+                    self.quality_inflight.remove(&file_id);
+                    self.quality_cache.insert(
+                        file_id,
+                        QualityReady {
+                            options: qualities,
+                            subs,
+                        },
+                    );
+                }
+                Msg::QualitiesFailed { file_id, what } => {
+                    self.quality_inflight.remove(&file_id);
+                    self.toast_err(&what);
                 }
                 Msg::PreviewFailed { req_id, what } => {
                     if self
@@ -1042,22 +1071,27 @@ impl App {
         self.enqueue_downloads(vec![(id, name)], dir);
     }
 
+    /// 当前目录下与 `name` 同集的外挂字幕 (id, 文件名)。
+    fn episode_subtitles(&self, name: &str) -> Vec<(String, String)> {
+        self.files
+            .iter()
+            .filter(|f| {
+                !f.is_folder()
+                    && helpers::is_subtitle_file(&f.name)
+                    && helpers::subtitle_of(name, &f.name)
+            })
+            .map(|f| (f.id.clone(), f.name.clone()))
+            .collect()
+    }
+
     /// 预览云端文件: 音/视频交给 mpv 流式播放, 其他下载后交给系统查看器。
     pub(crate) fn open_preview(&mut self, id: String, name: String) {
         let media = helpers::is_media_file(&name);
         let req_id = self.alloc_req_id();
         self.preview_pending = Some((req_id, name.clone()));
         // 同目录下的同集字幕, 播放时一并挂载(仅媒体预览需要)。
-        let subtitles: Vec<(String, String)> = if media {
-            self.files
-                .iter()
-                .filter(|f| {
-                    !f.is_folder()
-                        && helpers::is_subtitle_file(&f.name)
-                        && helpers::subtitle_of(&name, &f.name)
-                })
-                .map(|f| (f.id.clone(), f.name.clone()))
-                .collect()
+        let subtitles = if media {
+            self.episode_subtitles(&name)
         } else {
             Vec::new()
         };
@@ -1074,6 +1108,41 @@ impl App {
             media,
             subtitles,
         });
+    }
+
+    /// 确保某媒体文件的可用清晰度已解析(供「播放」子菜单展示)。
+    pub(crate) fn fetch_qualities(&mut self, id: String, name: String) {
+        if self.quality_cache.contains_key(&id) || self.quality_inflight.contains(&id) {
+            return;
+        }
+        self.quality_inflight.insert(id.clone());
+        let subtitles = self.episode_subtitles(&name);
+        self.send(Cmd::PreviewQualities {
+            file_id: id,
+            subtitles,
+        });
+    }
+
+    /// 用某个已解析出的清晰度播放(挂载同集字幕)。
+    pub(crate) fn play_option(&mut self, id: String, opt: crate::msg::QualityOption) {
+        let subs = self
+            .quality_cache
+            .get(&id)
+            .map(|r| r.subs.clone())
+            .unwrap_or_default();
+        let name = self
+            .files
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| opt.label.clone());
+        match helpers::play_with_mpv(&name, &opt.url, &opt.headers, &subs) {
+            Ok(()) => self.toast_ok(&format!("正在用 mpv 播放「{name}」({})", opt.label)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
+            }
+            Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
+        }
     }
 }
 
@@ -1101,6 +1170,9 @@ impl eframe::App for App {
 
         if self.auth_checking {
             ctx.request_repaint_after(Duration::from_millis(120));
+        } else if !self.quality_inflight.is_empty() {
+            // 清晰度解析中, 加快轮询让「播放」子菜单尽快展开选项。
+            ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.has_active_downloads()
             || self.dir_loading
             || !self.dir_inflight.is_empty()

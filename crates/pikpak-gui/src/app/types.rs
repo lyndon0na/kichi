@@ -61,7 +61,12 @@ impl Default for DirEntry {
 #[derive(Clone)]
 pub(crate) enum RowAction {
     OpenFolder(String, String),
+    /// 打开/播放(音视频为原画流式, 其他为下载后用系统查看器)。
     OpenFile(String, String),
+    /// 确保某媒体文件的可用清晰度已解析(供「播放」子菜单展示)。
+    FetchQualities(String, String),
+    /// 用已解析出的某个清晰度播放。
+    PlayOption(String, crate::msg::QualityOption),
     DownloadFile(String, String),
     CopyName(String),
     Rename(String, String),
@@ -165,4 +170,19 @@ pub(crate) struct ColDrag {
     pub orig_size_w: f32,
     /// 拖拽开始时 col_time_w
     pub orig_time_w: f32,
+}
+
+/// 已解析的可用清晰度与同集字幕。
+pub(crate) struct QualityReady {
+    pub options: Vec<crate::msg::QualityOption>,
+    pub subs: Vec<PathBuf>,
+}
+
+/// 「播放」子菜单展示所需的清晰度状态。
+#[derive(Clone, Copy)]
+pub(crate) enum QualityMenuState<'a> {
+    /// 尚未解析完成。
+    Loading,
+    /// 已解析(可能为空列表)。
+    Ready(&'a QualityReady),
 }

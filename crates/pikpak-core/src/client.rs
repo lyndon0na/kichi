@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::captcha::{build_user_agent, captcha_sign, now_ms};
 use crate::consts::*;
-use crate::download::{part_path, DownloadLink};
+use crate::download::{part_path, DownloadLink, MediaVariant};
 use crate::error::{
     api_error, ApiErrorBody, Error, ERROR_CODE_CAPTCHA_INVALID, ERROR_CODE_TOKEN_EXPIRED,
     ERROR_INVALID_ACCOUNT,
@@ -565,25 +565,64 @@ impl PikPakClient {
 
     // ---------- 本地下载 ----------
 
-    /// 返回访问签名直链所需的请求头(User-Agent / X-Device-Id / 可选 Bearer)。
-    /// 供外部播放器(如 mpv `--http-header-fields`)直接流式播放时携带。
-    pub async fn stream_headers(&self) -> Vec<(String, String)> {
+    /// 返回访问签名直链所需的最小请求头(User-Agent / X-Device-Id, 必要时附加 Bearer)。
+    ///
+    /// 先按与下载相同的策略探测: 不带 Bearer 发一个单字节 `Range` 请求, 若被拒
+    /// (401/403) 再带 Bearer 重试一次, 取服务端接受的那一组。避免向本就免鉴权的
+    /// 签名直链附加多余的 Authorization(部分 CDN 会因此重置连接、读到 0 字节)。
+    pub async fn stream_headers(&self, url: &str) -> Vec<(String, String)> {
         let (token, _, user_id, _) = self.current_auth().await;
+        let ua = build_user_agent(&self.device_id, &user_id);
         let mut headers = vec![
-            (
-                "User-Agent".to_string(),
-                build_user_agent(&self.device_id, &user_id),
-            ),
+            ("User-Agent".to_string(), ua.clone()),
             ("X-Device-Id".to_string(), self.device_id.clone()),
         ];
-        if !token.is_empty() {
-            headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+        let accept = |s: reqwest::StatusCode| {
+            s.is_success() || s == reqwest::StatusCode::PARTIAL_CONTENT
+        };
+
+        let first = self
+            .http
+            .get(url)
+            .header("User-Agent", &ua)
+            .header("X-Device-Id", &self.device_id)
+            .header("Range", "bytes=0-0")
+            .send()
+            .await;
+        if let Ok(resp) = first {
+            let status = resp.status();
+            drop(resp);
+            if accept(status) {
+                return headers;
+            }
+            if (status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN)
+                && !token.is_empty()
+            {
+                let retry = self
+                    .http
+                    .get(url)
+                    .header("User-Agent", &ua)
+                    .header("X-Device-Id", &self.device_id)
+                    .header("Range", "bytes=0-0")
+                    .bearer_auth(&token)
+                    .send()
+                    .await;
+                if let Ok(resp) = retry {
+                    let status = resp.status();
+                    drop(resp);
+                    if accept(status) {
+                        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+                    }
+                }
+            }
         }
         headers
     }
 
-    /// 解析某个文件的下载直链。需先对该 action 做 captcha init, 再取文件详情。
-    pub async fn file_download_link(&self, file_id: &str) -> Result<DownloadLink, Error> {
+    /// 拉取文件详情。需先对该 action 做 captcha init, 且 captcha token 用后即焚。
+    /// 目标是文件夹时返回错误。
+    async fn fetch_file_detail(&self, file_id: &str) -> Result<Value, Error> {
         let id = file_id.trim();
         if id.is_empty() {
             return Err(Error::msg("文件 ID 为空"));
@@ -605,9 +644,32 @@ impl PikPakClient {
             .unwrap_or_default()
             .contains("folder")
         {
-            return Err(Error::msg("该目标是一个文件夹, 本地下载暂只支持单个文件"));
+            return Err(Error::msg("该目标是一个文件夹, 暂只支持单个文件"));
         }
-        DownloadLink::from_detail(id, &detail)
+        Ok(detail)
+    }
+
+    /// 解析某个文件的下载直链。
+    pub async fn file_download_link(&self, file_id: &str) -> Result<DownloadLink, Error> {
+        let detail = self.fetch_file_detail(file_id).await?;
+        DownloadLink::from_detail(file_id.trim(), &detail)
+    }
+
+    /// 解析某个媒体文件可用的清晰度列表(原画在前, 其余按分辨率降序)。
+    /// 无转码流时回退为仅原画; 无任何可用直链时返回错误。
+    pub async fn media_variants(&self, file_id: &str) -> Result<Vec<MediaVariant>, Error> {
+        let detail = self.fetch_file_detail(file_id).await?;
+        let mut variants = MediaVariant::from_detail(&detail);
+        if variants.is_empty() {
+            let dl = DownloadLink::from_detail(file_id.trim(), &detail)?;
+            variants.push(MediaVariant {
+                label: "原画".to_string(),
+                url: dl.url,
+                is_origin: true,
+                height: 0,
+            });
+        }
+        Ok(variants)
     }
 
     /// 把某个文件(已拿到直链)流式下载到 `dest`。
