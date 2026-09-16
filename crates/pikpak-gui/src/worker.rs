@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pikpak_core::consts::OFFLINE_PHASES;
+use pikpak_core::download::part_path;
 use pikpak_core::{session, Error, PikPakClient};
 use tokio::sync::Semaphore;
 
@@ -606,6 +607,7 @@ async fn spawn_download(
         let permit = sem.acquire().await.ok();
         if cancel.load(Ordering::Relaxed) {
             cleanup_dl(&cancel_map, &reserved, req_id, &dest).await;
+            discard_part(&dest);
             drop(permit);
             let _ = msg_tx.send(Msg::DlCancelled { req_id });
             return;
@@ -634,6 +636,8 @@ async fn spawn_download(
             }
             Err(e) => {
                 if cancel.load(Ordering::Relaxed) {
+                    // 取消: 未完成的 .part 直接删除, 不保留续传文件。
+                    discard_part(&dest);
                     let _ = msg_tx.send(Msg::DlCancelled { req_id });
                 } else {
                     let _ = msg_tx.send(Msg::DlFailed {
@@ -644,6 +648,11 @@ async fn spawn_download(
             }
         }
     });
+}
+
+/// 取消下载时清理未完成的 `.part` 临时文件。
+fn discard_part(dest: &Path) {
+    let _ = std::fs::remove_file(part_path(dest));
 }
 
 /// 任务结束后统一移除取消登记与文件名占位。

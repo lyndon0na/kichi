@@ -19,7 +19,6 @@ fn status_line(job: &DlJob) -> (egui::Color32, String) {
         DlStatus::Queued => (egui::Color32::from_gray(150), "排队中".into()),
         DlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "下载中".into()),
         DlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
-        DlStatus::Cancelled => (egui::Color32::from_gray(150), "已取消(保留 .part 可续传)".into()),
         DlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
     }
 }
@@ -221,7 +220,7 @@ fn dl_card(
             btns.push(("打开目录", DlOp::OpenDir));
             btns.push(("移除", DlOp::Remove));
         }
-        DlStatus::Cancelled | DlStatus::Failed(_) => {
+        DlStatus::Failed(_) => {
             if !job.file_id.is_empty() {
                 btns.push(("重试", DlOp::Retry));
             }
@@ -340,6 +339,21 @@ impl App {
                                 .size(13.0)
                                 .color(th.text),
                         );
+                        // 选中项里可重试(已知云端 id 的取消/失败任务)的数量
+                        let retryable: Vec<u64> = self
+                            .selected_dl
+                            .iter()
+                            .copied()
+                            .filter(|rid| {
+                                self.jobs
+                                    .get(rid)
+                                    .map(|j| {
+                                        !j.file_id.is_empty()
+                                            && matches!(j.status, DlStatus::Failed(_))
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .collect();
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
                                 .add(
@@ -359,6 +373,20 @@ impl App {
                                         })
                                         .unwrap_or(false);
                                     ops.push((*rid, if running { DlOp::Cancel } else { DlOp::Remove }));
+                                }
+                            }
+                            if !retryable.is_empty()
+                                && ui
+                                    .add(
+                                        egui::Button::new(RichText::new("重试选中").color(th.on_accent))
+                                            .fill(th.accent)
+                                            .stroke(Stroke::NONE)
+                                            .corner_radius(th.cr(8)),
+                                    )
+                                    .clicked()
+                            {
+                                for rid in &retryable {
+                                    ops.push((*rid, DlOp::Retry));
                                 }
                             }
                             if ui
@@ -614,21 +642,44 @@ impl App {
                     }
                 }
                 DlOp::Retry => {
-                    if let Some(job) = self.jobs.get(&rid) {
-                        if !job.file_id.is_empty() {
-                            let items = vec![(job.file_id.clone(), job.name.clone())];
-                            let dir = job.dir.clone();
-                            self.enqueue_downloads(items, dir);
+                    // 取出旧条目信息后移除旧行, 再重新入队, 避免同一文件被重复重试。
+                    let info = self.jobs.get(&rid).and_then(|j| {
+                        if j.file_id.is_empty() {
+                            None
+                        } else {
+                            Some((
+                                j.file_id.clone(),
+                                j.name.clone(),
+                                j.dir.clone(),
+                                j.record_id.clone(),
+                            ))
                         }
+                    });
+                    if let Some((file_id, name, dir, rec_id)) = info {
+                        self.enqueue_downloads(vec![(file_id.clone(), name.clone())], dir.clone());
+                        self.jobs.remove(&rid);
+                        self.selected_dl.remove(&rid);
+                        if self.last_clicked_dl == Some(rid) {
+                            self.last_clicked_dl = None;
+                        }
+                        settings::remove_download_record(&rec_id, &file_id, &name, &dir);
                     }
                 }
                 DlOp::Remove => {
                     if let Some(job) = self.jobs.get(&rid) {
                         // 仅从列表/历史记录中移除, 不删除本地已下载的文件
-                        settings::remove_download_record(&job.file_id, &job.name, &job.dir);
+                        settings::remove_download_record(
+                            &job.record_id,
+                            &job.file_id,
+                            &job.name,
+                            &job.dir,
+                        );
                     }
                     self.jobs.remove(&rid);
                     self.selected_dl.remove(&rid);
+                    if self.last_clicked_dl == Some(rid) {
+                        self.last_clicked_dl = None;
+                    }
                 }
             }
         }

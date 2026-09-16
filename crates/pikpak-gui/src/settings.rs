@@ -72,16 +72,25 @@ pub fn append_download_record(record: DownloadRecord) {
 
 /// 从下载历史中移除与给定任务匹配的最新一条记录。
 /// 仅删除列表记录, 不触碰已下载到本地的文件。
-pub fn remove_download_record(file_id: &str, name: &str, dir: &std::path::Path) {
+/// 优先用记录唯一标识 `rec_id` 精确匹配, 缺失时回退到 file_id / 名称+目录。
+pub fn remove_download_record(
+    rec_id: &str,
+    file_id: &str,
+    name: &str,
+    dir: &std::path::Path,
+) {
     let mut history = load_download_history();
-    // 优先按 file_id 精确匹配, 否则回退到 名称+目录; history 最新在前, 移除最新一条。
-    let idx = history.iter().position(|r| {
-        if !file_id.is_empty() && !r.file_id.is_empty() {
-            r.file_id == file_id
-        } else {
-            r.name == name && r.dir == dir
-        }
-    });
+    let idx = if !rec_id.is_empty() {
+        history.iter().position(|r| r.timestamp == rec_id)
+    } else {
+        history.iter().position(|r| {
+            if !file_id.is_empty() && !r.file_id.is_empty() {
+                r.file_id == file_id
+            } else {
+                r.name == name && r.dir == dir
+            }
+        })
+    };
     if let Some(i) = idx {
         history.remove(i);
         save_download_history(&history);

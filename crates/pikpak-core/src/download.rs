@@ -216,7 +216,7 @@ pub(crate) fn value_i64(v: &Value) -> Option<i64> {
 }
 
 /// 给定正式目标路径, 返回其伴随的 `.part` 临时路径。
-pub(crate) fn part_path(dest: &std::path::Path) -> std::path::PathBuf {
+pub fn part_path(dest: &std::path::Path) -> std::path::PathBuf {
     let mut s = dest.as_os_str().to_owned();
     s.push(".part");
     std::path::PathBuf::from(s)

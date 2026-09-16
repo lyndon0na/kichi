@@ -194,16 +194,18 @@ impl App {
                 let mut next_id = 0u64;
                 // 历史文件按最新在前存储; 倒序分配 id, 使 id 随时间递增(旧的 id 小)。
                 for record in history.into_iter().rev() {
-                    next_id += 1;
                     let status = match record.status {
                         DownloadRecordStatus::Done => DlStatus::Done,
-                        DownloadRecordStatus::Cancelled => DlStatus::Cancelled,
+                        // 取消的任务不再保留在列表中(旧版本可能写入过取消记录)。
+                        DownloadRecordStatus::Cancelled => continue,
                         DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
                     };
+                    next_id += 1;
                     jobs.insert(
                         next_id,
                         DlJob {
                             file_id: record.file_id,
+                            record_id: record.timestamp,
                             name: record.name,
                             dir: record.dir,
                             total: record.total,
@@ -436,6 +438,8 @@ impl App {
                             j.total = bytes;
                         }
                         // 保存下载记录到磁盘
+                        let rec_id = Self::chrono_now();
+                        j.record_id = rec_id.clone();
                         settings::append_download_record(DownloadRecord {
                             file_id: j.file_id.clone(),
                             name: j.name.clone(),
@@ -443,29 +447,24 @@ impl App {
                             total: j.total,
                             done: j.done,
                             status: DownloadRecordStatus::Done,
-                            timestamp: Self::chrono_now(),
+                            timestamp: rec_id,
                         });
                     }
                 }
                 Msg::DlCancelled { req_id } => {
-                    if let Some(j) = self.jobs.get_mut(&req_id) {
-                        j.status = DlStatus::Cancelled;
-                        // 保存下载记录到磁盘
-                        settings::append_download_record(DownloadRecord {
-                            file_id: j.file_id.clone(),
-                            name: j.name.clone(),
-                            dir: j.dir.clone(),
-                            total: j.total,
-                            done: j.done,
-                            status: DownloadRecordStatus::Cancelled,
-                            timestamp: Self::chrono_now(),
-                        });
+                    // 取消后从列表移除且不保留记录; 未完成的 .part 已由下载线程删除。
+                    self.jobs.remove(&req_id);
+                    self.selected_dl.remove(&req_id);
+                    if self.last_clicked_dl == Some(req_id) {
+                        self.last_clicked_dl = None;
                     }
                 }
                 Msg::DlFailed { req_id, what } => {
                     if let Some(j) = self.jobs.get_mut(&req_id) {
                         j.status = DlStatus::Failed(what.clone());
                         // 保存下载记录到磁盘
+                        let rec_id = Self::chrono_now();
+                        j.record_id = rec_id.clone();
                         settings::append_download_record(DownloadRecord {
                             file_id: j.file_id.clone(),
                             name: j.name.clone(),
@@ -473,7 +472,7 @@ impl App {
                             total: j.total,
                             done: j.done,
                             status: DownloadRecordStatus::Failed(what),
-                            timestamp: Self::chrono_now(),
+                            timestamp: rec_id,
                         });
                     }
                 }
@@ -571,15 +570,14 @@ impl App {
         self.toast(msg, self.theme().danger);
     }
 
-    /// 获取当前时间的 ISO 8601 格式字符串。
+    /// 生成一条历史记录的唯一标识(纳秒时间戳, 字符串形式)。
     fn chrono_now() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now()
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
-        // 使用简单的 Unix 时间戳作为唯一标识
-        format!("{}", secs)
+            .as_nanos();
+        format!("{nanos}")
     }
 
     pub(crate) fn persist_settings(&self) {

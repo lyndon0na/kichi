@@ -121,7 +121,6 @@ pub(crate) enum DlStatus {
     Queued,
     Running,
     Done,
-    Cancelled,
     Failed(String),
 }
 
@@ -129,6 +128,8 @@ pub(crate) enum DlStatus {
 pub(crate) struct DlJob {
     /// 云端文件 id, 用于失败/取消后重试(历史记录可能为空)。
     pub file_id: String,
+    /// 对应的历史记录唯一标识, 用于精确移除(历史记录或首次写盘后填充)。
+    pub record_id: String,
     pub name: String,
     pub dir: PathBuf,
     pub total: u64,
@@ -144,6 +145,7 @@ impl DlJob {
     pub fn queued(file_id: String, name: String, dir: PathBuf) -> Self {
         DlJob {
             file_id,
+            record_id: String::new(),
             name,
             dir,
             total: 0,
