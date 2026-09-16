@@ -28,7 +28,7 @@ impl App {
 
         match self.page {
             Page::Files => self.files_page(ctx, th),
-            Page::Shares => self.placeholder_page(ctx, th, Glyph::Share, "我的分享", "暂无分享内容"),
+            Page::Shares => self.shares_page(ctx, th),
             Page::Trash => self.placeholder_page(ctx, th, Glyph::Trash, "回收站", "回收站为空"),
             Page::Tasks => self.tasks_page(ctx, th),
             Page::Transfers => self.transfers_page(ctx, th),
@@ -197,6 +197,10 @@ impl App {
             nav = Some(Page::Settings);
         }
         if let Some(p) = nav {
+            // 进入「我的分享」时按新鲜度决定是否刷新(仅在页面确实切换时)。
+            if p == Page::Shares && self.page != Page::Shares {
+                self.enter_shares();
+            }
             self.page = p;
         }
 

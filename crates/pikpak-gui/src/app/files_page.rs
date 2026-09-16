@@ -334,6 +334,10 @@ fn file_row(
             }
         }
         ui.separator();
+        if ui.button("分享").clicked() {
+            actions.push(RowAction::Share(f_ctx.id.clone()));
+            ui.close_menu();
+        }
         if ui.button("复制").clicked() {
             actions.push(RowAction::CopyItem(f_ctx.id.clone()));
             ui.close_menu();
@@ -447,6 +451,7 @@ impl App {
         let mut ask_rename = false;
         let mut ask_preview = false;
         let mut ask_trash = false;
+        let mut ask_share = false;
         // 各菜单/操作栏产生的行级操作, 统一在最后处理。
         let mut actions: Vec<RowAction> = Vec::new();
 
@@ -683,6 +688,12 @@ impl App {
                             {
                                 self.clip_selection(ClipKind::Copy);
                             }
+                            if ui
+                                .add(egui::Button::new(RichText::new("分享").color(th.text_weak)))
+                                .clicked()
+                            {
+                                ask_share = true;
+                            }
                             if single
                                 && ui
                                     .add(egui::Button::new(RichText::new("重命名").color(th.text_weak)))
@@ -758,6 +769,9 @@ impl App {
         }
         if ask_trash {
             self.trash_confirm = Some(sel_meta.clone());
+        }
+        if ask_share {
+            self.share_selection();
         }
 
         if want_download && !dl_candidates.is_empty() {
@@ -988,6 +1002,10 @@ impl App {
                                             }
                                         }
                                         ui.separator();
+                                        if ui.button("分享").clicked() {
+                                            actions.push(RowAction::Share(f_ctx.id.clone()));
+                                            ui.close_menu();
+                                        }
                                         if ui.button("复制").clicked() {
                                             actions.push(RowAction::CopyItem(f_ctx.id.clone()));
                                             ui.close_menu();
@@ -1092,6 +1110,9 @@ impl App {
                         }
                         RowAction::CutItem(id) => {
                             self.clip_item(ClipKind::Cut, id);
+                        }
+                        RowAction::Share(id) => {
+                            self.share_item(id);
                         }
                         RowAction::PasteInto(id) => {
                             self.paste_into(Some(id));

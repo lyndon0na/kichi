@@ -619,6 +619,56 @@ impl PikPakClient {
         a.captcha_token = None;
     }
 
+    // ---------- 分享 ----------
+
+    /// 创建分享链接。`expiration_days` 为 -1 表示永久;
+    /// `need_password` 为 true 时生成带提取码的私密分享。
+    pub async fn share_create(
+        &self,
+        file_ids: &[String],
+        expiration_days: i64,
+        need_password: bool,
+    ) -> Result<ShareCreated, Error> {
+        let url = format!("{API_HOST}/drive/v1/share");
+        let body = json!({
+            "file_ids": file_ids,
+            "share_to": if need_password { "encryptedlink" } else { "publiclink" },
+            "expiration_days": expiration_days,
+            "pass_code_option": if need_password { "REQUIRED" } else { "NOT_REQUIRED" },
+        });
+        let value = self.post(&url, &body).await?;
+        let created: ShareCreated = serde_json::from_value(value)?;
+        if created.share_url.is_empty() {
+            return Err(Error::msg("创建分享失败: 响应缺少分享链接"));
+        }
+        Ok(created)
+    }
+
+    /// 列出「我的分享」(单页)。分页游标为空表示没有更多。
+    pub async fn share_list(
+        &self,
+        size: usize,
+        next_page_token: Option<&str>,
+    ) -> Result<ShareList, Error> {
+        let url = format!("{API_HOST}/drive/v1/share/list");
+        let mut query: Vec<(&str, String)> = vec![
+            ("limit", size.to_string()),
+            ("thumbnail_size", "SIZE_SMALL".into()),
+        ];
+        if let Some(tok) = next_page_token {
+            query.push(("page_token", tok.to_string()));
+        }
+        let value = self.get(&url, &query).await?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    /// 批量取消分享(服务端接口为 share:batchDelete)。
+    pub async fn share_batch_delete(&self, ids: &[String]) -> Result<(), Error> {
+        let url = format!("{API_HOST}/drive/v1/share:batchDelete");
+        self.post(&url, &json!({ "ids": ids })).await?;
+        Ok(())
+    }
+
     // ---------- 本地下载 ----------
 
     /// 返回访问签名直链所需的最小请求头(User-Agent / X-Device-Id, 必要时附加 Bearer)。
@@ -1204,5 +1254,59 @@ mod tests {
         // 缺省目标 -> to 为空对象(表示根目录)。
         let root = move_copy_body(&ids, None);
         assert!(root["to"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn share_list_parse() {
+        // 计数类字段既有字符串也有数字, 都应能解析。
+        let json = json!({
+            "data": [
+                {
+                    "share_id": "S1",
+                    "share_url": "https://mypikpak.com/s/S1",
+                    "title": "我的分享",
+                    "pass_code": "abcd",
+                    "share_to": "encryptedlink",
+                    "file_num": "3",
+                    "view_count": 10,
+                    "restore_count": "1",
+                    "expiration_days": "-1",
+                    "share_status": "OK"
+                }
+            ],
+            "next_page_token": "next"
+        });
+        let list: ShareList = serde_json::from_value(json).unwrap();
+        assert_eq!(list.shares.len(), 1);
+        assert_eq!(list.next_page_token.as_deref(), Some("next"));
+        let s = &list.shares[0];
+        assert_eq!(s.share_id, "S1");
+        assert_eq!(s.view_count, "10");
+        assert!(s.needs_pass_code());
+        assert_eq!(s.expiry_label(), "永久");
+        assert_eq!(s.file_count(), 3);
+        assert!(!s.is_unavailable());
+    }
+
+    #[test]
+    fn share_list_defaults_and_empty_token() {
+        let json = json!({ "data": [], "next_page_token": "" });
+        let list: ShareList = serde_json::from_value(json).unwrap();
+        assert!(list.shares.is_empty());
+        assert!(list.next_page_token.is_none());
+    }
+
+    #[test]
+    fn share_created_parse() {
+        let json = json!({
+            "share_id": "S2",
+            "share_url": "https://mypikpak.com/s/S2",
+            "pass_code": "",
+            "share_text": "分享给你"
+        });
+        let c: ShareCreated = serde_json::from_value(json).unwrap();
+        assert_eq!(c.share_id, "S2");
+        assert_eq!(c.pass_code, "");
+        assert_eq!(c.share_text, "分享给你");
     }
 }

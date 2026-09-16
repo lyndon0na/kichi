@@ -72,6 +72,8 @@ pub(crate) enum RowAction {
     Rename(String, String),
     CopyItem(String),
     CutItem(String),
+    /// 为该项(若在多选内则为整个选中集)创建分享。
+    Share(String),
     PasteInto(String),
     Trash(String),
 }
@@ -340,4 +342,13 @@ pub(crate) enum QualityMenuState<'a> {
     Loading,
     /// 已解析(可能为空列表)。
     Ready(&'a QualityReady),
+}
+
+/// 分享创建成功后的结果展示。
+#[derive(Clone)]
+pub(crate) struct ShareResult {
+    pub url: String,
+    pub pass_code: String,
+    pub share_text: String,
+    pub label: String,
 }

@@ -26,6 +26,14 @@ pub(crate) fn open_path(path: &std::path::Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// 用系统默认浏览器打开一个 URL(交给 xdg-open, 同样适用于分享链接)。
+pub(crate) fn open_url(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+}
+
 /// 用 mpv 流式播放直链, 并携带签名直链所需的请求头。
 /// `subs` 为同集外挂字幕的本地路径, 会作为 `--sub-file` 挂载。
 pub(crate) fn play_with_mpv(

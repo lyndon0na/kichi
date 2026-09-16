@@ -21,6 +21,30 @@ where
     }
 }
 
+/// 兼容 number / string / bool / null 四种形式的字符串值(服务端计数等字段
+/// 有时返回数字、有时返回字符串)。
+fn de_string<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Val {
+        Str(String),
+        Int(i64),
+        Float(f64),
+        Bool(bool),
+        Null,
+    }
+    Ok(match Val::deserialize(d)? {
+        Val::Str(s) => s,
+        Val::Int(v) => v.to_string(),
+        Val::Float(v) => v.to_string(),
+        Val::Bool(v) => v.to_string(),
+        Val::Null => String::new(),
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 #[serde(default)]
 pub struct File {
@@ -159,6 +183,96 @@ impl Tasks {
             next_page_token,
         }
     }
+}
+
+/// 「我的分享」条目。服务端计数类字段以字符串 / 数字混用, 统一防御式转字符串。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct Share {
+    pub share_id: String,
+    #[serde(deserialize_with = "de_string")]
+    pub share_url: String,
+    #[serde(deserialize_with = "de_string")]
+    pub title: String,
+    #[serde(deserialize_with = "de_string")]
+    pub pass_code: String,
+    #[serde(deserialize_with = "de_string")]
+    pub share_to: String,
+    #[serde(deserialize_with = "de_string")]
+    pub create_time: String,
+    #[serde(deserialize_with = "de_string")]
+    pub expiration_days: String,
+    #[serde(deserialize_with = "de_string")]
+    pub view_count: String,
+    #[serde(deserialize_with = "de_string")]
+    pub restore_count: String,
+    #[serde(deserialize_with = "de_string")]
+    pub file_num: String,
+    #[serde(deserialize_with = "de_string")]
+    pub share_status: String,
+}
+
+impl Share {
+    /// 是否为需要提取码的私密分享。
+    pub fn needs_pass_code(&self) -> bool {
+        !self.pass_code.is_empty() || self.share_to.contains("encrypted")
+    }
+
+    /// 有效期描述: 永久 / N 天。
+    pub fn expiry_label(&self) -> String {
+        match self.expiration_days.trim() {
+            "" | "-1" | "0" => "永久".to_string(),
+            d => format!("{d} 天"),
+        }
+    }
+
+    /// 是否已失效或不可访问(status 非 OK)。
+    pub fn is_unavailable(&self) -> bool {
+        !self.share_status.is_empty() && self.share_status != "OK"
+    }
+
+    pub fn file_count(&self) -> i64 {
+        self.file_num.trim().parse().unwrap_or(0)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ShareList {
+    pub shares: Vec<Share>,
+    pub next_page_token: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ShareList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default, alias = "shares")]
+            data: Vec<Share>,
+            #[serde(default)]
+            next_page_token: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(ShareList {
+            shares: raw.data,
+            next_page_token: raw.next_page_token.filter(|s| !s.is_empty()),
+        })
+    }
+}
+
+/// 创建分享的响应。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ShareCreated {
+    pub share_id: String,
+    #[serde(deserialize_with = "de_string")]
+    pub share_url: String,
+    #[serde(deserialize_with = "de_string")]
+    pub pass_code: String,
+    #[serde(deserialize_with = "de_string")]
+    pub share_text: String,
 }
 
 pub fn task_str(task: &Task, keys: &[&str]) -> Option<String> {

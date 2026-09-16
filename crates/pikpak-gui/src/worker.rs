@@ -431,6 +431,66 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 preview_qualities(&client, &tx, file_id, subtitles).await;
             });
         }
+        Cmd::CreateShare {
+            file_ids,
+            expiration_days,
+            need_password,
+            label,
+        } => {
+            let Some(client) = &st.client else { return };
+            match client
+                .share_create(&file_ids, expiration_days, need_password)
+                .await
+            {
+                Ok(c) => {
+                    let _ = tx.send(Msg::ShareCreated {
+                        url: c.share_url,
+                        pass_code: c.pass_code,
+                        share_text: c.share_text,
+                        label,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error {
+                        what: format!("创建分享失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::ListShares {
+            token,
+            append,
+            req_id,
+        } => {
+            let Some(client) = &st.client else { return };
+            match client.share_list(100, token.as_deref()).await {
+                Ok(list) => {
+                    let _ = tx.send(Msg::Shares {
+                        req_id,
+                        append,
+                        list,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::SharesFailed {
+                        what: format!("加载分享列表失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::DeleteShares { ids } => {
+            let Some(client) = &st.client else { return };
+            match client.share_batch_delete(&ids).await {
+                Ok(()) => {
+                    let _ = tx.send(Msg::SharesDeleted { ids });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error {
+                        what: format!("取消分享失败: {e}"),
+                    });
+                }
+            }
+        }
     }
 }
 

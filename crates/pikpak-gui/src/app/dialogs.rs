@@ -6,7 +6,7 @@ use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
-use super::helpers::{input, truncate_text};
+use super::helpers::{self, input, truncate_text};
 use super::types::Crumb;
 use super::App;
 
@@ -290,6 +290,221 @@ impl App {
             }
             if close {
                 self.offline_picker_open = false;
+            }
+        }
+
+        if let Some(targets) = self.share_dialog.clone() {
+            let n = targets.len();
+            let name = if n == 1 {
+                targets[0].1.clone()
+            } else {
+                format!("选中的 {n} 项")
+            };
+            let mut confirm = false;
+            let mut close = false;
+            egui::Window::new("创建分享")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("将分享: {name}")).color(th.text));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("有效期").color(th.text_weak));
+                        let label = match self.share_expiration_days {
+                            1 => "1 天",
+                            7 => "7 天",
+                            30 => "30 天",
+                            _ => "永久",
+                        };
+                        egui::ComboBox::from_id_salt("share_expiry")
+                            .selected_text(label)
+                            .show_ui(ui, |ui| {
+                                for (d, l) in
+                                    [(-1, "永久"), (1, "1 天"), (7, "7 天"), (30, "30 天")]
+                                {
+                                    ui.selectable_value(&mut self.share_expiration_days, d, l);
+                                }
+                            });
+                    });
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut self.share_need_password, "需要提取码");
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("带提取码的分享更安全, 访问者需输入提取码。")
+                            .color(th.text_faint)
+                            .size(11.5),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("创建分享").color(th.on_accent))
+                                    .fill(th.accent)
+                                    .stroke(Stroke::NONE)
+                                    .corner_radius(th.cr(8)),
+                            )
+                            .clicked()
+                        {
+                            confirm = true;
+                            close = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if confirm {
+                let ids: Vec<String> = targets.iter().map(|(id, _)| id.clone()).collect();
+                let label = if n == 1 {
+                    targets[0].1.clone()
+                } else {
+                    format!("{n} 项")
+                };
+                self.send(Cmd::CreateShare {
+                    file_ids: ids,
+                    expiration_days: self.share_expiration_days,
+                    need_password: self.share_need_password,
+                    label,
+                });
+            }
+            if close {
+                self.share_dialog = None;
+            }
+        }
+
+        if let Some(r) = self.share_result.clone() {
+            let mut close = false;
+            let mut copied: Option<&'static str> = None;
+            let mut open = false;
+            egui::Window::new("分享已创建")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("「{}」的分享链接", r.label))
+                            .color(th.text_weak)
+                            .size(12.5),
+                    );
+                    ui.add_space(6.0);
+                    // 用可选中标签展示(只读文本域在 egui 中无法拖选)。
+                    ui.label(
+                        RichText::new(r.url.as_str())
+                            .monospace()
+                            .size(12.5)
+                            .color(th.text),
+                    );
+                    if !r.pass_code.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("提取码").color(th.text_weak).size(12.5));
+                        ui.label(
+                            RichText::new(r.pass_code.as_str())
+                                .monospace()
+                                .size(12.5)
+                                .color(th.text),
+                        );
+                    }
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("复制链接").color(th.on_accent))
+                                    .fill(th.accent)
+                                    .stroke(Stroke::NONE)
+                                    .corner_radius(th.cr(8)),
+                            )
+                            .clicked()
+                        {
+                            ctx.copy_text(r.url.clone());
+                            copied = Some("已复制分享链接");
+                        }
+                        if !r.pass_code.is_empty()
+                            && ui
+                                .add(egui::Button::new(
+                                    RichText::new("复制链接和提取码").color(th.text_weak),
+                                ))
+                                .clicked()
+                        {
+                            // 服务端返回的 share_text 未必带提取码, 只有确认包含时才用,
+                            // 否则自行拼出「链接 + 提取码」, 保证与按钮文案一致。
+                            let text = if !r.share_text.is_empty()
+                                && r.share_text.contains(r.pass_code.as_str())
+                            {
+                                r.share_text.clone()
+                            } else {
+                                format!("{} 提取码: {}", r.url, r.pass_code)
+                            };
+                            ctx.copy_text(text);
+                            copied = Some("已复制分享链接和提取码");
+                        }
+                        if ui.button("在浏览器打开").clicked() {
+                            open = true;
+                        }
+                        if ui.button("完成").clicked() {
+                            close = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                });
+            if let Some(msg) = copied {
+                self.toast_ok(msg);
+            }
+            if open {
+                if let Err(e) = helpers::open_url(&r.url) {
+                    self.toast_err(&format!("打开链接失败: {e}"));
+                }
+            }
+            if close {
+                self.share_result = None;
+            }
+        }
+
+        if let Some(items) = self.share_delete_confirm.clone() {
+            let ids: Vec<String> = items.iter().map(|(id, _)| id.clone()).collect();
+            let mut confirmed = false;
+            let mut close = false;
+            egui::Window::new("取消分享")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if items.len() == 1 {
+                        let title = if items[0].1.is_empty() {
+                            "该分享"
+                        } else {
+                            items[0].1.as_str()
+                        };
+                        ui.label(format!("确定取消分享「{title}」吗? 分享链接将立即失效。"));
+                    } else {
+                        ui.label(format!("确定取消这 {} 个分享吗?", items.len()));
+                    }
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("取消分享").color(Color32::WHITE))
+                                    .fill(th.danger)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            confirmed = true;
+                            close = true;
+                        }
+                        if ui.button("关闭").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if confirmed {
+                self.send(Cmd::DeleteShares { ids });
+                // 等待后台 SharesDeleted 回执后再关闭，避免请求失败时丢失确认框。
+            } else if close {
+                self.share_delete_confirm = None;
             }
         }
     }

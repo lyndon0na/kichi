@@ -4,6 +4,7 @@ mod helpers;
 mod library_page;
 mod login;
 mod settings_page;
+mod shares_page;
 mod sidebar;
 mod tasks_page;
 mod transfers_page;
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use pikpak_core::session;
-use pikpak_core::types::{File, FileList, Quota, Task};
+use pikpak_core::types::{File, FileList, Quota, Share, Task};
 
 use crate::kde;
 use crate::msg::{Cmd, Msg};
@@ -24,10 +25,12 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode};
+use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode};
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
+/// 「我的分享」列表新鲜期: 进入页面时命中则不发请求。
+const SHARES_TTL: Duration = Duration::from_secs(60);
 /// 目录缓存上限, 超出按 LRU 淘汰(不淘汰当前目录)。
 const DIR_CACHE_CAP: usize = 64;
 
@@ -139,6 +142,25 @@ pub struct App {
     pub(crate) quality_cache: HashMap<String, QualityReady>,
     /// 正在解析清晰度的文件 id。
     pub(crate) quality_inflight: HashSet<String>,
+
+    // 我的分享
+    pub(crate) shares: Vec<Share>,
+    pub(crate) shares_next: Option<String>,
+    pub(crate) shares_loading: bool,
+    /// 最近一次分享列表请求的 id, 用于丢弃乱序的旧响应。
+    pub(crate) shares_req: u64,
+    /// 分享列表多选(share_id)。
+    pub(crate) shares_selected: HashSet<String>,
+    /// 最近一次成功加载分享列表的时间, 用于 SWR 新鲜度判定。
+    pub(crate) shares_fetched_at: Option<Instant>,
+    /// 待创建分享的选中项 (id, name); Some 表示「创建分享」设置框打开。
+    pub(crate) share_dialog: Option<Vec<(String, String)>>,
+    pub(crate) share_expiration_days: i64,
+    pub(crate) share_need_password: bool,
+    /// 分享创建成功后的结果框。
+    pub(crate) share_result: Option<ShareResult>,
+    /// 取消分享确认 (share_id, 标题)。
+    pub(crate) share_delete_confirm: Option<Vec<(String, String)>>,
 
     pub(crate) toast: Option<(Color32, String, Instant)>,
 }
@@ -277,6 +299,17 @@ impl App {
             preview_pending: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
+            shares: Vec::new(),
+            shares_next: None,
+            shares_loading: false,
+            shares_req: 0,
+            shares_selected: HashSet::new(),
+            shares_fetched_at: None,
+            share_dialog: None,
+            share_expiration_days: -1,
+            share_need_password: false,
+            share_result: None,
+            share_delete_confirm: None,
             col_size_w: 100.0,
             col_time_w: 160.0,
             col_dragging: None,
@@ -388,6 +421,7 @@ impl App {
                     self.quality_inflight.clear();
                     self.dir_cache.clear();
                     self.dir_inflight.clear();
+                    self.clear_share_state();
                     // 登录态失效: 若保存过密码则尝试自动重登。
                     self.auto_login_if_possible();
                 }
@@ -413,6 +447,7 @@ impl App {
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
                     self.reset_stack();
+                    self.clear_share_state();
                 }
                 Msg::Files {
                     parent,
@@ -754,6 +789,53 @@ impl App {
                         self.preview_pending = None;
                     }
                     self.toast_err(&what);
+                }
+                Msg::ShareCreated {
+                    url,
+                    pass_code,
+                    share_text,
+                    label,
+                } => {
+                    self.share_result = Some(ShareResult {
+                        url,
+                        pass_code,
+                        share_text,
+                        label,
+                    });
+                    // 新分享已产生: 作废缓存, 并在分享页时立即刷新以展示。
+                    self.shares_fetched_at = None;
+                    if self.page == Page::Shares {
+                        self.refresh_shares();
+                    }
+                }
+                Msg::Shares { req_id, append, list } => {
+                    if req_id != self.shares_req {
+                        continue;
+                    }
+                    self.shares_loading = false;
+                    self.shares_fetched_at = Some(Instant::now());
+                    self.shares_next = list.next_page_token;
+                    if append {
+                        let known: HashSet<String> =
+                            self.shares.iter().map(|s| s.share_id.clone()).collect();
+                        for s in list.shares {
+                            if !known.contains(&s.share_id) {
+                                self.shares.push(s);
+                            }
+                        }
+                    } else {
+                        self.shares = list.shares;
+                    }
+                }
+                Msg::SharesFailed { what } => {
+                    self.shares_loading = false;
+                    self.toast_err(&what);
+                }
+                Msg::SharesDeleted { ids } => {
+                    self.shares.retain(|s| !ids.contains(&s.share_id));
+                    self.shares_selected.retain(|id| !ids.contains(id));
+                    self.share_delete_confirm = None;
+                    self.toast_ok(&format!("已取消 {} 个分享", ids.len()));
                 }
             }
         }
@@ -1534,6 +1616,92 @@ impl App {
             Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
         }
     }
+
+    // ---------- 我的分享 ----------
+
+    /// 清空分享相关状态(退出登录 / 会话失效时调用)。
+    pub(crate) fn clear_share_state(&mut self) {
+        self.shares.clear();
+        self.shares_next = None;
+        self.shares_loading = false;
+        self.shares_req = 0;
+        self.shares_selected.clear();
+        self.shares_fetched_at = None;
+        self.share_dialog = None;
+        self.share_result = None;
+        self.share_delete_confirm = None;
+    }
+
+    /// 进入「我的分享」页面: 缓存新鲜则零请求, 否则刷新。
+    pub(crate) fn enter_shares(&mut self) {
+        let fresh = self
+            .shares_fetched_at
+            .is_some_and(|t| t.elapsed() < SHARES_TTL);
+        if !fresh {
+            self.refresh_shares();
+        }
+    }
+
+    /// 请求刷新「我的分享」首页列表(保留旧数据, 仅置加载态)。
+    pub(crate) fn refresh_shares(&mut self) {
+        self.shares_loading = true;
+        self.shares_next = None;
+        self.shares_selected.clear();
+        self.shares_req += 1;
+        let req_id = self.shares_req;
+        self.send(Cmd::ListShares {
+            token: None,
+            append: false,
+            req_id,
+        });
+    }
+
+    /// 加载分享列表下一页。
+    pub(crate) fn load_more_shares(&mut self) {
+        let Some(token) = self.shares_next.clone() else {
+            return;
+        };
+        self.shares_loading = true;
+        self.shares_req += 1;
+        let req_id = self.shares_req;
+        self.send(Cmd::ListShares {
+            token: Some(token),
+            append: true,
+            req_id,
+        });
+    }
+
+    /// 打开「创建分享」设置框, targets 为 (id, name)。
+    pub(crate) fn open_share_dialog(&mut self, targets: Vec<(String, String)>) {
+        if targets.is_empty() {
+            return;
+        }
+        self.share_dialog = Some(targets);
+    }
+
+    /// 从当前选中项打开「创建分享」设置框。
+    pub(crate) fn share_selection(&mut self) {
+        let targets = self.selected_names();
+        if targets.is_empty() {
+            self.toast_warn("请先选择要分享的文件");
+            return;
+        }
+        self.open_share_dialog(targets);
+    }
+
+    /// 右键单项分享: 若该项在多选内则分享整个选中集, 否则仅分享该项。
+    pub(crate) fn share_item(&mut self, id: String) {
+        let targets = if self.selected.contains(&id) && self.selected.len() > 1 {
+            self.selected_names()
+        } else {
+            self.files
+                .iter()
+                .filter(|f| f.id == id)
+                .map(|f| (f.id.clone(), f.name.clone()))
+                .collect()
+        };
+        self.open_share_dialog(targets);
+    }
 }
 
 // ================= 主循环 =================
@@ -1570,6 +1738,7 @@ impl eframe::App for App {
         } else if self.has_active_downloads()
             || self.dir_loading
             || !self.dir_inflight.is_empty()
+            || self.shares_loading
         {
             // 目录请求在途(含后台静默校正)时加快轮询, 让结果尽快呈现。
             ctx.request_repaint_after(Duration::from_millis(80));

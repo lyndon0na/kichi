@@ -1,4 +1,4 @@
-use pikpak_core::types::{FileList, Quota, Task};
+use pikpak_core::types::{FileList, Quota, ShareList, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -131,6 +131,24 @@ pub enum Cmd {
         file_id: String,
         subtitles: Vec<(String, String)>,
     },
+    /// 为选中项创建分享链接。expiration_days=-1 表示永久。
+    CreateShare {
+        file_ids: Vec<String>,
+        expiration_days: i64,
+        need_password: bool,
+        /// 单个文件时为其名称, 多项时形如 "3 项", 用于结果展示。
+        label: String,
+    },
+    /// 列出「我的分享」。append=true 表示加载下一页。
+    ListShares {
+        token: Option<String>,
+        append: bool,
+        req_id: u64,
+    },
+    /// 批量取消分享。
+    DeleteShares {
+        ids: Vec<String>,
+    },
 }
 
 /// 后台线程 -> UI 消息。
@@ -261,6 +279,27 @@ pub enum Msg {
     PreviewFailed {
         req_id: u64,
         what: String,
+    },
+    /// 分享创建成功。
+    ShareCreated {
+        url: String,
+        pass_code: String,
+        share_text: String,
+        label: String,
+    },
+    /// 「我的分享」列表。
+    Shares {
+        req_id: u64,
+        append: bool,
+        list: ShareList,
+    },
+    /// 加载「我的分享」失败。
+    SharesFailed {
+        what: String,
+    },
+    /// 分享已取消(带上 id 以便即时移除)。
+    SharesDeleted {
+        ids: Vec<String>,
     },
     Error {
         what: String,
