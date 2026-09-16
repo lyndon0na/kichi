@@ -68,9 +68,13 @@ pub(crate) fn play_with_mpv(
     cmd.spawn().map(|_| ())
 }
 
-/// 可用 mpv 播放的音/视频扩展名(小写, 单点维护)。
-const MEDIA_EXTS: &[&str] = &[
+/// 可用 mpv 播放的视频扩展名(小写, 单点维护)。
+const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "ts", "rmvb", "m4v", "m2ts", "mpg", "mpeg",
+];
+
+/// 可用 mpv 播放的音频扩展名(小写, 单点维护)。
+const AUDIO_EXTS: &[&str] = &[
     "mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "ape",
 ];
 
@@ -86,7 +90,13 @@ fn ext_lower(name: &str) -> String {
 
 /// 判断文件名是否为可用 mpv 播放的音/视频。
 pub(crate) fn is_media_file(name: &str) -> bool {
-    MEDIA_EXTS.contains(&ext_lower(name).as_str())
+    let ext = ext_lower(name);
+    VIDEO_EXTS.contains(&ext.as_str()) || AUDIO_EXTS.contains(&ext.as_str())
+}
+
+/// 判断文件名是否为视频(只有视频需要考虑清晰度/转码流)。
+pub(crate) fn is_video_file(name: &str) -> bool {
+    VIDEO_EXTS.contains(&ext_lower(name).as_str())
 }
 
 /// 判断文件名是否为常见字幕格式。
@@ -335,13 +345,22 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_media_file, is_subtitle_file, subtitle_of};
+    use super::{is_media_file, is_subtitle_file, is_video_file, subtitle_of};
 
     #[test]
     fn detects_audio_and_video() {
         assert!(is_media_file("movie.MKV"));
         assert!(is_media_file("song.flac"));
         assert!(is_media_file("clip.mp4"));
+    }
+
+    #[test]
+    fn detects_only_video_as_video() {
+        assert!(is_video_file("movie.MKV"));
+        assert!(is_video_file("clip.mp4"));
+        assert!(!is_video_file("song.flac"));
+        assert!(!is_video_file("track.mp3"));
+        assert!(!is_video_file("photo.jpg"));
     }
 
     #[test]

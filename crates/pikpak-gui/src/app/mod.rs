@@ -1643,8 +1643,8 @@ impl App {
         let media = helpers::is_media_file(&name);
         let req_id = self.alloc_req_id();
         self.preview_pending = Some((req_id, name.clone()));
-        // 同目录下的同集字幕, 播放时一并挂载(仅媒体预览需要)。
-        let subtitles = if media {
+        // 同目录下的同集字幕, 播放时一并挂载(仅视频需要)。
+        let subtitles = if helpers::is_video_file(&name) {
             self.episode_subtitles(&name)
         } else {
             Vec::new()

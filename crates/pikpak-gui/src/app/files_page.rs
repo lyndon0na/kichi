@@ -6,7 +6,7 @@ use crate::format;
 use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
-use super::helpers::{is_media_file, truncate_text};
+use super::helpers::{is_media_file, is_video_file, truncate_text};
 use super::types::{ClipKind, ColDrag, Crumb, QualityMenuState, RowAction, SortBy, ViewMode};
 use super::App;
 
@@ -326,11 +326,14 @@ fn file_row(
                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
-            if is_media_file(&f_ctx.name) {
+            if is_video_file(&f_ctx.name) {
                 play_menu(ui, &f_ctx.id, &f_ctx.name, quality, actions);
-            } else if ui.button("打开").clicked() {
-                actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
-                ui.close_menu();
+            } else {
+                let label = if is_media_file(&f_ctx.name) { "播放" } else { "打开" };
+                if ui.button(label).clicked() {
+                    actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
+                    ui.close_menu();
+                }
             }
         }
         ui.separator();
@@ -704,17 +707,20 @@ impl App {
                             if show_open {
                                 let id = sel_meta[0].0.clone();
                                 let name = sel_meta[0].1.clone();
-                                if is_media_file(&name) {
+                                if is_video_file(&name) {
                                     let quality = match self.quality_cache.get(&id) {
                                         Some(r) => QualityMenuState::Ready(r),
                                         None => QualityMenuState::Loading,
                                     };
                                     play_menu(ui, &id, &name, quality, &mut actions);
-                                } else if ui
-                                    .add(egui::Button::new(RichText::new("打开").color(th.text_weak)))
-                                    .clicked()
-                                {
-                                    ask_preview = true;
+                                } else {
+                                    let label = if is_media_file(&name) { "播放" } else { "打开" };
+                                    if ui
+                                        .add(egui::Button::new(RichText::new(label).color(th.text_weak)))
+                                        .clicked()
+                                    {
+                                        ask_preview = true;
+                                    }
                                 }
                             }
                             if !dl_candidates.is_empty()
@@ -994,11 +1000,14 @@ impl App {
                                                 actions.push(RowAction::DownloadFile(f_ctx.id.clone(), f_ctx.name.clone()));
                                                 ui.close_menu();
                                             }
-                                            if is_media_file(&f_ctx.name) {
+                                            if is_video_file(&f_ctx.name) {
                                                 play_menu(ui, &f_ctx.id, &f_ctx.name, quality, &mut actions);
-                                            } else if ui.button("打开").clicked() {
-                                                actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
-                                                ui.close_menu();
+                                            } else {
+                                                let label = if is_media_file(&f_ctx.name) { "播放" } else { "打开" };
+                                                if ui.button(label).clicked() {
+                                                    actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
+                                                    ui.close_menu();
+                                                }
                                             }
                                         }
                                         ui.separator();
