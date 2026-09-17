@@ -164,6 +164,42 @@ pub struct App {
     /// 取消分享确认 (share_id, 标题)。
     pub(crate) share_delete_confirm: Option<Vec<(String, String)>>,
 
+    // 转存分享
+    /// 转存弹窗是否打开。
+    pub(crate) save_share_open: bool,
+    /// 用户输入的分享链接或分享 ID。
+    pub(crate) save_share_input: String,
+    /// 用户输入的提取码。
+    pub(crate) save_share_pass_code: String,
+    /// 是否正在解析分享链接。
+    pub(crate) save_share_resolving: bool,
+    /// 解析成功后的分享 ID。
+    pub(crate) save_share_id: Option<String>,
+    /// 解析成功后的分享标题。
+    pub(crate) save_share_title: Option<String>,
+    /// 解析成功后的 pass_code_token(转存时需要)。
+    pub(crate) save_share_token: Option<String>,
+    /// 解析出的文件列表。
+    pub(crate) save_share_files: Vec<File>,
+    /// 用户选中的文件 id。
+    pub(crate) save_share_selected: HashSet<String>,
+    /// 是否正在转存。
+    pub(crate) save_share_saving: bool,
+    /// 解析或转存的错误信息。
+    pub(crate) save_share_error: Option<String>,
+    /// 转存目标目录选择器是否打开。
+    pub(crate) save_share_picker_open: bool,
+    /// 转存目标目录选择器的面包屑导航。
+    pub(crate) save_share_picker_stack: Vec<Crumb>,
+    /// 转存目标目录选择器当前目录的子文件夹。
+    pub(crate) save_share_picker_folders: Vec<File>,
+    /// 转存目标目录选择器加载状态。
+    pub(crate) save_share_picker_loading: bool,
+    /// 转存目标目录选择器请求 ID。
+    pub(crate) save_share_picker_req: u64,
+    /// 用户选择的转存目标目录 (id, name); None 表示默认位置。
+    pub(crate) save_share_dest: Option<(String, String)>,
+
     // 回收站
     pub(crate) trash: Vec<File>,
     pub(crate) trash_next: Option<String>,
@@ -326,6 +362,26 @@ impl App {
             share_need_password: false,
             share_result: None,
             share_delete_confirm: None,
+            save_share_open: false,
+            save_share_input: String::new(),
+            save_share_pass_code: String::new(),
+            save_share_resolving: false,
+            save_share_id: None,
+            save_share_title: None,
+            save_share_token: None,
+            save_share_files: Vec::new(),
+            save_share_selected: HashSet::new(),
+            save_share_saving: false,
+            save_share_error: None,
+            save_share_picker_open: false,
+            save_share_picker_stack: vec![Crumb {
+                id: None,
+                label: "我的云盘".to_string(),
+            }],
+            save_share_picker_folders: Vec::new(),
+            save_share_picker_loading: false,
+            save_share_picker_req: 0,
+            save_share_dest: None,
             trash: Vec::new(),
             trash_next: None,
             trash_loading: false,
@@ -587,11 +643,20 @@ impl App {
                 Msg::OfflineRetried => self.send(Cmd::RefreshTasks),
                 Msg::OfflineDeleted => self.send(Cmd::RefreshTasks),
                 Msg::Folders { parent, req_id, files } => {
-                    if req_id != self.offline_picker_req || parent != self.offline_picker_parent() {
-                        continue;
+                    // 路由到对应的目录选择器
+                    if self.save_share_picker_open && req_id == self.save_share_picker_req {
+                        if parent != self.save_share_picker_parent() {
+                            continue;
+                        }
+                        self.save_share_picker_loading = false;
+                        self.save_share_picker_folders = files;
+                    } else if req_id == self.offline_picker_req {
+                        if parent != self.offline_picker_parent() {
+                            continue;
+                        }
+                        self.offline_picker_loading = false;
+                        self.offline_picker_folders = files;
                     }
-                    self.offline_picker_loading = false;
-                    self.offline_picker_folders = files;
                 }
                 Msg::Quota(quota) => self.quota = quota,
                 Msg::TasksAll { buckets } => {
@@ -919,6 +984,46 @@ impl App {
                     self.share_delete_confirm = None;
                     self.toast_ok(&format!("已取消 {} 个分享", ids.len()));
                 }
+                Msg::ShareResolved {
+                    share_id,
+                    title,
+                    pass_code_token,
+                    files,
+                } => {
+                    self.save_share_resolving = false;
+                    self.save_share_id = Some(share_id);
+                    self.save_share_title = Some(title);
+                    self.save_share_token = Some(pass_code_token);
+                    self.save_share_files = files;
+                    self.save_share_selected = HashSet::new();
+                }
+                Msg::ShareResolveFailed { what } => {
+                    self.save_share_resolving = false;
+                    self.save_share_error = Some(what);
+                }
+                Msg::ShareSaved { auto_move_failed } => {
+                    self.save_share_saving = false;
+                    self.save_share_open = false;
+                    let dest = self.save_share_dest.clone();
+                    self.clear_save_share_state();
+                    if auto_move_failed {
+                        if let Some((_, name)) = dest {
+                            self.toast_warn(&format!(
+                                "转存成功, 但自动移动失败, 请手动从「转存自分享」移动到「{name}」"
+                            ));
+                        } else {
+                            self.toast_warn("转存成功, 但自动移动失败, 请在「转存自分享」中查看");
+                        }
+                    } else if dest.is_some() {
+                        self.toast_ok("转存成功, 文件已移动到目标目录");
+                    } else {
+                        self.toast_ok("转存成功, 文件已保存到「转存自分享」");
+                    }
+                }
+                Msg::ShareSaveFailed { what } => {
+                    self.save_share_saving = false;
+                    self.save_share_error = Some(what);
+                }
             }
         }
     }
@@ -1031,6 +1136,33 @@ impl App {
         let req_id = self.offline_picker_req;
         self.send(Cmd::ListFolders {
             parent: self.offline_picker_parent(),
+            req_id,
+        });
+    }
+
+    /// 转存分享目录选择器当前所在目录。
+    pub(crate) fn save_share_picker_parent(&self) -> Option<String> {
+        self.save_share_picker_stack.last().and_then(|c| c.id.clone())
+    }
+
+    /// 打开转存分享「保存到」网盘目录选择器, 从根目录开始。
+    pub(crate) fn open_save_share_picker(&mut self) {
+        self.save_share_picker_open = true;
+        self.save_share_picker_stack = vec![Crumb {
+            id: None,
+            label: "我的云盘".into(),
+        }];
+        self.save_share_picker_list();
+    }
+
+    /// 请求转存分享选择器当前目录的子文件夹列表。
+    pub(crate) fn save_share_picker_list(&mut self) {
+        self.save_share_picker_loading = true;
+        self.save_share_picker_folders.clear();
+        self.save_share_picker_req += 1;
+        let req_id = self.save_share_picker_req;
+        self.send(Cmd::ListFolders {
+            parent: self.save_share_picker_parent(),
             req_id,
         });
     }
@@ -1712,6 +1844,41 @@ impl App {
         self.share_dialog = None;
         self.share_result = None;
         self.share_delete_confirm = None;
+    }
+
+    /// 清空转存分享弹窗状态。
+    pub(crate) fn clear_save_share_state(&mut self) {
+        self.save_share_input.clear();
+        self.save_share_pass_code.clear();
+        self.save_share_resolving = false;
+        self.save_share_id = None;
+        self.save_share_title = None;
+        self.save_share_token = None;
+        self.save_share_files.clear();
+        self.save_share_selected.clear();
+        self.save_share_saving = false;
+        self.save_share_error = None;
+        self.save_share_picker_open = false;
+        self.save_share_picker_stack = vec![Crumb {
+            id: None,
+            label: "我的云盘".to_string(),
+        }];
+        self.save_share_picker_folders.clear();
+        self.save_share_picker_loading = false;
+        self.save_share_dest = None;
+    }
+
+    /// 从分享链接中提取 share_id。支持完整 URL 或直接输入 ID。
+    pub(crate) fn extract_share_id(input: &str) -> String {
+        let input = input.trim();
+        // 尝试从 URL 中提取: https://mypikpak.com/s/VO8BcRb-XXX
+        if let Some(idx) = input.rfind("/s/") {
+            let id = &input[idx + 3..];
+            // 去掉可能的查询参数
+            id.split('?').next().unwrap_or(id).to_string()
+        } else {
+            input.to_string()
+        }
     }
 
     /// 进入「我的分享」页面: 缓存新鲜则零请求, 否则刷新。

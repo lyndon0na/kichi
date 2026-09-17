@@ -594,6 +594,335 @@ impl App {
                 self.trash_empty_confirm = false;
             }
         }
+
+        // 转存分享弹窗
+        if self.save_share_open {
+            let mut resolve = false;
+            let mut save = false;
+            let mut close = false;
+
+            egui::Window::new("转存分享")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(380.0);
+                    ui.add_space(4.0);
+
+                    // 错误提示
+                    if let Some(err) = &self.save_share_error {
+                        ui.label(RichText::new(err).color(th.danger).size(12.0));
+                        ui.add_space(6.0);
+                    }
+
+                    // 未解析: 显示输入框
+                    if self.save_share_id.is_none() {
+                        ui.label(RichText::new("分享链接或 ID").color(th.text_weak));
+                        let resp = ui.add(
+                            input(&mut self.save_share_input)
+                                .desired_width(360.0)
+                                .hint_text("https://mypikpak.com/s/xxx 或直接输入 ID"),
+                        );
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("提取码 (可选)").color(th.text_weak));
+                        ui.add(
+                            input(&mut self.save_share_pass_code)
+                                .desired_width(360.0)
+                                .hint_text("公开分享无需填写"),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            let can_resolve =
+                                !self.save_share_input.trim().is_empty() && !self.save_share_resolving;
+                            if ui.add_enabled(can_resolve, egui::Button::new("解析")).clicked() || enter {
+                                resolve = true;
+                            }
+                            if ui.button("取消").clicked() {
+                                close = true;
+                            }
+                            if self.save_share_resolving {
+                                ui.add_space(8.0);
+                                ui.spinner();
+                                ui.label(RichText::new("正在解析…").color(th.text_weak));
+                            }
+                        });
+                    } else {
+                        // 已解析: 显示文件列表
+                        let title = self.save_share_title.clone().unwrap_or_default();
+                        if !title.is_empty() {
+                            ui.label(
+                                RichText::new(format!("分享: {title}"))
+                                    .strong()
+                                    .color(th.text),
+                            );
+                            ui.add_space(6.0);
+                        }
+
+                        let files = self.save_share_files.clone();
+                        let selected = self.save_share_selected.clone();
+                        let all_selected =
+                            !files.is_empty() && selected.len() >= files.len();
+
+                        ui.label(
+                            RichText::new(format!("共 {} 个文件", files.len()))
+                                .color(th.text_weak)
+                                .size(12.0),
+                        );
+                        ui.add_space(4.0);
+
+                        // 全选
+                        let mut sel = all_selected;
+                        if ui.checkbox(&mut sel, "全选").changed() {
+                            if sel {
+                                self.save_share_selected =
+                                    files.iter().map(|f| f.id.clone()).collect();
+                            } else {
+                                self.save_share_selected.clear();
+                            }
+                        }
+                        ui.add_space(4.0);
+
+                        // 文件列表
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                for file in &files {
+                                    let is_sel = self.save_share_selected.contains(&file.id);
+                                    let mut checked = is_sel;
+                                    let icon = if file.is_folder() {
+                                        Glyph::Folder
+                                    } else {
+                                        Glyph::File
+                                    };
+                                    ui.horizontal(|ui| {
+                                        if ui.checkbox(&mut checked, "").changed() {
+                                            if checked {
+                                                self.save_share_selected.insert(file.id.clone());
+                                            } else {
+                                                self.save_share_selected.remove(&file.id);
+                                            }
+                                        }
+                                        let (r, _) = ui.allocate_exact_size(
+                                            vec2(16.0, 16.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        let color = if file.is_folder() {
+                                            Color32::from_rgb(232, 178, 84)
+                                        } else {
+                                            th.text_weak
+                                        };
+                                        icons::paint(ui.painter(), r, icon, color);
+                                        ui.label(
+                                            RichText::new(&file.name)
+                                                .color(th.text)
+                                                .size(13.0),
+                                        );
+                                    });
+                                }
+                            });
+
+                        ui.add_space(12.0);
+
+                        ui.horizontal(|ui| {
+                            let can_save = !self.save_share_selected.is_empty() && !self.save_share_saving;
+
+                            // 左侧: 目录选择按钮, 显示当前目标目录名或"默认位置"
+                            let dest_label = self
+                                .save_share_dest
+                                .as_ref()
+                                .map(|(_, name)| name.as_str())
+                                .unwrap_or("默认位置");
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new(dest_label).color(Color32::WHITE))
+                                        .fill(Color32::from_gray(45))
+                                        .stroke(Stroke::new(1.0, Color32::from_gray(70)))
+                                        .min_size(vec2(120.0, 0.0)),
+                                )
+                                .on_hover_text("点击选择保存目录")
+                                .clicked()
+                            {
+                                self.open_save_share_picker();
+                            }
+
+                            ui.add_space(8.0);
+
+                            // 右侧: 保存按钮
+                            if ui
+                                .add_enabled(
+                                    can_save,
+                                    egui::Button::new(RichText::new("保存").color(Color32::WHITE))
+                                        .fill(th.accent)
+                                        .stroke(Stroke::NONE),
+                                )
+                                .clicked()
+                            {
+                                save = true;
+                            }
+
+                            if ui.button("返回").clicked() {
+                                // 返回输入状态
+                                self.save_share_id = None;
+                                self.save_share_title = None;
+                                self.save_share_token = None;
+                                self.save_share_files.clear();
+                                self.save_share_selected.clear();
+                                self.save_share_error = None;
+                            }
+                            if ui.button("取消").clicked() {
+                                close = true;
+                            }
+                            if self.save_share_saving {
+                                ui.add_space(8.0);
+                                ui.spinner();
+                                ui.label(RichText::new("正在转存…").color(th.text_weak));
+                            }
+                        });
+                    }
+                });
+
+            if resolve {
+                self.save_share_error = None;
+                self.save_share_resolving = true;
+                let share_id = Self::extract_share_id(&self.save_share_input);
+                let pass_code = self.save_share_pass_code.clone();
+                self.send(Cmd::ResolveShare { share_id, pass_code });
+            }
+            if save {
+                if let (Some(share_id), Some(token)) =
+                    (&self.save_share_id, &self.save_share_token)
+                {
+                    self.save_share_saving = true;
+                    self.save_share_error = None;
+                    let file_ids: Vec<String> =
+                        self.save_share_selected.iter().cloned().collect();
+                    let dest = self.save_share_dest.as_ref().map(|(id, _)| id.clone());
+                    self.send(Cmd::SaveShare {
+                        share_id: share_id.clone(),
+                        pass_code_token: token.clone(),
+                        file_ids,
+                        dest,
+                    });
+                }
+            }
+            if close {
+                self.save_share_open = false;
+                self.clear_save_share_state();
+            }
+        }
+
+        // 转存分享目录选择器
+        if self.save_share_picker_open {
+            let crumbs = self.save_share_picker_stack.clone();
+            let folders = self.save_share_picker_folders.clone();
+            let loading = self.save_share_picker_loading;
+            let cur_dest = self.save_share_dest.clone();
+            let mut nav_to: Option<usize> = None;
+            let mut enter: Option<(String, String)> = None;
+            let mut confirm = false;
+            let mut close_picker = false;
+
+            egui::Window::new("选择转存到（网盘目录）")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        let last = crumbs.len().saturating_sub(1);
+                        for (i, c) in crumbs.iter().enumerate() {
+                            if i > 0 {
+                                ui.label(RichText::new("/").color(th.text_faint));
+                            }
+                            if ui.selectable_label(i == last, &c.label).clicked() && i != last {
+                                nav_to = Some(i);
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("save_share_picker_scroll")
+                        .auto_shrink([false, false])
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(380.0);
+                            if loading {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(24.0);
+                                    ui.spinner();
+                                    ui.add_space(24.0);
+                                });
+                            } else if folders.is_empty() {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(24.0);
+                                    ui.label(RichText::new("此目录下没有子文件夹").weak());
+                                    ui.add_space(24.0);
+                                });
+                            } else {
+                                for f in &folders {
+                                    if folder_row(ui, th, &f.name) {
+                                        enter = Some((f.id.clone(), f.name.clone()));
+                                    }
+                                    ui.add_space(2.0);
+                                }
+                            }
+                        });
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("选择此目录").color(Color32::WHITE))
+                                    .fill(th.accent)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close_picker = true;
+                        }
+                        if let Some((_, name)) = cur_dest.as_ref() {
+                            ui.label(RichText::new(format!("当前: {name}")).color(th.text_faint));
+                        }
+                    });
+                });
+
+            if let Some(i) = nav_to {
+                self.save_share_picker_stack.truncate(i + 1);
+                self.save_share_picker_list();
+            }
+            if let Some((id, name)) = enter {
+                self.save_share_picker_stack.push(Crumb {
+                    id: Some(id.clone()),
+                    label: name,
+                });
+                self.save_share_picker_list();
+            }
+            if confirm {
+                // 获取当前目录作为目标
+                let parent = self.save_share_picker_parent();
+                let label = self
+                    .save_share_picker_stack
+                    .last()
+                    .map(|c| c.label.clone())
+                    .unwrap_or_else(|| "我的云盘".to_string());
+                // 选择根目录等同于使用默认位置
+                match parent {
+                    Some(id) => self.save_share_dest = Some((id, label)),
+                    None => self.save_share_dest = None,
+                }
+                self.save_share_picker_open = false;
+            }
+            if close_picker {
+                self.save_share_picker_open = false;
+            }
+        }
     }
 
     pub(super) fn draw_toast(&mut self, ctx: &egui::Context) {

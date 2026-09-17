@@ -551,7 +551,116 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
+        Cmd::ResolveShare {
+            share_id,
+            pass_code,
+        } => {
+            let Some(client) = &st.client else { return };
+            match client.share_info(&share_id, &pass_code).await {
+                Ok(detail) => {
+                    let _ = tx.send(Msg::ShareResolved {
+                        share_id,
+                        title: detail.title,
+                        pass_code_token: detail.pass_code_token,
+                        files: detail.files,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::ShareResolveFailed {
+                        what: format!("解析分享失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::SaveShare {
+            share_id,
+            pass_code_token,
+            file_ids,
+            dest,
+        } => {
+            let Some(client) = &st.client else { return };
+
+            // 若用户指定了目标目录, 先快照「转存自分享」现有内容
+            let before_ids: Option<HashSet<String>> = if dest.is_some() {
+                snapshot_pack_folder(client).await.ok()
+            } else {
+                None
+            };
+
+            match client.share_restore(&share_id, &pass_code_token, &file_ids).await {
+                Ok(_) => {
+                    // 若用户指定了目标目录, 等转存完成后只移动新增的文件
+                    if let Some(dest_id) = dest {
+                        if let Err(e) =
+                            move_new_files(client, &dest_id, before_ids.unwrap_or_default()).await
+                        {
+                            tracing::warn!("自动移动转存文件失败: {e}");
+                            let _ = tx.send(Msg::ShareSaved {
+                                auto_move_failed: true,
+                            });
+                            return;
+                        }
+                    }
+                    let _ = tx.send(Msg::ShareSaved {
+                        auto_move_failed: false,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::ShareSaveFailed {
+                        what: format!("转存失败: {e}"),
+                    });
+                }
+            }
+        }
     }
+}
+
+/// 快照「转存自分享」文件夹中现有的文件 id 集合。
+async fn snapshot_pack_folder(client: &PikPakClient) -> Result<HashSet<String>, Error> {
+    let root_list = client.file_list(None, 100, None).await?;
+    let folder = root_list.files.iter().find(|f| {
+        f.is_folder()
+            && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+    });
+    let Some(folder) = folder else {
+        return Ok(HashSet::new());
+    };
+    let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
+    Ok(pack_list.files.iter().map(|f| f.id.clone()).collect())
+}
+
+/// 转存后自动移动: 等待服务端写入完成, 找出「转存自分享」中新增的文件并移动到目标目录。
+async fn move_new_files(
+    client: &PikPakClient,
+    dest_id: &str,
+    before_ids: HashSet<String>,
+) -> Result<(), Error> {
+    // 短暂等待让服务端完成转存写入
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let root_list = client.file_list(None, 100, None).await?;
+    let folder = root_list.files.iter().find(|f| {
+        f.is_folder()
+            && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+    });
+    let Some(folder) = folder else {
+        return Err(Error::msg("未找到「转存自分享」文件夹"));
+    };
+
+    let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
+    let new_ids: Vec<String> = pack_list
+        .files
+        .iter()
+        .filter(|f| !before_ids.contains(&f.id))
+        .map(|f| f.id.clone())
+        .collect();
+
+    if new_ids.is_empty() {
+        return Ok(());
+    }
+
+    client.batch_move(&new_ids, Some(dest_id)).await?;
+    Ok(())
 }
 
 /// 账号密码登录的公共实现(手动登录与密钥环自动登录共用)。

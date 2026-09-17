@@ -715,6 +715,77 @@ impl PikPakClient {
         Ok(())
     }
 
+    /// 解析他人分享链接, 获取文件列表与 `pass_code_token`(转存时需要)。
+    /// `pass_code` 为提取码, 公开分享传空字符串。
+    pub async fn share_info(
+        &self,
+        share_id: &str,
+        pass_code: &str,
+    ) -> Result<ShareDetail, Error> {
+        let url = format!("{API_HOST}/drive/v1/share");
+        let mut query: Vec<(&str, String)> = vec![
+            ("limit", "100".into()),
+            ("thumbnail_size", "SIZE_LARGE".into()),
+            ("share_id".into(), share_id.to_string()),
+        ];
+        if !pass_code.is_empty() {
+            query.push(("pass_code".into(), pass_code.to_string()));
+        }
+        let value = self.get(&url, &query).await?;
+        let detail: ShareDetail = serde_json::from_value(value)?;
+        if !detail.share_status.is_empty() && detail.share_status != "OK" {
+            return Err(Error::msg(format!(
+                "分享不可用: {}",
+                detail.share_status
+            )));
+        }
+        Ok(detail)
+    }
+
+    /// 分页获取分享内的文件列表(当文件数超过首页 limit 时)。
+    pub async fn share_detail(
+        &self,
+        share_id: &str,
+        pass_code_token: &str,
+        page_token: &str,
+    ) -> Result<ShareDetail, Error> {
+        let url = format!("{API_HOST}/drive/v1/share/detail");
+        let query: Vec<(&str, String)> = vec![
+            ("limit", "100".into()),
+            ("thumbnail_size", "SIZE_LARGE".into()),
+            ("share_id".into(), share_id.to_string()),
+            ("pass_code_token".into(), pass_code_token.to_string()),
+            ("page_token".into(), page_token.to_string()),
+        ];
+        let value = self.get(&url, &query).await?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    /// 将分享中的文件转存到自己的网盘。`file_ids` 为要保存的文件/文件夹 id 列表。
+    pub async fn share_restore(
+        &self,
+        share_id: &str,
+        pass_code_token: &str,
+        file_ids: &[String],
+    ) -> Result<ShareRestoreResult, Error> {
+        let url = format!("{API_HOST}/drive/v1/share/restore");
+        let body = json!({
+            "kind": "drive#file",
+            "share_id": share_id,
+            "pass_code_token": pass_code_token,
+            "file_ids": file_ids,
+        });
+        let value = self.post(&url, &body).await?;
+        let result: ShareRestoreResult = serde_json::from_value(value)?;
+        if result.restore_status != "RESTORE_START" {
+            return Err(Error::msg(format!(
+                "转存失败: {}",
+                result.restore_status
+            )));
+        }
+        Ok(result)
+    }
+
     // ---------- 本地下载 ----------
 
     /// 返回访问签名直链所需的最小请求头(User-Agent / X-Device-Id, 必要时附加 Bearer)。

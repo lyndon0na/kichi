@@ -165,6 +165,18 @@ pub enum Cmd {
     DeleteShares {
         ids: Vec<String>,
     },
+    /// 解析他人分享链接, 获取文件列表。
+    ResolveShare {
+        share_id: String,
+        pass_code: String,
+    },
+    /// 将分享中的文件转存到自己的网盘。dest 为转存后自动移动到的目标目录。
+    SaveShare {
+        share_id: String,
+        pass_code_token: String,
+        file_ids: Vec<String>,
+        dest: Option<String>,
+    },
 }
 
 /// 后台线程 -> UI 消息。
@@ -336,6 +348,25 @@ pub enum Msg {
     /// 分享已取消(带上 id 以便即时移除)。
     SharesDeleted {
         ids: Vec<String>,
+    },
+    /// 他人分享链接已解析, 包含文件列表。
+    ShareResolved {
+        share_id: String,
+        title: String,
+        pass_code_token: String,
+        files: Vec<pikpak_core::types::File>,
+    },
+    /// 解析分享链接失败。
+    ShareResolveFailed {
+        what: String,
+    },
+    /// 转存成功。auto_move_failed 表示转存成功但自动移动到目标目录失败。
+    ShareSaved {
+        auto_move_failed: bool,
+    },
+    /// 转存失败。
+    ShareSaveFailed {
+        what: String,
     },
     Error {
         what: String,

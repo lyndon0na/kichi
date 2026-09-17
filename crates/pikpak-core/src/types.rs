@@ -277,6 +277,54 @@ pub struct ShareCreated {
     pub share_text: String,
 }
 
+/// 解析他人分享链接的响应: 包含文件列表与 pass_code_token(转存时需要)。
+#[derive(Debug, Clone, Default)]
+pub struct ShareDetail {
+    pub share_status: String,
+    pub title: String,
+    /// 服务端签发的令牌, 后续 detail 分页与 restore 均需携带。
+    pub pass_code_token: String,
+    pub files: Vec<File>,
+    pub next_page_token: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ShareDetail {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            share_status: String,
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            pass_code_token: String,
+            #[serde(default)]
+            files: Vec<File>,
+            #[serde(default)]
+            next_page_token: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(ShareDetail {
+            share_status: raw.share_status,
+            title: raw.title,
+            pass_code_token: raw.pass_code_token,
+            files: raw.files,
+            next_page_token: raw.next_page_token.filter(|s| !s.is_empty()),
+        })
+    }
+}
+
+/// 转存(restore) 操作的响应。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ShareRestoreResult {
+    pub restore_status: String,
+    pub restore_task_id: String,
+}
+
 pub fn task_str(task: &Task, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(s) = task.get(*key).and_then(|v| v.as_str()) {

@@ -43,6 +43,19 @@ impl App {
                     icons::paint(ui.painter(), r, Glyph::Share, th.accent);
                     ui.label(RichText::new("我的分享").size(19.0).strong().color(th.text));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // 转存分享按钮
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("转存分享").color(th.accent),
+                                )
+                                .frame(true),
+                            )
+                            .clicked()
+                        {
+                            self.save_share_open = true;
+                            self.clear_save_share_state();
+                        }
                         let refreshing = loading && !shares.is_empty();
                         let (rr, ico) =
                             ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
