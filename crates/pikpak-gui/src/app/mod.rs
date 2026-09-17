@@ -183,6 +183,12 @@ pub struct App {
     pub(crate) save_share_files: Vec<File>,
     /// 用户选中的文件 id。
     pub(crate) save_share_selected: HashSet<String>,
+    /// 文件名搜索过滤。
+    pub(crate) save_share_filter: String,
+    /// 分享文件列表分页 token。
+    pub(crate) save_share_next: Option<String>,
+    /// 是否正在加载更多文件。
+    pub(crate) save_share_loading_more: bool,
     /// 是否正在转存。
     pub(crate) save_share_saving: bool,
     /// 解析或转存的错误信息。
@@ -199,6 +205,8 @@ pub struct App {
     pub(crate) save_share_picker_req: u64,
     /// 用户选择的转存目标目录 (id, name); None 表示默认位置。
     pub(crate) save_share_dest: Option<(String, String)>,
+    /// 自动移动失败时的目标目录信息, 用于重试。
+    pub(crate) save_share_move_failed: Option<(String, String)>,
 
     // 回收站
     pub(crate) trash: Vec<File>,
@@ -371,6 +379,9 @@ impl App {
             save_share_token: None,
             save_share_files: Vec::new(),
             save_share_selected: HashSet::new(),
+            save_share_filter: String::new(),
+            save_share_next: None,
+            save_share_loading_more: false,
             save_share_saving: false,
             save_share_error: None,
             save_share_picker_open: false,
@@ -382,6 +393,7 @@ impl App {
             save_share_picker_loading: false,
             save_share_picker_req: 0,
             save_share_dest: None,
+            save_share_move_failed: None,
             trash: Vec::new(),
             trash_next: None,
             trash_loading: false,
@@ -989,13 +1001,27 @@ impl App {
                     title,
                     pass_code_token,
                     files,
+                    next_page_token,
                 } => {
                     self.save_share_resolving = false;
                     self.save_share_id = Some(share_id);
                     self.save_share_title = Some(title);
                     self.save_share_token = Some(pass_code_token);
                     self.save_share_files = files;
+                    self.save_share_next = next_page_token;
                     self.save_share_selected = HashSet::new();
+                }
+                Msg::ShareFilesLoaded {
+                    files,
+                    next_page_token,
+                } => {
+                    self.save_share_loading_more = false;
+                    self.save_share_files.extend(files);
+                    self.save_share_next = next_page_token;
+                }
+                Msg::ShareFilesLoadFailed { what } => {
+                    self.save_share_loading_more = false;
+                    self.save_share_error = Some(what);
                 }
                 Msg::ShareResolveFailed { what } => {
                     self.save_share_resolving = false;
@@ -1005,11 +1031,15 @@ impl App {
                     self.save_share_saving = false;
                     self.save_share_open = false;
                     let dest = self.save_share_dest.clone();
+                    if auto_move_failed {
+                        // 保存失败信息以便重试
+                        self.save_share_move_failed = dest.clone();
+                    }
                     self.clear_save_share_state();
                     if auto_move_failed {
                         if let Some((_, name)) = dest {
                             self.toast_warn(&format!(
-                                "转存成功, 但自动移动失败, 请手动从「转存自分享」移动到「{name}」"
+                                "转存成功, 但自动移动到「{name}」失败。文件仍在「转存自分享」中"
                             ));
                         } else {
                             self.toast_warn("转存成功, 但自动移动失败, 请在「转存自分享」中查看");
@@ -1023,6 +1053,14 @@ impl App {
                 Msg::ShareSaveFailed { what } => {
                     self.save_share_saving = false;
                     self.save_share_error = Some(what);
+                }
+                Msg::ShareMoveRetried => {
+                    self.save_share_move_failed = None;
+                    self.toast_ok("移动成功");
+                    self.reload_dir();
+                }
+                Msg::ShareMoveRetryFailed { what } => {
+                    self.toast_err(&what);
                 }
             }
         }
@@ -1856,6 +1894,9 @@ impl App {
         self.save_share_token = None;
         self.save_share_files.clear();
         self.save_share_selected.clear();
+        self.save_share_filter.clear();
+        self.save_share_next = None;
+        self.save_share_loading_more = false;
         self.save_share_saving = false;
         self.save_share_error = None;
         self.save_share_picker_open = false;

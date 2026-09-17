@@ -170,12 +170,22 @@ pub enum Cmd {
         share_id: String,
         pass_code: String,
     },
+    /// 加载更多分享文件(分页)。
+    LoadMoreShareFiles {
+        share_id: String,
+        pass_code_token: String,
+        page_token: String,
+    },
     /// 将分享中的文件转存到自己的网盘。dest 为转存后自动移动到的目标目录。
     SaveShare {
         share_id: String,
         pass_code_token: String,
         file_ids: Vec<String>,
         dest: Option<String>,
+    },
+    /// 重试移动转存文件到目标目录(自动移动失败后手动重试)。
+    RetryMoveShare {
+        dest: String,
     },
 }
 
@@ -355,6 +365,16 @@ pub enum Msg {
         title: String,
         pass_code_token: String,
         files: Vec<pikpak_core::types::File>,
+        next_page_token: Option<String>,
+    },
+    /// 加载更多分享文件完成。
+    ShareFilesLoaded {
+        files: Vec<pikpak_core::types::File>,
+        next_page_token: Option<String>,
+    },
+    /// 加载更多分享文件失败。
+    ShareFilesLoadFailed {
+        what: String,
     },
     /// 解析分享链接失败。
     ShareResolveFailed {
@@ -366,6 +386,12 @@ pub enum Msg {
     },
     /// 转存失败。
     ShareSaveFailed {
+        what: String,
+    },
+    /// 重试移动成功。
+    ShareMoveRetried,
+    /// 重试移动失败。
+    ShareMoveRetryFailed {
         what: String,
     },
     Error {

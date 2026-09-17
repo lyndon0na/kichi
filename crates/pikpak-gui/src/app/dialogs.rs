@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, RichText, Str
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::Theme;
+use pikpak_core::types::File;
 
 use super::helpers::{self, input, truncate_text};
 use super::types::Crumb;
@@ -661,9 +662,16 @@ impl App {
                         }
 
                         let files = self.save_share_files.clone();
+                        let filter = self.save_share_filter.clone();
+                        let filtered: Vec<&File> = if filter.is_empty() {
+                            files.iter().collect()
+                        } else {
+                            let lower = filter.to_lowercase();
+                            files.iter().filter(|f| f.name.to_lowercase().contains(&lower)).collect()
+                        };
                         let selected = self.save_share_selected.clone();
-                        let all_selected =
-                            !files.is_empty() && selected.len() >= files.len();
+                        let filtered_selected = filtered.iter().filter(|f| selected.contains(&f.id)).count();
+                        let all_filtered_selected = !filtered.is_empty() && filtered_selected >= filtered.len();
 
                         ui.label(
                             RichText::new(format!("共 {} 个文件", files.len()))
@@ -672,15 +680,39 @@ impl App {
                         );
                         ui.add_space(4.0);
 
-                        // 全选
-                        let mut sel = all_selected;
+                        // 搜索框
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("搜索").color(th.text_weak).size(12.0));
+                            ui.add(
+                                input(&mut self.save_share_filter)
+                                    .desired_width(200.0)
+                                    .hint_text("按文件名过滤"),
+                            );
+                            if !filter.is_empty() && ui.button("清除").clicked() {
+                                self.save_share_filter.clear();
+                            }
+                        });
+                        ui.add_space(4.0);
+
+                        // 全选(仅对过滤后的文件生效)
+                        let mut sel = all_filtered_selected;
                         if ui.checkbox(&mut sel, "全选").changed() {
                             if sel {
-                                self.save_share_selected =
-                                    files.iter().map(|f| f.id.clone()).collect();
+                                for f in &filtered {
+                                    self.save_share_selected.insert(f.id.clone());
+                                }
                             } else {
-                                self.save_share_selected.clear();
+                                for f in &filtered {
+                                    self.save_share_selected.remove(&f.id);
+                                }
                             }
+                        }
+                        if !filter.is_empty() {
+                            ui.label(
+                                RichText::new(format!("(匹配 {} 个)", filtered.len()))
+                                    .color(th.text_faint)
+                                    .size(11.0),
+                            );
                         }
                         ui.add_space(4.0);
 
@@ -688,7 +720,12 @@ impl App {
                         egui::ScrollArea::vertical()
                             .max_height(240.0)
                             .show(ui, |ui| {
-                                for file in &files {
+                                if filtered.is_empty() && !files.is_empty() {
+                                    ui.label(
+                                        RichText::new("没有匹配的文件").color(th.text_weak).size(12.0),
+                                    );
+                                }
+                                for file in &filtered {
                                     let is_sel = self.save_share_selected.contains(&file.id);
                                     let mut checked = is_sel;
                                     let icon = if file.is_folder() {
@@ -722,6 +759,29 @@ impl App {
                                     });
                                 }
                             });
+
+                        // 加载更多按钮
+                        if let Some(next_token) = self.save_share_next.clone() {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if self.save_share_loading_more {
+                                    ui.spinner();
+                                    ui.label(RichText::new("正在加载…").color(th.text_weak).size(12.0));
+                                } else if ui.button("加载更多文件").clicked() {
+                                    if let (Some(share_id), Some(token)) =
+                                        (&self.save_share_id, &self.save_share_token)
+                                    {
+                                        self.save_share_loading_more = true;
+                                        self.save_share_error = None;
+                                        self.send(Cmd::LoadMoreShareFiles {
+                                            share_id: share_id.clone(),
+                                            pass_code_token: token.clone(),
+                                            page_token: next_token,
+                                        });
+                                    }
+                                }
+                            });
+                        }
 
                         ui.add_space(12.0);
 
@@ -798,7 +858,9 @@ impl App {
                     self.save_share_error = None;
                     let file_ids: Vec<String> =
                         self.save_share_selected.iter().cloned().collect();
-                    let dest = self.save_share_dest.as_ref().map(|(id, _)| id.clone());
+                    let dest = self.save_share_dest.as_ref().and_then(|(id, _)| {
+                        if id.is_empty() { None } else { Some(id.clone()) }
+                    });
                     self.send(Cmd::SaveShare {
                         share_id: share_id.clone(),
                         pass_code_token: token.clone(),
@@ -912,15 +974,63 @@ impl App {
                     .last()
                     .map(|c| c.label.clone())
                     .unwrap_or_else(|| "我的云盘".to_string());
-                // 选择根目录等同于使用默认位置
-                match parent {
-                    Some(id) => self.save_share_dest = Some((id, label)),
-                    None => self.save_share_dest = None,
-                }
+                // 选择根目录时, 用空字符串标记, 以便 UI 显示"我的云盘"而非"默认位置"
+                self.save_share_dest = Some((parent.unwrap_or_default(), label));
                 self.save_share_picker_open = false;
             }
             if close_picker {
                 self.save_share_picker_open = false;
+            }
+        }
+
+        // 自动移动失败重试对话框
+        if let Some((dest_id, dest_name)) = self.save_share_move_failed.clone() {
+            let mut retry = false;
+            let mut dismiss = false;
+
+            egui::Window::new("移动失败")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(320.0);
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "文件已转存到「转存自分享」, 但自动移动到「{dest_name}」失败。"
+                        ))
+                        .color(th.text),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("您可以重试移动, 或稍后手动处理。")
+                            .color(th.text_weak)
+                            .size(12.0),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("重试移动").color(Color32::WHITE))
+                                    .fill(th.accent)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            retry = true;
+                        }
+                        if ui.button("稍后处理").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+
+            if retry {
+                self.send(Cmd::RetryMoveShare { dest: dest_id });
+                self.save_share_move_failed = None;
+            }
+            if dismiss {
+                self.save_share_move_failed = None;
             }
         }
     }

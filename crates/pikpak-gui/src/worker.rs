@@ -563,11 +563,32 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                         title: detail.title,
                         pass_code_token: detail.pass_code_token,
                         files: detail.files,
+                        next_page_token: detail.next_page_token,
                     });
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::ShareResolveFailed {
                         what: format!("解析分享失败: {e}"),
+                    });
+                }
+            }
+        }
+        Cmd::LoadMoreShareFiles {
+            share_id,
+            pass_code_token,
+            page_token,
+        } => {
+            let Some(client) = &st.client else { return };
+            match client.share_detail(&share_id, &pass_code_token, &page_token).await {
+                Ok(detail) => {
+                    let _ = tx.send(Msg::ShareFilesLoaded {
+                        files: detail.files,
+                        next_page_token: detail.next_page_token,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::ShareFilesLoadFailed {
+                        what: format!("加载更多文件失败: {e}"),
                     });
                 }
             }
@@ -612,6 +633,56 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
+        Cmd::RetryMoveShare { dest } => {
+            let Some(client) = &st.client else { return };
+            // 找到「转存自分享」文件夹
+            let root_list = match client.file_list(None, 100, None).await {
+                Ok(list) => list,
+                Err(e) => {
+                    let _ = tx.send(Msg::ShareMoveRetryFailed {
+                        what: format!("加载文件列表失败: {e}"),
+                    });
+                    return;
+                }
+            };
+            let folder = root_list.files.iter().find(|f| {
+                f.is_folder()
+                    && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+            });
+            let Some(folder) = folder else {
+                let _ = tx.send(Msg::ShareMoveRetryFailed {
+                    what: "未找到「转存自分享」文件夹".to_string(),
+                });
+                return;
+            };
+            // 获取文件夹中的所有文件
+            let pack_list = match client.file_list(Some(&folder.id), 100, None).await {
+                Ok(list) => list,
+                Err(e) => {
+                    let _ = tx.send(Msg::ShareMoveRetryFailed {
+                        what: format!("加载转存文件失败: {e}"),
+                    });
+                    return;
+                }
+            };
+            if pack_list.files.is_empty() {
+                let _ = tx.send(Msg::ShareMoveRetryFailed {
+                    what: "「转存自分享」中没有文件".to_string(),
+                });
+                return;
+            }
+            let file_ids: Vec<String> = pack_list.files.iter().map(|f| f.id.clone()).collect();
+            match client.batch_move(&file_ids, Some(&dest)).await {
+                Ok(_) => {
+                    let _ = tx.send(Msg::ShareMoveRetried);
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::ShareMoveRetryFailed {
+                        what: format!("移动失败: {e}"),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -630,30 +701,47 @@ async fn snapshot_pack_folder(client: &PikPakClient) -> Result<HashSet<String>, 
 }
 
 /// 转存后自动移动: 等待服务端写入完成, 找出「转存自分享」中新增的文件并移动到目标目录。
+/// 使用重试机制轮询等待服务端同步, 而非固定 sleep。
 async fn move_new_files(
     client: &PikPakClient,
     dest_id: &str,
     before_ids: HashSet<String>,
 ) -> Result<(), Error> {
-    // 短暂等待让服务端完成转存写入
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // 重试机制: 最多轮询 5 次, 间隔递增 (1s, 2s, 3s, 4s, 5s)
+    let max_attempts = 5;
+    let mut new_ids: Vec<String> = Vec::new();
 
-    let root_list = client.file_list(None, 100, None).await?;
-    let folder = root_list.files.iter().find(|f| {
-        f.is_folder()
-            && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
-    });
-    let Some(folder) = folder else {
-        return Err(Error::msg("未找到「转存自分享」文件夹"));
-    };
+    for attempt in 0..max_attempts {
+        // 等待让服务端完成转存写入
+        tokio::time::sleep(Duration::from_secs(1 + attempt as u64)).await;
 
-    let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
-    let new_ids: Vec<String> = pack_list
-        .files
-        .iter()
-        .filter(|f| !before_ids.contains(&f.id))
-        .map(|f| f.id.clone())
-        .collect();
+        let root_list = client.file_list(None, 100, None).await?;
+        let folder = root_list.files.iter().find(|f| {
+            f.is_folder()
+                && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+        });
+        let Some(folder) = folder else {
+            if attempt == max_attempts - 1 {
+                return Err(Error::msg("未找到「转存自分享」文件夹"));
+            }
+            continue;
+        };
+
+        let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
+        new_ids = pack_list
+            .files
+            .iter()
+            .filter(|f| !before_ids.contains(&f.id))
+            .map(|f| f.id.clone())
+            .collect();
+
+        // 如果找到新文件, 跳出重试循环
+        if !new_ids.is_empty() {
+            break;
+        }
+
+        tracing::debug!("自动移动: 第 {} 次轮询未发现新文件", attempt + 1);
+    }
 
     if new_ids.is_empty() {
         return Ok(());
