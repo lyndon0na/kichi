@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,10 +10,65 @@ use kichi_core::consts::OFFLINE_PHASES;
 use kichi_core::download::part_path;
 use kichi_core::upload::{OssContext, OssUploadState};
 use kichi_core::{session, Error, KichiClient};
-use tokio::sync::Semaphore;
+use tokio::sync::Notify;
 
 use crate::credentials;
 use crate::msg::{Cmd, FolderItem, Msg, QualityOption};
+
+/// 动态并发闸: 上限可随时调整(扩容立刻放行排队任务, 缩容只影响后续
+/// acquire、不打断在传任务)。tokio Semaphore 的 set_capacity 未稳定,
+/// 而 forget_permits 缩容后会被任务释放的许可回填, 故自行实现。
+struct Gate {
+    limit: AtomicUsize,
+    active: AtomicUsize,
+    woken: Notify,
+}
+
+/// 占用一个并发槽位的守卫; 释放时唤醒排队任务。
+struct GateGuard<'a> {
+    gate: &'a Gate,
+}
+
+impl Gate {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit: AtomicUsize::new(limit),
+            active: AtomicUsize::new(0),
+            woken: Notify::new(),
+        }
+    }
+
+    fn set_limit(&self, limit: usize) {
+        self.limit.store(limit.max(1), Ordering::Relaxed);
+        self.woken.notify_waiters();
+    }
+
+    async fn acquire(&self) -> GateGuard<'_> {
+        loop {
+            // enable() 先注册唤醒、再判定槽位, 避免判定与挂起之间错过 notify_waiters。
+            let notified = self.woken.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let cur = self.active.load(Ordering::Acquire);
+            if cur < self.limit.load(Ordering::Relaxed)
+                && self
+                    .active
+                    .compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                return GateGuard { gate: self };
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for GateGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.active.fetch_sub(1, Ordering::AcqRel);
+        self.gate.woken.notify_waiters();
+    }
+}
 
 pub struct Worker {
     pub tx: Sender<Cmd>,
@@ -33,12 +88,6 @@ pub fn spawn() -> Worker {
     }
 }
 
-/// 本地下载的并发上限与单任务最大下载尝试次数。
-const DL_CONCURRENCY: usize = 3;
-const DL_MAX_ATTEMPTS: u32 = 5;
-/// 本地上传的并发上限与单任务最大尝试次数。
-const UL_CONCURRENCY: usize = 2;
-const UL_MAX_ATTEMPTS: u32 = 5;
 /// 离线任务每页条数。
 const TASK_PAGE_SIZE: usize = 100;
 /// 后台空闲轮询基节拍(仅作 recv 超时上限, 命令到达会立即唤醒)。
@@ -54,10 +103,14 @@ struct WorkerState {
     client: Option<Arc<KichiClient>>,
     /// 下载/上传取消开关, 按 req_id 索引; 任务结束后自行移除。
     cancel: Arc<tokio::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
-    /// 下载并发信号量, 超出上限的任务阻塞在 acquire 上排队。
-    sem: Arc<Semaphore>,
-    /// 上传并发信号量。
-    ul_sem: Arc<Semaphore>,
+    /// 下载并发闸, 超出上限的任务阻塞在 acquire 上排队。
+    sem: Arc<Gate>,
+    /// 上传并发闸。
+    ul_sem: Arc<Gate>,
+    /// 单任务最大尝试次数; spawn 新任务时捕获当前值, 进行中任务不受后续修改影响。
+    max_attempts: u32,
+    /// OSS 分片并发数, 应用于新建 client 与设置变更。
+    part_concurrency: usize,
     /// 已占用的目标文件名集合(键: "目录\0文件名"), 用于同名去重。
     reserved: Arc<Mutex<HashSet<String>>>,
     /// 离线任务每 phase 已加载的页数(刷新时保持分页深度)。
@@ -90,11 +143,14 @@ fn run(rx: Receiver<Cmd>, tx: Sender<Msg>) {
 }
 
 async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
+    let saved = crate::settings::load();
     let mut st = WorkerState {
         client: None,
         cancel: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        sem: Arc::new(Semaphore::new(DL_CONCURRENCY)),
-        ul_sem: Arc::new(Semaphore::new(UL_CONCURRENCY)),
+        sem: Arc::new(Gate::new(saved.dl_concurrency)),
+        ul_sem: Arc::new(Gate::new(saved.ul_concurrency)),
+        max_attempts: saved.max_attempts as u32,
+        part_concurrency: saved.part_concurrency,
         reserved: Arc::new(Mutex::new(HashSet::new())),
         tasks_pages: BTreeMap::new(),
         tasks_next: BTreeMap::new(),
@@ -182,6 +238,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             };
             let mut client = KichiClient::new(device_id);
             install_saver(&mut client);
+            client.set_part_concurrency(st.part_concurrency);
             client.set_session(&sess).await;
             let client = Arc::new(client);
             tracing::info!("尝试恢复登录态");
@@ -784,6 +841,21 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         Cmd::LoadThumbnail { file_id, url } => {
             load_thumbnail(st, tx, file_id, url).await;
         }
+        Cmd::SetTransferLimits {
+            dl_concurrency,
+            ul_concurrency,
+            part_concurrency,
+            max_attempts,
+        } => {
+            // 并发即时生效: 扩容立刻放行排队任务, 缩容只影响后续 acquire, 不打断在传任务。
+            st.sem.set_limit(dl_concurrency);
+            st.ul_sem.set_limit(ul_concurrency);
+            st.max_attempts = max_attempts as u32;
+            st.part_concurrency = part_concurrency;
+            if let Some(client) = &st.client {
+                client.set_part_concurrency(part_concurrency);
+            }
+        }
     }
 }
 
@@ -874,6 +946,7 @@ async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, pass
     let device_id = kichi_core::captcha::generate_device_id();
     let mut client = KichiClient::new(device_id.clone());
     install_saver(&mut client);
+    client.set_part_concurrency(st.part_concurrency);
     tracing::info!("开始登录: {username}");
     match client.login(&username, &password).await {
         Ok(sess) => {
@@ -1180,12 +1253,13 @@ async fn spawn_download(
     }
     let cancel_map = st.cancel.clone();
     let sem = st.sem.clone();
+    let max_attempts = st.max_attempts;
     let reserved = st.reserved.clone();
     let msg_tx = tx.clone();
 
     tokio::spawn(async move {
         // 抢占并发槽位; 若等待期间被取消则直接退出(释放占位)。
-        let permit = sem.acquire().await.ok();
+        let permit = sem.acquire().await;
         if cancel.load(Ordering::Relaxed) {
             cleanup_dl(&cancel_map, &reserved, req_id, &dest).await;
             discard_part(&dest);
@@ -1206,6 +1280,7 @@ async fn spawn_download(
             file_id,
             dest.clone(),
             cancel.clone(),
+            max_attempts,
         )
         .await;
         cleanup_dl(&cancel_map, &reserved, req_id, &dest).await;
@@ -1348,6 +1423,7 @@ async fn run_download(
     file_id: String,
     dest: PathBuf,
     cancel: Arc<AtomicBool>,
+    max_attempts: u32,
 ) -> Result<u64, Error> {
     // 进度转发限频, 避免高频消息刷 UI。
     let tx2 = tx.clone();
@@ -1372,8 +1448,7 @@ async fn run_download(
         let link = match client.file_download_link(&file_id).await {
             Ok(l) => l,
             Err(e) => {
-                if cancel.load(Ordering::Relaxed) || attempt >= DL_MAX_ATTEMPTS || !e.is_transient()
-                {
+                if cancel.load(Ordering::Relaxed) || attempt >= max_attempts || !e.is_transient() {
                     return Err(e);
                 }
                 tokio::time::sleep(download_backoff(attempt - 1)).await;
@@ -1387,8 +1462,7 @@ async fn run_download(
         {
             Ok(bytes) => return Ok(bytes),
             Err(e) => {
-                if cancel.load(Ordering::Relaxed) || attempt >= DL_MAX_ATTEMPTS || !e.is_transient()
-                {
+                if cancel.load(Ordering::Relaxed) || attempt >= max_attempts || !e.is_transient() {
                     return Err(e);
                 }
                 tokio::time::sleep(download_backoff(attempt - 1)).await;
@@ -1446,10 +1520,11 @@ async fn spawn_upload(
     st.cancel.lock().await.insert(req_id, cancel.clone());
     let cancel_map = st.cancel.clone();
     let sem = st.ul_sem.clone();
+    let max_attempts = st.max_attempts;
     let msg_tx = tx.clone();
 
     tokio::spawn(async move {
-        let permit = sem.acquire().await.ok();
+        let permit = sem.acquire().await;
         if cancel.load(Ordering::Relaxed) {
             cancel_map.lock().await.remove(&req_id);
             let _ = msg_tx.send(Msg::UlCancelled { req_id });
@@ -1469,6 +1544,7 @@ async fn spawn_upload(
             &path,
             parent.as_deref(),
             cancel.clone(),
+            max_attempts,
         )
         .await;
         cancel_map.lock().await.remove(&req_id);
@@ -1509,10 +1585,11 @@ async fn spawn_upload_dir(
     st.cancel.lock().await.insert(req_id, cancel.clone());
     let cancel_map = st.cancel.clone();
     let sem = st.ul_sem.clone();
+    let max_attempts = st.max_attempts;
     let msg_tx = tx.clone();
 
     tokio::spawn(async move {
-        let permit = sem.acquire().await.ok();
+        let permit = sem.acquire().await;
         if cancel.load(Ordering::Relaxed) {
             cancel_map.lock().await.remove(&req_id);
             let _ = msg_tx.send(Msg::UlCancelled { req_id });
@@ -1531,6 +1608,7 @@ async fn spawn_upload_dir(
             &path,
             parent.as_deref(),
             cancel.clone(),
+            max_attempts,
         )
         .await;
         cancel_map.lock().await.remove(&req_id);
@@ -1565,6 +1643,7 @@ async fn run_upload(
     path: &Path,
     parent: Option<&str>,
     cancel: Arc<AtomicBool>,
+    max_attempts: u32,
 ) -> Result<(), Error> {
     let tx2 = tx.clone();
     let mut last_send = Instant::now();
@@ -1579,9 +1658,16 @@ async fn run_upload(
             });
         }
     };
-    upload_local_file(client, path, parent, &cancel, &mut on_progress)
-        .await
-        .map(|_| ())
+    upload_local_file(
+        client,
+        path,
+        parent,
+        &cancel,
+        &mut on_progress,
+        max_attempts,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// 上传单个本地文件到指定网盘目录。返回是否秒传命中。
@@ -1594,6 +1680,7 @@ async fn upload_local_file<F>(
     parent: Option<&str>,
     cancel: &Arc<AtomicBool>,
     on_progress: &mut F,
+    max_attempts: u32,
 ) -> Result<bool, Error>
 where
     F: FnMut(u64, u64) + Send,
@@ -1623,7 +1710,7 @@ where
                 Ok(t) => t,
                 Err(e) => {
                     if cancel.load(Ordering::Relaxed)
-                        || attempt >= UL_MAX_ATTEMPTS
+                        || attempt >= max_attempts
                         || !e.is_transient()
                     {
                         return Err(e);
@@ -1647,7 +1734,7 @@ where
                 }
                 Err(e) => {
                     if cancel.load(Ordering::Relaxed)
-                        || attempt >= UL_MAX_ATTEMPTS
+                        || attempt >= max_attempts
                         || !e.is_transient()
                     {
                         return Err(e);
@@ -1673,7 +1760,7 @@ where
         {
             Ok(_) => return Ok(false),
             Err(e) => {
-                if cancel.load(Ordering::Relaxed) || attempt >= UL_MAX_ATTEMPTS {
+                if cancel.load(Ordering::Relaxed) || attempt >= max_attempts {
                     return Err(e);
                 }
                 if !e.is_transient() {
@@ -1735,6 +1822,7 @@ async fn run_upload_dir(
     dir: &Path,
     parent: Option<&str>,
     cancel: Arc<AtomicBool>,
+    max_attempts: u32,
 ) -> Result<(), Error> {
     let root_name = dir
         .file_name()
@@ -1808,6 +1896,7 @@ async fn run_upload_dir(
             Some(parent_id.as_str()),
             &cancel,
             &mut on_progress,
+            max_attempts,
         )
         .await?;
 
@@ -1938,5 +2027,43 @@ mod tests {
             join_local_path(base, &["../evil".into(), ".".into()]),
             PathBuf::from("/tmp/dl/evil/download")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gate_limit_changes_take_effect_immediately() {
+        let gate = Arc::new(Gate::new(1));
+        let held = gate.acquire().await; // 占满唯一槽位
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let g2 = gate.clone();
+        let waiter = tokio::spawn(async move {
+            let _g = g2.acquire().await;
+            let _ = tx.send(());
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(rx.try_recv().is_err(), "满载时新任务应排队");
+
+        // 扩容立刻放行排队任务。
+        gate.set_limit(2);
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("扩容后未放行")
+            .expect("排队任务 panic");
+
+        // 缩容不打断已在传的任务(held 仍持有槽位), 但超额后的新 acquire 需排队。
+        gate.set_limit(1);
+        let g3 = gate.clone();
+        let blocked = tokio::spawn(async move {
+            let _g = g3.acquire().await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!blocked.is_finished(), "缩容后超额时新任务应排队");
+
+        // 槽位释放后排队任务自动获准。
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("槽位释放后未放行排队任务")
+            .expect("排队任务 panic");
     }
 }

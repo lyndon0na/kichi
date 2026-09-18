@@ -1,7 +1,30 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// 传输参数默认值与取值范围(UI / worker 共用, 加载时统一钳制)。
+pub const DEFAULT_DL_CONCURRENCY: usize = 3;
+pub const DEFAULT_UL_CONCURRENCY: usize = 2;
+pub const DEFAULT_PART_CONCURRENCY: usize = 4;
+pub const DEFAULT_MAX_ATTEMPTS: usize = 5;
+pub const DL_CONCURRENCY_RANGE: (usize, usize) = (1, 8);
+pub const UL_CONCURRENCY_RANGE: (usize, usize) = (1, 4);
+pub const PART_CONCURRENCY_RANGE: (usize, usize) = (1, 10);
+pub const MAX_ATTEMPTS_RANGE: (usize, usize) = (1, 10);
+
+fn default_dl_concurrency() -> usize {
+    DEFAULT_DL_CONCURRENCY
+}
+fn default_ul_concurrency() -> usize {
+    DEFAULT_UL_CONCURRENCY
+}
+fn default_part_concurrency() -> usize {
+    DEFAULT_PART_CONCURRENCY
+}
+fn default_max_attempts() -> usize {
+    DEFAULT_MAX_ATTEMPTS
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub username: String,
@@ -11,6 +34,32 @@ pub struct Settings {
     /// 是否把密码保存到系统密钥环, 用于自动登录。
     #[serde(default)]
     pub remember_password: bool,
+    /// 本地下载并发上限。
+    #[serde(default = "default_dl_concurrency")]
+    pub dl_concurrency: usize,
+    /// 本地上传并发上限。
+    #[serde(default = "default_ul_concurrency")]
+    pub ul_concurrency: usize,
+    /// 单个上传任务的分片并发数。
+    #[serde(default = "default_part_concurrency")]
+    pub part_concurrency: usize,
+    /// 单个传输任务的最大尝试次数。
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            username: String::new(),
+            download_dir: String::new(),
+            remember_password: false,
+            dl_concurrency: DEFAULT_DL_CONCURRENCY,
+            ul_concurrency: DEFAULT_UL_CONCURRENCY,
+            part_concurrency: DEFAULT_PART_CONCURRENCY,
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+        }
+    }
 }
 
 /// 下载记录状态（仅保存已完成/取消/失败的）。
@@ -244,11 +293,20 @@ pub fn load() -> Settings {
         return Settings::default();
     };
     if let Ok(text) = std::fs::read_to_string(p) {
-        if let Ok(s) = serde_json::from_str(&text) {
+        if let Ok(mut s) = serde_json::from_str::<Settings>(&text) {
+            // 手工改坏 settings.json 时兜底钳制, 避免 0 并发把任务饿死。
+            s.dl_concurrency = clamp(s.dl_concurrency, DL_CONCURRENCY_RANGE);
+            s.ul_concurrency = clamp(s.ul_concurrency, UL_CONCURRENCY_RANGE);
+            s.part_concurrency = clamp(s.part_concurrency, PART_CONCURRENCY_RANGE);
+            s.max_attempts = clamp(s.max_attempts, MAX_ATTEMPTS_RANGE);
             return s;
         }
     }
     Settings::default()
+}
+
+fn clamp(v: usize, (lo, hi): (usize, usize)) -> usize {
+    v.clamp(lo, hi)
 }
 
 pub fn save(s: &Settings) {

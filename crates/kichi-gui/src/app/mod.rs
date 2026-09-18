@@ -233,6 +233,11 @@ pub struct App {
 
     // 本地下载
     pub(crate) download_dir: String,
+    // 传输并发/重试(设置页可调, 改动即推送 worker)。
+    pub(crate) dl_concurrency: usize,
+    pub(crate) ul_concurrency: usize,
+    pub(crate) part_concurrency: usize,
+    pub(crate) max_attempts: usize,
     pub(crate) jobs: BTreeMap<u64, DlJob>,
     pub(crate) selected_dl: HashSet<u64>,
     pub(crate) dl_filter: DlFilter,
@@ -443,6 +448,10 @@ impl App {
             hidden: HashMap::new(),
             logout_confirm: false,
             download_dir: saved.download_dir.clone(),
+            dl_concurrency: saved.dl_concurrency,
+            ul_concurrency: saved.ul_concurrency,
+            part_concurrency: saved.part_concurrency,
+            max_attempts: saved.max_attempts,
             jobs: {
                 let mut jobs = BTreeMap::new();
                 let history = settings::load_download_history();
@@ -1558,6 +1567,10 @@ impl App {
             username: name,
             download_dir: self.download_dir.clone(),
             remember_password: self.remember_password,
+            dl_concurrency: self.dl_concurrency,
+            ul_concurrency: self.ul_concurrency,
+            part_concurrency: self.part_concurrency,
+            max_attempts: self.max_attempts,
         });
     }
 

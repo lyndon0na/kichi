@@ -10,7 +10,7 @@
 | :-- | :-- | :-- |
 | **P0** | 用户可见的功能缺口 | 0 |
 | **P1** | 正确性与健壮性 | 0 |
-| **P2** | 可维护性与工程 | 4 |
+| **P2** | 可维护性与工程 | 3 |
 | **P3** | 分发与发布 | 4 |
 
 ---
@@ -27,7 +27,6 @@
 
 | 编号 | 任务 | 主要文件 | 说明 / 验收 |
 | :-- | :-- | :-- | :-- |
-| P2-2 | 并发 / 重试参数可配置 | `crates/kichi-gui/src/worker.rs`（`DL_CONCURRENCY` / `DL_MAX_ATTEMPTS` / `UL_CONCURRENCY` / `UL_MAX_ATTEMPTS`）<br>`crates/kichi-core/src/client.rs`（`OSS_UPLOAD_CONCURRENCY`）<br>`crates/kichi-gui/src/app/settings_page.rs`<br>`crates/kichi-gui/src/settings.rs` | 目前全是编译期常量，设置页只暴露下载目录 |
 | P2-3 | 日志轮转 + 预览缓存淘汰 | `crates/kichi-gui/src/logging.rs`<br>`crates/kichi-gui/src/worker.rs`（`preview_root`） | `kichi.log` 无轮转、预览缓存不清理；而目录缓存已有 LRU，口径不一致 |
 | P2-4 | 补测试 | `crates/kichi-gui/src/worker.rs`、`msg.rs`、`settings.rs`、`app/*`（各页面）<br>`crates/kichi-core/src/types.rs`、`session.rs`、`error.rs` | 现有 39 项测试只覆盖签名 / 解析 / 格式化等叶子模块，业务逻辑与持久化无测试。优先补纯逻辑：`visible_rows` 排序、`unique_name` 去重、`extract_share_id`、`de_number` / `de_string` 防御式解析 |
 | P2-5 | 对话框起始目录记忆 | `crates/kichi-gui/src/app/mod.rs`（`std::env::current_dir()`） | 新建 / 重命名 / 选择目录对话框都从进程 CWD 起，应改用上次使用过的目录 |
@@ -57,6 +56,7 @@
 - [x] P1-4 人机验证流程：`captcha_init` 取不到 `captcha_token` 时改为返回新错误变体 `Error::CaptchaReview`（携带从响应里递归提取的验证页链接 `data.url`/`*url`）；`Msg::LoginFailed` 增加 `verify_url` 字段并透传到 `App::auth_captcha_url`；登录页在需要验证时显示「打开验证页面」按钮（`helpers::open_url`）+ 完成验证后重试的引导，无链接时给出「稍后重试 / 换网络 / 用官方客户端验证」提示；补 `extract_verify_url` 单测（`error.rs` / `client.rs` / `msg.rs` / `worker.rs` / `app/mod.rs` / `login.rs`）
 - [~] P2-1 上传跨重启续传 —— **调查后判定不可行，代码已回退**（详见根目录 `UPLOAD_RESUME_NOTES.md`）。曾实现一版（`upload_resume.json` 持久化 upload_id / OSS 位置 / 已传分片 ETag，重启后重刷 STS 凭证 + `oss_list_parts` 对账续传），实机验证发现 PikPak 的 STS 凭证**按对象 key 授权**、而每次 `upload_create` 都换 key（key = `upload_tmp/<GCID>_<时间戳>`），用新票凭证访问旧 upload_id 直接 `403 AccessDenied: Access denied by authorizer's policy`，续传被服务端 policy 挡死。已将整套续传代码回退到「重启即全量重传」的干净状态（保留同票同凭证的**会话内**退避重试不受影响）。若日后要真做，唯一方向是持久化并在有效期内**免取票复用凭证本身**对旧 key 续传，但有安全与 STS 寿命窗口限制、且完成落库环节仍有未验证风险。
 - [x] P2-1b 上传/下载速率显示异常修复（随本次一并保留）：`drain()` 单帧内一次性消费积压的多条进度消息时，逐条按 `Instant::now()` 取样会因 `dt≈0` 让瞬时速率爆炸；新增 `sample_speed` 按 0.25s 节流取样，并补 `has_active_uploads` 使纯上传时也走快轮询，消除消息堆积（`app/mod.rs`）
+- [x] P2-2 并发 / 重试参数可配置：设置页新增「传输」卡片（下载并发 1–8 / 上传并发 1–4 / 上传分片并发 1–10 / 单任务重试次数 1–10），改动即持久化并推送 worker；并发经 `Cmd::SetTransferLimits` 即时生效（扩容立刻放行排队任务、缩容不打断在传任务），重试与分片并发对新启动任务生效。原编译期常量（`DL/UL_CONCURRENCY`、`DL/UL_MAX_ATTEMPTS`）删除；`OSS_UPLOAD_CONCURRENCY` 改为 `KichiClient` 的 `part_concurrency` 原子字段 + setter。tokio `Semaphore::set_capacity` 未稳定、`forget_permits` 缩容会被释放许可回填，故自研动态并发闸 `Gate`（`Notify::enable` 先注册后判定避免丢唤醒），并补扩容 / 缩容语义单测（`settings.rs` / `worker.rs` / `msg.rs` / `client.rs` / `app/mod.rs` / `app/settings_page.rs`）
 
 > [!TIP]
 > P0、P1 任务已全部完成。建议下一轮从 **P2（可维护性与工程）** 入手。

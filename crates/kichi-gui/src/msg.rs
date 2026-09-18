@@ -225,6 +225,14 @@ pub enum Cmd {
         file_id: String,
         url: String,
     },
+    /// 更新传输并发/重试参数。并发即时生效(不打断在传任务),
+    /// 重试与分片并发对之后新启动的任务生效。
+    SetTransferLimits {
+        dl_concurrency: usize,
+        ul_concurrency: usize,
+        part_concurrency: usize,
+        max_attempts: usize,
+    },
 }
 
 /// 后台线程 -> UI 消息。

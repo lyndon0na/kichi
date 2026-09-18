@@ -28,7 +28,7 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 /// OSS 请求使用的 User-Agent(沿用可用的阿里云 SDK 风格)。
 const OSS_UA: &str = "aliyun-sdk-android/2.9.5";
 
-/// OSS 分片并发的分片数。
+/// OSS 分片并发的默认分片数(可经 `set_part_concurrency` 覆盖)。
 const OSS_UPLOAD_CONCURRENCY: usize = 4;
 
 /// 整目录下载递归遍历时的页大小与文件总数上限(超限返回错误, 避免异常数据失控)。
@@ -53,6 +53,8 @@ pub struct KichiClient {
     /// 续期单飞: 保证同一时刻只有一个请求在刷新 token, 避免并发刷新与重复写盘。
     refresh_lock: Mutex<()>,
     on_tokens: Option<TokenSaver>,
+    /// OSS 分片上传并发数, 由 GUI 设置页驱动, 新任务生效。
+    part_concurrency: std::sync::atomic::AtomicUsize,
 }
 
 impl KichiClient {
@@ -67,7 +69,14 @@ impl KichiClient {
             auth: Mutex::new(Auth::default()),
             refresh_lock: Mutex::new(()),
             on_tokens: None,
+            part_concurrency: std::sync::atomic::AtomicUsize::new(OSS_UPLOAD_CONCURRENCY),
         }
+    }
+
+    /// 设置 OSS 分片上传并发数(小于 1 时按 1 处理)。
+    pub fn set_part_concurrency(&self, n: usize) {
+        self.part_concurrency
+            .store(n.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn set_token_saver(&mut self, saver: TokenSaver) {
@@ -1221,7 +1230,10 @@ impl KichiClient {
                 Ok::<(u64, String), Error>((part, etag))
             }
         }))
-        .buffered(OSS_UPLOAD_CONCURRENCY);
+        .buffered(
+            self.part_concurrency
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
 
         let mut stream = std::pin::pin!(results);
         while let Some(res) = stream.next().await {

@@ -1,6 +1,7 @@
 use eframe::egui::{self, vec2, Align, Frame, Layout, Margin, RichText, Stroke};
 
 use crate::icons::{self, Glyph};
+use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
 use super::App;
@@ -16,6 +17,47 @@ fn settings_card(ui: &mut egui::Ui, th: &Theme, title: &str, rows: &mut dyn FnMu
             ui.add_space(10.0);
             rows(ui);
         });
+}
+
+/// 设置卡片内的一行: 左侧标题+说明, 右侧 − 数值 + 步进器。值变化时返回 true。
+fn transfer_row(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    label: &str,
+    help: &str,
+    value: &mut i64,
+    range: (usize, usize),
+) -> bool {
+    let lo = range.0 as i64;
+    let hi = range.1 as i64;
+    let step = |txt: &str| {
+        egui::Button::new(RichText::new(txt).strong().color(th.text))
+            .corner_radius(th.cr(6))
+            .min_size(vec2(24.0, 24.0))
+    };
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).color(th.text_weak));
+        ui.label(RichText::new(help).color(th.text_faint).size(11.5));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.add_enabled(*value < hi, step("+")).clicked() {
+                *value += 1;
+                changed = true;
+            }
+            // 等宽占位保证 1→2 位数切换时按钮不跳动。
+            ui.label(
+                RichText::new(format!("{value:^2}"))
+                    .monospace()
+                    .size(12.5)
+                    .color(th.text),
+            );
+            if ui.add_enabled(*value > lo, step("−")).clicked() {
+                *value -= 1;
+                changed = true;
+            }
+        });
+    });
+    changed
 }
 
 impl App {
@@ -59,6 +101,70 @@ impl App {
                         });
                     });
                 });
+                ui.add_space(14.0);
+
+                // 传输并发 / 重试
+                let mut dl_conc = self.dl_concurrency as i64;
+                let mut ul_conc = self.ul_concurrency as i64;
+                let mut part_conc = self.part_concurrency as i64;
+                let mut attempts = self.max_attempts as i64;
+                let mut limits_changed = false;
+                settings_card(ui, th, "传输", &mut |ui| {
+                    limits_changed |= transfer_row(
+                        ui,
+                        th,
+                        "下载并发",
+                        "同时下载的文件数上限",
+                        &mut dl_conc,
+                        crate::settings::DL_CONCURRENCY_RANGE,
+                    );
+                    ui.add_space(8.0);
+                    limits_changed |= transfer_row(
+                        ui,
+                        th,
+                        "上传并发",
+                        "同时上传的文件数上限",
+                        &mut ul_conc,
+                        crate::settings::UL_CONCURRENCY_RANGE,
+                    );
+                    ui.add_space(8.0);
+                    limits_changed |= transfer_row(
+                        ui,
+                        th,
+                        "上传分片并发",
+                        "单个上传任务内同时传输的分片数",
+                        &mut part_conc,
+                        crate::settings::PART_CONCURRENCY_RANGE,
+                    );
+                    ui.add_space(8.0);
+                    limits_changed |= transfer_row(
+                        ui,
+                        th,
+                        "单任务重试次数",
+                        "网络抖动等瞬时错误下的最大尝试次数",
+                        &mut attempts,
+                        crate::settings::MAX_ATTEMPTS_RANGE,
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("并发调整即时生效; 重试与分片并发对新启动的任务生效。")
+                            .color(th.text_faint)
+                            .size(11.5),
+                    );
+                });
+                if limits_changed {
+                    self.dl_concurrency = dl_conc as usize;
+                    self.ul_concurrency = ul_conc as usize;
+                    self.part_concurrency = part_conc as usize;
+                    self.max_attempts = attempts as usize;
+                    self.persist_settings();
+                    self.send(Cmd::SetTransferLimits {
+                        dl_concurrency: self.dl_concurrency,
+                        ul_concurrency: self.ul_concurrency,
+                        part_concurrency: self.part_concurrency,
+                        max_attempts: self.max_attempts,
+                    });
+                }
                 ui.add_space(14.0);
 
                 // 账户
