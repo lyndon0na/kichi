@@ -1100,8 +1100,8 @@ impl App {
                             }
                         } else {
                             // 图标视图
-                            let card_w = 104.0;
-                            let card_h = 120.0;
+                            let card_w = self.grid_card_size;
+                            let card_h = self.grid_card_size * 1.15;
                             let gap = 8.0;
                             let avail_w = inner.width();
                             let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
@@ -1233,7 +1233,7 @@ impl App {
 
                                         if let Some(texture) = self.thumbnail_textures.get(&f.id) {
                                             // 渲染缩略图（保持宽高比）
-                                            let max_size = 90.0;
+                                            let max_size = card_w * 0.85;
                                             let tex_size = texture.size_vec2();
                                             let aspect = tex_size.x / tex_size.y;
                                             
@@ -1246,7 +1246,7 @@ impl App {
                                             };
                                             
                                             let thumb_rect = Rect::from_center_size(
-                                                Pos2::new(rect.center().x, rect.min.y + 48.0),
+                                                Pos2::new(rect.center().x, rect.min.y + card_h * 0.4),
                                                 vec2(w, h),
                                             );
                                             painter.image(
@@ -1450,6 +1450,17 @@ impl App {
                             }
                         }
                     });
+
+                // 网格视图大小调整滑块（右下角）
+                if matches!(self.view_mode, ViewMode::Icon) {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui: &mut egui::Ui| {
+                            ui.label(egui::RichText::new("🔍").size(12.0));
+                            ui.add(egui::Slider::new(&mut self.grid_card_size, 80.0..=160.0).show_value(false));
+                        });
+                    });
+                }
 
                 for action in actions {
                     match action {

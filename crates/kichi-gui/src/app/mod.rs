@@ -241,6 +241,8 @@ pub struct App {
     pub(crate) thumbnail_textures: HashMap<String, egui::TextureHandle>,
     /// 正在加载缩略图的文件 id。
     pub(crate) thumbnail_inflight: HashSet<String>,
+    /// 网格视图卡片大小(80-160)。
+    pub(crate) grid_card_size: f32,
 
     // 我的分享
     pub(crate) shares: Vec<Share>,
@@ -563,6 +565,7 @@ impl App {
             quality_inflight: HashSet::new(),
             thumbnail_textures: HashMap::new(),
             thumbnail_inflight: HashSet::new(),
+            grid_card_size: 104.0,
             shares: Vec::new(),
             shares_next: None,
             shares_loading: false,
