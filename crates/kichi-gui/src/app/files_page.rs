@@ -503,6 +503,17 @@ impl App {
             });
         }
 
+        // Ctrl + 滚轮调整网格视图大小
+        if matches!(self.view_mode, ViewMode::Icon) {
+            ctx.input(|i| {
+                let scroll = i.smooth_scroll_delta.y;
+                if scroll.abs() > 0.0 && i.modifiers.ctrl {
+                    let delta = if scroll > 0.0 { 5.0 } else { -5.0 };
+                    self.grid_card_size = (self.grid_card_size + delta).clamp(80.0, 160.0);
+                }
+            });
+        }
+
         let mut up = false;
         let mut jumped: Option<usize> = None;
         let mut mkdir = false;
@@ -1450,17 +1461,6 @@ impl App {
                             }
                         }
                     });
-
-                // 网格视图大小调整滑块（右下角）
-                if matches!(self.view_mode, ViewMode::Icon) {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui: &mut egui::Ui| {
-                            ui.label(egui::RichText::new("🔍").size(12.0));
-                            ui.add(egui::Slider::new(&mut self.grid_card_size, 80.0..=160.0).show_value(false));
-                        });
-                    });
-                }
 
                 for action in actions {
                     match action {
