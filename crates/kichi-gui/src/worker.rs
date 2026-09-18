@@ -741,24 +741,20 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         Cmd::RetryMoveShare { dest } => {
             let Some(client) = &st.client else { return };
             // 找到「转存自分享」文件夹
-            let root_list = match client.file_list(None, 100, None).await {
-                Ok(list) => list,
+            let folder = match find_pack_folder(client).await {
+                Ok(Some(f)) => f,
+                Ok(None) => {
+                    let _ = tx.send(Msg::ShareMoveRetryFailed {
+                        what: "未找到「转存自分享」文件夹".to_string(),
+                    });
+                    return;
+                }
                 Err(e) => {
                     let _ = tx.send(Msg::ShareMoveRetryFailed {
                         what: format!("加载文件列表失败: {e}"),
                     });
                     return;
                 }
-            };
-            let folder = root_list.files.iter().find(|f| {
-                f.is_folder()
-                    && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
-            });
-            let Some(folder) = folder else {
-                let _ = tx.send(Msg::ShareMoveRetryFailed {
-                    what: "未找到「转存自分享」文件夹".to_string(),
-                });
-                return;
             };
             // 获取文件夹中的所有文件
             let pack_list = match client.file_list(Some(&folder.id), 100, None).await {
@@ -794,13 +790,36 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
     }
 }
 
+/// 定位服务端转存暂存目录(「转存自分享」/ "Pack From Shared")。
+/// 优先使用持久化的目录 ID; ID 失效(如用户删除后服务端重建)时回退到名称匹配,
+/// 并把新 ID 写回缓存。服务端从未产生过该目录时返回 None。
+async fn find_pack_folder(client: &KichiClient) -> Result<Option<kichi_core::types::File>, Error> {
+    let cached = crate::settings::load_pack_folder_id();
+    let root_list = client.file_list(None, 100, None).await?;
+    let found = root_list
+        .files
+        .iter()
+        .find(|f| f.is_folder() && Some(&f.id) == cached.as_ref())
+        .or_else(|| {
+            root_list.files.iter().find(|f| {
+                f.is_folder()
+                    && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+            })
+        });
+    match found {
+        Some(f) => {
+            if Some(&f.id) != cached.as_ref() {
+                crate::settings::save_pack_folder_id(&f.id);
+            }
+            Ok(Some(f.clone()))
+        }
+        None => Ok(None),
+    }
+}
+
 /// 快照「转存自分享」文件夹中现有的文件 id 集合。
 async fn snapshot_pack_folder(client: &KichiClient) -> Result<HashSet<String>, Error> {
-    let root_list = client.file_list(None, 100, None).await?;
-    let folder = root_list.files.iter().find(|f| {
-        f.is_folder() && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
-    });
-    let Some(folder) = folder else {
+    let Some(folder) = find_pack_folder(client).await? else {
         return Ok(HashSet::new());
     };
     let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
@@ -822,11 +841,7 @@ async fn move_new_files(
         // 等待让服务端完成转存写入
         tokio::time::sleep(Duration::from_secs(1 + attempt as u64)).await;
 
-        let root_list = client.file_list(None, 100, None).await?;
-        let folder = root_list.files.iter().find(|f| {
-            f.is_folder() && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
-        });
-        let Some(folder) = folder else {
+        let Some(folder) = find_pack_folder(client).await? else {
             if attempt == max_attempts - 1 {
                 return Err(Error::msg("未找到「转存自分享」文件夹"));
             }

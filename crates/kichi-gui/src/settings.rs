@@ -212,6 +212,29 @@ pub fn remove_upload_record(rec_id: &str, local_path: &std::path::Path, name: &s
     }
 }
 
+/// 「转存自分享」暂存目录的持久化 ID。
+/// 单独存一个文件, 避免与 GUI 线程整体覆写 settings.json 产生竞争。
+fn pack_folder_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("kichi").join("pack_folder_id"))
+}
+
+pub fn load_pack_folder_id() -> Option<String> {
+    let p = pack_folder_path()?;
+    let text = std::fs::read_to_string(p).ok()?;
+    let id = text.trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+pub fn save_pack_folder_id(id: &str) {
+    let Some(p) = pack_folder_path() else {
+        return;
+    };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(p, id);
+}
+
 fn path() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("kichi").join("settings.json"))
 }
