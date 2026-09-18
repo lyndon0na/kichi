@@ -1175,9 +1175,6 @@ impl KichiClient {
     /// 需要已由 `upload_create` 得到 `oss` 上下文, 并由 `oss_initiate` 得到 `upload_id`。
     /// `state` 保存已成功分片的 ETag; 重试时传入同一 `state` 即可跳过已上传分片。
     /// `cancel` 置位时分片边界中止; `on_progress(已传字节, 总大小)` 随分片完成回调。
-    /// `persist` 在每当有一个分片成功写入 `state` 后被调用(在驱动任务内串行执行),
-    /// 供上层把 `state` 快照落盘以实现跨重启续传; 无需持久化时传入空闭包。
-    #[allow(clippy::too_many_arguments)]
     pub async fn upload_oss<F>(
         &self,
         oss: &OssContext,
@@ -1186,7 +1183,6 @@ impl KichiClient {
         cancel: Option<Arc<AtomicBool>>,
         state: &mut OssUploadState,
         on_progress: &mut F,
-        persist: &mut (dyn FnMut(&OssUploadState) + Send),
     ) -> Result<u64, Error>
     where
         F: FnMut(u64, u64) + Send,
@@ -1231,7 +1227,6 @@ impl KichiClient {
         while let Some(res) = stream.next().await {
             let (part, etag) = res?;
             state.etags.insert(part, etag);
-            persist(state);
         }
 
         if let Ok(mut g) = cb.lock() {
@@ -1277,55 +1272,6 @@ impl KichiClient {
         upload::extract_xml_tag(&text, "UploadId")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| Error::msg("OSS 初始化响应缺少 UploadId"))
-    }
-
-    /// 列举某个 `upload_id` 下已成功上传的分片(自动翻页)。
-    ///
-    /// 用于跨重启续传时以 OSS 端为权威对账本地记录的 ETag: upload_id 已失效时
-    /// 返回错误, 调用方据此退回全新上传。
-    pub async fn oss_list_parts(
-        &self,
-        oss: &OssContext,
-        upload_id: &str,
-    ) -> Result<Vec<(u64, String)>, Error> {
-        let mut marker: u64 = 0;
-        let mut all: Vec<(u64, String)> = Vec::new();
-        loop {
-            let query = format!("uploadId={upload_id}&max-parts=1000&part-number-marker={marker}");
-            let date = upload::http_date_now();
-            let auth = upload::oss_authorization("GET", &date, oss, &query);
-            let url = format!(
-                "https://{}/{}?{query}",
-                oss.endpoint.trim_end_matches('/'),
-                oss.key
-            );
-            let resp = self
-                .http
-                .get(&url)
-                .header("Date", &date)
-                .header("x-oss-security-token", &oss.security_token)
-                .header("Authorization", auth)
-                .header("User-Agent", OSS_UA)
-                .send()
-                .await?;
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            if !status.is_success() {
-                return Err(Error::HttpStatus {
-                    status: status.as_u16(),
-                    body: truncate(&text, 200),
-                });
-            }
-            all.extend(upload::parse_list_parts(&text));
-            if !upload::list_parts_truncated(&text) {
-                break;
-            }
-            match upload::list_parts_next_marker(&text) {
-                Some(m) if m > marker => marker = m,
-                _ => break,
-            }
-        }
-        Ok(all)
     }
 
     /// 上传一个分片, 返回其 ETag(不含引号)。

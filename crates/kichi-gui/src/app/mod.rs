@@ -242,8 +242,6 @@ pub struct App {
     pub(crate) selected_ul: HashSet<u64>,
     pub(crate) ul_filter: UlFilter,
     pub(crate) ul_last_clicked: Option<u64>,
-    /// 重启后从 `upload_resume.json` 还原、等待登录成功后自动续传的任务 req_id。
-    pub(crate) ul_resume_pending: HashSet<u64>,
     /// 进行中的异步选择 (是否目录, 目标目录, 目标路径展示, 结果通道), 避免阻塞 UI 线程。
     pub(crate) upload_pick: Option<UploadPick>,
 
@@ -608,7 +606,6 @@ impl App {
                             files_total: 0,
                             current: String::new(),
                             at: (record.at != 0).then_some(record.at),
-                            resumed: false,
                         },
                     );
                 }
@@ -617,7 +614,6 @@ impl App {
             selected_ul: HashSet::new(),
             ul_filter: UlFilter::All,
             ul_last_clicked: None,
-            ul_resume_pending: HashSet::new(),
             upload_pick: None,
             preview_pending: None,
             quality_cache: HashMap::new(),
@@ -684,26 +680,6 @@ impl App {
             .max()
             .copied()
             .unwrap_or(0);
-
-        // 还原上次中断的上传: 用递增且不与历史冲突的 req_id 重建卡片(排队中),
-        // 待登录成功后由 `dispatch_pending_uploads` 自动续传。
-        for rec in settings::load_upload_resume() {
-            let req_id = app.alloc_req_id();
-            app.ul_jobs.insert(
-                req_id,
-                UlJob {
-                    total: rec.total,
-                    done: 0,
-                    ..UlJob::queued(
-                        rec.local_path.clone(),
-                        rec.name.clone(),
-                        rec.parent.clone(),
-                        rec.dest_stack.clone(),
-                    )
-                },
-            );
-            app.ul_resume_pending.insert(req_id);
-        }
 
         match session::load_session() {
             Ok(Some(s)) => {
@@ -781,7 +757,6 @@ impl App {
                     self.reset_browse();
                     self.send(Cmd::RefreshQuota);
                     self.send(Cmd::RefreshTasks);
-                    self.dispatch_pending_uploads();
                     self.persist_settings();
                 }
                 Msg::LoginFailed { what, verify_url } => {
@@ -1212,25 +1187,6 @@ impl App {
                         sample_speed(&mut j.speed, &mut j.last_done, &mut j.last_at, done);
                         if done > j.done {
                             j.done = done;
-                        }
-                    }
-                }
-                Msg::UlResumed {
-                    req_id,
-                    resumed,
-                    skipped,
-                    total,
-                } => {
-                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
-                        j.resumed = resumed;
-                        if resumed {
-                            // 续传命中: 进度条直接初始化到已跳过字节, 直观体现"接着传"。
-                            if total > 0 {
-                                j.total = total;
-                            }
-                            if skipped > j.done {
-                                j.done = skipped;
-                            }
                         }
                     }
                 }
@@ -2183,24 +2139,6 @@ impl App {
         self.req_id
     }
 
-    /// 登录成功后, 把重启前中断的上传逐个交给 worker 续传。
-    /// 每个 req_id 只分发一次; 已不在列表(登录前被移除)的自动清出待发集合。
-    fn dispatch_pending_uploads(&mut self) {
-        if self.ul_resume_pending.is_empty() {
-            return;
-        }
-        let pending: Vec<u64> = self.ul_resume_pending.iter().copied().collect();
-        for req_id in pending {
-            let Some(job) = self.ul_jobs.get(&req_id) else {
-                self.ul_resume_pending.remove(&req_id);
-                continue;
-            };
-            let path = job.local_path.clone();
-            self.ul_resume_pending.remove(&req_id);
-            self.send(Cmd::ResumeUpload { req_id, path });
-        }
-    }
-
     pub(crate) fn has_active_downloads(&self) -> bool {
         self.jobs
             .values()
@@ -2454,7 +2392,6 @@ impl App {
                 req_id,
                 path,
                 parent: parent.clone(),
-                dest_stack: dest_stack.clone(),
             });
             n += 1;
         }

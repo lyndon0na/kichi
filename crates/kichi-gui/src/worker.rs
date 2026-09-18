@@ -543,45 +543,8 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             req_id,
             path,
             parent,
-            dest_stack,
         } => {
-            spawn_upload(st, tx, req_id, path, parent, dest_stack, None).await;
-        }
-        Cmd::ResumeUpload { req_id, path } => {
-            let rec = crate::settings::load_upload_resume()
-                .into_iter()
-                .find(|r| r.local_path == path);
-            // 校验本地文件仍在且大小未变; 否则丢弃续传记录并收回卡片。
-            let valid = match &rec {
-                Some(r) => tokio::fs::metadata(&r.local_path)
-                    .await
-                    .map(|m| m.is_file() && m.len() == r.total)
-                    .unwrap_or(false),
-                None => false,
-            };
-            match rec.filter(|_| valid) {
-                Some(rec) => {
-                    spawn_upload(
-                        st,
-                        tx,
-                        req_id,
-                        rec.local_path.clone(),
-                        rec.parent.clone(),
-                        rec.dest_stack.clone(),
-                        Some(rec),
-                    )
-                    .await;
-                }
-                None => {
-                    // 记录缺失或本地文件已变动/删除: 清理续传状态, 让 UI 收回卡片。
-                    tracing::warn!(
-                        "[上传续传] 放弃续传: 记录缺失或本地文件已变动/删除 ({})",
-                        path.display()
-                    );
-                    crate::settings::remove_upload_resume(&path);
-                    let _ = tx.send(Msg::UlCancelled { req_id });
-                }
-            }
+            spawn_upload(st, tx, req_id, path, parent).await;
         }
         Cmd::StartUploadDir {
             req_id,
@@ -1475,8 +1438,6 @@ async fn spawn_upload(
     req_id: u64,
     path: PathBuf,
     parent: Option<String>,
-    dest_stack: Vec<(Option<String>, String)>,
-    seed: Option<crate::settings::UploadResumeRecord>,
 ) {
     let Some(client) = st.client.clone() else {
         return;
@@ -1507,8 +1468,6 @@ async fn spawn_upload(
             req_id,
             &path,
             parent.as_deref(),
-            &dest_stack,
-            seed,
             cancel.clone(),
         )
         .await;
@@ -1597,17 +1556,14 @@ async fn spawn_upload_dir(
     });
 }
 
-/// 上传主流程(单文件): 委托 `upload_local_file` 并开启跨重启续传记录。
-/// `seed` 为重启前落盘的续传状态; 有则优先尝试续传, 位置/凭证失效时自动退回全新上传。
-#[allow(clippy::too_many_arguments)]
+/// 上传主流程: 算 gcid → 创建票据(秒传则结束) → OSS 分片;
+/// 分片并发且可在重试间续传, OSS 凭证失效时重建票据。
 async fn run_upload(
     client: &KichiClient,
     tx: &Sender<Msg>,
     req_id: u64,
     path: &Path,
     parent: Option<&str>,
-    dest_stack: &[(Option<String>, String)],
-    seed: Option<crate::settings::UploadResumeRecord>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), Error> {
     let tx2 = tx.clone();
@@ -1623,38 +1579,19 @@ async fn run_upload(
             });
         }
     };
-    upload_local_file(
-        client,
-        path,
-        parent,
-        dest_stack,
-        true,
-        seed,
-        Some((req_id, tx.clone())),
-        &cancel,
-        &mut on_progress,
-    )
-    .await
-    .map(|_| ())
+    upload_local_file(client, path, parent, &cancel, &mut on_progress)
+        .await
+        .map(|_| ())
 }
 
 /// 上传单个本地文件到指定网盘目录。返回是否秒传命中。
 ///
-/// 票据/`upload_id`/已传分片在重试间保留以实现运行内续传; 瞬时错误退避重试,
+/// 票据/`upload_id`/已传分片在重试间保留以实现续传; 瞬时错误退避重试,
 /// OSS 凭证或 uploadId 失效(非瞬时)时丢弃票据重建后重试。
-///
-/// `persist=true`(单文件上传) 时把续传状态写入 `upload_resume.json`, 使进程重启后
-/// 可凭 `seed` 跳过已上传分片继续: 秒传 / 成功 / 取消 时删除记录, 失败则保留。
-/// `seed=Some` 表示这是一次跨重启续传。目录递归上传按整目录管理, 暂不落盘(`persist=false`)。
-#[allow(clippy::too_many_arguments)]
 async fn upload_local_file<F>(
     client: &KichiClient,
     path: &Path,
     parent: Option<&str>,
-    dest_stack: &[(Option<String>, String)],
-    persist: bool,
-    mut seed: Option<crate::settings::UploadResumeRecord>,
-    resume_notify: Option<(u64, Sender<Msg>)>,
     cancel: &Arc<AtomicBool>,
     on_progress: &mut F,
 ) -> Result<bool, Error>
@@ -1665,28 +1602,20 @@ where
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .ok_or_else(|| Error::msg("无法获取文件名"))?;
+    let size = tokio::fs::metadata(path).await?.len();
 
-    // 续传时复用持久化的 size/gcid, 避免对大文件重算; 全新上传才现算 gcid(放阻塞线程池)。
-    let (size, hash) = match &seed {
-        Some(s) => (s.total, s.gcid.clone()),
-        None => {
-            let size = tokio::fs::metadata(path).await?.len();
-            let hash_path = path.to_path_buf();
-            let hash =
-                tokio::task::spawn_blocking(move || kichi_core::upload::file_gcid(&hash_path))
-                    .await
-                    .map_err(|e| Error::msg(format!("gcid 计算失败: {e}")))??;
-            (size, hash)
-        }
-    };
+    // gcid 需要完整读取文件, 放到阻塞线程池。
+    let hash_path = path.to_path_buf();
+    let hash = tokio::task::spawn_blocking(move || kichi_core::upload::file_gcid(&hash_path))
+        .await
+        .map_err(|e| Error::msg(format!("gcid 计算失败: {e}")))??;
 
     let mut oss: Option<OssContext> = None;
     let mut upload_id: Option<String> = None;
     let mut state = OssUploadState::default();
     let mut attempt: u32 = 0;
-    let mut last_persist = Instant::now();
 
-    let result: Result<bool, Error> = loop {
+    loop {
         attempt += 1;
 
         if oss.is_none() {
@@ -1697,7 +1626,7 @@ where
                         || attempt >= UL_MAX_ATTEMPTS
                         || !e.is_transient()
                     {
-                        break Err(e);
+                        return Err(e);
                     }
                     tokio::time::sleep(download_backoff(attempt - 1)).await;
                     continue;
@@ -1705,120 +1634,32 @@ where
             };
             if ticket.completed {
                 (*on_progress)(size, size);
-                break Ok(true);
+                return Ok(true);
             }
             let Some(o) = ticket.oss else {
-                break Err(Error::msg("服务端未返回上传上下文"));
+                return Err(Error::msg("服务端未返回上传上下文"));
             };
-
-            // 续传优先: 用刚刷新到的凭证比对持久化位置, 命中则沿用 upload_id 并以
-            // OSS ListParts 为权威对账已传分片; 位置不符或 upload_id 失效则退回全新上传。
-            let mut resumed = false;
-            if let Some(sd) = seed.take() {
-                let same = sd.endpoint == o.endpoint && sd.bucket == o.bucket && sd.key == o.key;
-                // 首次实测时直接看清续传卡在哪一环: 记录位置 vs 本次新票位置。
-                tracing::debug!(
-                    "[上传续传] {name} 位置比对 same={same}\n  记录: endpoint={} bucket={} key={} upload_id={}\n  新票: endpoint={} bucket={} key={}",
-                    sd.endpoint,
-                    sd.bucket,
-                    sd.key,
-                    sd.upload_id,
-                    o.endpoint,
-                    o.bucket,
-                    o.key
-                );
-                if same {
-                    match client.oss_list_parts(&o, &sd.upload_id).await {
-                        Ok(parts) => {
-                            state.etags = parts.into_iter().collect();
-                            upload_id = Some(sd.upload_id);
-                            oss = Some(o.clone());
-                            resumed = true;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "[上传续传] {name} 退回全新上传: upload_id 已失效或对账失败({e})"
-                            );
-                        }
-                    }
-                } else {
-                    tracing::warn!("[上传续传] {name} 退回全新上传: 服务端返回了新的 OSS 位置");
-                }
-                if !resumed {
+            match client.oss_initiate(&o).await {
+                Ok(id) => {
+                    upload_id = Some(id);
+                    oss = Some(o);
                     state.etags.clear();
                 }
-                // 一次性回报续传判定: 命中时给出跳过的字节数, 供 UI 与日志区分续传/全新。
-                let chunk = kichi_core::upload::upload_chunk_size(size);
-                let skipped = if resumed {
-                    state.uploaded_bytes(chunk, size)
-                } else {
-                    0
-                };
-                if resumed {
-                    tracing::info!(
-                        "[上传续传] {name} 命中, 跳过 {} 片 / {} 字节 (共 {size})",
-                        state.etags.len(),
-                        skipped
-                    );
-                }
-                if let Some((rid, tx)) = &resume_notify {
-                    let _ = tx.send(Msg::UlResumed {
-                        req_id: *rid,
-                        resumed,
-                        skipped,
-                        total: size,
-                    });
-                }
-            }
-            if !resumed {
-                match client.oss_initiate(&o).await {
-                    Ok(id) => {
-                        upload_id = Some(id);
-                        oss = Some(o);
-                        state.etags.clear();
+                Err(e) => {
+                    if cancel.load(Ordering::Relaxed)
+                        || attempt >= UL_MAX_ATTEMPTS
+                        || !e.is_transient()
+                    {
+                        return Err(e);
                     }
-                    Err(e) => {
-                        if cancel.load(Ordering::Relaxed)
-                            || attempt >= UL_MAX_ATTEMPTS
-                            || !e.is_transient()
-                        {
-                            break Err(e);
-                        }
-                        tokio::time::sleep(download_backoff(attempt - 1)).await;
-                        continue;
-                    }
-                }
-            }
-
-            // 拿到可用的 upload_id 后立即落盘续传记录(供本次崩溃后的下次重启)。
-            if persist {
-                if let (Some(o), Some(id)) = (&oss, &upload_id) {
-                    crate::settings::upsert_upload_resume(crate::settings::UploadResumeRecord {
-                        local_path: path.to_path_buf(),
-                        name: name.clone(),
-                        parent: parent.map(str::to_string),
-                        dest_stack: dest_stack.to_vec(),
-                        total: size,
-                        gcid: hash.clone(),
-                        endpoint: o.endpoint.clone(),
-                        bucket: o.bucket.clone(),
-                        key: o.key.clone(),
-                        upload_id: id.clone(),
-                        etags: state.etags.clone(),
-                        at: crate::format::now_unix(),
-                    });
+                    tokio::time::sleep(download_backoff(attempt - 1)).await;
+                    continue;
                 }
             }
         }
 
         let o = oss.as_ref().expect("oss set above");
         let id = upload_id.as_deref().expect("upload_id set above");
-        let mut persist_cb = |st: &OssUploadState| {
-            if persist && Instant::now().duration_since(last_persist) >= Duration::from_secs(1) {
-                last_persist = Instant::now();
-                crate::settings::update_upload_resume_etags(path, &st.etags);
-            }
-        };
         match client
             .upload_oss(
                 o,
@@ -1827,14 +1668,13 @@ where
                 Some(cancel.clone()),
                 &mut state,
                 &mut *on_progress,
-                &mut persist_cb,
             )
             .await
         {
-            Ok(_) => break Ok(false),
+            Ok(_) => return Ok(false),
             Err(e) => {
                 if cancel.load(Ordering::Relaxed) || attempt >= UL_MAX_ATTEMPTS {
-                    break Err(e);
+                    return Err(e);
                 }
                 if !e.is_transient() {
                     // 可能是 OSS 凭证/uploadId 失效: 丢弃票据, 下轮重建。
@@ -1846,17 +1686,7 @@ where
                 tokio::time::sleep(download_backoff(attempt - 1)).await;
             }
         }
-    };
-
-    // 收尾: 成功 / 取消 -> 删除续传记录; 失败保留, 下次重启可续传。
-    let discard = match &result {
-        Ok(_) => true,
-        Err(_) => cancel.load(Ordering::Relaxed),
-    };
-    if persist && discard {
-        crate::settings::remove_upload_resume(path);
     }
-    result
 }
 
 /// 本地目录里的一个待上传文件。
@@ -1976,10 +1806,6 @@ async fn run_upload_dir(
             client,
             &file.abs,
             Some(parent_id.as_str()),
-            &[],
-            false,
-            None,
-            None,
             &cancel,
             &mut on_progress,
         )

@@ -348,8 +348,6 @@ pub(crate) struct UlJob {
     pub current: String,
     /// 完成/失败时间(unix 秒); 进行中为 None。
     pub at: Option<u64>,
-    /// 本次运行是否为跨重启续传命中(跳过已传分片), 用于 UI 区分「续传中 / 上传中」。
-    pub resumed: bool,
 }
 
 impl UlJob {
@@ -385,7 +383,6 @@ impl UlJob {
             files_total: 0,
             current: String::new(),
             at: None,
-            resumed: false,
         }
     }
 

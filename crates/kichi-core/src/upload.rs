@@ -70,7 +70,7 @@ pub fn part_len(part: u64, chunk: u64, size: u64) -> u64 {
 
 /// OSS 分片上传的跨次重试状态: 保存已成功分片的 ETag (part_number -> etag)。
 /// 同一个 `upload_id` 内续传时用它跳过已上传的分片。
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default)]
 pub struct OssUploadState {
     pub etags: std::collections::HashMap<u64, String>,
 }
@@ -185,43 +185,6 @@ pub fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     let start = xml.find(&open)? + open.len();
     let end = xml[start..].find(&close)? + start;
     Some(xml[start..end].to_string())
-}
-
-/// 解析 OSS ListParts 响应中的已上传分片: 返回 `(part_number, etag)` 列表。
-/// ETag 去掉可能存在的引号。
-pub fn parse_list_parts(xml: &str) -> Vec<(u64, String)> {
-    let mut out = Vec::new();
-    let open = "<Part>";
-    let close = "</Part>";
-    let mut rest = xml;
-    while let Some(start) = rest.find(open) {
-        rest = &rest[start + open.len()..];
-        let end = match rest.find(close) {
-            Some(e) => e,
-            None => break,
-        };
-        let block = &rest[..end];
-        rest = &rest[end..];
-        if let (Some(pn), Some(et)) = (
-            extract_xml_tag(block, "PartNumber"),
-            extract_xml_tag(block, "ETag"),
-        ) {
-            if let Ok(n) = pn.trim().parse::<u64>() {
-                out.push((n, et.trim().trim_matches('"').to_string()));
-            }
-        }
-    }
-    out
-}
-
-/// ListParts 响应是否被截断(仍有下一页)。
-pub fn list_parts_truncated(xml: &str) -> bool {
-    extract_xml_tag(xml, "IsTruncated").is_some_and(|s| s.trim().eq_ignore_ascii_case("true"))
-}
-
-/// ListParts 响应中的下一页分片号游标。
-pub fn list_parts_next_marker(xml: &str) -> Option<u64> {
-    extract_xml_tag(xml, "NextPartNumberMarker").and_then(|s| s.trim().parse().ok())
 }
 
 fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
@@ -354,45 +317,5 @@ mod tests {
             extract_xml_tag("<X><UploadId>UP</UploadId></X>", "UploadId").as_deref(),
             Some("UP")
         );
-    }
-
-    #[test]
-    fn parse_list_parts_extracts_and_strips_quotes() {
-        let xml = "<ListAllMyParts>\
-             <Part><PartNumber>1</PartNumber><ETag>\"aa\"</ETag></Part>\
-             <Part><PartNumber>3</PartNumber><ETag>cc</ETag></Part>\
-           </ListAllMyParts>";
-        assert_eq!(
-            parse_list_parts(xml),
-            vec![(1, "aa".to_string()), (3, "cc".to_string())]
-        );
-        assert_eq!(parse_list_parts("<X></X>"), Vec::<(u64, String)>::new());
-    }
-
-    #[test]
-    fn list_parts_pagination_flags() {
-        assert!(list_parts_truncated(
-            "<R><IsTruncated>true</IsTruncated></R>"
-        ));
-        assert!(!list_parts_truncated(
-            "<R><IsTruncated>false</IsTruncated></R>"
-        ));
-        assert!(!list_parts_truncated("<R></R>"));
-        assert_eq!(
-            list_parts_next_marker("<R><NextPartNumberMarker>7</NextPartNumberMarker></R>"),
-            Some(7)
-        );
-        assert_eq!(list_parts_next_marker("<R></R>"), None);
-    }
-
-    #[test]
-    fn oss_upload_state_serde_roundtrip() {
-        let mut st = OssUploadState::default();
-        st.etags.insert(2, "b".into());
-        st.etags.insert(1, "a".into());
-        let json = serde_json::to_string(&st).unwrap();
-        let back: OssUploadState = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.etags.get(&1).map(String::as_str), Some("a"));
-        assert_eq!(back.etags.get(&2).map(String::as_str), Some("b"));
     }
 }

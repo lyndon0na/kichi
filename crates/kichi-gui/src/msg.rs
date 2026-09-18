@@ -150,18 +150,10 @@ pub enum Cmd {
         req_id: u64,
     },
     /// 把本地文件上传到网盘目录 parent(None = 根目录)。
-    /// `dest_stack` 为目标目录层级快照, 仅用于跨重启续传卡片的展示还原。
     StartUpload {
         req_id: u64,
         path: PathBuf,
         parent: Option<String>,
-        dest_stack: Vec<(Option<String>, String)>,
-    },
-    /// 续传一个此前中断的上传(跨重启)。worker 依据 `path` 从续存记录读取
-    /// `upload_id`/ETag/OSS 位置, 重新申请凭证后跳过已传分片继续。
-    ResumeUpload {
-        req_id: u64,
-        path: PathBuf,
     },
     /// 把本地目录递归上传到网盘目录 parent(None = 根目录)。
     StartUploadDir {
@@ -364,14 +356,6 @@ pub enum Msg {
         req_id: u64,
         total: u64,
         done: u64,
-    },
-    /// 续传判定结果: 重启后的一次性回报。`resumed` 为 true 表示命中续传、
-    /// 已跳过 `skipped` 字节(共 `total`); false 表示退回全新上传。
-    UlResumed {
-        req_id: u64,
-        resumed: bool,
-        skipped: u64,
-        total: u64,
     },
     /// 上传完成。
     UlFinished {
