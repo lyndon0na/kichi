@@ -426,12 +426,14 @@ impl KichiClient {
             .unwrap_or_default()
             .to_string();
         if out.is_empty() {
-            let msg = value
+            let description = value
                 .get("error_description")
                 .and_then(|v| v.as_str())
-                .unwrap_or("未获取到 captcha_token(可能需要通过网页验证)")
+                .unwrap_or("服务端要求通过网页完成人机验证")
                 .to_string();
-            return Err(Error::msg(msg));
+            // shield 判定需要真人验证时会返回验证页链接(键名含 url 的 http(s) 字符串)。
+            let url = extract_verify_url(&value);
+            return Err(Error::CaptchaReview { url, description });
         }
         {
             let mut a = self.auth.lock().await;
@@ -533,7 +535,7 @@ impl KichiClient {
         // 先获取根目录列表，然后递归遍历所有子目录
         let mut all_files = Vec::new();
         let mut folder_queue: VecDeque<String> = VecDeque::new();
-        
+
         // 获取根目录文件
         let root_list = self.file_list(None, WALK_PAGE_SIZE, None).await?;
         for f in root_list.files {
@@ -543,17 +545,19 @@ impl KichiClient {
                 all_files.push(f);
             }
         }
-        
+
         // 递归遍历所有子目录
         let mut visited: HashSet<String> = HashSet::new();
         while let Some(folder_id) = folder_queue.pop_front() {
             if !visited.insert(folder_id.clone()) {
                 continue;
             }
-            
+
             let mut token: Option<String> = None;
             loop {
-                let list = self.file_list(Some(&folder_id), WALK_PAGE_SIZE, token.as_deref()).await?;
+                let list = self
+                    .file_list(Some(&folder_id), WALK_PAGE_SIZE, token.as_deref())
+                    .await?;
                 for f in list.files {
                     if f.is_folder() {
                         folder_queue.push_back(f.id.clone());
@@ -561,21 +565,21 @@ impl KichiClient {
                         all_files.push(f);
                     }
                 }
-                
+
                 match list.next_page_token {
                     Some(t) if !t.is_empty() => token = Some(t),
                     _ => break,
                 }
             }
         }
-        
+
         // 按关键词过滤
         let keyword_lower = keyword.to_lowercase();
         let matched_files: Vec<File> = all_files
             .into_iter()
             .filter(|f| f.name.to_lowercase().contains(&keyword_lower))
             .collect();
-        
+
         Ok(FileList {
             files: matched_files,
             next_page_token: None,
@@ -1423,6 +1427,30 @@ fn request_action(method: &reqwest::Method, url: &str) -> String {
     format!("{method}:{path}")
 }
 
+/// 从 shield 响应里找出人机验证页链接: 递归取键名含 `url` 的 http(s) 字符串。
+/// 服务端字段形态不固定(`data.url` / 顶层 `url` 等), 故做宽松匹配, 找不到则返回 None。
+fn extract_verify_url(value: &Value) -> Option<String> {
+    fn walk(v: &Value) -> Option<String> {
+        match v {
+            Value::Object(map) => {
+                for (k, val) in map {
+                    if k.to_lowercase().contains("url") {
+                        if let Some(s) = val.as_str() {
+                            if s.starts_with("http") {
+                                return Some(s.to_string());
+                            }
+                        }
+                    }
+                }
+                map.values().find_map(walk)
+            }
+            Value::Array(arr) => arr.iter().find_map(walk),
+            _ => None,
+        }
+    }
+    walk(value)
+}
+
 /// 把响应体流式写入 `out`, 返回最终已写入字节数(含续传起点 `start`)。
 ///
 /// 分片粒度由 reqwest 决定; 每 `FLUSH_INTERVAL` 字节或结束时 flush 一次磁盘。
@@ -1482,6 +1510,20 @@ mod tests {
         assert!(list.files[0].is_folder());
         assert_eq!(list.files[0].size, 0);
         assert_eq!(list.files[1].size, 123456);
+    }
+
+    #[test]
+    fn extract_verify_url_finds_http_links() {
+        let nested = json!({ "data": { "url": "https://verify.example/x" } });
+        assert_eq!(
+            extract_verify_url(&nested).as_deref(),
+            Some("https://verify.example/x")
+        );
+        let top = json!({ "error": "review", "review_url": "https://a/b" });
+        assert_eq!(extract_verify_url(&top).as_deref(), Some("https://a/b"));
+        // 无 url 键或非 http 值时返回 None。
+        let none = json!({ "error": "review", "error_description": "需要验证" });
+        assert_eq!(extract_verify_url(&none), None);
     }
 
     #[test]

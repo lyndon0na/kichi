@@ -28,6 +28,14 @@ pub enum Error {
     #[error("登录已过期: {0}")]
     AuthExpired(String),
 
+    /// shield 判定需要真人网页人机验证(无法静默通过)。
+    /// `url` 为服务端给出的验证页链接(可能缺失), 用户需在浏览器完成验证后重试。
+    #[error("需要人机验证: {description}")]
+    CaptchaReview {
+        url: Option<String>,
+        description: String,
+    },
+
     #[error("{0}")]
     Msg(String),
 }

@@ -1,5 +1,6 @@
 use eframe::egui::{
-    self, vec2, Align, Color32, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText, Stroke, UiBuilder, pos2,
+    self, pos2, vec2, Align, Color32, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText,
+    Stroke, UiBuilder,
 };
 
 use kichi_core::types::File;
@@ -519,9 +520,7 @@ impl App {
             ctx.input(|i| {
                 for event in &i.events {
                     if let egui::Event::MouseWheel {
-                        modifiers,
-                        delta,
-                        ..
+                        modifiers, delta, ..
                     } = event
                     {
                         if modifiers.ctrl && delta.y.abs() > 0.0 {
@@ -606,7 +605,7 @@ impl App {
                             let clip_reserve = if clip_info.is_some() { 150.0 } else { 0.0 };
                             let crumbs_budget =
                                 (ui.available_width() - count_reserve - clip_reserve).max(48.0);
-                            
+
                             // 搜索模式指示器
                             if self.search_mode {
                                 egui::Frame::new()
@@ -616,14 +615,18 @@ impl App {
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             ui.label(
-                                                RichText::new(format!("搜索: {}", self.search_keyword))
-                                                    .color(th.accent)
-                                                    .size(12.0),
+                                                RichText::new(format!(
+                                                    "搜索: {}",
+                                                    self.search_keyword
+                                                ))
+                                                .color(th.accent)
+                                                .size(12.0),
                                             );
                                         });
                                     });
                                 ui.add_space(6.0);
-                            } else if let Some(i) = breadcrumbs(ui, th, &self.stack, crumbs_budget) {
+                            } else if let Some(i) = breadcrumbs(ui, th, &self.stack, crumbs_budget)
+                            {
                                 jumped = Some(i);
                             }
 
@@ -712,7 +715,11 @@ impl App {
                                                 .id(egui::Id::new("file_search"))
                                                 .frame(false)
                                                 .desired_width(150.0)
-                                                .hint_text(if self.search_mode { "搜索中..." } else { "按 Enter 全局搜索" })
+                                                .hint_text(if self.search_mode {
+                                                    "搜索中..."
+                                                } else {
+                                                    "按 Enter 全局搜索"
+                                                })
                                                 .font(FontId::proportional(13.5)),
                                         );
                                         if !self.filter.is_empty() {
@@ -1288,7 +1295,7 @@ impl App {
                                             let max_size = card_w * 0.85;
                                             let tex_size = texture.size_vec2();
                                             let aspect = tex_size.x / tex_size.y;
-                                            
+
                                             let (w, h) = if aspect > 1.0 {
                                                 // 横向图片
                                                 (max_size, max_size / aspect)
@@ -1296,9 +1303,12 @@ impl App {
                                                 // 纵向图片
                                                 (max_size * aspect, max_size)
                                             };
-                                            
+
                                             let thumb_rect = Rect::from_center_size(
-                                                Pos2::new(rect.center().x, rect.min.y + card_h * 0.4),
+                                                Pos2::new(
+                                                    rect.center().x,
+                                                    rect.min.y + card_h * 0.4,
+                                                ),
                                                 vec2(w, h),
                                             );
                                             painter.image(
@@ -1317,10 +1327,19 @@ impl App {
                                                     if th.dark { 0.22 } else { 0.14 },
                                                 )
                                             } else {
-                                                mix(th.card, color, if th.dark { 0.16 } else { 0.10 })
+                                                mix(
+                                                    th.card,
+                                                    color,
+                                                    if th.dark { 0.16 } else { 0.10 },
+                                                )
                                             };
                                             painter.rect_filled(icon_rect, th.cr(8), tile_bg);
-                                            icons::paint(&painter, icon_rect.shrink(4.0), glyph, color);
+                                            icons::paint(
+                                                &painter,
+                                                icon_rect.shrink(4.0),
+                                                glyph,
+                                                color,
+                                            );
                                         }
 
                                         // 文件名（底部居中，最多 2 行）
@@ -1483,7 +1502,10 @@ impl App {
                                 } else {
                                     "加载更多"
                                 };
-                                if ui.add_enabled(!self.search_loading, egui::Button::new(btn_text)).clicked() {
+                                if ui
+                                    .add_enabled(!self.search_loading, egui::Button::new(btn_text))
+                                    .clicked()
+                                {
                                     if self.search_mode {
                                         self.load_more_search_results();
                                     } else {
@@ -1499,8 +1521,11 @@ impl App {
                                 ui.add_space((list_avail_h * 0.3).max(20.0));
                                 ui.vertical_centered(|ui| {
                                     ui.label(
-                                        RichText::new(format!("没有找到匹配「{}」的文件", self.search_keyword))
-                                            .color(th.text_weak),
+                                        RichText::new(format!(
+                                            "没有找到匹配「{}」的文件",
+                                            self.search_keyword
+                                        ))
+                                        .color(th.text_weak),
                                     );
                                 });
                             }

@@ -271,13 +271,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             append,
             req_id,
         } => {
-            let Some(client) = &st.client else { 
+            let Some(client) = &st.client else {
                 return;
             };
-            match client
-                .search_files(&keyword, 100, token.as_deref())
-                .await
-            {
+            match client.search_files(&keyword, 100, token.as_deref()).await {
                 Ok(list) => {
                     tracing::info!("搜索成功: 返回 {} 个结果", list.files.len());
                     let _ = tx.send(Msg::SearchResults {
@@ -893,9 +890,13 @@ async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, pass
         }
         Err(e) => {
             tracing::warn!("登录失败: {e}");
-            let _ = tx.send(Msg::LoginFailed {
-                what: format!("登录失败: {e}"),
-            });
+            let (what, verify_url) = match &e {
+                Error::CaptchaReview { url, description } => {
+                    (format!("需要人机验证: {description}"), url.clone())
+                }
+                other => (format!("登录失败: {other}"), None),
+            };
+            let _ = tx.send(Msg::LoginFailed { what, verify_url });
         }
     }
 }
@@ -1092,12 +1093,7 @@ fn thumbnail_cache_path(file_id: &str) -> PathBuf {
 }
 
 /// 加载缩略图: 先检查磁盘缓存, 未命中则从 URL 下载, 解码为 RGBA 后发送给 UI。
-async fn load_thumbnail(
-    st: &WorkerState,
-    tx: &Sender<Msg>,
-    file_id: String,
-    url: String,
-) {
+async fn load_thumbnail(st: &WorkerState, tx: &Sender<Msg>, file_id: String, url: String) {
     let Some(client) = st.client.clone() else {
         return;
     };

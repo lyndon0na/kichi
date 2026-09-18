@@ -1464,11 +1464,15 @@ impl App {
                             let dir = if !self.download_dir.is_empty()
                                 && std::path::Path::new(&self.download_dir).is_dir()
                             {
-                                std::path::PathBuf::from(&self.download_dir)
+                                Some(std::path::PathBuf::from(&self.download_dir))
                             } else {
-                                dirs::download_dir().unwrap_or_default()
+                                dirs::download_dir().filter(|d| d.is_dir())
                             };
-                            open_dir(&dir);
+                            match dir {
+                                Some(d) => open_dir(&d),
+                                None => self
+                                    .toast_warn("无法定位下载目录, 请在「设置」中手动选择保存位置"),
+                            }
                         }
                     });
                 });

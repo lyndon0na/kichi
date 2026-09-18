@@ -128,6 +128,8 @@ pub struct App {
     pub(crate) login_username: String,
     pub(crate) login_password: String,
     pub(crate) auth_error: Option<String>,
+    /// 登录被要求人机验证时, 服务端给出的验证页链接(可在浏览器打开)。
+    pub(crate) auth_captcha_url: Option<String>,
     /// 是否把密码保存到系统密钥环以自动登录。
     pub(crate) remember_password: bool,
     /// 手动登录成功后待写入密钥环的密码。
@@ -352,6 +354,7 @@ impl App {
             login_username: saved.username.clone(),
             login_password: String::new(),
             auth_error: None,
+            auth_captcha_url: None,
             remember_password: saved.remember_password,
             pending_remember: None,
             kde_colors: kde::load(),
@@ -698,6 +701,7 @@ impl App {
                     self.username = username;
                     self.auth_checking = false;
                     self.auth_error = None;
+                    self.auth_captcha_url = None;
                     // 记住密码: 手动登录成功后写入密钥环; 未勾选则清除旧条目。
                     if self.remember_password {
                         if let Some(pw) = self.pending_remember.take() {
@@ -723,9 +727,10 @@ impl App {
                     self.send(Cmd::RefreshTasks);
                     self.persist_settings();
                 }
-                Msg::LoginFailed { what } => {
+                Msg::LoginFailed { what, verify_url } => {
                     self.auth_checking = false;
                     self.auth_error = Some(what);
+                    self.auth_captcha_url = verify_url;
                     self.username.clear();
                     self.pending_remember = None;
                 }
@@ -736,6 +741,7 @@ impl App {
                     self.auth_checking = false;
                     self.username.clear();
                     self.auth_error = Some(reason);
+                    self.auth_captcha_url = None;
                     self.jobs.clear();
                     self.selected_dl.clear();
                     self.last_clicked_dl = None;
@@ -754,6 +760,7 @@ impl App {
                     self.username.clear();
                     self.auth_checking = false;
                     self.auth_error = None;
+                    self.auth_captcha_url = None;
                     self.remember_password = false;
                     self.pending_remember = None;
                     self.persist_settings();
@@ -1555,6 +1562,7 @@ impl App {
         if self.remember_password && !username.is_empty() {
             self.auth_checking = true;
             self.auth_error = None;
+            self.auth_captcha_url = None;
             self.send(Cmd::AutoLogin { username });
         }
     }
@@ -2004,7 +2012,7 @@ impl App {
         } else {
             &self.files
         };
-        
+
         let kw = if self.search_mode {
             String::new() // 搜索结果已经过滤过了
         } else {
@@ -2619,17 +2627,74 @@ impl App {
         self.save_share_dest = None;
     }
 
-    /// 从分享链接中提取 share_id。支持完整 URL 或直接输入 ID。
-    pub(crate) fn extract_share_id(input: &str) -> String {
+    /// 解析分享输入, 返回 `(share_id, 链接里携带的提取码)`。
+    ///
+    /// 支持的形态:
+    /// - 完整链接: `https://mypikpak.com/s/<id>`
+    /// - 带查询参数 / 片段: `.../s/<id>?password=abcd#frag`(顺带提取 `password`/`pass_code`)
+    /// - 复制链接时附带的前后缀文字: 只取 `/s/` 之后的一段
+    /// - 裸 ID: `<id>`
+    ///
+    /// 无法识别(如缺少 `/s/` 的其它域名链接、含非法字符)时返回 `None`, 由调用方给出提示。
+    pub(crate) fn parse_share_input(input: &str) -> Option<(String, Option<String>)> {
         let input = input.trim();
-        // 尝试从 URL 中提取: https://mypikpak.com/s/VO8BcRb-XXX
-        if let Some(idx) = input.rfind("/s/") {
-            let id = &input[idx + 3..];
-            // 去掉可能的查询参数
-            id.split('?').next().unwrap_or(id).to_string()
-        } else {
-            input.to_string()
+        if input.is_empty() {
+            return None;
         }
+
+        // 截出 `/s/` 之后的一段: ID 到第一个非法字符为止, 之后按查询串解析提取码。
+        let (id_candidate, query) = if let Some(idx) = input.rfind("/s/") {
+            let rest = &input[idx + 3..];
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            let query = rest.find('?').map(|q| {
+                let after = &rest[q + 1..];
+                let end = after
+                    .find(|c: char| c == '#' || c.is_whitespace())
+                    .unwrap_or(after.len());
+                &after[..end]
+            });
+            (id, query)
+        } else if input.contains("://") {
+            // 是一个链接但不含 `/s/` 段, 无法定位分享 ID。
+            return None;
+        } else {
+            // 视为裸 ID。
+            (input.to_string(), None)
+        };
+
+        if !Self::is_valid_share_id(&id_candidate) {
+            return None;
+        }
+        let pass_code = query.and_then(Self::pass_code_from_query);
+        Some((id_candidate, pass_code))
+    }
+
+    /// share_id 只由字母、数字、`-`、`_` 组成且非空。
+    fn is_valid_share_id(id: &str) -> bool {
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }
+
+    /// 从 URL 查询串里取出提取码 (`password` / `pass_code` / `passcode`)。
+    fn pass_code_from_query(query: &str) -> Option<String> {
+        for pair in query.split('&') {
+            let mut kv = pair.splitn(2, '=');
+            let key = kv.next().unwrap_or("");
+            if matches!(key, "password" | "pass_code" | "passcode") {
+                if let Some(v) = kv.next() {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// 进入「我的分享」页面: 缓存新鲜则零请求, 否则刷新。
@@ -2910,5 +2975,36 @@ mod tests {
         assert_eq!((nodes[0].files_done, nodes[0].files_total), (2, 3));
         assert_eq!((nodes[3].files_done, nodes[3].files_total), (1, 1));
         assert_eq!((nodes[5].files_done, nodes[5].files_total), (0, 0));
+    }
+
+    #[test]
+    fn parse_share_id_from_url_forms() {
+        let cases = [
+            ("https://mypikpak.com/s/VO8B-abc", Some(("VO8B-abc", None))),
+            (
+                "  https://mypikpak.com/s/VO8B-abc?password=abcd  ",
+                Some(("VO8B-abc", Some("abcd"))),
+            ),
+            (
+                "https://mypikpak.com/s/VO8B-abc#frag",
+                Some(("VO8B-abc", None)),
+            ),
+            // 复制链接时附带的前后缀文字。
+            (
+                "打开链接 https://mypikpak.com/s/AbC_123 查看",
+                Some(("AbC_123", None)),
+            ),
+            ("xyz-1", Some(("xyz-1", None))),
+            // 无法识别的形态。
+            ("https://example.com/download/abc", None),
+            ("https://mypikpak.com/s/", None),
+            ("not a valid id!", None),
+            ("", None),
+        ];
+        for (input, want) in cases {
+            let got = App::parse_share_input(input);
+            let got = got.as_ref().map(|(id, p)| (id.as_str(), p.as_deref()));
+            assert_eq!(got, want, "input: {input:?}");
+        }
     }
 }

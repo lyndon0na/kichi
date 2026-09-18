@@ -106,21 +106,46 @@ impl App {
                                     self.pending_remember = Some(password.clone());
                                 }
                                 self.auth_error = None;
+                                self.auth_captcha_url = None;
                                 self.auth_checking = true;
                                 self.send(Cmd::Login { username, password });
                             }
                         });
 
-                    if let Some(err) = &self.auth_error {
+                    if let Some(err) = self.auth_error.clone() {
                         ui.add_space(12.0);
-                        ui.label(RichText::new(err).color(th.danger).size(13.0));
+                        if let Some(url) = self.auth_captcha_url.clone() {
+                            // 服务端要求真人网页验证: 给出可直接打开的验证页与重试引导。
+                            ui.label(
+                                RichText::new("需要人机验证才能继续登录")
+                                    .color(th.danger)
+                                    .size(13.0),
+                            );
+                            ui.label(RichText::new(err).color(th.text_weak).size(12.0));
+                            ui.add_space(8.0);
+                            if ui.button("打开验证页面").clicked() {
+                                if let Err(e) = super::helpers::open_url(&url) {
+                                    self.toast_err(&format!("打开验证页面失败: {e}"));
+                                }
+                            }
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("完成验证后返回, 再次点击「登录」重试。")
+                                    .color(th.text_weak)
+                                    .size(11.5),
+                            );
+                        } else {
+                            ui.label(RichText::new(err).color(th.danger).size(13.0));
+                        }
                     }
 
                     ui.add_space(16.0);
                     ui.label(
-                        RichText::new("登录遇到验证码时请稍后再试或检查网络")
-                            .color(th.text_faint)
-                            .size(11.5),
+                        RichText::new(
+                            "被要求人机验证时可稍后重试或更换网络环境; 若持续失败, 请在官方客户端完成验证后再试。",
+                        )
+                        .color(th.text_faint)
+                        .size(11.5),
                     );
                 });
             });

@@ -9,7 +9,7 @@
 | 优先级 | 主题 | 项数 |
 | :-- | :-- | :-- |
 | **P0** | 用户可见的功能缺口 | 0 |
-| **P1** | 正确性与健壮性 | 3 |
+| **P1** | 正确性与健壮性 | 0 |
 | **P2** | 可维护性与工程 | 5 |
 | **P3** | 分发与发布 | 4 |
 
@@ -21,11 +21,7 @@
 
 ## P1 · 正确性与健壮性
 
-| 编号 | 任务 | 主要文件 | 说明 / 验收 |
-| :-- | :-- | :-- | :-- |
-| P1-2 | 分享链接解析增强 | `crates/kichi-gui/src/app/mod.rs`（`extract_share_id`）<br>`crates/kichi-gui/src/app/dialogs.rs` | 仅识别 URL 中的 `/s/` 子串，其它形态（短链 / 带参数）会被当成裸 ID；补充解析与错误提示 |
-| P1-3 | 「打开下载目录」空路径修复 | `crates/kichi-gui/src/app/transfers_page.rs`（`dirs::download_dir().unwrap_or_default()`）<br>参考 `crates/kichi-gui/src/app/mod.rs`（`choose_download_dir`） | 取不到系统下载目录时回退为空路径，按钮变成无操作。应回退到已记住的下载目录或给出提示 |
-| P1-4 | 人机验证流程 | `crates/kichi-core/src/client.rs`<br>`crates/kichi-gui/src/app/login.rs` | 被要求网页端人机验证时当前只报错；至少给出明确引导（打开验证页 / 换网络重试） |
+> ✅ 全部完成
 
 ## P2 · 可维护性与工程
 
@@ -57,6 +53,9 @@
 - [x] P0-3 真实缩略图：网格视图加载 `thumbnail_link` 预签名直链，worker 下载 + 磁盘缓存（`~/.cache/kichi/thumbnails/`）+ `image` crate 解码为 RGBA 后上传 GPU 纹理；保持宽高比显示；Ctrl + 滚轮缩放网格大小（80–160px），图标 / 文字 / 缩略图随卡片等比缩放（`client.rs` / `worker.rs` / `msg.rs` / `app/mod.rs` / `files_page.rs`）
 - [x] P0-4 全局搜索：PikPak 无服务端搜索 API，采用客户端递归遍历所有目录并按文件名模糊匹配；搜索框按 Enter 触发搜索，支持分页加载更多；搜索模式下显示搜索结果指示器，导航/面包屑点击自动退出搜索模式（`client.rs` / `msg.rs` / `worker.rs` / `app/mod.rs` / `files_page.rs`）
 - [x] P1-1 分享转存目标目录改为持久化 ID：新增 `settings::load_pack_folder_id` / `save_pack_folder_id`（独立文件 `~/.config/kichi/pack_folder_id`，避免与 GUI 线程覆写 settings.json 竞争）；`worker.rs` 新增 `find_pack_folder` 统一按持久化 ID 定位「转存自分享」暂存目录，ID 失效时回退名称匹配并刷新缓存，`snapshot_pack_folder` / `move_new_files` / `Cmd::RetryMoveShare` 全部改用该入口（`worker.rs` / `settings.rs`）
+- [x] P1-2 分享链接解析增强：`extract_share_id` 改为 `parse_share_input`，支持带查询参数 / 片段 / 复制链接附带前后文字的形态，ID 截到首个非法字符为止，并顺带从 `password`/`pass_code` 回填提取码；无法识别（缺 `/s/` 的其它链接、非法字符、空）时返回 `None`，解析对话框给出错误提示而非当成裸 ID；补 `parse_share_id_from_url_forms` 单测（`mod.rs` / `dialogs.rs`）
+- [x] P1-3「打开下载目录」空路径修复：系统下载目录取不到时不再回退成空路径导致按钮无反应，改为回退到已记住的下载目录，两者都无效时给出 toast 提示前往设置选择（`transfers_page.rs`）
+- [x] P1-4 人机验证流程：`captcha_init` 取不到 `captcha_token` 时改为返回新错误变体 `Error::CaptchaReview`（携带从响应里递归提取的验证页链接 `data.url`/`*url`）；`Msg::LoginFailed` 增加 `verify_url` 字段并透传到 `App::auth_captcha_url`；登录页在需要验证时显示「打开验证页面」按钮（`helpers::open_url`）+ 完成验证后重试的引导，无链接时给出「稍后重试 / 换网络 / 用官方客户端验证」提示；补 `extract_verify_url` 单测（`error.rs` / `client.rs` / `msg.rs` / `worker.rs` / `app/mod.rs` / `login.rs`）
 
 > [!TIP]
-> P0 任务已全部完成。建议下一轮从 **P1（正确性与健壮性）** 入手。
+> P0、P1 任务已全部完成。建议下一轮从 **P2（可维护性与工程）** 入手。

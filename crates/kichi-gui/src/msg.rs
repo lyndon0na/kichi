@@ -233,8 +233,10 @@ pub enum Msg {
         username: String,
     },
     /// 登录失败(手动或密钥环自动登录)。
+    /// `verify_url` 非空时表示服务端要求人机验证, 可在浏览器打开该链接完成后重试。
     LoginFailed {
         what: String,
+        verify_url: Option<String>,
     },
     /// 自动登录不可用(密钥环未保存密码或不可用), 应回落到登录表单。
     AutoLoginUnavailable,

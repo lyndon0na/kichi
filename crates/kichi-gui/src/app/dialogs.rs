@@ -882,13 +882,28 @@ impl App {
 
             if resolve {
                 self.save_share_error = None;
-                self.save_share_resolving = true;
-                let share_id = Self::extract_share_id(&self.save_share_input);
-                let pass_code = self.save_share_pass_code.clone();
-                self.send(Cmd::ResolveShare {
-                    share_id,
-                    pass_code,
-                });
+                match Self::parse_share_input(&self.save_share_input) {
+                    Some((share_id, extracted_pass)) => {
+                        // 链接里带了提取码且用户未填写时自动回填。
+                        if let Some(p) = extracted_pass {
+                            if self.save_share_pass_code.trim().is_empty() {
+                                self.save_share_pass_code = p;
+                            }
+                        }
+                        self.save_share_resolving = true;
+                        let pass_code = self.save_share_pass_code.clone();
+                        self.send(Cmd::ResolveShare {
+                            share_id,
+                            pass_code,
+                        });
+                    }
+                    None => {
+                        self.save_share_error = Some(
+                            "无法识别分享链接, 请检查格式 (例如 https://mypikpak.com/s/xxx 或直接输入 ID)"
+                                .to_string(),
+                        );
+                    }
+                }
             }
             if save {
                 if let (Some(share_id), Some(token)) = (&self.save_share_id, &self.save_share_token)
