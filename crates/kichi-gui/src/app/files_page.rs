@@ -1244,9 +1244,9 @@ impl App {
                                         }
 
                                         // 文件图标或缩略图（居中偏上）
-                                        let icon_size = 36.0;
+                                        let icon_size = card_w * 0.45;
                                         let icon_rect = Rect::from_center_size(
-                                            Pos2::new(rect.center().x, rect.min.y + 34.0),
+                                            Pos2::new(rect.center().x, rect.min.y + card_h * 0.35),
                                             vec2(icon_size, icon_size),
                                         );
 
@@ -1298,14 +1298,15 @@ impl App {
                                         } else {
                                             th.text
                                         };
+                                        let font_size = (card_w * 0.11).clamp(9.0, 14.0);
                                         let name_g = truncate_text(
                                             &painter,
                                             name,
                                             max_w,
-                                            FontId::proportional(11.0),
+                                            FontId::proportional(font_size),
                                             name_color,
                                         );
-                                        let name_h = name_g.size().y.min(24.0);
+                                        let name_h = name_g.size().y.min(card_h * 0.25);
                                         let name_y = rect.max.y - 8.0 - name_h;
                                         painter.galley(
                                             Pos2::new(
