@@ -10,13 +10,13 @@ mod transfers_page;
 mod trash_page;
 pub(crate) mod types;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use kichi_core::session;
-use kichi_core::types::{File, FileList, Quota, Share, Task};
+use kichi_core::types::{task_id, File, FileList, Quota, Share, Task};
 
 use crate::kde;
 use crate::msg::{Cmd, Msg};
@@ -28,8 +28,9 @@ use crate::worker;
 
 use self::helpers::install_fonts;
 use self::types::{
-    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady,
-    ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, OfflineTab, Page,
+    QualityReady, ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick,
+    ViewMode,
 };
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
@@ -102,9 +103,19 @@ pub struct App {
     pub(crate) offline_picker_loading: bool,
     pub(crate) offline_picker_req: u64,
     pub(crate) buckets: BTreeMap<String, Vec<Task>>,
+    /// 离线任务每个 phase 的下一页游标; 缺失/None 表示没有更多。
+    pub(crate) buckets_next: BTreeMap<String, Option<String>>,
+    /// 正在「加载更多」的 phase 集合, 用于按钮禁用/转圈。
+    pub(crate) tasks_loading_more: BTreeSet<String>,
     pub(crate) tasks_loading: bool,
     /// 用户点击「刷新任务」后的进行中状态, 用于给出可见反馈。
     pub(crate) tasks_refreshing: bool,
+    /// 离线任务页的阶段页签; None 表示尚未按已有数据自动选定。
+    pub(crate) tasks_tab: Option<OfflineTab>,
+    /// 离线任务选中项(task id)。
+    pub(crate) tasks_selected: HashSet<String>,
+    /// 离线任务 Shift 范围选择的锚点(task id)。
+    pub(crate) tasks_anchor: Option<String>,
 
     pub(crate) quota: Option<Quota>,
 
@@ -276,8 +287,13 @@ impl App {
             offline_picker_loading: false,
             offline_picker_req: 0,
             buckets: BTreeMap::new(),
+            buckets_next: BTreeMap::new(),
+            tasks_loading_more: BTreeSet::new(),
             tasks_loading: false,
             tasks_refreshing: false,
+            tasks_tab: None,
+            tasks_selected: HashSet::new(),
+            tasks_anchor: None,
             quota: None,
             mkdir_open: false,
             mkdir_name: String::new(),
@@ -491,6 +507,10 @@ impl App {
                         });
                     }
                     self.buckets.clear();
+                    self.buckets_next.clear();
+                    self.tasks_loading_more.clear();
+                    self.tasks_selected.clear();
+                    self.tasks_anchor = None;
                     self.quota = None;
                     self.reset_browse();
                     self.send(Cmd::RefreshQuota);
@@ -533,6 +553,10 @@ impl App {
                     self.persist_settings();
                     self.quota = None;
                     self.buckets.clear();
+                    self.buckets_next.clear();
+                    self.tasks_loading_more.clear();
+                    self.tasks_selected.clear();
+                    self.tasks_anchor = None;
                     self.files.clear();
                     self.selected.clear();
                     self.dir_cache.clear();
@@ -681,17 +705,48 @@ impl App {
                     }
                 }
                 Msg::Quota(quota) => self.quota = quota,
-                Msg::TasksAll { buckets } => {
+                Msg::TasksAll {
+                    buckets,
+                    next_tokens,
+                } => {
                     // 合并而非整体替换: 某个分桶刷新失败时保留其旧数据。
                     for (phase, tasks) in buckets {
                         if tasks.is_empty() {
                             self.buckets.remove(&phase);
                         } else {
-                            self.buckets.insert(phase, tasks);
+                            self.buckets.insert(phase.clone(), tasks);
+                        }
+                        if let Some(tok) = next_tokens.get(&phase) {
+                            self.buckets_next.insert(phase, tok.clone());
                         }
                     }
                     self.tasks_loading = false;
                     self.tasks_refreshing = false;
+                }
+                Msg::TasksMore {
+                    phase,
+                    tasks,
+                    next_page_token,
+                } => {
+                    self.tasks_loading_more.remove(&phase);
+                    // 按 task_id 去重追加, 避免与刷新回包交叠时重复。
+                    let known: HashSet<String> = self
+                        .buckets
+                        .get(&phase)
+                        .map(|v| v.iter().filter_map(task_id).collect())
+                        .unwrap_or_default();
+                    let entry = self.buckets.entry(phase.clone()).or_default();
+                    for t in tasks {
+                        match task_id(&t) {
+                            Some(id) if known.contains(&id) => {}
+                            _ => entry.push(t),
+                        }
+                    }
+                    self.buckets_next.insert(phase, next_page_token);
+                }
+                Msg::TasksMoreFailed { phase, what } => {
+                    self.tasks_loading_more.remove(&phase);
+                    self.toast_err(&what);
                 }
                 Msg::DlProgress {
                     req_id,
@@ -1091,6 +1146,46 @@ impl App {
     }
     pub(crate) fn toast_err(&mut self, msg: &str) {
         self.toast(msg, self.theme().danger);
+    }
+
+    /// 当前生效的离线任务页签: 未手动选择时按已有数据自动挑一个(优先「下载中」)。
+    pub(crate) fn active_tasks_tab(&mut self) -> OfflineTab {
+        if let Some(t) = self.tasks_tab {
+            return t;
+        }
+        let pick = [
+            OfflineTab::Running,
+            OfflineTab::Pending,
+            OfflineTab::Error,
+            OfflineTab::Complete,
+        ]
+        .into_iter()
+        .find(|t| self.buckets.get(t.phase()).is_some_and(|v| !v.is_empty()))
+        .unwrap_or(OfflineTab::Pending);
+        // 一旦某个阶段已有数据就固定下来, 避免页签自行跳变。
+        if self.buckets.values().any(|v| !v.is_empty()) {
+            self.tasks_tab = Some(pick);
+        }
+        pick
+    }
+
+    /// 加载某个 phase 的下一页离线任务。
+    pub(crate) fn load_more_tasks(&mut self, phase: &str) {
+        if self.tasks_loading_more.contains(phase) {
+            return;
+        }
+        if self
+            .buckets_next
+            .get(phase)
+            .and_then(|t| t.as_ref())
+            .is_none()
+        {
+            return;
+        }
+        self.tasks_loading_more.insert(phase.to_string());
+        self.send(Cmd::LoadMoreTasks {
+            phase: phase.to_string(),
+        });
     }
 
     /// 生成一条历史记录的唯一标识(纳秒时间戳, 字符串形式)。
@@ -2118,6 +2213,7 @@ impl eframe::App for App {
             || !self.dir_inflight.is_empty()
             || self.shares_loading
             || self.trash_loading
+            || !self.tasks_loading_more.is_empty()
         {
             // 目录请求在途(含后台静默校正)时加快轮询, 让结果尽快呈现。
             ctx.request_repaint_after(Duration::from_millis(80));

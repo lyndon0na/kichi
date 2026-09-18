@@ -38,6 +38,8 @@ const DL_MAX_ATTEMPTS: u32 = 5;
 /// 本地上传的并发上限与单任务最大尝试次数。
 const UL_CONCURRENCY: usize = 2;
 const UL_MAX_ATTEMPTS: u32 = 5;
+/// 离线任务每页条数。
+const TASK_PAGE_SIZE: usize = 100;
 
 struct WorkerState {
     client: Option<Arc<KichiClient>>,
@@ -49,6 +51,10 @@ struct WorkerState {
     ul_sem: Arc<Semaphore>,
     /// 已占用的目标文件名集合(键: "目录\0文件名"), 用于同名去重。
     reserved: Arc<Mutex<HashSet<String>>>,
+    /// 离线任务每 phase 已加载的页数(刷新时保持分页深度)。
+    tasks_pages: BTreeMap<String, usize>,
+    /// 离线任务每 phase 的下一页游标(加载更多用); None/缺失表示没有更多。
+    tasks_next: BTreeMap<String, Option<String>>,
 }
 
 fn run(rx: Receiver<Cmd>, tx: Sender<Msg>) {
@@ -75,6 +81,8 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
         sem: Arc::new(Semaphore::new(DL_CONCURRENCY)),
         ul_sem: Arc::new(Semaphore::new(UL_CONCURRENCY)),
         reserved: Arc::new(Mutex::new(HashSet::new())),
+        tasks_pages: BTreeMap::new(),
+        tasks_next: BTreeMap::new(),
     };
     let mut tick = 0u64;
 
@@ -94,7 +102,7 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
                         refresh_quota(&st, &tx).await;
                     }
                     if tick.is_multiple_of(6) {
-                        refresh_tasks(&st, &tx).await;
+                        refresh_tasks(&mut st, &tx).await;
                     }
                 }
             }
@@ -429,6 +437,35 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             }
         }
         Cmd::RefreshTasks => refresh_tasks(st, tx).await,
+        Cmd::LoadMoreTasks { phase } => {
+            let Some(client) = st.client.clone() else {
+                return;
+            };
+            let Some(token) = st.tasks_next.get(&phase).cloned().flatten() else {
+                return;
+            };
+            match client
+                .offline_list_phase(&phase, TASK_PAGE_SIZE, Some(&token))
+                .await
+            {
+                Ok(page) => {
+                    *st.tasks_pages.entry(phase.clone()).or_insert(1) += 1;
+                    st.tasks_next
+                        .insert(phase.clone(), page.next_page_token.clone());
+                    let _ = tx.send(Msg::TasksMore {
+                        phase,
+                        tasks: page.tasks,
+                        next_page_token: page.next_page_token,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::TasksMoreFailed {
+                        phase,
+                        what: format!("加载更多任务失败: {e}"),
+                    });
+                }
+            }
+        }
         Cmd::RefreshQuota => refresh_quota(st, tx).await,
         Cmd::StartDownload {
             req_id,
@@ -1564,19 +1601,55 @@ async fn refresh_quota(st: &WorkerState, tx: &Sender<Msg>) {
     }
 }
 
-async fn refresh_tasks(st: &WorkerState, tx: &Sender<Msg>) {
-    let Some(client) = &st.client else { return };
+async fn refresh_tasks(st: &mut WorkerState, tx: &Sender<Msg>) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
     let mut buckets: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    let mut nexts: BTreeMap<String, Option<String>> = BTreeMap::new();
     for phase in OFFLINE_PHASES {
-        match client.offline_list_phase(phase, 100, None).await {
-            Ok(tasks) => {
-                buckets.insert(phase.to_string(), tasks.tasks);
+        // 保持用户已加载的分页深度(至少 1 页)。
+        let want = st.tasks_pages.get(phase).copied().unwrap_or(1).max(1);
+        let mut all: Vec<serde_json::Value> = Vec::new();
+        let mut token: Option<String> = None;
+        let mut fetched = 0usize;
+        let mut ok = true;
+        for _ in 0..want {
+            match client
+                .offline_list_phase(phase, TASK_PAGE_SIZE, token.as_deref())
+                .await
+            {
+                Ok(page) => {
+                    all.extend(page.tasks);
+                    token = page.next_page_token;
+                    fetched += 1;
+                }
+                Err(e) => {
+                    tracing::debug!("离线任务[{phase}] 刷新失败: {e}");
+                    ok = false;
+                    break;
+                }
             }
-            Err(e) => {
-                // 单个分桶失败时保留旧数据, 不阻断其它分桶的刷新。
-                tracing::debug!("离线任务[{phase}] 刷新失败: {e}");
+            if token.is_none() {
+                break;
             }
         }
+        if !ok {
+            // 单个分桶失败时保留旧数据(不插入), 连同其旧游标。
+            continue;
+        }
+        if all.is_empty() {
+            st.tasks_pages.remove(phase);
+            st.tasks_next.remove(phase);
+        } else {
+            st.tasks_pages.insert(phase.to_string(), fetched.max(1));
+            st.tasks_next.insert(phase.to_string(), token.clone());
+        }
+        buckets.insert(phase.to_string(), all);
+        nexts.insert(phase.to_string(), token);
     }
-    let _ = tx.send(Msg::TasksAll { buckets });
+    let _ = tx.send(Msg::TasksAll {
+        buckets,
+        next_tokens: nexts,
+    });
 }

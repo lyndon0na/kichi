@@ -1,5 +1,3 @@
-use kichi_core::consts::OFFLINE_PHASES;
-
 pub fn fmt_bytes(bytes: i64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -49,9 +47,6 @@ pub fn phase_label(phase: &str) -> &'static str {
         _ => "未知",
     }
 }
-
-/// 固定的展示顺序(与请求顺序一致)。
-pub const PHASE_ORDER: [&str; 4] = OFFLINE_PHASES;
 
 /// 把云端文件名收敛为安全的本地文件名(仅取 basename, 拒绝路径穿越/空名)。
 /// 返回 None 表示没有可用的名字, 调用方可回退到 "download"。

@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{self, vec2, Color32, FontId};
+use eframe::egui::{self, vec2, Color32, FontId, Painter, Pos2, Rect, Stroke};
+
+use crate::icons::Glyph;
+use crate::theme::{mix, Theme};
 
 /// 统一的单行输入框样式: 更舒适的内边距 / 最小高度, 与卡片圆角一致。
 pub(crate) fn input(text: &mut String) -> egui::TextEdit<'_> {
@@ -308,6 +311,115 @@ pub(crate) fn truncate_text(
         chars[..lo].iter().collect::<String>() + ell
     };
     painter.layout_no_wrap(out, font, color)
+}
+
+/// 复选框三态(供传输任务 / 离线任务等列表共用)。
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum CheckState {
+    Unchecked,
+    Checked,
+    Partial,
+}
+
+/// 在给定矩形内绘制现代化复选框(不处理点击)。
+pub(crate) fn paint_checkbox(
+    painter: &Painter,
+    th: &Theme,
+    rect: Rect,
+    state: CheckState,
+    hovered: bool,
+) {
+    let size = rect.width();
+    let (fill, border) = match state {
+        CheckState::Checked | CheckState::Partial => (th.accent, th.accent),
+        CheckState::Unchecked => {
+            if hovered {
+                (th.card, mix(th.border, th.text_weak, 0.65))
+            } else {
+                (th.card, mix(th.border, th.text_faint, 0.45))
+            }
+        }
+    };
+    painter.rect_filled(rect, th.cr(4), fill);
+    painter.rect_stroke(
+        rect,
+        th.cr(4),
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+
+    match state {
+        CheckState::Checked => {
+            let p1 = Pos2::new(rect.min.x + size * 0.26, rect.center().y + size * 0.02);
+            let p2 = Pos2::new(rect.min.x + size * 0.43, rect.max.y - size * 0.28);
+            let p3 = Pos2::new(rect.max.x - size * 0.24, rect.min.y + size * 0.30);
+            painter.add(egui::Shape::line(
+                vec![p1, p2, p3],
+                Stroke::new(1.8, th.on_accent),
+            ));
+        }
+        CheckState::Partial => {
+            let y = rect.center().y;
+            painter.line_segment(
+                [
+                    Pos2::new(rect.min.x + size * 0.28, y),
+                    Pos2::new(rect.max.x - size * 0.28, y),
+                ],
+                Stroke::new(1.8, th.on_accent),
+            );
+        }
+        CheckState::Unchecked => {}
+    }
+}
+
+/// 绘制列表卡片底盘: 底色(依 hover / 选中) + 描边 + 选中时左侧 accent 条。
+pub(crate) fn card_shell(painter: &Painter, th: &Theme, rect: Rect, hovered: bool, selected: bool) {
+    let bg = if selected {
+        mix(th.card, th.accent, if th.dark { 0.22 } else { 0.12 })
+    } else if hovered {
+        mix(th.card, th.text, if th.dark { 0.05 } else { 0.03 })
+    } else {
+        th.card
+    };
+    painter.rect_filled(rect, th.cr(12), bg);
+    painter.rect_stroke(
+        rect,
+        th.cr(12),
+        Stroke::new(1.0, th.border),
+        egui::StrokeKind::Inside,
+    );
+    if selected {
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(rect.min.x + 3.0, rect.min.y + 12.0),
+                Pos2::new(rect.min.x + 5.0, rect.max.y - 12.0),
+            ),
+            th.cr(2),
+            th.accent,
+        );
+    }
+}
+
+/// 绘制一个图标动作按钮(hover 底 + tooltip + 危险色), 返回是否被点击。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn icon_action(
+    ui: &mut egui::Ui,
+    painter: &Painter,
+    th: &Theme,
+    rect: Rect,
+    id: egui::Id,
+    glyph: Glyph,
+    tip: &str,
+    danger: bool,
+) -> bool {
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        painter.rect_filled(rect, th.cr(6), th.hover);
+    }
+    let color = if danger { th.danger } else { th.text_weak };
+    crate::icons::paint(painter, rect.shrink(6.0), glyph, color);
+    resp.on_hover_text(tip).clicked()
 }
 
 pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {

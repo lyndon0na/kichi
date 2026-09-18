@@ -8,7 +8,9 @@ use crate::msg::Cmd;
 use crate::settings;
 use crate::theme::{mix, Theme};
 
-use super::helpers::{open_dir, open_path, truncate_text};
+use super::helpers::{
+    card_shell, icon_action, open_dir, open_path, paint_checkbox, truncate_text, CheckState,
+};
 use super::types::{
     Crumb, DlFilter, DlJob, DlOp, DlSel, DlStatus, Page, TransferTab, UlFilter, UlJob, UlOp,
     UlStatus,
@@ -38,65 +40,6 @@ fn upload_status_line(job: &UlJob) -> (egui::Color32, String) {
     }
 }
 
-/// 复选框三态。
-#[derive(Clone, Copy, PartialEq)]
-enum CheckState {
-    Unchecked,
-    Checked,
-    Partial,
-}
-
-/// 在给定矩形内绘制现代化复选框(不处理点击)。
-fn paint_checkbox(
-    painter: &egui::Painter,
-    th: &Theme,
-    rect: Rect,
-    state: CheckState,
-    hovered: bool,
-) {
-    let size = rect.width();
-    let (fill, border) = match state {
-        CheckState::Checked | CheckState::Partial => (th.accent, th.accent),
-        CheckState::Unchecked => {
-            if hovered {
-                (th.card, mix(th.border, th.text_weak, 0.65))
-            } else {
-                (th.card, mix(th.border, th.text_faint, 0.45))
-            }
-        }
-    };
-    painter.rect_filled(rect, th.cr(4), fill);
-    painter.rect_stroke(
-        rect,
-        th.cr(4),
-        Stroke::new(1.0, border),
-        egui::StrokeKind::Inside,
-    );
-
-    match state {
-        CheckState::Checked => {
-            let p1 = Pos2::new(rect.min.x + size * 0.26, rect.center().y + size * 0.02);
-            let p2 = Pos2::new(rect.min.x + size * 0.43, rect.max.y - size * 0.28);
-            let p3 = Pos2::new(rect.max.x - size * 0.24, rect.min.y + size * 0.30);
-            painter.add(egui::Shape::line(
-                vec![p1, p2, p3],
-                Stroke::new(1.8, th.on_accent),
-            ));
-        }
-        CheckState::Partial => {
-            let y = rect.center().y;
-            painter.line_segment(
-                [
-                    Pos2::new(rect.min.x + size * 0.28, y),
-                    Pos2::new(rect.max.x - size * 0.28, y),
-                ],
-                Stroke::new(1.8, th.on_accent),
-            );
-        }
-        CheckState::Unchecked => {}
-    }
-}
-
 /// 渲染单个下载任务卡片, 返回操作和选择请求。
 #[allow(clippy::too_many_arguments)]
 fn dl_card(
@@ -116,33 +59,8 @@ fn dl_card(
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
     let painter = ui.painter().clone();
 
-    // 背景
-    let bg = if is_sel {
-        mix(th.card, th.accent, if th.dark { 0.22 } else { 0.12 })
-    } else if resp.hovered() {
-        mix(th.card, th.text, if th.dark { 0.05 } else { 0.03 })
-    } else {
-        th.card
-    };
-    painter.rect_filled(rect, th.cr(12), bg);
-    painter.rect_stroke(
-        rect,
-        th.cr(12),
-        Stroke::new(1.0, th.border),
-        egui::StrokeKind::Inside,
-    );
-
-    // 选中时左侧 accent 条
-    if is_sel {
-        painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(rect.min.x + 3.0, rect.min.y + 12.0),
-                Pos2::new(rect.min.x + 5.0, rect.max.y - 12.0),
-            ),
-            th.cr(2),
-            th.accent,
-        );
-    }
+    // 背景 / 选中态
+    card_shell(&painter, th, rect, resp.hovered(), is_sel);
 
     let inner = rect.shrink2(vec2(12.0, 10.0));
 
@@ -305,23 +223,17 @@ fn dl_card(
     for (glyph, tip, dop) in btns.into_iter().rev() {
         let rect = Rect::from_min_max(Pos2::new(bx - btn_sz, btn_y), Pos2::new(bx, btn_y + btn_sz));
         bx -= btn_sz + btn_gap;
-        let bresp = ui.interact(
+        let id = ui.id().with(("dl_btn", rid, tip));
+        if icon_action(
+            ui,
+            &painter,
+            th,
             rect,
-            ui.id().with(("dl_btn", rid, tip)),
-            egui::Sense::click(),
-        );
-        if bresp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            painter.rect_filled(rect, th.cr(6), th.hover);
-        }
-        let color = if glyph == Glyph::Trash {
-            th.danger
-        } else {
-            th.text_weak
-        };
-        icons::paint(&painter, rect.shrink(6.0), glyph, color);
-        let bresp = bresp.on_hover_text(tip);
-        if bresp.clicked() {
+            id,
+            glyph,
+            tip,
+            glyph == Glyph::Trash,
+        ) {
             op = Some(dop);
         }
     }
@@ -360,30 +272,8 @@ fn ul_card(
     let (rect, resp) = ui.allocate_exact_size(vec2(w, DL_CARD_H), egui::Sense::click());
     let painter = ui.painter().clone();
 
-    let bg = if is_sel {
-        mix(th.card, th.accent, if th.dark { 0.22 } else { 0.12 })
-    } else if resp.hovered() {
-        mix(th.card, th.text, if th.dark { 0.05 } else { 0.03 })
-    } else {
-        th.card
-    };
-    painter.rect_filled(rect, th.cr(12), bg);
-    painter.rect_stroke(
-        rect,
-        th.cr(12),
-        Stroke::new(1.0, th.border),
-        egui::StrokeKind::Inside,
-    );
-    if is_sel {
-        painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(rect.min.x + 3.0, rect.min.y + 12.0),
-                Pos2::new(rect.min.x + 5.0, rect.max.y - 12.0),
-            ),
-            th.cr(2),
-            th.accent,
-        );
-    }
+    // 背景 / 选中态
+    card_shell(&painter, th, rect, resp.hovered(), is_sel);
 
     let inner = rect.shrink2(vec2(12.0, 10.0));
 
@@ -545,18 +435,8 @@ fn ul_card(
     for (glyph, tip, dop) in btns.into_iter().rev() {
         let r = Rect::from_min_max(Pos2::new(bx - btn_sz, btn_y), Pos2::new(bx, btn_y + btn_sz));
         bx -= btn_sz + btn_gap;
-        let bresp = ui.interact(r, ui.id().with(("ul_btn", rid, tip)), egui::Sense::click());
-        if bresp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            painter.rect_filled(r, th.cr(6), th.hover);
-        }
-        let color = if glyph == Glyph::Trash {
-            th.danger
-        } else {
-            th.text_weak
-        };
-        icons::paint(&painter, r.shrink(6.0), glyph, color);
-        if bresp.on_hover_text(tip).clicked() {
+        let id = ui.id().with(("ul_btn", rid, tip));
+        if icon_action(ui, &painter, th, r, id, glyph, tip, glyph == Glyph::Trash) {
             op = Some(dop);
         }
     }

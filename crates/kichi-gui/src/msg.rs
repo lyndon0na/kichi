@@ -96,6 +96,10 @@ pub enum Cmd {
         req_id: u64,
     },
     RefreshTasks,
+    /// 加载某个 phase 的下一页离线任务。
+    LoadMoreTasks {
+        phase: String,
+    },
     OfflineRetry {
         task_id: String,
     },
@@ -258,6 +262,17 @@ pub enum Msg {
     Quota(Option<Quota>),
     TasksAll {
         buckets: BTreeMap<String, Vec<Task>>,
+        next_tokens: BTreeMap<String, Option<String>>,
+    },
+    /// 某 phase 追加了一页离线任务(append 语义)。
+    TasksMore {
+        phase: String,
+        tasks: Vec<Task>,
+        next_page_token: Option<String>,
+    },
+    TasksMoreFailed {
+        phase: String,
+        what: String,
     },
     /// 下载进度。total 未知时为 0。
     DlProgress {

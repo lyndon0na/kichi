@@ -88,6 +88,52 @@ pub(crate) enum DlSel {
     Range(u64),
 }
 
+/// 离线任务页的阶段页签。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum OfflineTab {
+    Pending,
+    Running,
+    Complete,
+    Error,
+}
+
+impl OfflineTab {
+    /// 展示顺序与服务端 phase 请求顺序一致。
+    pub(crate) const ALL: [OfflineTab; 4] = [
+        OfflineTab::Pending,
+        OfflineTab::Running,
+        OfflineTab::Complete,
+        OfflineTab::Error,
+    ];
+
+    /// 对应的服务端 phase 常量。
+    pub(crate) fn phase(self) -> &'static str {
+        match self {
+            OfflineTab::Pending => "PHASE_TYPE_PENDING",
+            OfflineTab::Running => "PHASE_TYPE_RUNNING",
+            OfflineTab::Complete => "PHASE_TYPE_COMPLETE",
+            OfflineTab::Error => "PHASE_TYPE_ERROR",
+        }
+    }
+}
+
+/// 离线任务行级操作。
+pub(crate) enum TaskOp {
+    /// 下载到本地 (file_id, name)。
+    Download(String, String),
+    /// 重试失败任务 (task_id)。
+    Retry(String),
+    /// 删除任务记录 (task_id)。
+    Delete(String),
+}
+
+/// 离线任务列表行点击产生的选择请求。
+pub(crate) enum TaskSel {
+    Replace(String),
+    Toggle(String),
+    Range(String),
+}
+
 /// 文件列表视图模式。
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum ViewMode {
