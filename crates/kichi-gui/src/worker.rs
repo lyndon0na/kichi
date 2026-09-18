@@ -40,6 +40,14 @@ const UL_CONCURRENCY: usize = 2;
 const UL_MAX_ATTEMPTS: u32 = 5;
 /// 离线任务每页条数。
 const TASK_PAGE_SIZE: usize = 100;
+/// 后台空闲轮询基节拍(仅作 recv 超时上限, 命令到达会立即唤醒)。
+const POLL_TICK: Duration = Duration::from_millis(800);
+/// 离线任务快刷节拍: 存在进行中(等待/下载中)任务时, 需要及时反映状态迁移。
+const TASKS_POLL_ACTIVE: Duration = Duration::from_secs(3);
+/// 离线任务慢刷节拍: 无进行中任务时, 仅等待新增/外部变更。
+const TASKS_POLL_IDLE: Duration = Duration::from_secs(60);
+/// 配额轮询节拍: 变化慢, 且登录与删除等操作后已显式刷新。
+const QUOTA_POLL: Duration = Duration::from_secs(60);
 
 struct WorkerState {
     client: Option<Arc<KichiClient>>,
@@ -55,6 +63,12 @@ struct WorkerState {
     tasks_pages: BTreeMap<String, usize>,
     /// 离线任务每 phase 的下一页游标(加载更多用); None/缺失表示没有更多。
     tasks_next: BTreeMap<String, Option<String>>,
+    /// 上一轮刷新时是否存在进行中(等待/下载中)的离线任务, 决定轮询快慢。
+    tasks_active: bool,
+    /// 上次刷新离线任务的时间。
+    last_tasks_poll: Instant,
+    /// 上次刷新配额的时间。
+    last_quota_poll: Instant,
 }
 
 fn run(rx: Receiver<Cmd>, tx: Sender<Msg>) {
@@ -83,25 +97,32 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
         reserved: Arc::new(Mutex::new(HashSet::new())),
         tasks_pages: BTreeMap::new(),
         tasks_next: BTreeMap::new(),
+        tasks_active: false,
+        last_tasks_poll: Instant::now(),
+        last_quota_poll: Instant::now(),
     };
-    let mut tick = 0u64;
 
     tracing::info!("后台 worker 已启动");
     loop {
-        let msg = rx.recv_timeout(Duration::from_millis(800));
+        let msg = rx.recv_timeout(POLL_TICK);
 
         match msg {
             Ok(cmd) => {
                 handle(&mut st, &tx, cmd).await;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // 周期性自动刷新。
+                // 周期性自动刷新: 按「上一次刷新距今」判定, 节拍随任务活动状态自适应。
                 if st.client.is_some() {
-                    tick += 1;
-                    if tick.is_multiple_of(3) {
-                        refresh_quota(&st, &tx).await;
+                    let now = Instant::now();
+                    if now.duration_since(st.last_quota_poll) >= QUOTA_POLL {
+                        refresh_quota(&mut st, &tx).await;
                     }
-                    if tick.is_multiple_of(6) {
+                    let tasks_interval = if st.tasks_active {
+                        TASKS_POLL_ACTIVE
+                    } else {
+                        TASKS_POLL_IDLE
+                    };
+                    if now.duration_since(st.last_tasks_poll) >= tasks_interval {
                         refresh_tasks(&mut st, &tx).await;
                     }
                 }
@@ -444,6 +465,8 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             let Some(token) = st.tasks_next.get(&phase).cloned().flatten() else {
                 return;
             };
+            // 手动翻页也算一次「刚拉过」, 避免紧接着又触发自动刷新。
+            st.last_tasks_poll = Instant::now();
             match client
                 .offline_list_phase(&phase, TASK_PAGE_SIZE, Some(&token))
                 .await
@@ -1588,8 +1611,11 @@ async fn run_upload_dir(
     Ok(())
 }
 
-async fn refresh_quota(st: &WorkerState, tx: &Sender<Msg>) {
-    let Some(client) = &st.client else { return };
+async fn refresh_quota(st: &mut WorkerState, tx: &Sender<Msg>) {
+    st.last_quota_poll = Instant::now();
+    let Some(client) = st.client.clone() else {
+        return;
+    };
     match client.quota().await {
         Ok(q) => {
             let _ = tx.send(Msg::Quota(Some(q)));
@@ -1601,12 +1627,20 @@ async fn refresh_quota(st: &WorkerState, tx: &Sender<Msg>) {
     }
 }
 
+/// 会随时间自行变化的离线任务状态(其余状态只在用户操作时改变)。
+fn is_active_phase(phase: &str) -> bool {
+    matches!(phase, "PHASE_TYPE_PENDING" | "PHASE_TYPE_RUNNING")
+}
+
 async fn refresh_tasks(st: &mut WorkerState, tx: &Sender<Msg>) {
+    st.last_tasks_poll = Instant::now();
     let Some(client) = st.client.clone() else {
         return;
     };
     let mut buckets: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     let mut nexts: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut active = false;
+    let mut active_unknown = false;
     for phase in OFFLINE_PHASES {
         // 保持用户已加载的分页深度(至少 1 页)。
         let want = st.tasks_pages.get(phase).copied().unwrap_or(1).max(1);
@@ -1636,7 +1670,14 @@ async fn refresh_tasks(st: &mut WorkerState, tx: &Sender<Msg>) {
         }
         if !ok {
             // 单个分桶失败时保留旧数据(不插入), 连同其旧游标。
+            // 进行中分桶失败时状态未知, 维持上一轮的活动判定(避免误降频)。
+            if is_active_phase(phase) {
+                active_unknown = true;
+            }
             continue;
+        }
+        if is_active_phase(phase) && !all.is_empty() {
+            active = true;
         }
         if all.is_empty() {
             st.tasks_pages.remove(phase);
@@ -1648,6 +1689,7 @@ async fn refresh_tasks(st: &mut WorkerState, tx: &Sender<Msg>) {
         buckets.insert(phase.to_string(), all);
         nexts.insert(phase.to_string(), token);
     }
+    st.tasks_active = active || (active_unknown && st.tasks_active);
     let _ = tx.send(Msg::TasksAll {
         buckets,
         next_tokens: nexts,

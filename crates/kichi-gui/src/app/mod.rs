@@ -906,6 +906,8 @@ impl App {
                             self.reload_dir();
                         }
                     }
+                    // 上传占用空间, 显式刷新配额(自动轮询已降频)。
+                    self.send(Cmd::RefreshQuota);
                     self.toast_ok("上传完成");
                 }
                 Msg::UlCancelled { req_id } => {
