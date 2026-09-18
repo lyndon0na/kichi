@@ -110,6 +110,9 @@ fn paint_disclosure(painter: &egui::Painter, rect: Rect, expanded: bool, color: 
 fn upload_status_line(job: &UlJob) -> (egui::Color32, String) {
     match &job.status {
         UlStatus::Queued => (egui::Color32::from_gray(150), "排队中".into()),
+        UlStatus::Running if job.resumed => {
+            (egui::Color32::from_rgb(60, 130, 200), "续传中".into())
+        }
         UlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "上传中".into()),
         UlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
         UlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
@@ -739,6 +742,20 @@ fn ul_card(
         }
     }
 
+    // 续传命中时给出跳过比例提示。
+    if job.resumed && matches!(job.status, UlStatus::Running) {
+        let pct = if job.total > 0 {
+            (job.done as f64 / job.total as f64 * 100.0)
+                .min(100.0)
+                .round()
+        } else {
+            0.0
+        };
+        resp.clone().on_hover_text(format!(
+            "跨重启续传: 已跳过约 {pct}%（复用已上传分片，未重传）"
+        ));
+    }
+
     if cb_clicked {
         sel = Some(DlSel::Toggle(rid));
     } else if op.is_none() && resp.clicked() {
@@ -932,6 +949,18 @@ impl App {
 
     /// 从列表移除一个上传任务(运行中的取消; 其余删除行与历史记录)。
     fn remove_upload_job(&mut self, rid: u64) {
+        // 尚未分发的续传卡片: worker 侧无此任务, 直接清记录并收回, 不走 Cancel。
+        if self.ul_resume_pending.remove(&rid) {
+            if let Some(job) = self.ul_jobs.get(&rid) {
+                settings::remove_upload_resume(&job.local_path);
+            }
+            self.ul_jobs.remove(&rid);
+            self.selected_ul.remove(&rid);
+            if self.ul_last_clicked == Some(rid) {
+                self.ul_last_clicked = None;
+            }
+            return;
+        }
         let running = self
             .ul_jobs
             .get(&rid)
@@ -1219,7 +1248,14 @@ impl App {
 
         for (rid, op) in ops {
             match op {
-                UlOp::Cancel => self.send(Cmd::CancelUpload { req_id: rid }),
+                UlOp::Cancel => {
+                    // 尚未分发的续传卡片: worker 侧无此任务, 直接收回而非发无效 Cancel。
+                    if self.ul_resume_pending.contains(&rid) {
+                        self.remove_upload_job(rid);
+                    } else {
+                        self.send(Cmd::CancelUpload { req_id: rid });
+                    }
+                }
                 UlOp::Remove => self.remove_upload_job(rid),
                 UlOp::Retry => self.retry_upload_job(rid),
                 UlOp::OpenInDrive => {

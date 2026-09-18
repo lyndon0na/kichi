@@ -10,7 +10,7 @@
 | :-- | :-- | :-- |
 | **P0** | 用户可见的功能缺口 | 0 |
 | **P1** | 正确性与健壮性 | 0 |
-| **P2** | 可维护性与工程 | 5 |
+| **P2** | 可维护性与工程 | 4 |
 | **P3** | 分发与发布 | 4 |
 
 ---
@@ -27,7 +27,6 @@
 
 | 编号 | 任务 | 主要文件 | 说明 / 验收 |
 | :-- | :-- | :-- | :-- |
-| P2-1 | 上传跨重启续传 | `crates/kichi-core/src/upload.rs`（`OssUploadState`）<br>`crates/kichi-gui/src/worker.rs`<br>`crates/kichi-gui/src/settings.rs`（持久化 `upload_id` / 凭据 / 已传分片） | 现在只在运行期内续传，重启即丢 `upload_id` 与 ETags |
 | P2-2 | 并发 / 重试参数可配置 | `crates/kichi-gui/src/worker.rs`（`DL_CONCURRENCY` / `DL_MAX_ATTEMPTS` / `UL_CONCURRENCY` / `UL_MAX_ATTEMPTS`）<br>`crates/kichi-core/src/client.rs`（`OSS_UPLOAD_CONCURRENCY`）<br>`crates/kichi-gui/src/app/settings_page.rs`<br>`crates/kichi-gui/src/settings.rs` | 目前全是编译期常量，设置页只暴露下载目录 |
 | P2-3 | 日志轮转 + 预览缓存淘汰 | `crates/kichi-gui/src/logging.rs`<br>`crates/kichi-gui/src/worker.rs`（`preview_root`） | `kichi.log` 无轮转、预览缓存不清理；而目录缓存已有 LRU，口径不一致 |
 | P2-4 | 补测试 | `crates/kichi-gui/src/worker.rs`、`msg.rs`、`settings.rs`、`app/*`（各页面）<br>`crates/kichi-core/src/types.rs`、`session.rs`、`error.rs` | 现有 39 项测试只覆盖签名 / 解析 / 格式化等叶子模块，业务逻辑与持久化无测试。优先补纯逻辑：`visible_rows` 排序、`unique_name` 去重、`extract_share_id`、`de_number` / `de_string` 防御式解析 |
@@ -56,6 +55,7 @@
 - [x] P1-2 分享链接解析增强：`extract_share_id` 改为 `parse_share_input`，支持带查询参数 / 片段 / 复制链接附带前后文字的形态，ID 截到首个非法字符为止，并顺带从 `password`/`pass_code` 回填提取码；无法识别（缺 `/s/` 的其它链接、非法字符、空）时返回 `None`，解析对话框给出错误提示而非当成裸 ID；补 `parse_share_id_from_url_forms` 单测（`mod.rs` / `dialogs.rs`）
 - [x] P1-3「打开下载目录」空路径修复：系统下载目录取不到时不再回退成空路径导致按钮无反应，改为回退到已记住的下载目录，两者都无效时给出 toast 提示前往设置选择（`transfers_page.rs`）
 - [x] P1-4 人机验证流程：`captcha_init` 取不到 `captcha_token` 时改为返回新错误变体 `Error::CaptchaReview`（携带从响应里递归提取的验证页链接 `data.url`/`*url`）；`Msg::LoginFailed` 增加 `verify_url` 字段并透传到 `App::auth_captcha_url`；登录页在需要验证时显示「打开验证页面」按钮（`helpers::open_url`）+ 完成验证后重试的引导，无链接时给出「稍后重试 / 换网络 / 用官方客户端验证」提示；补 `extract_verify_url` 单测（`error.rs` / `client.rs` / `msg.rs` / `worker.rs` / `app/mod.rs` / `login.rs`）
+- [x] P2-1 上传跨重启续传：新增 `settings::UploadResumeRecord` 与独立文件 `~/.config/kichi/upload_resume.json`（由 worker 单一写入，避免与 GUI 线程覆写 `settings.json` 竞争），持久化 `upload_id` / OSS 位置(endpoint/bucket/key) / 已传分片 ETag / gcid / 展示元数据；`kichi-core` 新增 `oss_list_parts`(自动翻页，以 OSS 为权威对账已传分片) 并给 `upload_oss` 增加每分片完成回调以驱动快照落盘（每片写入、GUI 侧 1s 节流）；`upload_local_file` 拿到可用 `upload_id` 即 upsert 记录、成功/取消/秒传时删除、失败保留；`Cmd::StartUpload` 携带 `dest_stack`，新增 `Cmd::ResumeUpload`：登录成功后 `dispatch_pending_uploads` 对重启前中断卡片(复用 `Queued` 态)自动重刷 STS 凭证→校验 bucket/key→`list_parts` 对账→灌回 ETag 跳过已传分片；位置不符/upload_id 失效/本地文件变动或缺失时安全退回全新上传；未分发的续传卡片支持取消/移除以清理记录。**已知边界**：目录递归上传本轮不续传（按整目录管理，暂 `persist=false`）；续传复用持久化 gcid + 仅校验文件大小，未重算 gcid（`upload.rs` / `client.rs` / `worker.rs` / `settings.rs` / `msg.rs` / `app/mod.rs` / `app/transfers_page.rs`）
 
 > [!TIP]
 > P0、P1 任务已全部完成。建议下一轮从 **P2（可维护性与工程）** 入手。
