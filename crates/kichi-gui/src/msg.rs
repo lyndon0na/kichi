@@ -60,6 +60,13 @@ pub enum Cmd {
         append: bool,
         req_id: u64,
     },
+    /// 全局搜索文件(跨目录)。append=true 表示加载下一页。
+    SearchFiles {
+        keyword: String,
+        token: Option<String>,
+        append: bool,
+        req_id: u64,
+    },
     CreateFolder {
         name: String,
         parent: Option<String>,
@@ -244,6 +251,16 @@ pub enum Msg {
     /// 列出目录失败; 带上 parent 以便精确结束加载态并释放在途登记。
     FilesFailed {
         parent: Option<String>,
+        what: String,
+    },
+    /// 全局搜索结果。
+    SearchResults {
+        req_id: u64,
+        append: bool,
+        list: FileList,
+    },
+    /// 搜索失败。
+    SearchFailed {
         what: String,
     },
     FolderCreated,

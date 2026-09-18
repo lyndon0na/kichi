@@ -8,7 +8,7 @@
 
 | 优先级 | 主题 | 项数 |
 | :-- | :-- | :-- |
-| **P0** | 用户可见的功能缺口 | 2 |
+| **P0** | 用户可见的功能缺口 | 0 |
 | **P1** | 正确性与健壮性 | 4 |
 | **P2** | 可维护性与工程 | 5 |
 | **P3** | 分发与发布 | 4 |
@@ -17,10 +17,7 @@
 
 ## P0 · 用户可见的功能缺口
 
-| 编号 | 任务 | 主要文件 | 说明 / 验收 |
-| :-- | :-- | :-- | :-- |
-| P0-3 | 真实缩略图 | `crates/kichi-core/src/types.rs`（`File::icon_link` / `thumbnail_link`，**已反序列化但全项目未使用**）<br>`crates/kichi-gui/src/app/files_page.rs`（`file_visual`、网格渲染）<br>`crates/kichi-gui/src/worker.rs`（下载 / 缓存缩略图） | 网格视图目前只画类型图标。注意缩略图直链的鉴权与落盘缓存（可复用 `preview_root` 思路） |
-| P0-4 | 全局搜索 | `crates/kichi-gui/src/app/mod.rs`（`visible_rows`）<br>`crates/kichi-gui/src/app/files_page.rs`（搜索框）<br>`crates/kichi-core/src/client.rs`（若无服务端搜索端点则需先调研） | 现在只对**当前已加载目录**做名称包含过滤；需求是跨目录 / 服务端搜索 |
+> ✅ 全部完成
 
 ## P1 · 正确性与健壮性
 
@@ -58,6 +55,8 @@
 - [x] 工程杂项：`LICENSE`、`CHANGELOG.md`、`rustfmt.toml`，移除占位 `repository`，版本号去硬编码，`.gitignore` 扩充，全仓库 `cargo fmt`（`d6044a3`）
 - [x] P0-1 离线任务「加载更多」分页；顺带把离线任务 / 配额的自动轮询改为自适应节拍（`worker.rs` / `tasks_page.rs` / `app/mod.rs` / `msg.rs`）
 - [x] P0-2 整目录递归下载：`kichi-core::walk_folder` 递归遍历 + 本地按云端层级建目录；传输任务页聚合为单张目录卡片（显示「文件 已完成/全部」），展开后按层级显示目录树、子目录可单独折叠；重试仅重下失败子文件（`client.rs` / `worker.rs` / `app/mod.rs` / `files_page.rs` / `transfers_page.rs` / `settings.rs` / `msg.rs`）
+- [x] P0-3 真实缩略图：网格视图加载 `thumbnail_link` 预签名直链，worker 下载 + 磁盘缓存（`~/.cache/kichi/thumbnails/`）+ `image` crate 解码为 RGBA 后上传 GPU 纹理；保持宽高比显示；Ctrl + 滚轮缩放网格大小（80–160px），图标 / 文字 / 缩略图随卡片等比缩放（`client.rs` / `worker.rs` / `msg.rs` / `app/mod.rs` / `files_page.rs`）
+- [x] P0-4 全局搜索：PikPak 无服务端搜索 API，采用客户端递归遍历所有目录并按文件名模糊匹配；搜索框按 Enter 触发搜索，支持分页加载更多；搜索模式下显示搜索结果指示器，导航/面包屑点击自动退出搜索模式（`client.rs` / `msg.rs` / `worker.rs` / `app/mod.rs` / `files_page.rs`）
 
 > [!TIP]
-> 建议下一轮从 **P0-3（真实缩略图）** 入手：`File::icon_link` / `thumbnail_link` 已反序列化但未使用，可复用预览缓存的直链鉴权与落盘思路。
+> P0 任务已全部完成。建议下一轮从 **P1（正确性与健壮性）** 入手。

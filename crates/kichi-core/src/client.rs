@@ -521,6 +521,67 @@ impl KichiClient {
             .await
     }
 
+    /// 全局搜索文件(按文件名模糊匹配, 跨所有目录)。
+    /// 注意: PikPak API 不支持服务端搜索, 此方法递归遍历根目录并在客户端过滤。
+    pub async fn search_files(
+        &self,
+        keyword: &str,
+        _size: usize,
+        _next_page_token: Option<&str>,
+    ) -> Result<FileList, Error> {
+        // 服务端无全局搜索 API，使用客户端递归搜索
+        // 先获取根目录列表，然后递归遍历所有子目录
+        let mut all_files = Vec::new();
+        let mut folder_queue: VecDeque<String> = VecDeque::new();
+        
+        // 获取根目录文件
+        let root_list = self.file_list(None, WALK_PAGE_SIZE, None).await?;
+        for f in root_list.files {
+            if f.is_folder() {
+                folder_queue.push_back(f.id.clone());
+            } else {
+                all_files.push(f);
+            }
+        }
+        
+        // 递归遍历所有子目录
+        let mut visited: HashSet<String> = HashSet::new();
+        while let Some(folder_id) = folder_queue.pop_front() {
+            if !visited.insert(folder_id.clone()) {
+                continue;
+            }
+            
+            let mut token: Option<String> = None;
+            loop {
+                let list = self.file_list(Some(&folder_id), WALK_PAGE_SIZE, token.as_deref()).await?;
+                for f in list.files {
+                    if f.is_folder() {
+                        folder_queue.push_back(f.id.clone());
+                    } else {
+                        all_files.push(f);
+                    }
+                }
+                
+                match list.next_page_token {
+                    Some(t) if !t.is_empty() => token = Some(t),
+                    _ => break,
+                }
+            }
+        }
+        
+        // 按关键词过滤
+        let keyword_lower = keyword.to_lowercase();
+        let matched_files: Vec<File> = all_files
+            .into_iter()
+            .filter(|f| f.name.to_lowercase().contains(&keyword_lower))
+            .collect();
+        
+        Ok(FileList {
+            files: matched_files,
+            next_page_token: None,
+        })
+    }
+
     /// 按给定 filters 列出文件(分页)。
     async fn file_list_filtered(
         &self,

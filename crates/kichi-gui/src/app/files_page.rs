@@ -466,6 +466,17 @@ impl App {
             ctx.request_repaint();
         }
 
+        let mut trigger_search = false;
+        // 搜索框 Enter 键检测（在 TextEdit 消费事件之前检查）
+        let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("file_search")));
+        if search_focused {
+            ctx.input(|i| {
+                if i.key_pressed(Key::Enter) {
+                    trigger_search = true;
+                }
+            });
+        }
+
         // 键盘快捷键
         if !ctx.wants_keyboard_input() {
             ctx.input(|i| {
@@ -595,7 +606,24 @@ impl App {
                             let clip_reserve = if clip_info.is_some() { 150.0 } else { 0.0 };
                             let crumbs_budget =
                                 (ui.available_width() - count_reserve - clip_reserve).max(48.0);
-                            if let Some(i) = breadcrumbs(ui, th, &self.stack, crumbs_budget) {
+                            
+                            // 搜索模式指示器
+                            if self.search_mode {
+                                egui::Frame::new()
+                                    .fill(th.accent_soft())
+                                    .corner_radius(th.cr(7))
+                                    .inner_margin(Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("搜索: {}", self.search_keyword))
+                                                    .color(th.accent)
+                                                    .size(12.0),
+                                            );
+                                        });
+                                    });
+                                ui.add_space(6.0);
+                            } else if let Some(i) = breadcrumbs(ui, th, &self.stack, crumbs_budget) {
                                 jumped = Some(i);
                             }
 
@@ -679,12 +707,12 @@ impl App {
                                             th.text_faint,
                                         );
                                         ui.add_space(1.0);
-                                        ui.add(
+                                        let _search_response = ui.add(
                                             egui::TextEdit::singleline(&mut self.filter)
                                                 .id(egui::Id::new("file_search"))
                                                 .frame(false)
                                                 .desired_width(150.0)
-                                                .hint_text("搜索当前目录")
+                                                .hint_text(if self.search_mode { "搜索中..." } else { "按 Enter 全局搜索" })
                                                 .font(FontId::proportional(13.5)),
                                         );
                                         if !self.filter.is_empty() {
@@ -703,7 +731,7 @@ impl App {
                                                 },
                                             );
                                             if xresp.clicked() {
-                                                self.filter.clear();
+                                                self.exit_search();
                                             }
                                         }
                                     });
@@ -947,10 +975,12 @@ impl App {
             });
 
         if up {
+            self.exit_search();
             self.stack.pop();
             self.show_dir();
         }
         if let Some(i) = jumped {
+            self.exit_search();
             self.stack.truncate(i + 1);
             self.show_dir();
         }
@@ -984,6 +1014,9 @@ impl App {
         }
         if ask_share {
             self.share_selection();
+        }
+        if trigger_search {
+            self.trigger_search();
         }
 
         if want_download && (!dl_candidates.is_empty() || !dl_folders.is_empty()) {
@@ -1436,16 +1469,42 @@ impl App {
                             }
                         }
 
-                        if self.dir_next.is_some() {
+                        // 加载更多按钮
+                        let has_more = if self.search_mode {
+                            self.search_next.is_some()
+                        } else {
+                            self.dir_next.is_some()
+                        };
+                        if has_more {
                             ui.add_space(4.0);
                             ui.vertical_centered(|ui| {
-                                if ui.button("加载更多").clicked() {
-                                    self.load_more();
+                                let btn_text = if self.search_loading {
+                                    "搜索中..."
+                                } else {
+                                    "加载更多"
+                                };
+                                if ui.add_enabled(!self.search_loading, egui::Button::new(btn_text)).clicked() {
+                                    if self.search_mode {
+                                        self.load_more_search_results();
+                                    } else {
+                                        self.load_more();
+                                    }
                                 }
                             });
                             ui.add_space(2.0);
                         }
-                        if self.files.is_empty() && !self.dir_loading {
+                        // 空状态提示
+                        if self.search_mode {
+                            if self.search_results.is_empty() && !self.search_loading {
+                                ui.add_space((list_avail_h * 0.3).max(20.0));
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("没有找到匹配「{}」的文件", self.search_keyword))
+                                            .color(th.text_weak),
+                                    );
+                                });
+                            }
+                        } else if self.files.is_empty() && !self.dir_loading {
                             ui.add_space((list_avail_h * 0.3).max(20.0));
                             ui.vertical_centered(|ui| {
                                 ui.label(RichText::new("此文件夹为空").color(th.text_weak));

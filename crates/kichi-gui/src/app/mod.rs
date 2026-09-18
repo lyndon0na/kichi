@@ -156,6 +156,20 @@ pub struct App {
     /// 正在进行的首屏请求: 目录 id -> 请求 id, 用于避免重复的 revalidate。
     pub(crate) dir_inflight: HashMap<Option<String>, u64>,
 
+    // 全局搜索
+    /// 是否处于搜索模式(搜索模式下显示搜索结果而非当前目录)
+    pub(crate) search_mode: bool,
+    /// 搜索关键词
+    pub(crate) search_keyword: String,
+    /// 搜索结果
+    pub(crate) search_results: Vec<File>,
+    /// 搜索结果分页 token
+    pub(crate) search_next: Option<String>,
+    /// 搜索是否进行中
+    pub(crate) search_loading: bool,
+    /// 当前搜索请求 ID
+    pub(crate) search_req_id: u64,
+
     // 列宽 (名称列 = 剩余空间)
     pub(crate) col_size_w: f32,
     pub(crate) col_time_w: f32,
@@ -358,6 +372,12 @@ impl App {
             dir_loading: false,
             dir_cache: HashMap::new(),
             dir_inflight: HashMap::new(),
+            search_mode: false,
+            search_keyword: String::new(),
+            search_results: Vec::new(),
+            search_next: None,
+            search_loading: false,
+            search_req_id: 0,
             offline_url: String::new(),
             offline_name: String::new(),
             offline_dest: None,
@@ -768,6 +788,32 @@ impl App {
                     // 响应按 parent 路由进缓存; 即使已切换到别的目录, 迟到的
                     // 响应也能正确落位, 下次进入该目录即可命中。
                     self.apply_files(parent, req_id, append, list);
+                }
+                Msg::SearchResults {
+                    req_id,
+                    append,
+                    list,
+                } => {
+                    if req_id != self.search_req_id {
+                        continue;
+                    }
+                    self.search_loading = false;
+                    self.search_next = list.next_page_token;
+                    if append {
+                        let known: HashSet<String> =
+                            self.search_results.iter().map(|f| f.id.clone()).collect();
+                        for f in list.files {
+                            if !known.contains(&f.id) {
+                                self.search_results.push(f);
+                            }
+                        }
+                    } else {
+                        self.search_results = list.files;
+                    }
+                }
+                Msg::SearchFailed { what } => {
+                    self.search_loading = false;
+                    self.toast_err(&what);
                 }
                 Msg::FolderCreated => {
                     self.toast_ok("新建文件夹成功");
@@ -1709,6 +1755,54 @@ impl App {
         self.send_list(parent, None, false);
     }
 
+    /// 触发全局搜索。
+    pub(crate) fn trigger_search(&mut self) {
+        let keyword = self.filter.trim().to_string();
+        tracing::info!("触发搜索: keyword='{}'", keyword);
+        if keyword.is_empty() {
+            self.exit_search();
+            return;
+        }
+        self.search_mode = true;
+        self.search_keyword = keyword.clone();
+        self.search_results.clear();
+        self.search_next = None;
+        self.search_loading = true;
+        self.search_req_id += 1;
+        tracing::info!("发送搜索命令: req_id={}", self.search_req_id);
+        let _ = self.tx.send(Cmd::SearchFiles {
+            keyword,
+            token: None,
+            append: false,
+            req_id: self.search_req_id,
+        });
+    }
+
+    /// 退出搜索模式。
+    pub(crate) fn exit_search(&mut self) {
+        self.search_mode = false;
+        self.search_keyword.clear();
+        self.search_results.clear();
+        self.search_next = None;
+        self.search_loading = false;
+        self.filter.clear();
+    }
+
+    /// 加载更多搜索结果。
+    pub(crate) fn load_more_search_results(&mut self) {
+        if self.search_loading || self.search_next.is_none() {
+            return;
+        }
+        self.search_loading = true;
+        let token = self.search_next.clone().unwrap();
+        let _ = self.tx.send(Cmd::SearchFiles {
+            keyword: self.search_keyword.clone(),
+            token: Some(token),
+            append: true,
+            req_id: self.search_req_id,
+        });
+    }
+
     /// 把一次 ListFiles 响应写入缓存, 并在其属于当前目录时同步到可见列表。
     /// `entry.req` 保证乱序到达的旧响应不会覆盖新数据。
     fn apply_files(&mut self, parent: Option<String>, req_id: u64, append: bool, list: FileList) {
@@ -1800,6 +1894,7 @@ impl App {
     }
 
     pub(crate) fn goto_folder(&mut self, id: &str, name: &str) {
+        self.exit_search();
         self.stack.push(Crumb {
             id: Some(id.to_string()),
             label: name.to_string(),
@@ -1903,12 +1998,23 @@ impl App {
 
     /// 当前目录内过滤后的可见文件(文件夹在前, 组内按当前排序)。
     pub(crate) fn visible_rows(&self) -> (Vec<File>, Vec<File>) {
-        let kw = self.filter.trim().to_lowercase();
+        // 搜索模式下使用搜索结果
+        let source = if self.search_mode {
+            &self.search_results
+        } else {
+            &self.files
+        };
+        
+        let kw = if self.search_mode {
+            String::new() // 搜索结果已经过滤过了
+        } else {
+            self.filter.trim().to_lowercase()
+        };
         let cur = self.current_parent();
         let mut folders: Vec<&File> = Vec::new();
         let mut plain: Vec<&File> = Vec::new();
-        for f in &self.files {
-            if self.hidden.get(&f.id).is_some_and(|hp| *hp == cur) {
+        for f in source {
+            if !self.search_mode && self.hidden.get(&f.id).is_some_and(|hp| *hp == cur) {
                 continue;
             }
             let hit = kw.is_empty() || f.name.to_lowercase().contains(&kw);

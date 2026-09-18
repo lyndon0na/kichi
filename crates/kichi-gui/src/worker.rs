@@ -265,6 +265,35 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
+        Cmd::SearchFiles {
+            keyword,
+            token,
+            append,
+            req_id,
+        } => {
+            let Some(client) = &st.client else { 
+                return;
+            };
+            match client
+                .search_files(&keyword, 100, token.as_deref())
+                .await
+            {
+                Ok(list) => {
+                    tracing::info!("搜索成功: 返回 {} 个结果", list.files.len());
+                    let _ = tx.send(Msg::SearchResults {
+                        req_id,
+                        append,
+                        list,
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("搜索失败: {}", e);
+                    let _ = tx.send(Msg::SearchFailed {
+                        what: format!("搜索失败: {e}"),
+                    });
+                }
+            }
+        }
         Cmd::CreateFolder { name, parent } => {
             let Some(client) = &st.client else { return };
             match client.create_folder(&name, parent.as_deref()).await {
