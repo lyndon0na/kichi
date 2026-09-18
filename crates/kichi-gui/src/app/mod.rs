@@ -15,8 +15,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
-use pikpak_core::session;
-use pikpak_core::types::{File, FileList, Quota, Share, Task};
+use kichi_core::session;
+use kichi_core::types::{File, FileList, Quota, Share, Task};
 
 use crate::kde;
 use crate::msg::{Cmd, Msg};

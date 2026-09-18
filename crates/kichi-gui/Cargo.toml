@@ -1,11 +1,11 @@
 [package]
-name = "pikpak-gui"
+name = "kichi-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-pikpak-core = { workspace = true }
+kichi-core = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

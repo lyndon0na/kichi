@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Install the PikPak Linux icon and desktop entry for the current user.
+# Install the Kichi icon and desktop entry for the current user.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ICON_SRC="$ROOT/assets/pikpak-linux.svg"
-DESKTOP_SRC="$ROOT/packaging/pikpak-linux.desktop"
+ICON_SRC="$ROOT/assets/kichi.svg"
+DESKTOP_SRC="$ROOT/packaging/kichi.desktop"
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-ICON_NAME="pikpak-linux"
+ICON_NAME="kichi"
 APPS_DIR="$DATA_HOME/applications"
 HICOLOR="$DATA_HOME/icons/hicolor"
 
@@ -51,4 +51,4 @@ fi
 echo "installed:"
 echo "  icon:    $HICOLOR/scalable/apps/$ICON_NAME.svg (+ PNG sizes)"
 echo "  desktop: $APPS_DIR/$ICON_NAME.desktop"
-echo "note: make sure 'pikpak-gui' is on \$PATH (or edit Exec= in the desktop file)."
+echo "note: make sure 'kichi-gui' is on \$PATH (or edit Exec= in the desktop file)."

@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2, UiBuilder};
 
-use pikpak_core::types::File;
+use kichi_core::types::File;
 
 use crate::format;
 use crate::icons::{self, Glyph};

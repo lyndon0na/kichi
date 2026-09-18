@@ -30,7 +30,7 @@ impl Session {
 }
 
 pub fn session_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("pikpak-linux").join("session.json"))
+    dirs::config_dir().map(|d| d.join("kichi").join("session.json"))
 }
 
 pub fn load_session() -> Result<Option<Session>, Error> {

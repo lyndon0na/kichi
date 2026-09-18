@@ -21,7 +21,7 @@ impl App {
                     let lp = ui.painter().clone();
                     let rr = r;
                     lp.rect_filled(rr, th.cr(16), th.accent);
-                    let g = lp.layout_no_wrap("P".into(), FontId::proportional(32.0), th.on_accent);
+                    let g = lp.layout_no_wrap("K".into(), FontId::proportional(32.0), th.on_accent);
                     lp.galley(
                         Pos2::new(rr.center().x - g.size().x / 2.0, rr.center().y - g.size().y / 2.0 - 1.0),
                         g,

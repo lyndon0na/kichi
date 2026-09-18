@@ -40,7 +40,7 @@ pub struct DownloadRecord {
 }
 
 fn download_history_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("pikpak-linux").join("downloads.json"))
+    dirs::config_dir().map(|d| d.join("kichi").join("downloads.json"))
 }
 
 pub fn load_download_history() -> Vec<DownloadRecord> {
@@ -135,7 +135,7 @@ pub struct UploadRecord {
 }
 
 fn upload_history_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("pikpak-linux").join("uploads.json"))
+    dirs::config_dir().map(|d| d.join("kichi").join("uploads.json"))
 }
 
 pub fn load_upload_history() -> Vec<UploadRecord> {
@@ -187,7 +187,7 @@ pub fn remove_upload_record(rec_id: &str, local_path: &std::path::Path, name: &s
 }
 
 fn path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("pikpak-linux").join("settings.json"))
+    dirs::config_dir().map(|d| d.join("kichi").join("settings.json"))
 }
 
 pub fn load() -> Settings {

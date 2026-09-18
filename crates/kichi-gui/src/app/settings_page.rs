@@ -83,7 +83,7 @@ impl App {
                 });
                 ui.add_space(24.0);
                 ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("PikPak Linux · 非官方客户端 v0.1.0").color(th.text_faint).size(11.5));
+                    ui.label(RichText::new("Kichi · PikPak Third-Party Client v0.1.0").color(th.text_faint).size(11.5));
                 });
             });
     }

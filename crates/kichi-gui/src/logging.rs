@@ -1,7 +1,7 @@
 //! 运行日志初始化: 同时输出到 stderr 与缓存目录下的日志文件。
 //!
-//! 级别由环境变量 `PIKPAK_LOG`(优先)或 `RUST_LOG` 控制, 例如
-//! `PIKPAK_LOG=debug` 或 `PIKPAK_LOG=pikpak_core=trace,warn`。
+//! 级别由环境变量 `KICHI_LOG`(优先)或 `RUST_LOG` 控制, 例如
+//! `KICHI_LOG=debug` 或 `KICHI_LOG=kichi_core=trace,warn`。
 //! 未设置时默认 `info`, 并对本项目 crate 打开 `debug`。
 
 use std::fs::OpenOptions;
@@ -15,8 +15,8 @@ use tracing_subscriber::EnvFilter;
 fn log_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("pikpak-linux")
-        .join("pikpak.log")
+        .join("kichi")
+        .join("kichi.log")
 }
 
 /// 同时写 stderr 与日志文件的 `MakeWriter`。
@@ -54,11 +54,11 @@ impl std::io::Write for Tee<'_> {
 }
 
 fn filter() -> EnvFilter {
-    std::env::var("PIKPAK_LOG")
+    std::env::var("KICHI_LOG")
         .ok()
         .or_else(|| std::env::var("RUST_LOG").ok())
         .and_then(|s| EnvFilter::try_new(&s).ok())
-        .unwrap_or_else(|| EnvFilter::new("info,pikpak_core=debug,pikpak_gui=debug"))
+        .unwrap_or_else(|| EnvFilter::new("info,kichi_core=debug,kichi_gui=debug"))
 }
 
 /// 初始化全局日志(只调用一次)。

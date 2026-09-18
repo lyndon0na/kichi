@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, Stroke, vec2};
 
-use pikpak_core::types::Quota;
+use kichi_core::types::Quota;
 
 use crate::format;
 use crate::icons::{self, Glyph};
@@ -17,9 +17,10 @@ impl App {
             .default_width(228.0)
             .width_range(196.0..=320.0)
             .frame(
+                // 不描整面板边框: 上/下/左侧的框线会被一并去掉,
+                // 右侧分隔线由 SidePanel 自带的 separator 提供。
                 Frame::new()
                     .fill(th.panel)
-                    .stroke(Stroke::new(1.0, th.border))
                     .inner_margin(Margin::symmetric(10, 12)),
             )
             .show(ctx, |ui| {
@@ -124,7 +125,7 @@ impl App {
         let logo = Rect::from_center_size(Pos2::new(brect.min.x + 18.0, brect.center().y), vec2(30.0, 30.0));
         bp.rect_filled(logo, th.cr(9), th.accent);
         let ltxt = bp.layout_no_wrap(
-            "P".into(),
+            "K".into(),
             FontId::proportional(17.0),
             th.on_accent,
         );
@@ -133,14 +134,14 @@ impl App {
             ltxt,
             th.on_accent,
         );
-        let brand = bp.layout_no_wrap("PikPak".into(), FontId::proportional(17.0), th.text);
+        let brand = bp.layout_no_wrap("Kichi".into(), FontId::proportional(17.0), th.text);
         bp.galley(
             Pos2::new(brect.min.x + 42.0, brect.min.y + 3.0),
             brand,
             th.text,
         );
         let sub = bp.layout_no_wrap(
-            "Linux 客户端".into(),
+            "PikPak Third-Party Client".into(),
             FontId::proportional(11.0),
             th.text_faint,
         );
@@ -230,7 +231,7 @@ impl App {
             .chars()
             .next()
             .map(|c| c.to_uppercase().collect::<String>())
-            .unwrap_or_else(|| "P".into());
+            .unwrap_or_else(|| "K".into());
         let av = Rect::from_center_size(Pos2::new(rect.min.x + 19.0, rect.center().y), vec2(30.0, 30.0));
         painter.rect_filled(av, CornerRadius::same(15), mix(th.panel, th.accent, 0.28));
         let g = painter.layout_no_wrap(initial, FontId::proportional(14.0), th.accent);

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use pikpak_core::types::File;
+use kichi_core::types::File;
 
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum Page {

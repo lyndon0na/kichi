@@ -1,4 +1,4 @@
-use pikpak_core::consts::OFFLINE_PHASES;
+use kichi_core::consts::OFFLINE_PHASES;
 
 pub fn fmt_bytes(bytes: i64) -> String {
     const KB: f64 = 1024.0;

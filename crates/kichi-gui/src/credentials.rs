@@ -4,7 +4,7 @@
 //! 所有函数都是阻塞的 D-Bus 调用, 调用方应放到阻塞线程上执行。
 
 /// 密钥环条目的 service 名。
-const SERVICE: &str = "pikpak-linux";
+const SERVICE: &str = "kichi";
 
 fn entry(username: &str) -> keyring::Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, username)

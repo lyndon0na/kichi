@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
-    <linearGradient id="pikpak-p" x1="86" y1="54" x2="188" y2="202" gradientUnits="userSpaceOnUse">
+    <linearGradient id="kichi-p" x1="86" y1="54" x2="188" y2="202" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#3B82F6"/>
       <stop offset="1" stop-color="#00A8FF"/>
     </linearGradient>
   </defs>
   <rect x="2" y="2" width="252" height="252" rx="56" fill="#ffffff" stroke="#DDE3EC" stroke-width="4"/>
-  <rect x="86" y="54" width="34" height="148" rx="17" fill="url(#pikpak-p)"/>
-  <circle cx="140" cy="100" r="48" fill="url(#pikpak-p)"/>
+  <rect x="86" y="54" width="34" height="148" rx="17" fill="url(#kichi-p)"/>
+  <circle cx="140" cy="100" r="48" fill="url(#kichi-p)"/>
   <circle cx="146" cy="100" r="21" fill="#ffffff"/>
 </svg>

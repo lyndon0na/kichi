@@ -5,10 +5,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pikpak_core::consts::OFFLINE_PHASES;
-use pikpak_core::download::part_path;
-use pikpak_core::upload::{OssContext, OssUploadState};
-use pikpak_core::{session, Error, PikPakClient};
+use kichi_core::consts::OFFLINE_PHASES;
+use kichi_core::download::part_path;
+use kichi_core::upload::{OssContext, OssUploadState};
+use kichi_core::{session, Error, KichiClient};
 use tokio::sync::Semaphore;
 
 use crate::credentials;
@@ -23,7 +23,7 @@ pub fn spawn() -> Worker {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
     let (msg_tx, msg_rx) = mpsc::channel::<Msg>();
     std::thread::Builder::new()
-        .name("pikpak-worker".into())
+        .name("kichi-worker".into())
         .spawn(move || run(cmd_rx, msg_tx))
         .expect("failed to spawn worker");
     Worker {
@@ -40,7 +40,7 @@ const UL_CONCURRENCY: usize = 2;
 const UL_MAX_ATTEMPTS: u32 = 5;
 
 struct WorkerState {
-    client: Option<Arc<PikPakClient>>,
+    client: Option<Arc<KichiClient>>,
     /// 下载/上传取消开关, 按 req_id 索引; 任务结束后自行移除。
     cancel: Arc<tokio::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     /// 下载并发信号量, 超出上限的任务阻塞在 acquire 上排队。
@@ -150,7 +150,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 user_id: user_id.clone(),
                 username: username.clone(),
             };
-            let mut client = PikPakClient::new(device_id);
+            let mut client = KichiClient::new(device_id);
             install_saver(&mut client);
             client.set_session(&sess).await;
             let client = Arc::new(client);
@@ -687,7 +687,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
 }
 
 /// 快照「转存自分享」文件夹中现有的文件 id 集合。
-async fn snapshot_pack_folder(client: &PikPakClient) -> Result<HashSet<String>, Error> {
+async fn snapshot_pack_folder(client: &KichiClient) -> Result<HashSet<String>, Error> {
     let root_list = client.file_list(None, 100, None).await?;
     let folder = root_list.files.iter().find(|f| {
         f.is_folder()
@@ -703,7 +703,7 @@ async fn snapshot_pack_folder(client: &PikPakClient) -> Result<HashSet<String>, 
 /// 转存后自动移动: 等待服务端写入完成, 找出「转存自分享」中新增的文件并移动到目标目录。
 /// 使用重试机制轮询等待服务端同步, 而非固定 sleep。
 async fn move_new_files(
-    client: &PikPakClient,
+    client: &KichiClient,
     dest_id: &str,
     before_ids: HashSet<String>,
 ) -> Result<(), Error> {
@@ -753,8 +753,8 @@ async fn move_new_files(
 
 /// 账号密码登录的公共实现(手动登录与密钥环自动登录共用)。
 async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, password: String) {
-    let device_id = pikpak_core::captcha::generate_device_id();
-    let mut client = PikPakClient::new(device_id.clone());
+    let device_id = kichi_core::captcha::generate_device_id();
+    let mut client = KichiClient::new(device_id.clone());
     install_saver(&mut client);
     tracing::info!("开始登录: {username}");
     match client.login(&username, &password).await {
@@ -777,8 +777,8 @@ async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, pass
     }
 }
 
-fn install_saver(client: &mut PikPakClient) {
-    let saver: pikpak_core::client::TokenSaver = Arc::new(|sess| {
+fn install_saver(client: &mut KichiClient) {
+    let saver: kichi_core::client::TokenSaver = Arc::new(|sess| {
         let _ = session::save_session(sess);
     });
     client.set_token_saver(saver);
@@ -786,11 +786,11 @@ fn install_saver(client: &mut PikPakClient) {
 
 // ---------------- 文件预览 ----------------
 
-/// 预览缓存目录: `~/.cache/pikpak-linux/preview`(取不到时退回临时目录)。
+/// 预览缓存目录: `~/.cache/kichi/preview`(取不到时退回临时目录)。
 fn preview_root() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("pikpak-linux")
+        .join("kichi")
         .join("preview")
 }
 
@@ -813,7 +813,7 @@ fn preview_cache_path(file_id: &str, name: &str) -> PathBuf {
 /// 媒体预览: 解析限时直链后交给 UI, 由外部播放器流式播放。
 /// 同集外挂字幕会先下载到本地缓存, 一并交给播放器挂载。
 async fn preview_stream(
-    client: &PikPakClient,
+    client: &KichiClient,
     tx: &Sender<Msg>,
     req_id: u64,
     file_id: String,
@@ -843,7 +843,7 @@ async fn preview_stream(
 
 /// 解析媒体文件的可用清晰度列表, 连同同集字幕一起交给 UI 供选择。
 async fn preview_qualities(
-    client: &PikPakClient,
+    client: &KichiClient,
     tx: &Sender<Msg>,
     file_id: String,
     subtitles: Vec<(String, String)>,
@@ -879,7 +879,7 @@ async fn preview_qualities(
 /// 下载同集外挂字幕到预览缓存, 返回本地路径。
 /// 尽力而为: 单条失败(解析直链或下载出错)时跳过, 不影响视频播放。
 async fn prepare_subtitles(
-    client: &PikPakClient,
+    client: &KichiClient,
     subtitles: &[(String, String)],
 ) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -905,7 +905,7 @@ async fn prepare_subtitles(
 
 /// 非媒体预览: 下载到本地缓存(命中缓存则跳过), 再交给系统查看器打开。
 async fn preview_download(
-    client: &PikPakClient,
+    client: &KichiClient,
     tx: &Sender<Msg>,
     req_id: u64,
     file_id: String,
@@ -1063,7 +1063,7 @@ async fn cleanup_dl(
 /// 主下载流程: 交替「解析直链 / 传输」, 两者任何一步的瞬时错误都计入次数做退避重试,
 /// 每次重试前都重新解析(直链限时)。非瞬时错误立即返回。
 async fn run_download(
-    client: &PikPakClient,
+    client: &KichiClient,
     tx: &Sender<Msg>,
     req_id: u64,
     file_id: String,
@@ -1267,7 +1267,7 @@ async fn spawn_upload_dir(
 /// 上传主流程: 算 gcid → 创建票据(秒传则结束) → OSS 分片;
 /// 分片并发且可在重试间续传, OSS 凭证失效时重建票据。
 async fn run_upload(
-    client: &PikPakClient,
+    client: &KichiClient,
     tx: &Sender<Msg>,
     req_id: u64,
     path: &Path,
@@ -1297,7 +1297,7 @@ async fn run_upload(
 /// 票据/`upload_id`/已传分片在重试间保留以实现续传; 瞬时错误退避重试,
 /// OSS 凭证或 uploadId 失效(非瞬时)时丢弃票据重建后重试。
 async fn upload_local_file<F>(
-    client: &PikPakClient,
+    client: &KichiClient,
     path: &Path,
     parent: Option<&str>,
     cancel: &Arc<AtomicBool>,
@@ -1314,7 +1314,7 @@ where
 
     // gcid 需要完整读取文件, 放到阻塞线程池。
     let hash_path = path.to_path_buf();
-    let hash = tokio::task::spawn_blocking(move || pikpak_core::upload::file_gcid(&hash_path))
+    let hash = tokio::task::spawn_blocking(move || kichi_core::upload::file_gcid(&hash_path))
         .await
         .map_err(|e| Error::msg(format!("gcid 计算失败: {e}")))??;
 
@@ -1430,7 +1430,7 @@ fn collect_dir(root: &Path) -> Result<(Vec<PathBuf>, Vec<LocalFile>, u64), Error
 
 /// 目录递归上传: 建远端目录 + 逐个上传文件, 汇报聚合进度与文件计数。
 async fn run_upload_dir(
-    client: &PikPakClient,
+    client: &KichiClient,
     tx: &Sender<Msg>,
     req_id: u64,
     dir: &Path,

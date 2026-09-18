@@ -5,7 +5,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, RichText, Str
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::Theme;
-use pikpak_core::types::File;
+use kichi_core::types::File;
 
 use super::helpers::{self, input, truncate_text};
 use super::types::Crumb;

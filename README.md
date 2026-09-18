@@ -1,4 +1,4 @@
-# PikPak Linux 客户端
+# Kichi — PikPak Linux 客户端
 
 PikPak 云盘的 Linux 桌面客户端（非官方）。基于逆向的私有 API 实现，Rust 编写，使用 egui/eframe 构建界面。
 
@@ -80,13 +80,13 @@ PikPak 云盘的 Linux 桌面客户端（非官方）。基于逆向的私有 AP
 
 ## 界面截图占位
 
-项目尚未内置截图；可自行 `cargo run -p pikpak-gui` 后查看。
+项目尚未内置截图；可自行 `cargo run -p kichi-gui` 后查看。
 
 ## 目录结构
 
 ```
 crates/
-├── pikpak-core/          # API 客户端核心库（无界面依赖，可复用）
+├── kichi-core/         # API 客户端核心库（无界面依赖，可复用）
 │   └── src/
 │       ├── client.rs     # HTTP 层：鉴权、自动 refresh(code16)、自动 captcha 重试(code9)
 │       ├── captcha.rs    # captcha_sign / device_sign 加签算法
@@ -96,7 +96,7 @@ crates/
 │       ├── types.rs      # File / Quota / Task 等模型（防御式解析）
 │       ├── error.rs      # 统一错误类型
 │       └── session.rs    # 会话持久化
-└── pikpak-gui/           # eframe(egui) 桌面应用
+└── kichi-gui/          # eframe(egui) 桌面应用
     └── src/
         ├── main.rs       # 入口
         ├── app/          # UI 模块（按职责拆分）
@@ -138,10 +138,10 @@ sudo dnf install gcc pkgconf openssl-devel libxkbcommon-devel wayland-devel \
 
 ```bash
 # 开发运行
-cargo run -p pikpak-gui
+cargo run -p kichi-gui
 
-# 发布构建（产物 target/release/pikpak-gui）
-cargo build --release -p pikpak-gui
+# 发布构建（产物 target/release/kichi-gui）
+cargo build --release -p kichi-gui
 
 # 运行测试
 cargo test --workspace
@@ -156,20 +156,20 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 ./packaging/install-icon.sh   # 安装到 ~/.local/share 并刷新图标/菜单缓存
 ```
 
-脚本会写入 `pikpak-linux.desktop` 与 hicolor 图标（SVG 源文件位于
-`assets/pikpak-linux.svg`）。应用启动时已声明 `app_id = "pikpak-linux"`，
+脚本会写入 `kichi.desktop` 与 hicolor 图标（SVG 源文件位于
+`assets/kichi.svg`）。应用启动时已声明 `app_id = "kichi"`，
 重启应用后任务栏/窗口即显示新图标。
 
 ## 配置与数据
 
 | 文件 | 作用 |
 | --- | --- |
-| `~/.config/pikpak-linux/session.json` | access/refresh token、device id 等登录态 |
-| `~/.config/pikpak-linux/settings.json` | 记住的账号、本地下载目录、是否记住密码 |
-| `~/.config/pikpak-linux/downloads.json` | 本地下载历史（最多 200 条，启动时恢复为任务列表） |
-| `~/.config/pikpak-linux/uploads.json` | 本地上传历史（最多 200 条，启动时恢复为任务列表） |
-| `~/.cache/pikpak-linux/pikpak.log` | 运行日志（同时输出到 stderr）；级别由 `PIKPAK_LOG` / `RUST_LOG` 控制 |
-| `~/.cache/pikpak-linux/preview/` | 非流媒体文件的预览缓存（按文件 id 分目录） |
+| `~/.config/kichi/session.json` | access/refresh token、device id 等登录态 |
+| `~/.config/kichi/settings.json` | 记住的账号、本地下载目录、是否记住密码 |
+| `~/.config/kichi/downloads.json` | 本地下载历史（最多 200 条，启动时恢复为任务列表） |
+| `~/.config/kichi/uploads.json` | 本地上传历史（最多 200 条，启动时恢复为任务列表） |
+| `~/.cache/kichi/kichi.log` | 运行日志（同时输出到 stderr）；级别由 `KICHI_LOG` / `RUST_LOG` 控制 |
+| `~/.cache/kichi/preview/` | 非流媒体文件的预览缓存（按文件 id 分目录） |
 
 > 「记住密码」的密码保存在**系统密钥环**（KDE Wallet / GNOME Keyring，Secret Service），
 > 不会明文写入上述配置文件；密钥环不可用时只记住账号，不影响正常登录。

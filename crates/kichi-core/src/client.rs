@@ -41,7 +41,7 @@ struct Auth {
 
 pub type TokenSaver = Arc<dyn Fn(&Session) + Send + Sync>;
 
-pub struct PikPakClient {
+pub struct KichiClient {
     http: reqwest::Client,
     device_id: String,
     auth: Mutex<Auth>,
@@ -50,7 +50,7 @@ pub struct PikPakClient {
     on_tokens: Option<TokenSaver>,
 }
 
-impl PikPakClient {
+impl KichiClient {
     pub fn new(device_id: String) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(BROWSER_UA)
@@ -726,10 +726,10 @@ impl PikPakClient {
         let mut query: Vec<(&str, String)> = vec![
             ("limit", "100".into()),
             ("thumbnail_size", "SIZE_LARGE".into()),
-            ("share_id".into(), share_id.to_string()),
+            ("share_id", share_id.to_string()),
         ];
         if !pass_code.is_empty() {
-            query.push(("pass_code".into(), pass_code.to_string()));
+            query.push(("pass_code", pass_code.to_string()));
         }
         let value = self.get(&url, &query).await?;
         let detail: ShareDetail = serde_json::from_value(value)?;
@@ -753,9 +753,9 @@ impl PikPakClient {
         let query: Vec<(&str, String)> = vec![
             ("limit", "100".into()),
             ("thumbnail_size", "SIZE_LARGE".into()),
-            ("share_id".into(), share_id.to_string()),
-            ("pass_code_token".into(), pass_code_token.to_string()),
-            ("page_token".into(), page_token.to_string()),
+            ("share_id", share_id.to_string()),
+            ("pass_code_token", pass_code_token.to_string()),
+            ("page_token", page_token.to_string()),
         ];
         let value = self.get(&url, &query).await?;
         Ok(serde_json::from_value(value)?)
@@ -1357,7 +1357,7 @@ mod tests {
     #[tokio::test]
     async fn login_requires_no_refresh_token() {
         // 未登录时若触发 code16 不应调用 refresh(直接报错)。
-        let client = PikPakClient::new("0123456789abcdef0123456789abcdef".into());
+        let client = KichiClient::new("0123456789abcdef0123456789abcdef".into());
         let e = client.refresh_token().await.unwrap_err();
         assert!(e.to_string().contains("缺少 refresh token"));
     }

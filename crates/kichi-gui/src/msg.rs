@@ -1,4 +1,4 @@
-use pikpak_core::types::{FileList, Quota, ShareList, Task};
+use kichi_core::types::{FileList, Quota, ShareList, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -253,7 +253,7 @@ pub enum Msg {
     Folders {
         parent: Option<String>,
         req_id: u64,
-        files: Vec<pikpak_core::types::File>,
+        files: Vec<kichi_core::types::File>,
     },
     Quota(Option<Quota>),
     TasksAll {
@@ -364,12 +364,12 @@ pub enum Msg {
         share_id: String,
         title: String,
         pass_code_token: String,
-        files: Vec<pikpak_core::types::File>,
+        files: Vec<kichi_core::types::File>,
         next_page_token: Option<String>,
     },
     /// 加载更多分享文件完成。
     ShareFilesLoaded {
-        files: Vec<pikpak_core::types::File>,
+        files: Vec<kichi_core::types::File>,
         next_page_token: Option<String>,
     },
     /// 加载更多分享文件失败。

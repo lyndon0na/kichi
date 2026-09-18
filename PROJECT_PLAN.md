@@ -1,6 +1,6 @@
 # PROJECT_PLAN
 
-PikPak Linux 客户端开发计划与进展记录。
+Kichi 客户端开发计划与进展记录。
 
 ## 一、目标
 
@@ -26,8 +26,8 @@ PikPak Linux 客户端开发计划与进展记录。
 - [x] M0 调研 API：端点、加签算法、登录/文件/离线任务的数据结构
   - 参考社区逆向：`Quan666/PikPakAPI`(py)、`Muione/PikpakAPI`(ts) 交叉验证
   - 用固定输入 + python 生成 golden 向量，保证 `captcha_sign`/`device_sign` 正确
-- [x] M1 `pikpak-core`：常量/签名、错误模型、HTTP 层、模型、业务方法、会话持久化、单测
-- [x] M2 `pikpak-gui`：后台 worker + 登录页 + 文件页 + 离线任务页，真机登录联调
+- [x] M1 `kichi-core`：常量/签名、错误模型、HTTP 层、模型、业务方法、会话持久化、单测
+- [x] M2 `kichi-gui`：后台 worker + 登录页 + 文件页 + 离线任务页，真机登录联调
 - [x] M3 联调修复：
   - `error_code=16` → 自动 refresh 重试
   - `error_code=9` → 按操作 action 重新 captcha_init 后重试（文件列表恢复）
@@ -89,7 +89,7 @@ PikPak Linux 客户端开发计划与进展记录。
   下载目录记忆、下载历史持久化（`downloads.json`，最多 200 条，启动时恢复）
 - 文件预览：双击或右键「播放」；视频子菜单列出云端清晰度(原画/1080P/720P…，无转码流时仅原画，
   打开子菜单时按需解析)，选择后由 `mpv` 流式播放(带签名直链请求头)，自动挂载同集外挂字幕；
-  音频只有原文件, 直接播放; 其他文件下载到 `~/.cache/pikpak-linux/preview` 后交给系统查看器(`xdg-open`)，
+  音频只有原文件, 直接播放; 其他文件下载到 `~/.cache/kichi/preview` 后交给系统查看器(`xdg-open`)，
   命中缓存不重复下载，缺少 `mpv` 时仅提示安装
 - 主题：读取系统 KDE 配色（`kde.rs`）自动跟随明暗与强调色并适配 Breeze 风格，
   非 KDE 环境回退内置浅色；任务/下载角标、记住账号、中文界面与 CJK 字体自动加载
@@ -226,9 +226,9 @@ UI 每次帧 `try_recv` 收敛消息，操作即时性由点击 → 发送 → �
 `sha1 = "0.10"`、`hmac = "0.12"`、`base64 = "0.22"`（`Date` 头可手写或加 `httpdate`）。
 
 ### 5) 落地步骤
-- `pikpak-core`：新增 `upload.rs`（gcid / OSS 签名 / 分片）+ `client.rs` 的
+- `kichi-core`：新增 `upload.rs`（gcid / OSS 签名 / 分片）+ `client.rs` 的
   `upload_create` / `oss_initiate` / `oss_upload_part` / `oss_complete`；模型防御式解析。
-- `pikpak-gui`：`Cmd::StartUpload`、`Msg::Ul*`、`worker::spawn_upload`
+- `kichi-gui`：`Cmd::StartUpload`、`Msg::Ul*`、`worker::spawn_upload`
   （并发信号量 / 取消 / 退避重试 / 进度）、`helpers::pick_files`、
   文件页「上传到此处」、传输任务页上传分栏接真实列表。
 - 测试：gcid 黄金向量（与 pikpakhash/pikpaktui 对拍）、签名串黄金向量、创建响应解析、

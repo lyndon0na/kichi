@@ -207,7 +207,7 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("pikpak-upload-{label}-{nanos}"));
+        let p = std::env::temp_dir().join(format!("kichi-upload-{label}-{nanos}"));
         std::fs::write(&p, data).unwrap();
         p
     }

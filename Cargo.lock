@@ -2082,6 +2082,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kichi-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "dirs",
+ "futures-util",
+ "hmac 0.12.1",
+ "httpdate",
+ "md-5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "kichi-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "eframe",
+ "keyring",
+ "kichi-core",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2876,43 +2913,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "pikpak-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "dirs",
- "futures-util",
- "hmac 0.12.1",
- "httpdate",
- "md-5",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "pikpak-gui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "eframe",
- "keyring",
- "pikpak-core",
- "rfd",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "pin-project"

@@ -10,6 +10,6 @@ pub mod session;
 pub mod types;
 pub mod upload;
 
-pub use client::PikPakClient;
+pub use client::KichiClient;
 pub use error::Error;
 pub use session::Session;

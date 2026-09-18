@@ -1,11 +1,11 @@
 [package]
-name = "pikpak-core"
+name = "kichi-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "pikpak_core"
+name = "kichi_core"
 
 [dependencies]
 tokio = { workspace = true }
