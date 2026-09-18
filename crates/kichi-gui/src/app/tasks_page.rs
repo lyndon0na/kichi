@@ -310,41 +310,62 @@ impl App {
                 );
                 ui.add_space(10.0);
 
-                // 新建离线下载(可折叠, 默认收起以让位给列表)
-                egui::CollapsingHeader::new(
-                    RichText::new("新建离线下载")
-                        .size(13.5)
-                        .strong()
-                        .color(th.text),
-                )
-                .default_open(false)
-                .show(ui, |ui| {
-                    egui::Frame::new()
-                        .fill(th.card)
-                        .stroke(Stroke::new(1.0, th.border))
-                        .corner_radius(th.cr(14))
-                        .inner_margin(Margin::same(16))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("链接 / 磁力").color(th.text_weak));
-                                let resp = ui.add(
-                                    input(&mut self.offline_url)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("magnet:?xt=... 或 https://..."),
-                                );
-                                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                                    create = true;
-                                }
-                            });
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("文件名").color(th.text_weak));
-                                ui.add(
-                                    input(&mut self.offline_name)
-                                        .desired_width(280.0)
-                                        .hint_text("可选, 留空自动识别"),
-                                );
-                                ui.add_space(8.0);
+                // 新建离线下载(常显, 使用频率较高)
+                egui::Frame::new()
+                    .fill(th.card)
+                    .stroke(Stroke::new(1.0, th.border))
+                    .corner_radius(th.cr(14))
+                    .inner_margin(Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("新建离线下载")
+                                .size(14.0)
+                                .strong()
+                                .color(th.text),
+                        );
+                        ui.add_space(10.0);
+                        // 链接 + 文件名同一行: 链接自适应, 右侧固定宽给文件名。
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("链接 / 磁力").color(th.text_weak));
+                            const NAME_W: f32 = 200.0;
+                            let name_label_w = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    "文件名".to_string(),
+                                    FontId::proportional(14.0),
+                                    th.text_weak,
+                                )
+                                .size()
+                                .x;
+                            let url_w =
+                                (ui.available_width() - name_label_w - NAME_W - 24.0).max(160.0);
+                            let resp = ui.add(
+                                input(&mut self.offline_url)
+                                    .desired_width(url_w)
+                                    .hint_text("magnet:?xt=... 或 https://..."),
+                            );
+                            if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                create = true;
+                            }
+                            ui.add_space(10.0);
+                            ui.label(RichText::new("文件名").color(th.text_weak));
+                            ui.add(
+                                input(&mut self.offline_name)
+                                    .desired_width(NAME_W)
+                                    .hint_text("可选, 留空自动识别"),
+                            );
+                        });
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("保存到").color(th.text_weak));
+                            let label = match &self.offline_dest {
+                                Some((_, name)) => format!("网盘目录 · {name}"),
+                                None => "离线默认目录".to_string(),
+                            };
+                            if ui.button(RichText::new(label).color(th.accent)).clicked() {
+                                self.open_offline_picker();
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 let enabled = !self.offline_url.trim().is_empty();
                                 if ui
                                     .add_enabled(
@@ -361,26 +382,22 @@ impl App {
                                     create = true;
                                 }
                             });
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("保存到").color(th.text_weak));
-                                let label = match &self.offline_dest {
-                                    Some((_, name)) => format!("网盘目录 · {name}"),
-                                    None => "离线默认目录".to_string(),
-                                };
-                                if ui.button(RichText::new(label).color(th.accent)).clicked() {
-                                    self.open_offline_picker();
-                                }
-                            });
                         });
-                });
+                    });
                 ui.add_space(8.0);
 
-                // 阶段页签 + 刷新
+                // 页签行的可见项(全选 / 计数用); 按点击前的页签计算, 点击后下方列表本帧即切换。
+                let row_active = self.active_tasks_tab();
+                let row_ids: Vec<String> = self
+                    .buckets
+                    .get(row_active.phase())
+                    .map(|v| v.iter().filter_map(task_id).collect())
+                    .unwrap_or_default();
+
+                // 阶段页签 + 全选 / 计数 + 刷新(同一行, 与传输任务一致)
                 ui.horizontal(|ui| {
-                    let active = self.active_tasks_tab();
                     for tab in OfflineTab::ALL {
-                        self.task_tab_button(ui, th, tab, active);
+                        self.task_tab_button(ui, th, tab, row_active);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let refreshing = self.tasks_refreshing;
@@ -406,6 +423,52 @@ impl App {
                         if refreshing {
                             ui.add(egui::Spinner::new().size(14.0).color(th.text_weak));
                         }
+
+                        if !row_ids.is_empty() {
+                            ui.add_space(14.0);
+                            let vis_total = row_ids.len();
+                            let vis_selected = row_ids
+                                .iter()
+                                .filter(|id| self.tasks_selected.contains(*id))
+                                .count();
+                            let master = if vis_total == 0 || vis_selected == 0 {
+                                CheckState::Unchecked
+                            } else if vis_selected >= vis_total {
+                                CheckState::Checked
+                            } else {
+                                CheckState::Partial
+                            };
+                            let (cb_rect, cb_resp) =
+                                ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::click());
+                            paint_checkbox(ui.painter(), th, cb_rect, master, cb_resp.hovered());
+                            if cb_resp.clicked() {
+                                if master == CheckState::Checked {
+                                    for id in &row_ids {
+                                        self.tasks_selected.remove(id);
+                                    }
+                                } else {
+                                    for id in &row_ids {
+                                        self.tasks_selected.insert(id.clone());
+                                    }
+                                }
+                            }
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("全选").color(th.text_weak).size(12.5));
+                            ui.add_space(14.0);
+                            if vis_selected > 0 {
+                                ui.label(
+                                    RichText::new(format!("已选 {vis_selected}/{vis_total}"))
+                                        .color(th.accent)
+                                        .size(12.5),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(format!("共 {vis_total} 个"))
+                                        .color(th.text_faint)
+                                        .size(12.5),
+                                );
+                            }
+                        }
                     });
                 });
                 ui.add_space(6.0);
@@ -424,55 +487,6 @@ impl App {
                 let id_set: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
                 self.tasks_selected
                     .retain(|id| id_set.contains(id.as_str()));
-
-                // 全选 + 计数
-                if task_count > 0 {
-                    ui.horizontal(|ui| {
-                        let vis_total = ids.len();
-                        let vis_selected = ids
-                            .iter()
-                            .filter(|id| self.tasks_selected.contains(*id))
-                            .count();
-                        let master = if vis_total == 0 || vis_selected == 0 {
-                            CheckState::Unchecked
-                        } else if vis_selected >= vis_total {
-                            CheckState::Checked
-                        } else {
-                            CheckState::Partial
-                        };
-                        let (cb_rect, cb_resp) =
-                            ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::click());
-                        paint_checkbox(ui.painter(), th, cb_rect, master, cb_resp.hovered());
-                        if cb_resp.clicked() {
-                            if master == CheckState::Checked {
-                                for id in &ids {
-                                    self.tasks_selected.remove(id);
-                                }
-                            } else {
-                                for id in &ids {
-                                    self.tasks_selected.insert(id.clone());
-                                }
-                            }
-                        }
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("全选").color(th.text_weak).size(12.5));
-                        ui.add_space(12.0);
-                        if vis_selected > 0 {
-                            ui.label(
-                                RichText::new(format!("已选 {vis_selected}/{vis_total}"))
-                                    .color(th.accent)
-                                    .size(12.5),
-                            );
-                        } else {
-                            ui.label(
-                                RichText::new(format!("共 {vis_total} 个"))
-                                    .color(th.text_faint)
-                                    .size(12.5),
-                            );
-                        }
-                    });
-                    ui.add_space(4.0);
-                }
 
                 if task_count == 0 {
                     ui.centered_and_justified(|ui| {
