@@ -176,6 +176,7 @@
 crates/
 ├── kichi-core/                  # API 客户端核心库（无界面依赖，可复用）
 │   └── src/
+│       ├── lib.rs               # crate 根：模块声明与公开导出
 │       ├── client.rs            # HTTP 层：鉴权、自动 refresh(code16)、自动 captcha 重试(code9)
 │       ├── captcha.rs           # captcha_sign / device_sign 加签算法
 │       ├── consts.rs            # client_id / host / 盐值表 / 常量
@@ -187,6 +188,7 @@ crates/
 └── kichi-gui/                   # eframe(egui) 桌面应用
     └── src/
         ├── main.rs              # 入口
+        ├── logging.rs           # 日志初始化（stderr + ~/.cache/kichi/kichi.log）
         ├── app/                 # UI 模块（按职责拆分）
         │   ├── mod.rs           # App 结构体、初始化、消息处理、业务逻辑
         │   ├── types.rs         # Page / ViewMode / TransferTab / DlJob 等内部类型
@@ -273,7 +275,8 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 | 整目录下载 | 本地下载整目录暂不支持（会跳过文件夹） |
 | 离线任务字段 | 无官方文档，当前按 `phase` 分桶请求以保证状态准确 |
 | 人机验证 | 部分操作（如异常 IP 登录）会被要求网页端人机验证，此时会提示失败 |
-| 分页 | 超过 100 条的任务 / 文件分批显示，仅支持「加载更多」 |
+| 分页 | 文件 / 分享 / 回收站超过 100 条时分批显示，支持「加载更多」 |
+| 离线任务分页 | 无「加载更多」：每个 `phase` 只取首页（最多 100 条），超出部分不展示 |
 
 ## 免责声明
 
