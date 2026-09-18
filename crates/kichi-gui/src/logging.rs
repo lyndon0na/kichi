@@ -68,7 +68,11 @@ pub fn init() {
         let _ = std::fs::create_dir_all(dir);
     }
     // 追加写, 不做轮转(日志量小)。
-    let file = OpenOptions::new().create(true).append(true).open(&path).ok();
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok();
 
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter())

@@ -1,1 +1,11 @@
 target/
+
+# 构建 / 工具产物
+*.rs.bk
+.delta/
+.commandcode/
+
+# 编辑器 / 系统
+*.swp
+*~
+.DS_Store

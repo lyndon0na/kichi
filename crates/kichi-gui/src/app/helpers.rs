@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, FontId, vec2};
+use eframe::egui::{self, vec2, Color32, FontId};
 
 /// 统一的单行输入框样式: 更舒适的内边距 / 最小高度, 与卡片圆角一致。
 pub(crate) fn input(text: &mut String) -> egui::TextEdit<'_> {
@@ -74,9 +74,7 @@ const VIDEO_EXTS: &[&str] = &[
 ];
 
 /// 可用 mpv 播放的音频扩展名(小写, 单点维护)。
-const AUDIO_EXTS: &[&str] = &[
-    "mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "ape",
-];
+const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "ape"];
 
 /// 常见字幕扩展名(小写, 单点维护)。
 const SUBTITLE_EXTS: &[&str] = &["ass", "ssa", "srt", "sub", "vtt", "sbv", "sup"];
@@ -107,8 +105,7 @@ pub(crate) fn is_subtitle_file(name: &str) -> bool {
 /// 判断字幕是否与某视频同集: 去掉扩展名后与视频名相同(忽略大小写), 或以视频名为前缀
 /// 且其后紧跟非字母数字分隔符(如 `.sc.ass` / `_chs.srt` / `.zh-CN.ass`)。
 pub(crate) fn subtitle_of(video: &str, sub: &str) -> bool {
-    let (Some((vstem, _)), Some((sstem, _))) =
-        (video.rsplit_once('.'), sub.rsplit_once('.'))
+    let (Some((vstem, _)), Some((sstem, _))) = (video.rsplit_once('.'), sub.rsplit_once('.'))
     else {
         return false;
     };
@@ -201,9 +198,7 @@ pub(crate) fn pick_folder(initial: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// 异步弹出目录选择框(0 或 1 个路径)。
-pub(crate) fn pick_dir_async(
-    initial: &std::path::Path,
-) -> std::sync::mpsc::Receiver<Vec<PathBuf>> {
+pub(crate) fn pick_dir_async(initial: &std::path::Path) -> std::sync::mpsc::Receiver<Vec<PathBuf>> {
     let (tx, rx) = std::sync::mpsc::channel();
     let initial = initial.to_path_buf();
     std::thread::spawn(move || {
@@ -383,8 +378,14 @@ mod tests {
     #[test]
     fn matches_same_episode_subtitles() {
         let video = "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].mkv";
-        assert!(subtitle_of(video, "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].sc.ass"));
-        assert!(subtitle_of(video, "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].ass"));
+        assert!(subtitle_of(
+            video,
+            "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].sc.ass"
+        ));
+        assert!(subtitle_of(
+            video,
+            "[VCB-Studio] K-ON!! [01][Ma10p_1080p][x265_flac_2aac].ass"
+        ));
         assert!(subtitle_of("ep01.mkv", "ep01.chs.srt"));
         assert!(subtitle_of("ep01.mkv", "ep01-CN.ass"));
         // 忽略大小写, 且多字节文件名不 panic。

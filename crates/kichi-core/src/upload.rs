@@ -150,12 +150,11 @@ pub fn oss_authorization(method: &str, date: &str, oss: &OssContext, query: &str
         format!("/{}/{}?{query}", oss.bucket, oss.key)
     };
     // string_to_sign: METHOD\n<Content-MD5>\n<Content-Type>\n<Date>\n<canonicalized headers><resource>
-    let string_to_sign = format!(
-        "{method}\n\napplication/octet-stream\n{date}\n{canonicalized_headers}{resource}"
-    );
+    let string_to_sign =
+        format!("{method}\n\napplication/octet-stream\n{date}\n{canonicalized_headers}{resource}");
 
-    let mut mac = HmacSha1::new_from_slice(oss.access_key_secret.as_bytes())
-        .expect("HMAC 接受任意长度密钥");
+    let mut mac =
+        HmacSha1::new_from_slice(oss.access_key_secret.as_bytes()).expect("HMAC 接受任意长度密钥");
     mac.update(string_to_sign.as_bytes());
     let sig = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
     format!("OSS {}:{}", oss.access_key_id, sig)

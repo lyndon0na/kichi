@@ -1,4 +1,6 @@
-use eframe::egui::{self, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2};
+use eframe::egui::{
+    self, vec2, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke,
+};
 
 use crate::format;
 use crate::icons::{self, Glyph};
@@ -7,7 +9,10 @@ use crate::settings;
 use crate::theme::{mix, Theme};
 
 use super::helpers::{open_dir, open_path, truncate_text};
-use super::types::{Crumb, DlFilter, DlJob, DlOp, DlSel, DlStatus, Page, TransferTab, UlFilter, UlJob, UlOp, UlStatus};
+use super::types::{
+    Crumb, DlFilter, DlJob, DlOp, DlSel, DlStatus, Page, TransferTab, UlFilter, UlJob, UlOp,
+    UlStatus,
+};
 use super::App;
 
 /// 下载卡片固定高度(虚拟滚动要求逐行等高)。
@@ -42,7 +47,13 @@ enum CheckState {
 }
 
 /// 在给定矩形内绘制现代化复选框(不处理点击)。
-fn paint_checkbox(painter: &egui::Painter, th: &Theme, rect: Rect, state: CheckState, hovered: bool) {
+fn paint_checkbox(
+    painter: &egui::Painter,
+    th: &Theme,
+    rect: Rect,
+    state: CheckState,
+    hovered: bool,
+) {
     let size = rect.width();
     let (fill, border) = match state {
         CheckState::Checked | CheckState::Partial => (th.accent, th.accent),
@@ -55,14 +66,22 @@ fn paint_checkbox(painter: &egui::Painter, th: &Theme, rect: Rect, state: CheckS
         }
     };
     painter.rect_filled(rect, th.cr(4), fill);
-    painter.rect_stroke(rect, th.cr(4), Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        th.cr(4),
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
 
     match state {
         CheckState::Checked => {
             let p1 = Pos2::new(rect.min.x + size * 0.26, rect.center().y + size * 0.02);
             let p2 = Pos2::new(rect.min.x + size * 0.43, rect.max.y - size * 0.28);
             let p3 = Pos2::new(rect.max.x - size * 0.24, rect.min.y + size * 0.30);
-            painter.add(egui::Shape::line(vec![p1, p2, p3], Stroke::new(1.8, th.on_accent)));
+            painter.add(egui::Shape::line(
+                vec![p1, p2, p3],
+                Stroke::new(1.8, th.on_accent),
+            ));
         }
         CheckState::Partial => {
             let y = rect.center().y;
@@ -106,7 +125,12 @@ fn dl_card(
         th.card
     };
     painter.rect_filled(rect, th.cr(12), bg);
-    painter.rect_stroke(rect, th.cr(12), Stroke::new(1.0, th.border), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        th.cr(12),
+        Stroke::new(1.0, th.border),
+        egui::StrokeKind::Inside,
+    );
 
     // 选中时左侧 accent 条
     if is_sel {
@@ -127,7 +151,11 @@ fn dl_card(
         Pos2::new(inner.min.x + 8.0, inner.center().y),
         vec2(16.0, 16.0),
     );
-    let cb_resp = ui.interact(cb_rect, ui.id().with(("dl_check", rid)), egui::Sense::click());
+    let cb_resp = ui.interact(
+        cb_rect,
+        ui.id().with(("dl_check", rid)),
+        egui::Sense::click(),
+    );
     if cb_resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -135,7 +163,11 @@ fn dl_card(
         &painter,
         th,
         cb_rect,
-        if is_sel { CheckState::Checked } else { CheckState::Unchecked },
+        if is_sel {
+            CheckState::Checked
+        } else {
+            CheckState::Unchecked
+        },
         resp.hovered() || cb_resp.hovered(),
     );
     let cb_clicked = cb_resp.clicked();
@@ -148,7 +180,13 @@ fn dl_card(
     let right_start = inner.max.x - BTN_W;
     let left_w = ((right_start - content_x - 16.0) * 0.46).max(120.0);
 
-    let name_g = truncate_text(&painter, &job.name, left_w, FontId::proportional(13.5), th.text);
+    let name_g = truncate_text(
+        &painter,
+        &job.name,
+        left_w,
+        FontId::proportional(13.5),
+        th.text,
+    );
     painter.galley(Pos2::new(content_x, inner.min.y + 1.0), name_g, th.text);
     let (col, mut txt) = status_line(job);
     if let Some(at) = job.at {
@@ -185,7 +223,10 @@ fn dl_card(
                 painter.rect_filled(bar_rect, th.cr(3), mix(th.text_faint, th.bg, 0.7));
                 let fill_w = mid_w * frac;
                 if fill_w > 0.0 {
-                    let fill_rect = Rect::from_min_max(bar_rect.min, Pos2::new(bar_rect.min.x + fill_w, bar_rect.max.y));
+                    let fill_rect = Rect::from_min_max(
+                        bar_rect.min,
+                        Pos2::new(bar_rect.min.x + fill_w, bar_rect.max.y),
+                    );
                     painter.rect_filled(fill_rect, th.cr(3), th.accent);
                 }
                 let mut info = format!(
@@ -242,9 +283,7 @@ fn dl_card(
     // 右侧: 图标操作按钮(右对齐, 统一预留宽度保证各卡片列对齐)
     let mut btns: Vec<(Glyph, &str, DlOp)> = Vec::new();
     match &job.status {
-        DlStatus::Queued | DlStatus::Running => {
-            btns.push((Glyph::Close, "取消下载", DlOp::Cancel))
-        }
+        DlStatus::Queued | DlStatus::Running => btns.push((Glyph::Close, "取消下载", DlOp::Cancel)),
         DlStatus::Done => {
             btns.push((Glyph::OpenExternal, "打开文件", DlOp::OpenFile));
             btns.push((Glyph::Folder, "打开所在目录", DlOp::OpenDir));
@@ -266,7 +305,11 @@ fn dl_card(
     for (glyph, tip, dop) in btns.into_iter().rev() {
         let rect = Rect::from_min_max(Pos2::new(bx - btn_sz, btn_y), Pos2::new(bx, btn_y + btn_sz));
         bx -= btn_sz + btn_gap;
-        let bresp = ui.interact(rect, ui.id().with(("dl_btn", rid, tip)), egui::Sense::click());
+        let bresp = ui.interact(
+            rect,
+            ui.id().with(("dl_btn", rid, tip)),
+            egui::Sense::click(),
+        );
         if bresp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             painter.rect_filled(rect, th.cr(6), th.hover);
@@ -349,7 +392,11 @@ fn ul_card(
         Pos2::new(inner.min.x + 8.0, inner.center().y),
         vec2(16.0, 16.0),
     );
-    let cb_resp = ui.interact(cb_rect, ui.id().with(("ul_check", rid)), egui::Sense::click());
+    let cb_resp = ui.interact(
+        cb_rect,
+        ui.id().with(("ul_check", rid)),
+        egui::Sense::click(),
+    );
     if cb_resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -357,7 +404,11 @@ fn ul_card(
         &painter,
         th,
         cb_rect,
-        if is_sel { CheckState::Checked } else { CheckState::Unchecked },
+        if is_sel {
+            CheckState::Checked
+        } else {
+            CheckState::Unchecked
+        },
         resp.hovered() || cb_resp.hovered(),
     );
     let cb_clicked = cb_resp.clicked();
@@ -369,7 +420,13 @@ fn ul_card(
     let left_w = ((right_start - content_x - 16.0) * 0.46).max(120.0);
 
     // 左列: 名称 / 状态(含相对时间) / 目标路径
-    let name_g = truncate_text(&painter, &job.name, left_w, FontId::proportional(13.5), th.text);
+    let name_g = truncate_text(
+        &painter,
+        &job.name,
+        left_w,
+        FontId::proportional(13.5),
+        th.text,
+    );
     painter.galley(Pos2::new(content_x, inner.min.y + 1.0), name_g, th.text);
     let (col, mut txt) = upload_status_line(job);
     if job.is_dir && job.files_total > 0 {
@@ -528,14 +585,29 @@ fn ul_card(
 
 impl App {
     /// 传输任务页顶部的「上传 / 下载」分栏按钮。
-    fn transfer_tab_button(&mut self, ui: &mut egui::Ui, th: &Theme, tab: TransferTab, label: &str) {
+    fn transfer_tab_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        tab: TransferTab,
+        label: &str,
+    ) {
         let selected = self.transfer_tab == tab;
-        let text = RichText::new(label)
-            .size(13.0)
-            .color(if selected { th.on_accent } else { th.text_weak });
+        let text = RichText::new(label).size(13.0).color(if selected {
+            th.on_accent
+        } else {
+            th.text_weak
+        });
         let btn = egui::Button::new(text)
-            .fill(if selected { th.accent } else { egui::Color32::TRANSPARENT })
-            .stroke(Stroke::new(1.0, if selected { th.accent } else { th.border }))
+            .fill(if selected {
+                th.accent
+            } else {
+                egui::Color32::TRANSPARENT
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if selected { th.accent } else { th.border },
+            ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() {
             self.transfer_tab = tab;
@@ -545,12 +617,21 @@ impl App {
     /// 下载列表的状态筛选按钮。
     fn dl_filter_button(&mut self, ui: &mut egui::Ui, th: &Theme, filter: DlFilter, label: &str) {
         let selected = self.dl_filter == filter;
-        let text = RichText::new(label)
-            .size(12.0)
-            .color(if selected { th.on_accent } else { th.text_weak });
+        let text = RichText::new(label).size(12.0).color(if selected {
+            th.on_accent
+        } else {
+            th.text_weak
+        });
         let btn = egui::Button::new(text)
-            .fill(if selected { th.accent } else { egui::Color32::TRANSPARENT })
-            .stroke(Stroke::new(1.0, if selected { th.accent } else { th.border }))
+            .fill(if selected {
+                th.accent
+            } else {
+                egui::Color32::TRANSPARENT
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if selected { th.accent } else { th.border },
+            ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() && !selected {
             self.dl_filter = filter;
@@ -584,12 +665,21 @@ impl App {
     /// 上传列表的状态筛选按钮。
     fn ul_filter_button(&mut self, ui: &mut egui::Ui, th: &Theme, filter: UlFilter, label: &str) {
         let selected = self.ul_filter == filter;
-        let text = RichText::new(label)
-            .size(12.0)
-            .color(if selected { th.on_accent } else { th.text_weak });
+        let text = RichText::new(label).size(12.0).color(if selected {
+            th.on_accent
+        } else {
+            th.text_weak
+        });
         let btn = egui::Button::new(text)
-            .fill(if selected { th.accent } else { egui::Color32::TRANSPARENT })
-            .stroke(Stroke::new(1.0, if selected { th.accent } else { th.border }))
+            .fill(if selected {
+                th.accent
+            } else {
+                egui::Color32::TRANSPARENT
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if selected { th.accent } else { th.border },
+            ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() && !selected {
             self.ul_filter = filter;
@@ -740,7 +830,10 @@ impl App {
             let ids = self.visible_ul_ids();
             self.selected_ul.retain(|id| ids.contains(id));
             let vis_total = ids.len();
-            let vis_selected = ids.iter().filter(|id| self.selected_ul.contains(id)).count();
+            let vis_selected = ids
+                .iter()
+                .filter(|id| self.selected_ul.contains(id))
+                .count();
             let master = if vis_total == 0 || vis_selected == 0 {
                 CheckState::Unchecked
             } else if vis_selected >= vis_total {
@@ -793,14 +886,16 @@ impl App {
                 }
                 ui.add_space(12.0);
                 let (sum_done, sum_total, speed) =
-                    self.ul_jobs.values().fold((0u64, 0u64, 0u64), |(d, t, s), j| {
-                        let sp = if matches!(j.status, UlStatus::Running) {
-                            j.speed
-                        } else {
-                            0
-                        };
-                        (d + j.done, t + j.total, s + sp)
-                    });
+                    self.ul_jobs
+                        .values()
+                        .fold((0u64, 0u64, 0u64), |(d, t, s), j| {
+                            let sp = if matches!(j.status, UlStatus::Running) {
+                                j.speed
+                            } else {
+                                0
+                            };
+                            (d + j.done, t + j.total, s + sp)
+                        });
                 if sum_total > 0 {
                     let pct = (sum_done as f32 / sum_total as f32 * 100.0).round() as u32;
                     let mut agg = format!(
@@ -833,7 +928,11 @@ impl App {
         if ids.is_empty() {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("该筛选下暂无任务").color(th.text_weak).size(13.0));
+                ui.label(
+                    RichText::new("该筛选下暂无任务")
+                        .color(th.text_weak)
+                        .size(13.0),
+                );
             });
             return;
         }
@@ -883,7 +982,11 @@ impl App {
                     if let Some(anchor) = self.ul_last_clicked {
                         let start = ids.iter().position(|x| *x == anchor).unwrap_or(0);
                         let end = ids.iter().position(|x| *x == rid).unwrap_or(0);
-                        let (from, to) = if start <= end { (start, end) } else { (end, start) };
+                        let (from, to) = if start <= end {
+                            (start, end)
+                        } else {
+                            (end, start)
+                        };
                         if !ctrl {
                             self.selected_ul.clear();
                         }
@@ -926,23 +1029,16 @@ impl App {
             && !self.selected_dl.is_empty()
         {
             egui::TopBottomPanel::bottom("dl_action_bar")
-                .frame(
-                    Frame::new()
-                        .fill(th.bg)
-                        .inner_margin(Margin {
-                            left: 20,
-                            right: 20,
-                            top: 0,
-                            bottom: 0,
-                        }),
-                )
+                .frame(Frame::new().fill(th.bg).inner_margin(Margin {
+                    left: 20,
+                    right: 20,
+                    top: 0,
+                    bottom: 0,
+                }))
                 .show(ctx, |ui| {
                     let top = ui.max_rect().min.y;
-                    ui.painter().hline(
-                        ui.max_rect().x_range(),
-                        top,
-                        Stroke::new(1.0, th.border),
-                    );
+                    ui.painter()
+                        .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(
@@ -983,16 +1079,21 @@ impl App {
                                             matches!(j.status, DlStatus::Queued | DlStatus::Running)
                                         })
                                         .unwrap_or(false);
-                                    ops.push((*rid, if running { DlOp::Cancel } else { DlOp::Remove }));
+                                    ops.push((
+                                        *rid,
+                                        if running { DlOp::Cancel } else { DlOp::Remove },
+                                    ));
                                 }
                             }
                             if !retryable.is_empty()
                                 && ui
                                     .add(
-                                        egui::Button::new(RichText::new("重试选中").color(th.on_accent))
-                                            .fill(th.accent)
-                                            .stroke(Stroke::NONE)
-                                            .corner_radius(th.cr(8)),
+                                        egui::Button::new(
+                                            RichText::new("重试选中").color(th.on_accent),
+                                        )
+                                        .fill(th.accent)
+                                        .stroke(Stroke::NONE)
+                                        .corner_radius(th.cr(8)),
                                     )
                                     .clicked()
                             {
@@ -1002,8 +1103,10 @@ impl App {
                             }
                             if ui
                                 .add(
-                                    egui::Button::new(RichText::new("取消选中").color(th.text_weak))
-                                        .frame(false),
+                                    egui::Button::new(
+                                        RichText::new("取消选中").color(th.text_weak),
+                                    )
+                                    .frame(false),
                                 )
                                 .clicked()
                             {
@@ -1026,11 +1129,8 @@ impl App {
                 }))
                 .show(ctx, |ui| {
                     let top = ui.max_rect().min.y;
-                    ui.painter().hline(
-                        ui.max_rect().x_range(),
-                        top,
-                        Stroke::new(1.0, th.border),
-                    );
+                    ui.painter()
+                        .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
                     ui.add_space(8.0);
                     let retryable: Vec<u64> = self
                         .selected_ul
@@ -1099,7 +1199,12 @@ impl App {
         }
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(th.bg).inner_margin(Margin { left: 20, right: 20, top: 16, bottom: 12 }))
+            .frame(Frame::new().fill(th.bg).inner_margin(Margin {
+                left: 20,
+                right: 20,
+                top: 16,
+                bottom: 12,
+            }))
             .show(ctx, |ui| {
                 // 标题行
                 ui.horizontal(|ui| {
@@ -1132,10 +1237,12 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add(
-                                egui::Button::new(RichText::new("打开下载目录").color(th.text_weak))
-                                    .stroke(Stroke::new(1.0, th.border))
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .corner_radius(th.cr(8)),
+                                egui::Button::new(
+                                    RichText::new("打开下载目录").color(th.text_weak),
+                                )
+                                .stroke(Stroke::new(1.0, th.border))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .corner_radius(th.cr(8)),
                             )
                             .clicked()
                         {
@@ -1174,7 +1281,12 @@ impl App {
                             .count();
 
                         self.dl_filter_button(ui, th, DlFilter::All, &format!("全部 {total}"));
-                        self.dl_filter_button(ui, th, DlFilter::Active, &format!("进行中 {active}"));
+                        self.dl_filter_button(
+                            ui,
+                            th,
+                            DlFilter::Active,
+                            &format!("进行中 {active}"),
+                        );
                         self.dl_filter_button(ui, th, DlFilter::Done, &format!("已完成 {done_c}"));
                         self.dl_filter_button(ui, th, DlFilter::Failed, &format!("失败 {failed}"));
 
@@ -1183,8 +1295,10 @@ impl App {
                         // 剔除已不在当前筛选中的选中项(如进行中任务完成后被筛掉)
                         self.selected_dl.retain(|id| dl_ids.contains(id));
                         let vis_total = dl_ids.len();
-                        let vis_selected =
-                            dl_ids.iter().filter(|id| self.selected_dl.contains(id)).count();
+                        let vis_selected = dl_ids
+                            .iter()
+                            .filter(|id| self.selected_dl.contains(id))
+                            .count();
                         let master = if vis_total == 0 || vis_selected == 0 {
                             CheckState::Unchecked
                         } else if vis_selected >= vis_total {
@@ -1197,8 +1311,10 @@ impl App {
                             if done_c > 0
                                 && ui
                                     .add(
-                                        egui::Button::new(RichText::new("清除已完成").color(th.text_weak))
-                                            .frame(false),
+                                        egui::Button::new(
+                                            RichText::new("清除已完成").color(th.text_weak),
+                                        )
+                                        .frame(false),
                                     )
                                     .clicked()
                             {
@@ -1246,14 +1362,18 @@ impl App {
                                     (d + j.done, t + j.total, s + sp)
                                 });
                             if sum_total > 0 {
-                                let pct = (sum_done as f32 / sum_total as f32 * 100.0).round() as u32;
+                                let pct =
+                                    (sum_done as f32 / sum_total as f32 * 100.0).round() as u32;
                                 let mut agg = format!(
                                     "整体 {pct}% · {}/{}",
                                     format::fmt_bytes(sum_done as i64),
                                     format::fmt_bytes(sum_total as i64)
                                 );
                                 if speed > 0 {
-                                    agg.push_str(&format!(" · {}/s", format::fmt_bytes(speed as i64)));
+                                    agg.push_str(&format!(
+                                        " · {}/s",
+                                        format::fmt_bytes(speed as i64)
+                                    ));
                                 }
                                 ui.label(RichText::new(agg).color(th.text_faint).size(12.0));
                             }
@@ -1266,12 +1386,7 @@ impl App {
                     ui.centered_and_justified(|ui| {
                         ui.add_space(60.0);
                         let (r, _) = ui.allocate_exact_size(vec2(64.0, 64.0), egui::Sense::hover());
-                        icons::paint(
-                            ui.painter(),
-                            r,
-                            Glyph::Download,
-                            th.text_faint,
-                        );
+                        icons::paint(ui.painter(), r, Glyph::Download, th.text_faint);
                         ui.add_space(10.0);
                         ui.label(RichText::new("暂无下载任务").color(th.text_weak).size(14.0));
                         ui.add_space(4.0);
@@ -1290,7 +1405,9 @@ impl App {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
-                            RichText::new("该筛选下暂无任务").color(th.text_weak).size(13.0),
+                            RichText::new("该筛选下暂无任务")
+                                .color(th.text_weak)
+                                .size(13.0),
                         );
                     });
                     return;
@@ -1340,7 +1457,8 @@ impl App {
                         }
                         DlSel::Range(rid) => {
                             if let Some(anchor) = self.last_clicked_dl {
-                                let start_idx = dl_ids.iter().position(|x| *x == anchor).unwrap_or(0);
+                                let start_idx =
+                                    dl_ids.iter().position(|x| *x == anchor).unwrap_or(0);
                                 let end_idx = dl_ids.iter().position(|x| *x == rid).unwrap_or(0);
                                 let (from, to) = if start_idx <= end_idx {
                                     (start_idx, end_idx)

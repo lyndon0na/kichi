@@ -77,7 +77,9 @@ impl MediaVariant {
                 if m.get("is_visible").and_then(|v| v.as_bool()) == Some(false) {
                     continue;
                 }
-                let Some(url) = pick_media_url(m) else { continue };
+                let Some(url) = pick_media_url(m) else {
+                    continue;
+                };
                 let is_origin = m
                     .get("is_origin")
                     .and_then(|v| v.as_bool())

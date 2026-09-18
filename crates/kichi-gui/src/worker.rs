@@ -471,7 +471,9 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             media,
             subtitles,
         } => {
-            let Some(client) = st.client.clone() else { return };
+            let Some(client) = st.client.clone() else {
+                return;
+            };
             let tx = tx.clone();
             tokio::spawn(async move {
                 if media {
@@ -481,11 +483,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             });
         }
-        Cmd::PreviewQualities {
-            file_id,
-            subtitles,
-        } => {
-            let Some(client) = st.client.clone() else { return };
+        Cmd::PreviewQualities { file_id, subtitles } => {
+            let Some(client) = st.client.clone() else {
+                return;
+            };
             let tx = tx.clone();
             tokio::spawn(async move {
                 preview_qualities(&client, &tx, file_id, subtitles).await;
@@ -579,7 +580,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             page_token,
         } => {
             let Some(client) = &st.client else { return };
-            match client.share_detail(&share_id, &pass_code_token, &page_token).await {
+            match client
+                .share_detail(&share_id, &pass_code_token, &page_token)
+                .await
+            {
                 Ok(detail) => {
                     let _ = tx.send(Msg::ShareFilesLoaded {
                         files: detail.files,
@@ -608,7 +612,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 None
             };
 
-            match client.share_restore(&share_id, &pass_code_token, &file_ids).await {
+            match client
+                .share_restore(&share_id, &pass_code_token, &file_ids)
+                .await
+            {
                 Ok(_) => {
                     // 若用户指定了目标目录, 等转存完成后只移动新增的文件
                     if let Some(dest_id) = dest {
@@ -690,8 +697,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
 async fn snapshot_pack_folder(client: &KichiClient) -> Result<HashSet<String>, Error> {
     let root_list = client.file_list(None, 100, None).await?;
     let folder = root_list.files.iter().find(|f| {
-        f.is_folder()
-            && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+        f.is_folder() && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
     });
     let Some(folder) = folder else {
         return Ok(HashSet::new());
@@ -717,8 +723,7 @@ async fn move_new_files(
 
         let root_list = client.file_list(None, 100, None).await?;
         let folder = root_list.files.iter().find(|f| {
-            f.is_folder()
-                && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
+            f.is_folder() && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
         });
         let Some(folder) = folder else {
             if attempt == max_attempts - 1 {
@@ -760,7 +765,9 @@ async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, pass
     match client.login(&username, &password).await {
         Ok(sess) => {
             if let Err(e) = session::save_session(&sess) {
-                let _ = tx.send(Msg::Error { what: e.to_string() });
+                let _ = tx.send(Msg::Error {
+                    what: e.to_string(),
+                });
             }
             st.client = Some(Arc::new(client));
             tracing::info!("登录成功: {username}");
@@ -878,10 +885,7 @@ async fn preview_qualities(
 
 /// 下载同集外挂字幕到预览缓存, 返回本地路径。
 /// 尽力而为: 单条失败(解析直链或下载出错)时跳过, 不影响视频播放。
-async fn prepare_subtitles(
-    client: &KichiClient,
-    subtitles: &[(String, String)],
-) -> Vec<PathBuf> {
+async fn prepare_subtitles(client: &KichiClient, subtitles: &[(String, String)]) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for (id, name) in subtitles {
         let dest = preview_cache_path(id, name);
@@ -930,10 +934,7 @@ async fn preview_download(
             return;
         }
     };
-    match client
-        .download_to(&link, &dest, None, |_, _| {})
-        .await
-    {
+    match client.download_to(&link, &dest, None, |_, _| {}).await {
         Ok(_) => {
             let _ = tx.send(Msg::PreviewReady {
                 req_id,
@@ -1183,8 +1184,15 @@ async fn spawn_upload(
             total: 0,
             done: 0,
         });
-        let outcome =
-            run_upload(&client, &msg_tx, req_id, &path, parent.as_deref(), cancel.clone()).await;
+        let outcome = run_upload(
+            &client,
+            &msg_tx,
+            req_id,
+            &path,
+            parent.as_deref(),
+            cancel.clone(),
+        )
+        .await;
         cancel_map.lock().await.remove(&req_id);
         drop(permit);
 
@@ -1238,9 +1246,15 @@ async fn spawn_upload_dir(
             total: 0,
             done: 0,
         });
-        let outcome =
-            run_upload_dir(&client, &msg_tx, req_id, &path, parent.as_deref(), cancel.clone())
-                .await;
+        let outcome = run_upload_dir(
+            &client,
+            &msg_tx,
+            req_id,
+            &path,
+            parent.as_deref(),
+            cancel.clone(),
+        )
+        .await;
         cancel_map.lock().await.remove(&req_id);
         drop(permit);
 
@@ -1369,7 +1383,14 @@ where
         let o = oss.as_ref().expect("oss set above");
         let id = upload_id.as_deref().expect("upload_id set above");
         match client
-            .upload_oss(o, id, path, Some(cancel.clone()), &mut state, &mut *on_progress)
+            .upload_oss(
+                o,
+                id,
+                path,
+                Some(cancel.clone()),
+                &mut state,
+                &mut *on_progress,
+            )
             .await
         {
             Ok(_) => return Ok(false),
@@ -1443,10 +1464,9 @@ async fn run_upload_dir(
         .ok_or_else(|| Error::msg("无法获取文件夹名"))?;
 
     let walk = dir.to_path_buf();
-    let (dirs, files, total_bytes) =
-        tokio::task::spawn_blocking(move || collect_dir(&walk))
-            .await
-            .map_err(|e| Error::msg(format!("读取目录失败: {e}")))??;
+    let (dirs, files, total_bytes) = tokio::task::spawn_blocking(move || collect_dir(&walk))
+        .await
+        .map_err(|e| Error::msg(format!("读取目录失败: {e}")))??;
     let total_files = files.len() as u32;
     tracing::info!(
         "开始上传目录 {root_name}: {total_files} 个文件, {} 字节",
@@ -1465,8 +1485,13 @@ async fn run_upload_dir(
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         let parent_rel = rel.parent().map(Path::to_path_buf).unwrap_or_default();
-        let parent_id = dir_ids.get(&parent_rel).cloned().unwrap_or_else(|| root_id.clone());
-        let id = client.create_folder_id(&name, Some(parent_id.as_str())).await?;
+        let parent_id = dir_ids
+            .get(&parent_rel)
+            .cloned()
+            .unwrap_or_else(|| root_id.clone());
+        let id = client
+            .create_folder_id(&name, Some(parent_id.as_str()))
+            .await?;
         dir_ids.insert(rel.clone(), id);
     }
 
@@ -1499,8 +1524,14 @@ async fn run_upload_dir(
                 });
             }
         };
-        upload_local_file(client, &file.abs, Some(parent_id.as_str()), &cancel, &mut on_progress)
-            .await?;
+        upload_local_file(
+            client,
+            &file.abs,
+            Some(parent_id.as_str()),
+            &cancel,
+            &mut on_progress,
+        )
+        .await?;
 
         base += file.size;
         let _ = tx.send(Msg::UlProgress {

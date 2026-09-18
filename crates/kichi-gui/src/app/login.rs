@@ -1,4 +1,4 @@
-use eframe::egui::{self, FontId, Frame, Key, Margin, Pos2, RichText, Stroke, vec2};
+use eframe::egui::{self, vec2, FontId, Frame, Key, Margin, Pos2, RichText, Stroke};
 
 use crate::msg::Cmd;
 use crate::theme::Theme;
@@ -23,15 +23,27 @@ impl App {
                     lp.rect_filled(rr, th.cr(16), th.accent);
                     let g = lp.layout_no_wrap("K".into(), FontId::proportional(32.0), th.on_accent);
                     lp.galley(
-                        Pos2::new(rr.center().x - g.size().x / 2.0, rr.center().y - g.size().y / 2.0 - 1.0),
+                        Pos2::new(
+                            rr.center().x - g.size().x / 2.0,
+                            rr.center().y - g.size().y / 2.0 - 1.0,
+                        ),
                         g,
                         th.on_accent,
                     );
 
                     ui.add_space(16.0);
-                    ui.label(RichText::new("登录 PikPak").size(22.0).strong().color(th.text));
+                    ui.label(
+                        RichText::new("登录 PikPak")
+                            .size(22.0)
+                            .strong()
+                            .color(th.text),
+                    );
                     ui.add_space(2.0);
-                    ui.label(RichText::new("继续使用你的云端文件").size(12.5).color(th.text_weak));
+                    ui.label(
+                        RichText::new("继续使用你的云端文件")
+                            .size(12.5)
+                            .color(th.text_weak),
+                    );
 
                     ui.add_space(18.0);
                     if self.auth_checking {

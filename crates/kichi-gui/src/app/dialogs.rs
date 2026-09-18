@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, RichText, Stroke, vec2};
+use eframe::egui::{self, vec2, Align2, Color32, FontId, Key, Pos2, Rect, RichText, Stroke};
 
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
@@ -20,10 +20,23 @@ fn folder_row(ui: &mut egui::Ui, th: &Theme, name: &str) -> bool {
     if resp.hovered() {
         painter.rect_filled(rect, th.cr(6), th.hover);
     }
-    let icon_rect =
-        Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), vec2(18.0, 18.0));
-    icons::paint(&painter, icon_rect, Glyph::Folder, Color32::from_rgb(232, 178, 84));
-    let g = truncate_text(&painter, name, rect.width() - 34.0, FontId::proportional(13.5), th.text);
+    let icon_rect = Rect::from_center_size(
+        Pos2::new(rect.min.x + 16.0, rect.center().y),
+        vec2(18.0, 18.0),
+    );
+    icons::paint(
+        &painter,
+        icon_rect,
+        Glyph::Folder,
+        Color32::from_rgb(232, 178, 84),
+    );
+    let g = truncate_text(
+        &painter,
+        name,
+        rect.width() - 34.0,
+        FontId::proportional(13.5),
+        th.text,
+    );
     painter.galley(
         Pos2::new(rect.min.x + 32.0, rect.center().y - g.size().y / 2.0),
         g,
@@ -128,7 +141,13 @@ impl App {
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .add(egui::Button::new(RichText::new("移入回收站").color(Color32::WHITE)).fill(th.danger).stroke(Stroke::NONE))
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("移入回收站").color(Color32::WHITE),
+                                )
+                                .fill(th.danger)
+                                .stroke(Stroke::NONE),
+                            )
                             .clicked()
                         {
                             confirmed = true;
@@ -258,9 +277,11 @@ impl App {
                     ui.horizontal(|ui| {
                         if ui
                             .add(
-                                egui::Button::new(RichText::new("选择此目录").color(Color32::WHITE))
-                                    .fill(th.accent)
-                                    .stroke(Stroke::NONE),
+                                egui::Button::new(
+                                    RichText::new("选择此目录").color(Color32::WHITE),
+                                )
+                                .fill(th.accent)
+                                .stroke(Stroke::NONE),
                             )
                             .clicked()
                         {
@@ -279,7 +300,10 @@ impl App {
                 self.offline_picker_list();
             }
             if let Some((id, name)) = enter {
-                self.offline_picker_stack.push(Crumb { id: Some(id), label: name });
+                self.offline_picker_stack.push(Crumb {
+                    id: Some(id),
+                    label: name,
+                });
                 self.offline_picker_list();
             }
             if confirm {
@@ -624,8 +648,7 @@ impl App {
                                 .desired_width(360.0)
                                 .hint_text("https://mypikpak.com/s/xxx 或直接输入 ID"),
                         );
-                        let enter =
-                            resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                         ui.add_space(6.0);
                         ui.label(RichText::new("提取码 (可选)").color(th.text_weak));
                         ui.add(
@@ -635,9 +658,13 @@ impl App {
                         );
                         ui.add_space(12.0);
                         ui.horizontal(|ui| {
-                            let can_resolve =
-                                !self.save_share_input.trim().is_empty() && !self.save_share_resolving;
-                            if ui.add_enabled(can_resolve, egui::Button::new("解析")).clicked() || enter {
+                            let can_resolve = !self.save_share_input.trim().is_empty()
+                                && !self.save_share_resolving;
+                            if ui
+                                .add_enabled(can_resolve, egui::Button::new("解析"))
+                                .clicked()
+                                || enter
+                            {
                                 resolve = true;
                             }
                             if ui.button("取消").clicked() {
@@ -667,11 +694,16 @@ impl App {
                             files.iter().collect()
                         } else {
                             let lower = filter.to_lowercase();
-                            files.iter().filter(|f| f.name.to_lowercase().contains(&lower)).collect()
+                            files
+                                .iter()
+                                .filter(|f| f.name.to_lowercase().contains(&lower))
+                                .collect()
                         };
                         let selected = self.save_share_selected.clone();
-                        let filtered_selected = filtered.iter().filter(|f| selected.contains(&f.id)).count();
-                        let all_filtered_selected = !filtered.is_empty() && filtered_selected >= filtered.len();
+                        let filtered_selected =
+                            filtered.iter().filter(|f| selected.contains(&f.id)).count();
+                        let all_filtered_selected =
+                            !filtered.is_empty() && filtered_selected >= filtered.len();
 
                         ui.label(
                             RichText::new(format!("共 {} 个文件", files.len()))
@@ -722,7 +754,9 @@ impl App {
                             .show(ui, |ui| {
                                 if filtered.is_empty() && !files.is_empty() {
                                     ui.label(
-                                        RichText::new("没有匹配的文件").color(th.text_weak).size(12.0),
+                                        RichText::new("没有匹配的文件")
+                                            .color(th.text_weak)
+                                            .size(12.0),
                                     );
                                 }
                                 for file in &filtered {
@@ -752,9 +786,7 @@ impl App {
                                         };
                                         icons::paint(ui.painter(), r, icon, color);
                                         ui.label(
-                                            RichText::new(&file.name)
-                                                .color(th.text)
-                                                .size(13.0),
+                                            RichText::new(&file.name).color(th.text).size(13.0),
                                         );
                                     });
                                 }
@@ -766,7 +798,9 @@ impl App {
                             ui.horizontal(|ui| {
                                 if self.save_share_loading_more {
                                     ui.spinner();
-                                    ui.label(RichText::new("正在加载…").color(th.text_weak).size(12.0));
+                                    ui.label(
+                                        RichText::new("正在加载…").color(th.text_weak).size(12.0),
+                                    );
                                 } else if ui.button("加载更多文件").clicked() {
                                     if let (Some(share_id), Some(token)) =
                                         (&self.save_share_id, &self.save_share_token)
@@ -786,7 +820,8 @@ impl App {
                         ui.add_space(12.0);
 
                         ui.horizontal(|ui| {
-                            let can_save = !self.save_share_selected.is_empty() && !self.save_share_saving;
+                            let can_save =
+                                !self.save_share_selected.is_empty() && !self.save_share_saving;
 
                             // 左侧: 目录选择按钮, 显示当前目标目录名或"默认位置"
                             let dest_label = self
@@ -796,10 +831,12 @@ impl App {
                                 .unwrap_or("默认位置");
                             if ui
                                 .add(
-                                    egui::Button::new(RichText::new(dest_label).color(Color32::WHITE))
-                                        .fill(Color32::from_gray(45))
-                                        .stroke(Stroke::new(1.0, Color32::from_gray(70)))
-                                        .min_size(vec2(120.0, 0.0)),
+                                    egui::Button::new(
+                                        RichText::new(dest_label).color(Color32::WHITE),
+                                    )
+                                    .fill(Color32::from_gray(45))
+                                    .stroke(Stroke::new(1.0, Color32::from_gray(70)))
+                                    .min_size(vec2(120.0, 0.0)),
                                 )
                                 .on_hover_text("点击选择保存目录")
                                 .clicked()
@@ -848,18 +885,23 @@ impl App {
                 self.save_share_resolving = true;
                 let share_id = Self::extract_share_id(&self.save_share_input);
                 let pass_code = self.save_share_pass_code.clone();
-                self.send(Cmd::ResolveShare { share_id, pass_code });
+                self.send(Cmd::ResolveShare {
+                    share_id,
+                    pass_code,
+                });
             }
             if save {
-                if let (Some(share_id), Some(token)) =
-                    (&self.save_share_id, &self.save_share_token)
+                if let (Some(share_id), Some(token)) = (&self.save_share_id, &self.save_share_token)
                 {
                     self.save_share_saving = true;
                     self.save_share_error = None;
-                    let file_ids: Vec<String> =
-                        self.save_share_selected.iter().cloned().collect();
+                    let file_ids: Vec<String> = self.save_share_selected.iter().cloned().collect();
                     let dest = self.save_share_dest.as_ref().and_then(|(id, _)| {
-                        if id.is_empty() { None } else { Some(id.clone()) }
+                        if id.is_empty() {
+                            None
+                        } else {
+                            Some(id.clone())
+                        }
                     });
                     self.send(Cmd::SaveShare {
                         share_id: share_id.clone(),
@@ -938,9 +980,11 @@ impl App {
                     ui.horizontal(|ui| {
                         if ui
                             .add(
-                                egui::Button::new(RichText::new("选择此目录").color(Color32::WHITE))
-                                    .fill(th.accent)
-                                    .stroke(Stroke::NONE),
+                                egui::Button::new(
+                                    RichText::new("选择此目录").color(Color32::WHITE),
+                                )
+                                .fill(th.accent)
+                                .stroke(Stroke::NONE),
                             )
                             .clicked()
                         {
@@ -1052,7 +1096,8 @@ impl App {
                     .show(ui, |ui| {
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
-                            let (dr, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
+                            let (dr, _) =
+                                ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
                             ui.painter().circle_filled(dr.center(), 3.5, color);
                             ui.add_space(2.0);
                             ui.label(RichText::new(msg).color(color));

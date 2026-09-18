@@ -59,10 +59,10 @@ struct Canvas {
 
 impl Canvas {
     fn new(rect: Rect, color: Color32) -> Self {
-    let s = rect.width().min(rect.height());
-    let x0 = rect.center().x - s / 2.0;
-    let y0 = rect.center().y - s / 2.0;
-    Canvas { x0, y0, s, color }
+        let s = rect.width().min(rect.height());
+        let x0 = rect.center().x - s / 2.0;
+        let y0 = rect.center().y - s / 2.0;
+        Canvas { x0, y0, s, color }
     }
     /// 规范坐标 -> 屏幕坐标。
     fn p(&self, x: f32, y: f32) -> Pos2 {
@@ -90,14 +90,37 @@ impl Canvas {
         }
     }
     #[allow(clippy::too_many_arguments)]
-    fn rect_filled(&self, painter: &Painter, x0: f32, y0: f32, x1: f32, y1: f32, radius: f32, c: Color32) {
+    fn rect_filled(
+        &self,
+        painter: &Painter,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        radius: f32,
+        c: Color32,
+    ) {
         let r = Rect::from_min_max(self.p(x0, y0), self.p(x1, y1));
         painter.rect_filled(r, radius, c);
     }
     #[allow(clippy::too_many_arguments)]
-    fn rect_stroke(&self, painter: &Painter, x0: f32, y0: f32, x1: f32, y1: f32, radius: f32, width: f32) {
+    fn rect_stroke(
+        &self,
+        painter: &Painter,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        radius: f32,
+        width: f32,
+    ) {
         let r = Rect::from_min_max(self.p(x0, y0), self.p(x1, y1));
-        painter.rect_stroke(r, radius, self.stroke(width), eframe::egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            r,
+            radius,
+            self.stroke(width),
+            eframe::egui::StrokeKind::Inside,
+        );
     }
 }
 
@@ -171,7 +194,11 @@ fn video(painter: &Painter, c: &Canvas) {
 fn image(painter: &Painter, c: &Canvas) {
     c.rect_stroke(painter, 2.2, 2.6, 13.8, 13.4, 2.4, 1.5);
     painter.circle_filled(c.p(11.2, 5.6), c.s * 0.09, c.color);
-    c.polyline(painter, &[[3.4, 11.4], [6.6, 7.6], [9.4, 10.4], [12.6, 6.8]], 1.4);
+    c.polyline(
+        painter,
+        &[[3.4, 11.4], [6.6, 7.6], [9.4, 10.4], [12.6, 6.8]],
+        1.4,
+    );
 }
 
 fn audio(painter: &Painter, c: &Canvas) {
@@ -198,7 +225,11 @@ fn archive(painter: &Painter, c: &Canvas) {
     // 盒体
     c.rect_stroke(painter, 2.2, 6.4, 13.8, 13.4, 1.6, 1.5);
     // 盒盖
-    c.polyline(painter, &[[2.2, 6.4], [5.0, 3.2], [11.0, 3.2], [13.8, 6.4]], 1.5);
+    c.polyline(
+        painter,
+        &[[2.2, 6.4], [5.0, 3.2], [11.0, 3.2], [13.8, 6.4]],
+        1.5,
+    );
     c.polyline(painter, &[[5.0, 3.2], [5.0, 5.0]], 1.5);
     c.polyline(painter, &[[11.0, 3.2], [11.0, 5.0]], 1.5);
     // 拉链
@@ -233,7 +264,8 @@ fn gear(painter: &Painter, c: &Canvas) {
     let center = c.p(8.0, 8.0);
     let tooth_h = (c.s * 0.5).max(1.2);
     for i in 0..n {
-        let a = std::f32::consts::TAU * (i as f32) / (n as f32) + std::f32::consts::TAU / (2.0 * n as f32);
+        let a = std::f32::consts::TAU * (i as f32) / (n as f32)
+            + std::f32::consts::TAU / (2.0 * n as f32);
         let dir = eframe::egui::vec2(a.cos(), a.sin());
         let p0 = center + dir * inner;
         let p1 = center + dir * outer;
@@ -296,14 +328,23 @@ fn refresh(painter: &Painter, c: &Canvas) {
 }
 
 fn logout(painter: &Painter, c: &Canvas) {
-    c.polyline(painter, &[[5.0, 2.6], [2.6, 2.6], [2.6, 13.4], [5.0, 13.4]], 1.4);
+    c.polyline(
+        painter,
+        &[[5.0, 2.6], [2.6, 2.6], [2.6, 13.4], [5.0, 13.4]],
+        1.4,
+    );
     c.polyline(painter, &[[8.0, 5.0], [11.0, 8.0], [8.0, 11.0]], 1.5);
     c.polyline(painter, &[[5.0, 8.0], [11.0, 8.0]], 1.5);
 }
 
 fn search(painter: &Painter, c: &Canvas) {
     // 镜片 + 手柄
-    painter.circle(c.p(7.0, 7.0), c.s * 0.30, Color32::TRANSPARENT, c.stroke(1.5));
+    painter.circle(
+        c.p(7.0, 7.0),
+        c.s * 0.30,
+        Color32::TRANSPARENT,
+        c.stroke(1.5),
+    );
     painter.line_segment([c.p(9.4, 9.4), c.p(13.2, 13.2)], c.stroke(1.6));
 }
 
@@ -327,7 +368,11 @@ fn share(painter: &Painter, c: &Canvas) {
 fn trash(painter: &Painter, c: &Canvas) {
     // 桶盖 + 提手
     c.polyline(painter, &[[3.2, 4.4], [12.8, 4.4]], 1.5);
-    c.polyline(painter, &[[6.4, 4.4], [6.9, 2.6], [9.1, 2.6], [9.6, 4.4]], 1.4);
+    c.polyline(
+        painter,
+        &[[6.4, 4.4], [6.9, 2.6], [9.1, 2.6], [9.6, 4.4]],
+        1.4,
+    );
     // 桶身
     c.polyline(painter, &[[4.6, 4.4], [5.3, 13.6]], 1.4);
     c.polyline(painter, &[[11.4, 4.4], [10.7, 13.6]], 1.4);
@@ -350,7 +395,13 @@ fn open_external(painter: &Painter, c: &Canvas) {
     // 开口方框(右上留口) + 指向右上的箭头
     c.polyline(
         painter,
-        &[[9.4, 3.8], [3.8, 3.8], [3.8, 12.2], [12.2, 12.2], [12.2, 6.6]],
+        &[
+            [9.4, 3.8],
+            [3.8, 3.8],
+            [3.8, 12.2],
+            [12.2, 12.2],
+            [12.2, 6.6],
+        ],
         1.5,
     );
     // 箭头杆

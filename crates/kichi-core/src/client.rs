@@ -355,11 +355,13 @@ impl KichiClient {
                 }
             );
             // refresh token 过期/被吊销: 归为登录态失效, 交由上层要求重新登录。
-            return Err(Error::AuthExpired(if err_body.error_description.is_empty() {
-                err_body.error
-            } else {
-                err_body.error_description
-            }));
+            return Err(Error::AuthExpired(
+                if err_body.error_description.is_empty() {
+                    err_body.error
+                } else {
+                    err_body.error_description
+                },
+            ));
         }
         let token: TokenResponse = serde_json::from_slice(&bytes)?;
         let user_id = token.sub.clone().unwrap_or_default();
@@ -562,7 +564,8 @@ impl KichiClient {
     /// 服务端「清空回收站」: 一次清空全部内容(无请求体)。
     pub async fn empty_trash(&self) -> Result<(), Error> {
         let url = format!("{API_HOST}/drive/v1/files/trash:empty");
-        self.request(reqwest::Method::PATCH, &url, None, &[]).await?;
+        self.request(reqwest::Method::PATCH, &url, None, &[])
+            .await?;
         Ok(())
     }
 
@@ -717,11 +720,7 @@ impl KichiClient {
 
     /// 解析他人分享链接, 获取文件列表与 `pass_code_token`(转存时需要)。
     /// `pass_code` 为提取码, 公开分享传空字符串。
-    pub async fn share_info(
-        &self,
-        share_id: &str,
-        pass_code: &str,
-    ) -> Result<ShareDetail, Error> {
+    pub async fn share_info(&self, share_id: &str, pass_code: &str) -> Result<ShareDetail, Error> {
         let url = format!("{API_HOST}/drive/v1/share");
         let mut query: Vec<(&str, String)> = vec![
             ("limit", "100".into()),
@@ -734,10 +733,7 @@ impl KichiClient {
         let value = self.get(&url, &query).await?;
         let detail: ShareDetail = serde_json::from_value(value)?;
         if !detail.share_status.is_empty() && detail.share_status != "OK" {
-            return Err(Error::msg(format!(
-                "分享不可用: {}",
-                detail.share_status
-            )));
+            return Err(Error::msg(format!("分享不可用: {}", detail.share_status)));
         }
         Ok(detail)
     }
@@ -778,10 +774,7 @@ impl KichiClient {
         let value = self.post(&url, &body).await?;
         let result: ShareRestoreResult = serde_json::from_value(value)?;
         if result.restore_status != "RESTORE_START" {
-            return Err(Error::msg(format!(
-                "转存失败: {}",
-                result.restore_status
-            )));
+            return Err(Error::msg(format!("转存失败: {}", result.restore_status)));
         }
         Ok(result)
     }
@@ -800,9 +793,8 @@ impl KichiClient {
             ("User-Agent".to_string(), ua.clone()),
             ("X-Device-Id".to_string(), self.device_id.clone()),
         ];
-        let accept = |s: reqwest::StatusCode| {
-            s.is_success() || s == reqwest::StatusCode::PARTIAL_CONTENT
-        };
+        let accept =
+            |s: reqwest::StatusCode| s.is_success() || s == reqwest::StatusCode::PARTIAL_CONTENT;
 
         let first = self
             .http
@@ -1130,7 +1122,11 @@ impl KichiClient {
         let query = "uploads";
         let date = upload::http_date_now();
         let auth = upload::oss_authorization("POST", &date, oss, query);
-        let url = format!("https://{}/{}?uploads", oss.endpoint.trim_end_matches('/'), oss.key);
+        let url = format!(
+            "https://{}/{}?uploads",
+            oss.endpoint.trim_end_matches('/'),
+            oss.key
+        );
         let resp = self
             .http
             .post(&url)
@@ -1233,7 +1229,10 @@ impl KichiClient {
             });
         }
         // OSS 失败时也可能返回 200 + <Error> 体, 简单探测一下。
-        if text.contains("<Error>") && !text.contains("<ETag>") && !text.contains("<CompleteMultipartUploadResult") {
+        if text.contains("<Error>")
+            && !text.contains("<ETag>")
+            && !text.contains("<CompleteMultipartUploadResult")
+        {
             return Err(Error::msg(format!(
                 "OSS 完成分片失败: {}",
                 truncate(&text, 200)

@@ -154,10 +154,14 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, theme.accent);
     v.widgets.active.bg_stroke = Stroke::new(1.0, theme.accent);
 
-    v.widgets.noninteractive.weak_bg_fill = mix(theme.card, theme.text, if theme.dark { 0.06 } else { 0.04 });
-    v.widgets.inactive.weak_bg_fill = mix(theme.bg, theme.text, if theme.dark { 0.09 } else { 0.055 });
-    v.widgets.hovered.weak_bg_fill = mix(theme.bg, theme.accent, if theme.dark { 0.18 } else { 0.14 });
-    v.widgets.active.weak_bg_fill = mix(theme.bg, theme.accent, if theme.dark { 0.26 } else { 0.2 });
+    v.widgets.noninteractive.weak_bg_fill =
+        mix(theme.card, theme.text, if theme.dark { 0.06 } else { 0.04 });
+    v.widgets.inactive.weak_bg_fill =
+        mix(theme.bg, theme.text, if theme.dark { 0.09 } else { 0.055 });
+    v.widgets.hovered.weak_bg_fill =
+        mix(theme.bg, theme.accent, if theme.dark { 0.18 } else { 0.14 });
+    v.widgets.active.weak_bg_fill =
+        mix(theme.bg, theme.accent, if theme.dark { 0.26 } else { 0.2 });
     v.widgets.inactive.bg_fill = mix(theme.bg, theme.text, if theme.dark { 0.06 } else { 0.04 });
     v.widgets.hovered.bg_fill = mix(theme.bg, theme.text, if theme.dark { 0.12 } else { 0.06 });
     v.widgets.active.bg_fill = mix(theme.bg, theme.text, if theme.dark { 0.16 } else { 0.09 });
@@ -168,9 +172,11 @@ pub fn configure(ctx: &Context, theme: &Theme) {
         v.widgets.noninteractive.weak_bg_fill = base;
         v.widgets.inactive.weak_bg_fill = base;
         v.widgets.inactive.bg_fill = base;
-        v.widgets.hovered.weak_bg_fill = mix(base, theme.accent, if theme.dark { 0.24 } else { 0.14 });
+        v.widgets.hovered.weak_bg_fill =
+            mix(base, theme.accent, if theme.dark { 0.24 } else { 0.14 });
         v.widgets.hovered.bg_fill = mix(base, theme.accent, if theme.dark { 0.24 } else { 0.14 });
-        v.widgets.active.weak_bg_fill = mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
+        v.widgets.active.weak_bg_fill =
+            mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
         v.widgets.active.bg_fill = mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
         v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme.border);
         v.widgets.hovered.bg_stroke = Stroke::new(1.0, mix(theme.border, theme.accent, 0.5));

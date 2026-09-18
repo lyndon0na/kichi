@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align, Frame, Key, Layout, Margin, RichText, Stroke, vec2};
+use eframe::egui::{self, vec2, Align, Frame, Key, Layout, Margin, RichText, Stroke};
 
 use kichi_core::types::{task_file_id, task_id, task_name, task_size};
 
@@ -20,7 +20,12 @@ impl App {
         let mut clear_all: Vec<Vec<String>> = Vec::new();
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(th.bg).inner_margin(Margin { left: 20, right: 20, top: 16, bottom: 12 }))
+            .frame(Frame::new().fill(th.bg).inner_margin(Margin {
+                left: 20,
+                right: 20,
+                top: 16,
+                bottom: 12,
+            }))
             .show(ctx, |ui| {
                 // 标题
                 ui.horizontal(|ui| {
@@ -29,7 +34,11 @@ impl App {
                     ui.label(RichText::new("离线下载").size(19.0).strong().color(th.text));
                 });
                 ui.add_space(4.0);
-                ui.label(RichText::new("将磁力 / 直链先转存到云端, 完成后在「我的文件」中查看。").color(th.text_weak).size(12.5));
+                ui.label(
+                    RichText::new("将磁力 / 直链先转存到云端, 完成后在「我的文件」中查看。")
+                        .color(th.text_weak)
+                        .size(12.5),
+                );
                 ui.add_space(14.0);
 
                 // 新建离线下载卡片
@@ -39,7 +48,12 @@ impl App {
                     .corner_radius(th.cr(14))
                     .inner_margin(Margin::same(16))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("新建离线下载").size(14.0).strong().color(th.text));
+                        ui.label(
+                            RichText::new("新建离线下载")
+                                .size(14.0)
+                                .strong()
+                                .color(th.text),
+                        );
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("链接 / 磁力").color(th.text_weak));
@@ -65,10 +79,12 @@ impl App {
                             if ui
                                 .add_enabled(
                                     enabled,
-                                    egui::Button::new(RichText::new("提交下载").color(th.on_accent))
-                                        .fill(th.accent)
-                                        .stroke(Stroke::NONE)
-                                        .corner_radius(th.cr(8)),
+                                    egui::Button::new(
+                                        RichText::new("提交下载").color(th.on_accent),
+                                    )
+                                    .fill(th.accent)
+                                    .stroke(Stroke::NONE)
+                                    .corner_radius(th.cr(8)),
                                 )
                                 .clicked()
                             {
@@ -107,101 +123,137 @@ impl App {
                             return;
                         }
 
-                // 任务分组列表
-                egui::Frame::new()
-                    .fill(th.card)
-                    .stroke(Stroke::new(1.0, th.border))
-                    .corner_radius(th.cr(14))
-                    .inner_margin(Margin::symmetric(14, 8))
-                    .show(ui, |ui| {
-                        let mut any = false;
-                        for phase in format::PHASE_ORDER {
-                            let Some(tasks) = self.buckets.get(phase) else {
-                                continue;
-                            };
-                            if tasks.is_empty() {
-                                continue;
-                            }
-                            any = true;
-                            let color = match phase {
-                                "PHASE_TYPE_COMPLETE" => th.ok,
-                                "PHASE_TYPE_ERROR" => th.danger,
-                                "PHASE_TYPE_RUNNING" => egui::Color32::from_rgb(96, 146, 235),
-                                _ => th.warn,
-                            };
-                            let header = format!("{} ({})", format::phase_label(phase), tasks.len());
-                            egui::CollapsingHeader::new(RichText::new(header).color(color).strong().size(13.5))
-                                .default_open(phase != "PHASE_TYPE_COMPLETE")
-                                .show(ui, |ui| {
-                                    for t in tasks {
-                                        let name = task_name(t).unwrap_or_else(|| "未知任务".into());
-                                        let id = task_id(t).unwrap_or_default();
-                                        let size = task_size(t).unwrap_or(0);
-                                        let file_id = task_file_id(t).unwrap_or_default();
-                                        ui.horizontal(|ui| {
+                        // 任务分组列表
+                        egui::Frame::new()
+                            .fill(th.card)
+                            .stroke(Stroke::new(1.0, th.border))
+                            .corner_radius(th.cr(14))
+                            .inner_margin(Margin::symmetric(14, 8))
+                            .show(ui, |ui| {
+                                let mut any = false;
+                                for phase in format::PHASE_ORDER {
+                                    let Some(tasks) = self.buckets.get(phase) else {
+                                        continue;
+                                    };
+                                    if tasks.is_empty() {
+                                        continue;
+                                    }
+                                    any = true;
+                                    let color = match phase {
+                                        "PHASE_TYPE_COMPLETE" => th.ok,
+                                        "PHASE_TYPE_ERROR" => th.danger,
+                                        "PHASE_TYPE_RUNNING" => {
+                                            egui::Color32::from_rgb(96, 146, 235)
+                                        }
+                                        _ => th.warn,
+                                    };
+                                    let header =
+                                        format!("{} ({})", format::phase_label(phase), tasks.len());
+                                    egui::CollapsingHeader::new(
+                                        RichText::new(header).color(color).strong().size(13.5),
+                                    )
+                                    .default_open(phase != "PHASE_TYPE_COMPLETE")
+                                    .show(ui, |ui| {
+                                        for t in tasks {
+                                            let name =
+                                                task_name(t).unwrap_or_else(|| "未知任务".into());
+                                            let id = task_id(t).unwrap_or_default();
+                                            let size = task_size(t).unwrap_or(0);
+                                            let file_id = task_file_id(t).unwrap_or_default();
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(2.0);
+                                                ui.label(
+                                                    RichText::new(&name).size(13.5).color(th.text),
+                                                );
+                                                if size > 0 {
+                                                    ui.label(
+                                                        RichText::new(format::fmt_bytes(size))
+                                                            .color(th.text_faint)
+                                                            .size(12.0),
+                                                    );
+                                                }
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        if !file_id.is_empty()
+                                                            && phase == "PHASE_TYPE_COMPLETE"
+                                                            && ui
+                                                                .add(
+                                                                    egui::Button::new(
+                                                                        RichText::new("下载")
+                                                                            .color(th.accent),
+                                                                    )
+                                                                    .fill(th.accent_soft())
+                                                                    .stroke(Stroke::NONE)
+                                                                    .corner_radius(th.cr(7)),
+                                                                )
+                                                                .clicked()
+                                                        {
+                                                            download_target = Some((
+                                                                file_id.clone(),
+                                                                name.clone(),
+                                                            ));
+                                                        }
+                                                        if !id.is_empty()
+                                                            && ui
+                                                                .button(
+                                                                    RichText::new("删除")
+                                                                        .color(th.text_weak),
+                                                                )
+                                                                .clicked()
+                                                        {
+                                                            del = Some(id.clone());
+                                                        }
+                                                        if phase == "PHASE_TYPE_ERROR"
+                                                            && !id.is_empty()
+                                                            && ui
+                                                                .button(
+                                                                    RichText::new("重试")
+                                                                        .color(th.warn),
+                                                                )
+                                                                .clicked()
+                                                        {
+                                                            retry = Some(id.clone());
+                                                        }
+                                                    },
+                                                );
+                                            });
                                             ui.add_space(2.0);
-                                            ui.label(
-                                                RichText::new(&name)
-                                                    .size(13.5)
-                                                    .color(th.text),
-                                            );
-                                            if size > 0 {
-                                                ui.label(RichText::new(format::fmt_bytes(size)).color(th.text_faint).size(12.0));
-                                            }
-                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                                if !file_id.is_empty()
-                                                    && phase == "PHASE_TYPE_COMPLETE"
-                                                    && ui
-                                                        .add(
-                                                            egui::Button::new(RichText::new("下载").color(th.accent))
-                                                                .fill(th.accent_soft())
-                                                                .stroke(Stroke::NONE)
-                                                                .corner_radius(th.cr(7)),
+                                            ui.separator();
+                                        }
+                                        if phase != "PHASE_TYPE_RUNNING" {
+                                            let ids: Vec<String> =
+                                                tasks.iter().filter_map(task_id).collect();
+                                            if !ids.is_empty() {
+                                                ui.add_space(2.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(4.0);
+                                                    if ui
+                                                        .button(
+                                                            RichText::new(
+                                                                "清空本组(仅移除任务记录)",
+                                                            )
+                                                            .color(th.text_faint)
+                                                            .size(12.0),
                                                         )
                                                         .clicked()
-                                                {
-                                                    download_target = Some((file_id.clone(), name.clone()));
-                                                }
-                                                if !id.is_empty()
-                                                    && ui.button(RichText::new("删除").color(th.text_weak)).clicked()
-                                                {
-                                                    del = Some(id.clone());
-                                                }
-                                                if phase == "PHASE_TYPE_ERROR"
-                                                    && !id.is_empty()
-                                                    && ui.button(RichText::new("重试").color(th.warn)).clicked()
-                                                {
-                                                    retry = Some(id.clone());
-                                                }
-                                            });
-                                        });
-                                        ui.add_space(2.0);
-                                        ui.separator();
-                                    }
-                                    if phase != "PHASE_TYPE_RUNNING" {
-                                        let ids: Vec<String> = tasks.iter().filter_map(task_id).collect();
-                                        if !ids.is_empty() {
-                                            ui.add_space(2.0);
-                                            ui.horizontal(|ui| {
-                                                ui.add_space(4.0);
-                                                if ui.button(RichText::new("清空本组(仅移除任务记录)").color(th.text_faint).size(12.0)).clicked() {
-                                                    clear_all.push(ids);
-                                                }
-                                            });
-                                            ui.add_space(2.0);
+                                                    {
+                                                        clear_all.push(ids);
+                                                    }
+                                                });
+                                                ui.add_space(2.0);
+                                            }
                                         }
-                                    }
-                                });
-                        }
-                        if !any && self.buckets.values().all(|v| v.is_empty()) {
-                            ui.centered_and_justified(|ui| {
-                                ui.add_space(30.0);
-                                ui.label(RichText::new("暂无离线任务").color(th.text_weak));
-                                ui.add_space(30.0);
+                                    });
+                                }
+                                if !any && self.buckets.values().all(|v| v.is_empty()) {
+                                    ui.centered_and_justified(|ui| {
+                                        ui.add_space(30.0);
+                                        ui.label(RichText::new("暂无离线任务").color(th.text_weak));
+                                        ui.add_space(30.0);
+                                    });
+                                }
                             });
-                        }
-                    });
-
                     });
 
                 // 刷新按钮 (固定在滚动区下方, 始终可见可点)
@@ -213,7 +265,15 @@ impl App {
                     let ico_clicked = !refreshing && ico.clicked();
                     let btn = ui.add_enabled(
                         !refreshing,
-                        egui::Button::new(RichText::new(if refreshing { "正在刷新…" } else { "刷新任务" }).color(th.text_weak)).frame(false),
+                        egui::Button::new(
+                            RichText::new(if refreshing {
+                                "正在刷新…"
+                            } else {
+                                "刷新任务"
+                            })
+                            .color(th.text_weak),
+                        )
+                        .frame(false),
                     );
                     if btn.clicked() || ico_clicked {
                         do_refresh = true;

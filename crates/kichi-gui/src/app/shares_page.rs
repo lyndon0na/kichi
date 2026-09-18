@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use eframe::egui::{self, Align, Frame, Layout, Margin, RichText, Stroke, vec2};
+use eframe::egui::{self, vec2, Align, Frame, Layout, Margin, RichText, Stroke};
 
 use crate::format;
 use crate::icons::{self, Glyph};

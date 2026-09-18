@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use eframe::egui::{
-    self, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke, vec2,
+    self, vec2, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke,
 };
 
 use kichi_core::types::File;
@@ -25,7 +25,13 @@ enum TrashAction {
 }
 
 /// 回收站列表行(复选框 + 类型图标 + 名称/信息 + 还原/彻底删除按钮)。
-fn trash_row(ui: &mut egui::Ui, th: &Theme, f: &File, is_sel: bool, actions: &mut Vec<TrashAction>) {
+fn trash_row(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    f: &File,
+    is_sel: bool,
+    actions: &mut Vec<TrashAction>,
+) {
     let row_h = 52.0;
     let w = ui.available_width().max(320.0);
     let (rect, row_resp) = ui.allocate_exact_size(vec2(w, row_h), egui::Sense::click());
@@ -51,7 +57,11 @@ fn trash_row(ui: &mut egui::Ui, th: &Theme, f: &File, is_sel: bool, actions: &mu
     painter.rect_filled(
         cb_rect,
         th.cr(3),
-        if is_sel { th.accent } else { egui::Color32::TRANSPARENT },
+        if is_sel {
+            th.accent
+        } else {
+            egui::Color32::TRANSPARENT
+        },
     );
     painter.rect_stroke(
         cb_rect,
@@ -94,7 +104,8 @@ fn trash_row(ui: &mut egui::Ui, th: &Theme, f: &File, is_sel: bool, actions: &mu
     // 右侧: 彻底删除(描边) + 还原(实底)
     let btn_h = 26.0;
     let del_label = "彻底删除";
-    let del_g = painter.layout_no_wrap(del_label.to_string(), FontId::proportional(12.5), th.danger);
+    let del_g =
+        painter.layout_no_wrap(del_label.to_string(), FontId::proportional(12.5), th.danger);
     let del_w = del_g.size().x + 24.0;
     let del_rect = Rect::from_min_size(
         Pos2::new(rect.max.x - del_w - 10.0, rect.center().y - btn_h / 2.0),
@@ -133,7 +144,11 @@ fn trash_row(ui: &mut egui::Ui, th: &Theme, f: &File, is_sel: bool, actions: &mu
     }
 
     let res_label = "还原";
-    let res_g = painter.layout_no_wrap(res_label.to_string(), FontId::proportional(12.5), th.on_accent);
+    let res_g = painter.layout_no_wrap(
+        res_label.to_string(),
+        FontId::proportional(12.5),
+        th.on_accent,
+    );
     let res_w = res_g.size().x + 28.0;
     let res_rect = Rect::from_min_size(
         Pos2::new(del_rect.min.x - res_w - 8.0, rect.center().y - btn_h / 2.0),
@@ -165,7 +180,13 @@ fn trash_row(ui: &mut egui::Ui, th: &Theme, f: &File, is_sel: bool, actions: &mu
     // 名称 + 元信息(图标与按钮之间)
     let text_x = rect.min.x + 66.0;
     let text_w = (res_rect.min.x - 14.0 - text_x).max(50.0);
-    let name_g = truncate_text(&painter, &f.name, text_w, FontId::proportional(14.0), th.text);
+    let name_g = truncate_text(
+        &painter,
+        &f.name,
+        text_w,
+        FontId::proportional(14.0),
+        th.text,
+    );
     painter.galley(
         Pos2::new(text_x, rect.center().y - name_g.size().y / 2.0 - 8.0),
         name_g,
@@ -185,7 +206,13 @@ fn trash_row(ui: &mut egui::Ui, th: &Theme, f: &File, is_sel: bool, actions: &mu
     if let Some(t) = t {
         meta.push_str(&format!(" · {}", format::fmt_time(t)));
     }
-    let meta_g = truncate_text(&painter, &meta, text_w, FontId::proportional(11.5), th.text_weak);
+    let meta_g = truncate_text(
+        &painter,
+        &meta,
+        text_w,
+        FontId::proportional(11.5),
+        th.text_weak,
+    );
     painter.galley(
         Pos2::new(text_x, rect.center().y + 4.0),
         meta_g,
@@ -238,12 +265,10 @@ impl App {
                         if !trash.is_empty()
                             && ui
                                 .add(
-                                    egui::Button::new(
-                                        RichText::new("清空回收站").color(th.danger),
-                                    )
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
-                                    .corner_radius(th.cr(8)),
+                                    egui::Button::new(RichText::new("清空回收站").color(th.danger))
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                        .corner_radius(th.cr(8)),
                                 )
                                 .clicked()
                         {
@@ -257,8 +282,12 @@ impl App {
                         let btn = ui.add_enabled(
                             !refreshing,
                             egui::Button::new(
-                                RichText::new(if refreshing { "正在刷新…" } else { "刷新" })
-                                    .color(th.text_weak),
+                                RichText::new(if refreshing {
+                                    "正在刷新…"
+                                } else {
+                                    "刷新"
+                                })
+                                .color(th.text_weak),
                             )
                             .frame(false),
                         );

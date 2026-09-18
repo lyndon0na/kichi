@@ -20,12 +20,17 @@ use kichi_core::types::{File, FileList, Quota, Share, Task};
 
 use crate::kde;
 use crate::msg::{Cmd, Msg};
-use crate::settings::{self, DownloadRecord, DownloadRecordStatus, UploadRecord, UploadRecordStatus};
+use crate::settings::{
+    self, DownloadRecord, DownloadRecordStatus, UploadRecord, UploadRecordStatus,
+};
 use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
-use self::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady, ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode};
+use self::types::{
+    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, Page, QualityReady,
+    ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+};
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
@@ -445,7 +450,8 @@ impl App {
         if !font_loaded && app.toast.is_none() {
             app.toast = Some((
                 Color32::from_rgb(200, 160, 60),
-                "未找到中文字体，中文可能显示为方块。请安装 wqy-zenhei 或 google-droid-sans-fonts".into(),
+                "未找到中文字体，中文可能显示为方块。请安装 wqy-zenhei 或 google-droid-sans-fonts"
+                    .into(),
                 Instant::now(),
             ));
         }
@@ -654,7 +660,11 @@ impl App {
                 }
                 Msg::OfflineRetried => self.send(Cmd::RefreshTasks),
                 Msg::OfflineDeleted => self.send(Cmd::RefreshTasks),
-                Msg::Folders { parent, req_id, files } => {
+                Msg::Folders {
+                    parent,
+                    req_id,
+                    files,
+                } => {
                     // 路由到对应的目录选择器
                     if self.save_share_picker_open && req_id == self.save_share_picker_req {
                         if parent != self.save_share_picker_parent() {
@@ -967,7 +977,11 @@ impl App {
                         self.refresh_shares();
                     }
                 }
-                Msg::Shares { req_id, append, list } => {
+                Msg::Shares {
+                    req_id,
+                    append,
+                    list,
+                } => {
                     if req_id != self.shares_req {
                         continue;
                     }
@@ -1121,7 +1135,9 @@ impl App {
         self.kde_checked = Instant::now();
         let fresh = kde::load();
         let changed = match (&self.kde_colors, &fresh) {
-            (Some(a), Some(b)) => a.accent != b.accent || a.dark != b.dark || a.view_bg != b.view_bg,
+            (Some(a), Some(b)) => {
+                a.accent != b.accent || a.dark != b.dark || a.view_bg != b.view_bg
+            }
             (None, Some(_)) | (Some(_), None) => true,
             (None, None) => false,
         };
@@ -1180,7 +1196,9 @@ impl App {
 
     /// 转存分享目录选择器当前所在目录。
     pub(crate) fn save_share_picker_parent(&self) -> Option<String> {
-        self.save_share_picker_stack.last().and_then(|c| c.id.clone())
+        self.save_share_picker_stack
+            .last()
+            .and_then(|c| c.id.clone())
     }
 
     /// 打开转存分享「保存到」网盘目录选择器, 从根目录开始。
@@ -1259,10 +1277,13 @@ impl App {
     pub(crate) fn show_dir(&mut self) {
         self.selected.clear();
         let parent = self.current_parent();
-        let cached = self
-            .dir_cache
-            .get(&parent)
-            .map(|e| (e.files.clone(), e.next_token.clone(), e.fetched_at.elapsed()));
+        let cached = self.dir_cache.get(&parent).map(|e| {
+            (
+                e.files.clone(),
+                e.next_token.clone(),
+                e.fetched_at.elapsed(),
+            )
+        });
         match cached {
             Some((files, next, age)) => {
                 self.files = files;
@@ -1353,9 +1374,8 @@ impl App {
                 HashSet::new()
             };
             let listing_parent = parent.clone();
-            self.hidden.retain(|id, hp| {
-                *hp != listing_parent || present.contains(id)
-            });
+            self.hidden
+                .retain(|id, hp| *hp != listing_parent || present.contains(id));
         }
 
         self.evict_dir_cache();
@@ -1479,7 +1499,10 @@ impl App {
             return;
         }
         match clip.kind {
-            ClipKind::Copy => self.send(Cmd::CopyTo { ids: clip.ids, dest }),
+            ClipKind::Copy => self.send(Cmd::CopyTo {
+                ids: clip.ids,
+                dest,
+            }),
             ClipKind::Cut => {
                 self.send(Cmd::MoveTo {
                     ids: clip.ids,
@@ -1603,7 +1626,11 @@ impl App {
     }
 
     /// 逐个提交下载任务(共享同一个已选目录)。
-    pub(crate) fn enqueue_downloads(&mut self, items: Vec<(String, String)>, dir: std::path::PathBuf) {
+    pub(crate) fn enqueue_downloads(
+        &mut self,
+        items: Vec<(String, String)>,
+        dir: std::path::PathBuf,
+    ) {
         if items.is_empty() {
             return;
         }
@@ -1623,16 +1650,15 @@ impl App {
 
     /// 下载单个文件。若已有默认下载目录则直接下载, 否则弹目录选择框。
     pub(crate) fn download_single(&mut self, id: String, name: String) {
-        let dir = if !self.download_dir.is_empty()
-            && std::path::Path::new(&self.download_dir).is_dir()
-        {
-            std::path::PathBuf::from(&self.download_dir)
-        } else {
-            let Some(d) = self.choose_download_dir() else {
-                return;
+        let dir =
+            if !self.download_dir.is_empty() && std::path::Path::new(&self.download_dir).is_dir() {
+                std::path::PathBuf::from(&self.download_dir)
+            } else {
+                let Some(d) = self.choose_download_dir() else {
+                    return;
+                };
+                d
             };
-            d
-        };
         self.enqueue_downloads(vec![(id, name)], dir);
     }
 
