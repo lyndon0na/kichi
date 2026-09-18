@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use eframe::egui::{
     self, vec2, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke,
 };
@@ -12,22 +14,96 @@ use super::helpers::{
     card_shell, icon_action, open_dir, open_path, paint_checkbox, truncate_text, CheckState,
 };
 use super::types::{
-    Crumb, DlFilter, DlJob, DlOp, DlSel, DlStatus, Page, TransferTab, UlFilter, UlJob, UlOp,
-    UlStatus,
+    Crumb, DlFilter, DlJob, DlNode, DlOp, DlRow, DlSel, DlStatus, Page, TransferTab, UlFilter,
+    UlJob, UlOp, UlStatus,
 };
 use super::App;
 
-/// 下载卡片固定高度(虚拟滚动要求逐行等高)。
+/// 顶层任务卡片高度, 以及其后的间距。
 const DL_CARD_H: f32 = 72.0;
+const DL_CARD_GAP: f32 = 8.0;
+/// 目录树子行(紧凑单行)的高度与间距: 子目录略矮、子文件稍高。
+const NODE_DIR_H: f32 = 30.0;
+const NODE_FILE_H: f32 = 38.0;
+const NODE_GAP: f32 = 2.0;
+/// 展开目录卡片底部的留白。
+const TREE_PAD: f32 = 8.0;
+/// 单个展开目录最多渲染的子行数与截断提示行高(超出部分只提示)。
+const TREE_CHILD_CAP: usize = 1000;
+const TREE_HINT_H: f32 = 26.0;
 
-/// 下载行状态文案。
+/// 左侧复选框列的宽度, 卡片内容统一从这里起排。
+const CB_W: f32 = 26.0;
+/// 右侧图标按钮组预留宽度(保证各卡片列对齐)。
+const BTN_W: f32 = 92.0;
+/// 子项的基准缩进(相对复选框列)与每层递增量。
+const NODE_BASE: f32 = 22.0;
+const NODE_STEP: f32 = 18.0;
+
+/// 某个层级节点的名称左边界(相对行矩形)。父级目录标题在 CB_W+18 处,
+/// 因此 depth=1 的子项会比父标题再右移一档, 层级才看得出区别。
+fn node_left(inner_min_x: f32, depth: u32) -> f32 {
+    inner_min_x + CB_W + NODE_BASE + depth as f32 * NODE_STEP
+}
+
+/// 画层级竖线: 每个祖先层级一条, 形成目录树的分组导轨。`extend` 用于跨行间距相接。
+fn paint_rails(
+    painter: &egui::Painter,
+    th: &Theme,
+    rect: Rect,
+    inner_min_x: f32,
+    depth: u32,
+    extend: f32,
+) {
+    let col = mix(th.text_faint, th.bg, 0.45);
+    for k in 1..depth {
+        let x = node_left(inner_min_x, k) - 30.0;
+        painter.line_segment(
+            [
+                Pos2::new(x, rect.min.y + 2.0),
+                Pos2::new(x, rect.max.y + extend),
+            ],
+            Stroke::new(1.0, col),
+        );
+    }
+}
+
+/// 下载行状态文案(目录任务的「文件 k/N」由卡片自行追加)。
 fn status_line(job: &DlJob) -> (egui::Color32, String) {
+    if job.is_folder() {
+        return match &job.status {
+            DlStatus::Queued => (egui::Color32::from_gray(150), "扫描目录中…".into()),
+            DlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "下载中".into()),
+            DlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
+            DlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
+        };
+    }
     match &job.status {
         DlStatus::Queued => (egui::Color32::from_gray(150), "排队中".into()),
         DlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "下载中".into()),
         DlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
         DlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
     }
+}
+
+/// 画目录行的展开/收起三角(展开朝下, 收起朝右)。
+fn paint_disclosure(painter: &egui::Painter, rect: Rect, expanded: bool, color: egui::Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.45;
+    let pts = if expanded {
+        vec![
+            Pos2::new(c.x - r, c.y - r * 0.5),
+            Pos2::new(c.x + r, c.y - r * 0.5),
+            Pos2::new(c.x, c.y + r * 0.7),
+        ]
+    } else {
+        vec![
+            Pos2::new(c.x - r * 0.5, c.y - r),
+            Pos2::new(c.x + r * 0.7, c.y),
+            Pos2::new(c.x - r * 0.5, c.y + r),
+        ]
+    };
+    painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
 }
 
 /// 上传行状态文案。
@@ -40,7 +116,8 @@ fn upload_status_line(job: &UlJob) -> (egui::Color32, String) {
     }
 }
 
-/// 渲染单个下载任务卡片, 返回操作和选择请求。
+/// 渲染单个顶层下载任务卡片, 返回操作和选择请求。
+/// `shell=false` 时不自绘卡片底(用于展开目录: 底由整块面板统一绘制)。
 #[allow(clippy::too_many_arguments)]
 fn dl_card(
     ui: &mut egui::Ui,
@@ -51,6 +128,7 @@ fn dl_card(
     ctrl: bool,
     shift: bool,
     now: u64,
+    shell: bool,
 ) -> (Option<DlOp>, Option<DlSel>) {
     let mut op: Option<DlOp> = None;
     let mut sel: Option<DlSel> = None;
@@ -59,10 +137,13 @@ fn dl_card(
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
     let painter = ui.painter().clone();
 
-    // 背景 / 选中态
-    card_shell(&painter, th, rect, resp.hovered(), is_sel);
-
     let inner = rect.shrink2(vec2(12.0, 10.0));
+    let is_folder = job.is_folder();
+
+    // 背景 / 选中态
+    if shell {
+        card_shell(&painter, th, rect, resp.hovered(), is_sel);
+    }
 
     // 复选框
     let cb_rect = Rect::from_center_size(
@@ -90,11 +171,33 @@ fn dl_card(
     );
     let cb_clicked = cb_resp.clicked();
 
-    // 布局: [复选框] [名称/状态/目录] [进度] [按钮]
-    const CB_W: f32 = 26.0;
-    // 预留最宽按钮组(3 个图标)的宽度, 保证各卡片列对齐。
-    const BTN_W: f32 = 92.0;
-    let content_x = inner.min.x + CB_W;
+    // 布局: [复选框] [展开箭头] [名称/状态/目录] [进度] [按钮]
+    let mut content_x = inner.min.x + CB_W;
+    // 目录行: 展开/收起箭头
+    if is_folder {
+        let ch_rect = Rect::from_center_size(
+            Pos2::new(content_x + 7.0, inner.center().y),
+            vec2(16.0, 16.0),
+        );
+        let ch_resp = ui.interact(
+            ch_rect,
+            ui.id().with(("dl_expand", rid)),
+            egui::Sense::click(),
+        );
+        if ch_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let ch_col = if ch_resp.hovered() {
+            th.text
+        } else {
+            th.text_weak
+        };
+        paint_disclosure(&painter, ch_rect.shrink(4.0), job.expanded, ch_col);
+        if ch_resp.clicked() {
+            op = Some(DlOp::Expand);
+        }
+        content_x += 18.0;
+    }
     let right_start = inner.max.x - BTN_W;
     let left_w = ((right_start - content_x - 16.0) * 0.46).max(120.0);
 
@@ -107,6 +210,10 @@ fn dl_card(
     );
     painter.galley(Pos2::new(content_x, inner.min.y + 1.0), name_g, th.text);
     let (col, mut txt) = status_line(job);
+    // 目录任务: 追加「文件 已完成/全部」。
+    if is_folder && job.files_total > 0 {
+        txt = format!("{txt} · 文件 {}/{}", job.files_done, job.files_total);
+    }
     if let Some(at) = job.at {
         let rel = format::fmt_rel(now, at);
         if !rel.is_empty() {
@@ -203,7 +310,10 @@ fn dl_card(
     match &job.status {
         DlStatus::Queued | DlStatus::Running => btns.push((Glyph::Close, "取消下载", DlOp::Cancel)),
         DlStatus::Done => {
-            btns.push((Glyph::OpenExternal, "打开文件", DlOp::OpenFile));
+            // 目录没有单一文件可打开, 仅提供「打开所在目录」。
+            if !is_folder {
+                btns.push((Glyph::OpenExternal, "打开文件", DlOp::OpenFile));
+            }
             btns.push((Glyph::Folder, "打开所在目录", DlOp::OpenDir));
             btns.push((Glyph::Trash, "从列表移除", DlOp::Remove));
         }
@@ -252,6 +362,187 @@ fn dl_card(
     }
 
     (op, sel)
+}
+
+/// 渲染目录任务下的一个子目录行(紧凑单行: 缩进 + 箭头 + 文件夹图标 + 子树文件计数),
+/// 返回是否点击了展开箭头。`h` 为该行高度。
+fn dl_dir_node(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    node: &DlNode,
+    folder: u64,
+    idx: usize,
+    h: f32,
+) -> bool {
+    let w = ui.available_width().max(320.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    let painter = ui.painter().clone();
+    let inner = rect.shrink2(vec2(12.0, 0.0));
+    paint_rails(&painter, th, rect, inner.min.x, node.depth, NODE_GAP);
+
+    // 子目录行用略深的底色作为分组标题。
+    let base = mix(th.card, th.text_faint, 0.12);
+    let bg = if resp.hovered() {
+        mix(base, th.text, if th.dark { 0.05 } else { 0.03 })
+    } else {
+        base
+    };
+    let bar = Rect::from_min_max(
+        Pos2::new(inner.min.x, rect.min.y),
+        Pos2::new(inner.max.x, rect.max.y),
+    );
+    painter.rect_filled(bar, th.cr(6), bg);
+
+    // 名称对齐到该层级的缩进位; 箭头与图标放在名称左侧的缩进区。
+    let left = node_left(inner.min.x, node.depth);
+    let ch_rect =
+        Rect::from_center_size(Pos2::new(left - 32.0, inner.center().y), vec2(16.0, 16.0));
+    let ch_resp = ui.interact(
+        ch_rect,
+        ui.id().with(("dl_dir_expand", folder, idx)),
+        egui::Sense::click(),
+    );
+    if ch_resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let ch_col = if ch_resp.hovered() {
+        th.text
+    } else {
+        th.text_weak
+    };
+    paint_disclosure(&painter, ch_rect.shrink(4.0), node.expanded, ch_col);
+
+    let icon_rect =
+        Rect::from_center_size(Pos2::new(left - 15.0, inner.center().y), vec2(14.0, 14.0));
+    icons::paint(&painter, icon_rect, Glyph::Folder, th.text_weak);
+
+    let right_start = inner.max.x - 10.0;
+    let left_w = ((right_start - left - 16.0) * 0.55).max(100.0);
+    let name_g = truncate_text(
+        &painter,
+        &node.name,
+        left_w,
+        FontId::proportional(12.5),
+        th.text,
+    );
+    painter.galley(
+        Pos2::new(left, inner.center().y - name_g.size().y / 2.0),
+        name_g,
+        th.text,
+    );
+
+    let info = if node.files_total == 0 {
+        "空".to_string()
+    } else {
+        format!("{} / {} 个文件", node.files_done, node.files_total)
+    };
+    painter.text(
+        Pos2::new(right_start, inner.center().y),
+        egui::Align2::RIGHT_CENTER,
+        info,
+        FontId::proportional(11.0),
+        th.text_faint,
+    );
+
+    // 点击整行也可切换展开。
+    ch_resp.clicked() || resp.clicked()
+}
+
+/// 渲染目录任务下的一个文件行(紧凑单行: 名称 + 状态 + 大小), 只读。
+fn dl_file_node(ui: &mut egui::Ui, th: &Theme, node: &DlNode, job: &DlJob, h: f32) {
+    let w = ui.available_width().max(320.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    let painter = ui.painter().clone();
+    let inner = rect.shrink2(vec2(12.0, 0.0));
+    paint_rails(&painter, th, rect, inner.min.x, node.depth, NODE_GAP);
+    if resp.hovered() {
+        let hover = mix(th.card, th.text, if th.dark { 0.05 } else { 0.03 });
+        painter.rect_filled(rect.shrink2(vec2(8.0, 0.0)), th.cr(6), hover);
+    }
+
+    let left = node_left(inner.min.x, node.depth);
+    let right_start = inner.max.x - 10.0;
+    let left_w = (right_start - left - 150.0).max(100.0);
+    let name_g = truncate_text(
+        &painter,
+        &job.name,
+        left_w,
+        FontId::proportional(12.5),
+        th.text,
+    );
+    painter.galley(
+        Pos2::new(left, inner.center().y - name_g.size().y / 2.0),
+        name_g,
+        th.text,
+    );
+
+    let (col, txt) = file_node_status(job);
+    painter.text(
+        Pos2::new(right_start, inner.center().y),
+        egui::Align2::RIGHT_CENTER,
+        txt,
+        FontId::proportional(11.0),
+        col,
+    );
+}
+
+/// 子文件行的右侧文案与颜色: 状态 + 大小/速率。
+fn file_node_status(job: &DlJob) -> (egui::Color32, String) {
+    let green = egui::Color32::from_rgb(70, 150, 90);
+    let blue = egui::Color32::from_rgb(60, 130, 200);
+    let gray = egui::Color32::from_gray(150);
+    let red = egui::Color32::from_rgb(217, 70, 60);
+    match &job.status {
+        DlStatus::Done => (
+            green,
+            format!("已完成 · {}", format::fmt_bytes(job.done as i64)),
+        ),
+        DlStatus::Running => {
+            let mut s = String::from("下载中");
+            if job.total > 0 {
+                let pct = (job.done as f32 / job.total as f32 * 100.0).round() as u32;
+                s.push_str(&format!(" · {pct}%"));
+            } else if job.done > 0 {
+                s.push_str(&format!(" · {}", format::fmt_bytes(job.done as i64)));
+            }
+            if job.speed > 0 {
+                s.push_str(&format!(" · {}/s", format::fmt_bytes(job.speed as i64)));
+            }
+            (blue, s)
+        }
+        DlStatus::Queued => (gray, "排队中".to_string()),
+        DlStatus::Failed(_) => (red, "失败".to_string()),
+    }
+}
+
+impl App {
+    /// 目录树节点的行高。
+    fn node_h(&self, folder: &u64, idx: usize) -> f32 {
+        let is_dir = self
+            .jobs
+            .get(folder)
+            .and_then(|j| j.nodes.get(idx))
+            .map(|n| n.is_dir)
+            .unwrap_or(false);
+        if is_dir {
+            NODE_DIR_H
+        } else {
+            NODE_FILE_H
+        }
+    }
+
+    /// 展开目录整块面板的高度(标题行 + 子行 + 可能的截断提示 + 底部留白)。
+    fn tree_block_height(&self, folder: &u64, nodes: &[usize]) -> f32 {
+        let shown = nodes.len().min(TREE_CHILD_CAP);
+        let mut h = DL_CARD_H + TREE_PAD;
+        for idx in &nodes[..shown] {
+            h += self.node_h(folder, *idx) + NODE_GAP;
+        }
+        if nodes.len() > shown {
+            h += TREE_HINT_H;
+        }
+        h
+    }
 }
 
 /// 渲染单个上传任务卡片, 返回操作和选择请求。
@@ -521,20 +812,64 @@ impl App {
         }
     }
 
-    /// 从列表移除一个下载任务(运行中的取消; 其余删除行与历史记录)。
+    /// 从列表移除一个下载任务(运行中的普通文件先取消; 目录任务连同子文件一起移除)。
     fn remove_download_job(&mut self, rid: u64) {
-        let running = self
-            .jobs
-            .get(&rid)
-            .map(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
-            .unwrap_or(false);
+        let Some((is_folder, kids, rec, running, parent)) = self.jobs.get(&rid).map(|j| {
+            (
+                j.is_folder(),
+                j.file_rids().collect::<Vec<_>>(),
+                (
+                    j.record_id.clone(),
+                    j.file_id.clone(),
+                    j.name.clone(),
+                    j.dir.clone(),
+                ),
+                matches!(j.status, DlStatus::Queued | DlStatus::Running),
+                j.parent,
+            )
+        }) else {
+            return;
+        };
+        if is_folder {
+            // 目录: 停止运行中的子任务并连同子行一起移除, 同时删除目录历史记录。
+            for cid in kids {
+                let c_running = self
+                    .jobs
+                    .get(&cid)
+                    .map(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
+                    .unwrap_or(false);
+                if c_running {
+                    self.send(Cmd::CancelDownload { req_id: cid });
+                }
+                self.jobs.remove(&cid);
+                self.selected_dl.remove(&cid);
+            }
+            settings::remove_download_record(&rec.0, &rec.1, &rec.2, &rec.3);
+            self.jobs.remove(&rid);
+            self.selected_dl.remove(&rid);
+            if self.last_clicked_dl == Some(rid) {
+                self.last_clicked_dl = None;
+            }
+            return;
+        }
+        if let Some(p) = parent {
+            // 子文件行(兜底路径): 从父目录的目录树中摘除后刷新聚合。
+            if let Some(pj) = self.jobs.get_mut(&p) {
+                pj.nodes.retain(|n| n.rid != Some(rid));
+            }
+            self.jobs.remove(&rid);
+            self.selected_dl.remove(&rid);
+            if self.last_clicked_dl == Some(rid) {
+                self.last_clicked_dl = None;
+            }
+            self.recompute_folder(p);
+            return;
+        }
         if running {
             self.send(Cmd::CancelDownload { req_id: rid });
             return;
         }
-        if let Some(job) = self.jobs.get(&rid) {
-            settings::remove_download_record(&job.record_id, &job.file_id, &job.name, &job.dir);
-        }
+        settings::remove_download_record(&rec.0, &rec.1, &rec.2, &rec.3);
         self.jobs.remove(&rid);
         self.selected_dl.remove(&rid);
         if self.last_clicked_dl == Some(rid) {
@@ -1143,20 +1478,15 @@ impl App {
                 let mut dl_ids: Vec<u64> = Vec::new();
                 if !self.jobs.is_empty() {
                     ui.horizontal(|ui| {
-                        let total = self.jobs.len();
-                        let active = self
-                            .jobs
-                            .values()
+                        // 仅统计顶层任务(目录已聚合其子文件, 避免重复计数)。
+                        let top = self.jobs.values().filter(|j| j.parent.is_none());
+                        let total = top.clone().count();
+                        let active = top
+                            .clone()
                             .filter(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
                             .count();
-                        let done_c = self
-                            .jobs
-                            .values()
-                            .filter(|j| j.status == DlStatus::Done)
-                            .count();
-                        let failed = self
-                            .jobs
-                            .values()
+                        let done_c = top.clone().filter(|j| j.status == DlStatus::Done).count();
+                        let failed = top
                             .filter(|j| matches!(j.status, DlStatus::Failed(_)))
                             .count();
 
@@ -1232,8 +1562,11 @@ impl App {
                                 );
                             }
                             ui.add_space(12.0);
-                            let (sum_done, sum_total, speed) =
-                                self.jobs.values().fold((0u64, 0u64, 0u64), |(d, t, s), j| {
+                            let (sum_done, sum_total, speed) = self
+                                .jobs
+                                .values()
+                                .filter(|j| j.parent.is_none())
+                                .fold((0u64, 0u64, 0u64), |(d, t, s), j| {
                                     let sp = if matches!(j.status, DlStatus::Running) {
                                         j.speed
                                     } else {
@@ -1297,24 +1630,104 @@ impl App {
                 let shift = ui.input(|i| i.modifiers.shift);
                 let now = format::now_unix();
 
+                // 顺序布局: 由 egui 负责滚动范围与排版(不再手写虚拟滚动, 避免坐标/裁剪问题)。
+                // 展开目录把子树包在同一块面板里; 单个目录最多渲染 TREE_CHILD_CAP 个子行。
+                let dl_rows = self.dl_rows();
                 let scroll_h = ui.available_height();
                 egui::ScrollArea::vertical()
                     .id_salt("downloads_scroll")
                     .auto_shrink([false, false])
                     .max_height(scroll_h.max(60.0))
-                    .show_rows(ui, DL_CARD_H, dl_ids.len(), |ui, range| {
-                        for i in range {
-                            let rid = dl_ids[i];
-                            let Some(job) = self.jobs.get(&rid) else {
-                                continue;
-                            };
-                            let is_sel = self.selected_dl.contains(&rid);
-                            let (op, sel) = dl_card(ui, th, rid, job, is_sel, ctrl, shift, now);
-                            if let Some(op) = op {
-                                ops.push((rid, op));
-                            }
-                            if let Some(sel) = sel {
-                                sel_reqs.push(sel);
+                    .show(ui, |ui| {
+                        // 行间距完全由下面的显式 gap 控制。
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let width = ui.available_width().max(320.0);
+                        for row in &dl_rows {
+                            match row {
+                                DlRow::Job(id) => {
+                                    if let Some(job) = self.jobs.get(id) {
+                                        let is_sel = self.selected_dl.contains(id);
+                                        let (op, sel) = dl_card(
+                                            ui, th, *id, job, is_sel, ctrl, shift, now, true,
+                                        );
+                                        if let Some(op) = op {
+                                            ops.push((*id, op));
+                                        }
+                                        if let Some(sel) = sel {
+                                            sel_reqs.push(sel);
+                                        }
+                                    }
+                                    ui.add_space(DL_CARD_GAP);
+                                }
+                                DlRow::Tree(folder, nodes) => {
+                                    let Some(job) = self.jobs.get(folder) else {
+                                        continue;
+                                    };
+                                    let shown = nodes.len().min(TREE_CHILD_CAP);
+                                    let truncated = nodes.len() > shown;
+                                    // 面板高度已知, 先在当前光标处铺底, 再顺序画内容。
+                                    let block_h = self.tree_block_height(folder, nodes);
+                                    let top = ui.cursor().min;
+                                    let block = Rect::from_min_size(
+                                        Pos2::new(top.x, top.y),
+                                        vec2(width, block_h),
+                                    );
+                                    let header =
+                                        Rect::from_min_size(block.min, vec2(width, DL_CARD_H));
+                                    let hovered = ui.rect_contains_pointer(header);
+                                    card_shell(
+                                        ui.painter(),
+                                        th,
+                                        block,
+                                        hovered,
+                                        self.selected_dl.contains(folder),
+                                    );
+                                    let is_sel = self.selected_dl.contains(folder);
+                                    let (op, sel) = dl_card(
+                                        ui, th, *folder, job, is_sel, ctrl, shift, now, false,
+                                    );
+                                    if let Some(op) = op {
+                                        ops.push((*folder, op));
+                                    }
+                                    if let Some(sel) = sel {
+                                        sel_reqs.push(sel);
+                                    }
+                                    for idx in &nodes[..shown] {
+                                        let idx = *idx;
+                                        let h = self.node_h(folder, idx);
+                                        let Some(node) =
+                                            self.jobs.get(folder).and_then(|j| j.nodes.get(idx))
+                                        else {
+                                            ui.add_space(h + NODE_GAP);
+                                            continue;
+                                        };
+                                        if node.is_dir {
+                                            if dl_dir_node(ui, th, node, *folder, idx, h) {
+                                                ops.push((*folder, DlOp::ToggleDir(idx)));
+                                            }
+                                        } else if let Some(cid) = node.rid {
+                                            if let Some(cjob) = self.jobs.get(&cid) {
+                                                dl_file_node(ui, th, node, cjob, h);
+                                            }
+                                        }
+                                        ui.add_space(NODE_GAP);
+                                    }
+                                    if truncated {
+                                        let (r, _) = ui.allocate_exact_size(
+                                            vec2(width, TREE_HINT_H),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().text(
+                                            Pos2::new(r.min.x + CB_W + NODE_BASE, r.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            format!("… 仅显示前 {shown} 项(共 {} 项)", nodes.len()),
+                                            FontId::proportional(11.0),
+                                            th.text_faint,
+                                        );
+                                    }
+                                    ui.add_space(TREE_PAD);
+                                    ui.add_space(DL_CARD_GAP);
+                                }
                             }
                         }
                     });
@@ -1366,7 +1779,7 @@ impl App {
             let done_ids: Vec<u64> = self
                 .jobs
                 .iter()
-                .filter(|(_, j)| j.status == DlStatus::Done)
+                .filter(|(_, j)| j.parent.is_none() && j.status == DlStatus::Done)
                 .map(|(id, _)| *id)
                 .collect();
             for rid in done_ids {
@@ -1374,8 +1787,28 @@ impl App {
             }
         }
         for (rid, op) in ops {
+            let is_folder = self.jobs.get(&rid).map(|j| j.is_folder()).unwrap_or(false);
             match op {
-                DlOp::Cancel => self.send(Cmd::CancelDownload { req_id: rid }),
+                DlOp::Expand => {
+                    if let Some(j) = self.jobs.get_mut(&rid) {
+                        j.expanded = !j.expanded;
+                    }
+                }
+                DlOp::ToggleDir(idx) => {
+                    if let Some(j) = self.jobs.get_mut(&rid) {
+                        if let Some(n) = j.nodes.get_mut(idx) {
+                            n.expanded = !n.expanded;
+                        }
+                    }
+                }
+                DlOp::Cancel => {
+                    if is_folder {
+                        // 目录: 通知子任务停止并连同目录一起移除(不记历史)。
+                        self.remove_download_job(rid);
+                    } else {
+                        self.send(Cmd::CancelDownload { req_id: rid });
+                    }
+                }
                 DlOp::OpenDir => {
                     if let Some(job) = self.jobs.get(&rid) {
                         open_dir(&job.dir);
@@ -1391,46 +1824,118 @@ impl App {
                     }
                 }
                 DlOp::Retry => {
-                    // 取出旧条目信息后移除旧行, 再重新入队, 避免同一文件被重复重试。
-                    let info = self.jobs.get(&rid).and_then(|j| {
-                        if j.file_id.is_empty() {
-                            None
-                        } else {
-                            Some((
-                                j.file_id.clone(),
-                                j.name.clone(),
-                                j.dir.clone(),
-                                j.record_id.clone(),
-                            ))
+                    if is_folder {
+                        self.retry_folder(rid);
+                    } else {
+                        // 取出旧条目信息后移除旧行, 再重新入队, 避免同一文件被重复重试。
+                        let info = self.jobs.get(&rid).and_then(|j| {
+                            if j.file_id.is_empty() {
+                                None
+                            } else {
+                                Some((
+                                    j.file_id.clone(),
+                                    j.name.clone(),
+                                    j.dir.clone(),
+                                    j.record_id.clone(),
+                                ))
+                            }
+                        });
+                        if let Some((file_id, name, dir, rec_id)) = info {
+                            self.enqueue_downloads(
+                                vec![(file_id.clone(), name.clone())],
+                                dir.clone(),
+                            );
+                            self.remove_download_job(rid);
+                            settings::remove_download_record(&rec_id, &file_id, &name, &dir);
                         }
-                    });
-                    if let Some((file_id, name, dir, rec_id)) = info {
-                        self.enqueue_downloads(vec![(file_id.clone(), name.clone())], dir.clone());
-                        self.jobs.remove(&rid);
-                        self.selected_dl.remove(&rid);
-                        if self.last_clicked_dl == Some(rid) {
-                            self.last_clicked_dl = None;
-                        }
-                        settings::remove_download_record(&rec_id, &file_id, &name, &dir);
                     }
                 }
                 DlOp::Remove => {
-                    if let Some(job) = self.jobs.get(&rid) {
-                        // 仅从列表/历史记录中移除, 不删除本地已下载的文件
-                        settings::remove_download_record(
-                            &job.record_id,
-                            &job.file_id,
-                            &job.name,
-                            &job.dir,
-                        );
-                    }
-                    self.jobs.remove(&rid);
-                    self.selected_dl.remove(&rid);
-                    if self.last_clicked_dl == Some(rid) {
-                        self.last_clicked_dl = None;
-                    }
+                    // 仅从列表/历史记录中移除, 不删除本地已下载的文件。
+                    self.remove_download_job(rid);
                 }
             }
         }
+    }
+
+    /// 重试目录下载: 仅重下失败的子文件; 若尚未扫描出子文件(扫描阶段失败)则重新扫描。
+    fn retry_folder(&mut self, rid: u64) {
+        let Some((folder_id, name, dir, rec_id, file_id, has_files)) =
+            self.jobs.get(&rid).map(|j| {
+                (
+                    j.folder_id.clone(),
+                    j.name.clone(),
+                    j.dir.clone(),
+                    j.record_id.clone(),
+                    j.file_id.clone(),
+                    j.nodes.iter().any(|n| !n.is_dir),
+                )
+            })
+        else {
+            return;
+        };
+        if !has_files {
+            // 扫描阶段失败(尚无文件节点): 重新扫描, 沿用同一 req_id。
+            settings::remove_download_record(&rec_id, &file_id, &name, &dir);
+            if let Some(j) = self.jobs.get_mut(&rid) {
+                j.record_id.clear();
+                j.at = None;
+                j.status = DlStatus::Queued;
+                j.expanded = true;
+            }
+            if let Some(fid) = folder_id {
+                self.send(Cmd::StartDownloadFolder {
+                    req_id: rid,
+                    folder_id: fid,
+                    name,
+                    dest_dir: dir,
+                });
+                self.toast_ok("正在重新扫描目录…");
+            }
+            return;
+        }
+        // 收集失败文件所在的节点下标, 只重下这些文件。
+        let failed: Vec<(usize, String, String, PathBuf)> = self
+            .jobs
+            .get(&rid)
+            .map(|j| {
+                j.nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| {
+                        let c = self.jobs.get(&n.rid?)?;
+                        match &c.status {
+                            DlStatus::Failed(_) => {
+                                Some((i, c.file_id.clone(), c.name.clone(), c.dir.clone()))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if failed.is_empty() {
+            return;
+        }
+        for (idx, c_file_id, c_name, c_dir) in failed {
+            let new_cid = self.enqueue_download_item(c_file_id, c_name, c_dir, Some(rid));
+            let old = {
+                let Some(j) = self.jobs.get_mut(&rid) else {
+                    continue;
+                };
+                j.nodes.get_mut(idx).and_then(|n| n.rid.replace(new_cid))
+            };
+            if let Some(old) = old {
+                self.jobs.remove(&old);
+                self.selected_dl.remove(&old);
+            }
+        }
+        settings::remove_download_record(&rec_id, &file_id, &name, &dir);
+        if let Some(j) = self.jobs.get_mut(&rid) {
+            j.record_id.clear();
+            j.at = None;
+            j.expanded = true;
+        }
+        self.recompute_folder(rid);
     }
 }

@@ -364,6 +364,13 @@ fn file_row(
                 actions.push(RowAction::OpenFolder(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
+            if ui.button("下载到本地…").clicked() {
+                actions.push(RowAction::DownloadFolder(
+                    f_ctx.id.clone(),
+                    f_ctx.name.clone(),
+                ));
+                ui.close_menu();
+            }
         } else {
             if ui.button("下载到本地…").clicked() {
                 actions.push(RowAction::DownloadFile(
@@ -515,7 +522,7 @@ impl App {
         let visible_total = folders.len() + plain.len();
         let sel_meta = self.selected_names();
         let dl_candidates = self.selected_plain_files();
-        let dl_has_folder = self.selected_has_folder();
+        let dl_folders = self.selected_folders();
         let clip_info = self
             .clipboard
             .as_ref()
@@ -900,7 +907,7 @@ impl App {
                                     }
                                 }
                             }
-                            if !dl_candidates.is_empty()
+                            if (!dl_candidates.is_empty() || !dl_folders.is_empty())
                                 && ui
                                     .add(
                                         egui::Button::new(
@@ -959,7 +966,7 @@ impl App {
             self.share_selection();
         }
 
-        if want_download && !dl_candidates.is_empty() {
+        if want_download && (!dl_candidates.is_empty() || !dl_folders.is_empty()) {
             let dir = if !self.download_dir.is_empty()
                 && std::path::Path::new(&self.download_dir).is_dir()
             {
@@ -970,10 +977,12 @@ impl App {
                 };
                 d
             };
-            let has_folder = dl_has_folder;
-            self.enqueue_downloads(dl_candidates.clone(), dir);
-            if has_folder {
-                self.toast_warn("已跳过选中的文件夹(暂不支持整目录下载)");
+            self.enqueue_downloads(dl_candidates.clone(), dir.clone());
+            for (id, name) in &dl_folders {
+                self.enqueue_download_folder(id.clone(), name.clone(), dir.clone());
+            }
+            if !dl_folders.is_empty() {
+                self.toast_ok("正在扫描目录…");
             }
         }
 
@@ -1252,6 +1261,13 @@ impl App {
                                                     ));
                                                     ui.close_menu();
                                                 }
+                                                if ui.button("下载到本地…").clicked() {
+                                                    actions.push(RowAction::DownloadFolder(
+                                                        f_ctx.id.clone(),
+                                                        f_ctx.name.clone(),
+                                                    ));
+                                                    ui.close_menu();
+                                                }
                                             } else {
                                                 if ui.button("下载到本地…").clicked() {
                                                     actions.push(RowAction::DownloadFile(
@@ -1395,6 +1411,9 @@ impl App {
                         RowAction::FetchQualities(id, name) => self.fetch_qualities(id, name),
                         RowAction::PlayOption(id, opt) => self.play_option(id, opt),
                         RowAction::DownloadFile(id, name) => self.download_single(id, name),
+                        RowAction::DownloadFolder(id, name) => {
+                            self.download_single_folder(id, name)
+                        }
                         RowAction::CopyName(name) => {
                             let ctx2 = ctx.clone();
                             ctx2.copy_text(name);

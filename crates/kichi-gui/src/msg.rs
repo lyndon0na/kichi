@@ -2,6 +2,19 @@ use kichi_core::types::{FileList, Quota, ShareList, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// 目录扫描出的一个条目(目录或文件), 按先序排列并带层级。
+#[derive(Clone)]
+pub struct FolderItem {
+    pub is_dir: bool,
+    pub name: String,
+    /// 层级: 目录卡片(root)=0, 其直接子项=1。
+    pub depth: u32,
+    /// 文件条目的云端 id(目录条目为空)。
+    pub file_id: String,
+    /// 文件条目: 目标目录; 目录条目: 该目录的本地路径。
+    pub dir: PathBuf,
+}
+
 /// 一个可选择的清晰度: 标签、限时直链, 以及播放时服务端接受的请求头。
 #[derive(Clone)]
 pub struct QualityOption {
@@ -113,6 +126,14 @@ pub enum Cmd {
     StartDownload {
         req_id: u64,
         file_id: String,
+        name: String,
+        dest_dir: PathBuf,
+    },
+    /// 递归下载云端目录(folder_id)到本地目录 dest_dir。
+    /// 后台先扫描目录树, 回 `Msg::FolderScanned`, 再由 UI 逐个提交子文件下载。
+    StartDownloadFolder {
+        req_id: u64,
+        folder_id: String,
         name: String,
         dest_dir: PathBuf,
     },
@@ -291,6 +312,17 @@ pub enum Msg {
     },
     /// 下载失败。
     DlFailed {
+        req_id: u64,
+        what: String,
+    },
+    /// 目录扫描完成: items 为先序排列的目录树条目, total_bytes 为文件合计大小。
+    FolderScanned {
+        req_id: u64,
+        items: Vec<FolderItem>,
+        total_bytes: u64,
+    },
+    /// 目录扫描失败。
+    FolderScanFailed {
         req_id: u64,
         what: String,
     },

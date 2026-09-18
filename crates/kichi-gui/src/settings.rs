@@ -21,10 +21,35 @@ pub enum DownloadRecordStatus {
     Failed(String),
 }
 
+/// 目录下载记录内联的树节点快照(不单独占用历史条目)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadChildRecord {
+    #[serde(default)]
+    pub file_id: String,
+    pub name: String,
+    /// 文件条目: 目标目录; 目录条目: 该目录的本地路径。
+    pub dir: PathBuf,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub done: u64,
+    /// 文件条目状态; 目录条目固定为 Done(占位)。
+    pub status: DownloadRecordStatus,
+    /// 完成/失败时间(unix 秒)。
+    #[serde(default)]
+    pub at: u64,
+    /// 是否为子目录条目。
+    #[serde(default)]
+    pub is_dir: bool,
+    /// 层级: 目录卡片(root)=0, 其直接子项=1。
+    #[serde(default)]
+    pub depth: u32,
+}
+
 /// 单条下载历史记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRecord {
-    /// 云端文件 id(旧记录可能缺失, 用于重试)。
+    /// 云端文件 id(旧记录可能缺失, 用于重试)。目录记录为目录 id。
     #[serde(default)]
     pub file_id: String,
     pub name: String,
@@ -37,6 +62,12 @@ pub struct DownloadRecord {
     pub at: u64,
     /// ISO 8601 时间戳。
     pub timestamp: String,
+    /// 是否为整目录下载记录。
+    #[serde(default)]
+    pub is_folder: bool,
+    /// 目录记录的个子文件快照(仅 is_folder 时有值)。
+    #[serde(default)]
+    pub children: Vec<DownloadChildRecord>,
 }
 
 fn download_history_path() -> Option<PathBuf> {

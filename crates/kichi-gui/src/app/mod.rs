@@ -21,17 +21,93 @@ use kichi_core::types::{task_id, File, FileList, Quota, Share, Task};
 use crate::kde;
 use crate::msg::{Cmd, Msg};
 use crate::settings::{
-    self, DownloadRecord, DownloadRecordStatus, UploadRecord, UploadRecordStatus,
+    self, DownloadChildRecord, DownloadRecord, DownloadRecordStatus, UploadRecord,
+    UploadRecordStatus,
 };
 use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::helpers::install_fonts;
 use self::types::{
-    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlStatus, OfflineTab, Page,
-    QualityReady, ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick,
-    ViewMode,
+    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
+    OfflineTab, Page, QualityReady, ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus,
+    UploadPick, ViewMode,
 };
+
+/// 下载任务状态 -> 持久化记录状态(非终态仅在异常情况下出现, 兜底标记未完成)。
+fn dl_record_status(s: &DlStatus) -> DownloadRecordStatus {
+    match s {
+        DlStatus::Done => DownloadRecordStatus::Done,
+        DlStatus::Failed(w) => DownloadRecordStatus::Failed(w.clone()),
+        DlStatus::Queued | DlStatus::Running => DownloadRecordStatus::Failed("未完成".into()),
+    }
+}
+
+/// 汇总目录任务下所有子文件的进度与状态: (合计大小, 已下载, 合计速率, 聚合状态)。
+fn aggregate_children<'a>(children: impl Iterator<Item = &'a DlJob>) -> (u64, u64, u64, DlStatus) {
+    let mut total = 0u64;
+    let mut done = 0u64;
+    let mut speed = 0u64;
+    let (mut n, mut done_n, mut fail_n) = (0u32, 0u32, 0u32);
+    let mut active = false;
+    for c in children {
+        n += 1;
+        total = total.saturating_add(c.total);
+        done = done.saturating_add(c.done);
+        match &c.status {
+            DlStatus::Done => done_n += 1,
+            DlStatus::Failed(_) => fail_n += 1,
+            DlStatus::Running => {
+                active = true;
+                speed = speed.saturating_add(c.speed);
+            }
+            DlStatus::Queued => {}
+        }
+    }
+    let status = if fail_n > 0 {
+        DlStatus::Failed(format!("{fail_n} 个文件失败"))
+    } else if n > 0 && done_n == n {
+        DlStatus::Done
+    } else if active {
+        DlStatus::Running
+    } else {
+        DlStatus::Queued
+    };
+    (total, done, speed, status)
+}
+
+/// 依据文件节点的 `done` 标记, 自底向上累加每个子目录节点的子树文件计数。
+/// `nodes` 必须按先序排列(父节点先于其子孙)。
+fn compute_dir_counts(nodes: &mut [DlNode]) {
+    for n in nodes.iter_mut() {
+        if n.is_dir {
+            n.files_done = 0;
+            n.files_total = 0;
+        }
+    }
+    // 栈内为当前仍「开放」的祖先目录下标(按 depth 递增)。
+    let mut stack: Vec<usize> = Vec::new();
+    for i in 0..nodes.len() {
+        while let Some(&top) = stack.last() {
+            if nodes[top].depth >= nodes[i].depth {
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+        if nodes[i].is_dir {
+            stack.push(i);
+        } else if nodes[i].rid.is_some() {
+            let done = nodes[i].done;
+            for &d in &stack {
+                nodes[d].files_total += 1;
+                if done {
+                    nodes[d].files_done += 1;
+                }
+            }
+        }
+    }
+}
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
@@ -311,6 +387,100 @@ impl App {
                 let mut next_id = 0u64;
                 // 历史文件按最新在前存储; 倒序分配 id, 使 id 随时间递增(旧的 id 小)。
                 for record in history.into_iter().rev() {
+                    if record.is_folder {
+                        let folder_status = match record.status {
+                            DownloadRecordStatus::Done => DlStatus::Done,
+                            DownloadRecordStatus::Cancelled => continue,
+                            DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
+                        };
+                        let cloud_id = record.file_id.clone();
+                        next_id += 1;
+                        let folder_id = next_id;
+                        let mut nodes: Vec<DlNode> = Vec::with_capacity(record.children.len());
+                        for ch in &record.children {
+                            if ch.is_dir {
+                                nodes.push(DlNode {
+                                    is_dir: true,
+                                    name: ch.name.clone(),
+                                    depth: ch.depth,
+                                    rid: None,
+                                    expanded: true,
+                                    files_done: 0,
+                                    files_total: 0,
+                                    done: false,
+                                });
+                                continue;
+                            }
+                            let cstatus = match &ch.status {
+                                DownloadRecordStatus::Done => DlStatus::Done,
+                                DownloadRecordStatus::Cancelled => {
+                                    DlStatus::Failed("已取消".into())
+                                }
+                                DownloadRecordStatus::Failed(w) => DlStatus::Failed(w.clone()),
+                            };
+                            let done = cstatus == DlStatus::Done;
+                            next_id += 1;
+                            jobs.insert(
+                                next_id,
+                                DlJob {
+                                    file_id: ch.file_id.clone(),
+                                    record_id: String::new(),
+                                    name: ch.name.clone(),
+                                    dir: ch.dir.clone(),
+                                    total: ch.total,
+                                    done: ch.done,
+                                    status: cstatus,
+                                    speed: 0,
+                                    last_done: 0,
+                                    last_at: None,
+                                    at: (ch.at != 0).then_some(ch.at),
+                                    folder_id: None,
+                                    parent: Some(folder_id),
+                                    nodes: Vec::new(),
+                                    expanded: false,
+                                    files_done: 0,
+                                    files_total: 0,
+                                },
+                            );
+                            nodes.push(DlNode {
+                                is_dir: false,
+                                name: ch.name.clone(),
+                                depth: ch.depth,
+                                rid: Some(next_id),
+                                expanded: false,
+                                files_done: 0,
+                                files_total: 0,
+                                done,
+                            });
+                        }
+                        compute_dir_counts(&mut nodes);
+                        let files_total = nodes.iter().filter(|n| !n.is_dir).count() as u32;
+                        let files_done =
+                            nodes.iter().filter(|n| !n.is_dir && n.done).count() as u32;
+                        jobs.insert(
+                            folder_id,
+                            DlJob {
+                                file_id: cloud_id.clone(),
+                                record_id: record.timestamp,
+                                name: record.name,
+                                dir: record.dir,
+                                total: record.total,
+                                done: record.done,
+                                status: folder_status,
+                                speed: 0,
+                                last_done: 0,
+                                last_at: None,
+                                at: (record.at != 0).then_some(record.at),
+                                folder_id: Some(cloud_id),
+                                parent: None,
+                                nodes,
+                                expanded: false,
+                                files_done,
+                                files_total,
+                            },
+                        );
+                        continue;
+                    }
                     let status = match record.status {
                         DownloadRecordStatus::Done => DlStatus::Done,
                         // 取消的任务不再保留在列表中(旧版本可能写入过取消记录)。
@@ -332,6 +502,12 @@ impl App {
                             last_done: 0,
                             last_at: None,
                             at: (record.at != 0).then_some(record.at),
+                            folder_id: None,
+                            parent: None,
+                            nodes: Vec::new(),
+                            expanded: false,
+                            files_done: 0,
+                            files_total: 0,
                         },
                     );
                 }
@@ -778,6 +954,10 @@ impl App {
                             j.done = done;
                         }
                     }
+                    // 子文件进度回传后刷新所属目录任务的聚合进度。
+                    if let Some(p) = self.jobs.get(&req_id).and_then(|j| j.parent) {
+                        self.recompute_folder(p);
+                    }
                 }
                 Msg::DlFinished { req_id, bytes } => {
                     if let Some(j) = self.jobs.get_mut(&req_id) {
@@ -786,48 +966,129 @@ impl App {
                         if bytes > 0 && j.total == 0 {
                             j.total = bytes;
                         }
-                        // 保存下载记录到磁盘
-                        let rec_id = Self::chrono_now();
-                        j.record_id = rec_id.clone();
-                        j.at = Some(crate::format::now_unix());
-                        settings::append_download_record(DownloadRecord {
-                            file_id: j.file_id.clone(),
-                            name: j.name.clone(),
-                            dir: j.dir.clone(),
-                            total: j.total,
-                            done: j.done,
-                            status: DownloadRecordStatus::Done,
-                            at: j.at.unwrap_or(0),
-                            timestamp: rec_id,
-                        });
+                    }
+                    match self.jobs.get(&req_id).and_then(|j| j.parent) {
+                        Some(p) => self.recompute_folder(p),
+                        None => self.persist_download_job(req_id, DownloadRecordStatus::Done),
                     }
                 }
                 Msg::DlCancelled { req_id } => {
                     // 取消后从列表移除且不保留记录; 未完成的 .part 已由下载线程删除。
+                    let parent = self.jobs.get(&req_id).and_then(|j| j.parent);
                     self.jobs.remove(&req_id);
                     self.selected_dl.remove(&req_id);
                     if self.last_clicked_dl == Some(req_id) {
                         self.last_clicked_dl = None;
                     }
+                    if let Some(p) = parent {
+                        if let Some(pj) = self.jobs.get_mut(&p) {
+                            pj.nodes.retain(|n| n.rid != Some(req_id));
+                        }
+                        self.recompute_folder(p);
+                    }
                 }
                 Msg::DlFailed { req_id, what } => {
                     if let Some(j) = self.jobs.get_mut(&req_id) {
                         j.status = DlStatus::Failed(what.clone());
-                        // 保存下载记录到磁盘
-                        let rec_id = Self::chrono_now();
-                        j.record_id = rec_id.clone();
-                        j.at = Some(crate::format::now_unix());
-                        settings::append_download_record(DownloadRecord {
-                            file_id: j.file_id.clone(),
-                            name: j.name.clone(),
-                            dir: j.dir.clone(),
-                            total: j.total,
-                            done: j.done,
-                            status: DownloadRecordStatus::Failed(what),
-                            at: j.at.unwrap_or(0),
-                            timestamp: rec_id,
-                        });
                     }
+                    match self.jobs.get(&req_id).and_then(|j| j.parent) {
+                        Some(p) => self.recompute_folder(p),
+                        None => {
+                            self.persist_download_job(req_id, DownloadRecordStatus::Failed(what))
+                        }
+                    }
+                }
+                Msg::FolderScanned {
+                    req_id,
+                    items,
+                    total_bytes,
+                } => {
+                    if !self
+                        .jobs
+                        .get(&req_id)
+                        .map(|j| j.is_folder())
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    // 没有文件(空目录或仅空子目录): 直接完成。
+                    if items.iter().all(|it| it.is_dir) {
+                        let nodes: Vec<DlNode> = items
+                            .iter()
+                            .map(|it| DlNode {
+                                is_dir: true,
+                                name: it.name.clone(),
+                                depth: it.depth,
+                                rid: None,
+                                expanded: true,
+                                files_done: 0,
+                                files_total: 0,
+                                done: false,
+                            })
+                            .collect();
+                        if let Some(j) = self.jobs.get_mut(&req_id) {
+                            j.status = DlStatus::Done;
+                            j.total = 0;
+                            j.done = 0;
+                            j.nodes = nodes;
+                            j.files_done = 0;
+                            j.files_total = 0;
+                        }
+                        self.persist_download_job(req_id, DownloadRecordStatus::Done);
+                        self.toast_ok("空目录已创建");
+                    } else {
+                        let mut nodes: Vec<DlNode> = Vec::with_capacity(items.len());
+                        let mut files_total = 0u32;
+                        for it in items {
+                            if it.is_dir {
+                                nodes.push(DlNode {
+                                    is_dir: true,
+                                    name: it.name,
+                                    depth: it.depth,
+                                    rid: None,
+                                    expanded: true,
+                                    files_done: 0,
+                                    files_total: 0,
+                                    done: false,
+                                });
+                            } else {
+                                let cid = self.enqueue_download_item(
+                                    it.file_id,
+                                    it.name.clone(),
+                                    it.dir,
+                                    Some(req_id),
+                                );
+                                nodes.push(DlNode {
+                                    is_dir: false,
+                                    name: it.name,
+                                    depth: it.depth,
+                                    rid: Some(cid),
+                                    expanded: false,
+                                    files_done: 0,
+                                    files_total: 0,
+                                    done: false,
+                                });
+                                files_total += 1;
+                            }
+                        }
+                        compute_dir_counts(&mut nodes);
+                        if let Some(j) = self.jobs.get_mut(&req_id) {
+                            j.nodes = nodes;
+                            j.total = total_bytes;
+                            j.done = 0;
+                            j.files_done = 0;
+                            j.files_total = files_total;
+                            j.status = DlStatus::Running;
+                        }
+                        self.toast_ok(&format!("已加入下载队列 ({files_total} 个文件)"));
+                    }
+                }
+                Msg::FolderScanFailed { req_id, what } => {
+                    if let Some(j) = self.jobs.get_mut(&req_id) {
+                        j.status = DlStatus::Failed(what.clone());
+                    }
+                    self.persist_download_job(req_id, DownloadRecordStatus::Failed(what.clone()));
+                    self.toast_err(&what);
                 }
                 Msg::UlProgress {
                     req_id,
@@ -1673,22 +1934,56 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn selected_has_folder(&self) -> bool {
+    /// 选中项里的文件夹(id, name), 用于整目录下载。
+    pub(crate) fn selected_folders(&self) -> Vec<(String, String)> {
         self.files
             .iter()
-            .any(|f| self.selected.contains(&f.id) && f.is_folder())
+            .filter(|f| self.selected.contains(&f.id) && f.is_folder())
+            .map(|f| (f.id.clone(), f.name.clone()))
+            .collect()
     }
 
-    /// 当前筛选下可见的任务 id, 按最新在前排序。
+    /// 当前筛选下可见的顶层任务 id(不含目录的子文件), 按最新在前排序。
     pub(crate) fn visible_dl_ids(&self) -> Vec<u64> {
         let mut ids: Vec<u64> = self
             .jobs
             .iter()
-            .filter(|(_, j)| self.dl_filter.matches(j))
+            .filter(|(_, j)| j.parent.is_none() && self.dl_filter.matches(j))
             .map(|(id, _)| *id)
             .collect();
         ids.sort_unstable_by(|a, b| b.cmp(a));
         ids
+    }
+
+    /// 传输任务页当前要渲染的行(顶层任务 + 已展开目录的子文件)。
+    pub(crate) fn dl_rows(&self) -> Vec<DlRow> {
+        let mut rows = Vec::new();
+        for id in self.visible_dl_ids() {
+            let Some(j) = self.jobs.get(&id) else {
+                continue;
+            };
+            if !j.is_folder() || !j.expanded {
+                rows.push(DlRow::Job(id));
+                continue;
+            }
+            // 先序遍历, 跳过被收起子目录的子孙。
+            let mut visible: Vec<usize> = Vec::new();
+            let mut skip_below: Option<u32> = None;
+            for (i, n) in j.nodes.iter().enumerate() {
+                if let Some(d) = skip_below {
+                    if n.depth > d {
+                        continue;
+                    }
+                    skip_below = None;
+                }
+                visible.push(i);
+                if n.is_dir && !n.expanded {
+                    skip_below = Some(n.depth);
+                }
+            }
+            rows.push(DlRow::Tree(id, visible));
+        }
+        rows
     }
 
     pub(crate) fn alloc_req_id(&mut self) -> u64 {
@@ -1722,6 +2017,29 @@ impl App {
         Some(picked)
     }
 
+    /// 提交单个下载任务并登记任务行, 返回 req_id。parent 为所属目录任务的 req_id。
+    pub(crate) fn enqueue_download_item(
+        &mut self,
+        file_id: String,
+        name: String,
+        dir: std::path::PathBuf,
+        parent: Option<u64>,
+    ) -> u64 {
+        let req_id = self.alloc_req_id();
+        let job = match parent {
+            Some(p) => DlJob::child(file_id.clone(), name.clone(), dir.clone(), p),
+            None => DlJob::queued(file_id.clone(), name.clone(), dir.clone()),
+        };
+        self.jobs.insert(req_id, job);
+        self.send(Cmd::StartDownload {
+            req_id,
+            file_id,
+            name,
+            dest_dir: dir,
+        });
+        req_id
+    }
+
     /// 逐个提交下载任务(共享同一个已选目录)。
     pub(crate) fn enqueue_downloads(
         &mut self,
@@ -1732,17 +2050,152 @@ impl App {
             return;
         }
         for (id, name) in &items {
-            let req_id = self.alloc_req_id();
-            self.jobs
-                .insert(req_id, DlJob::queued(id.clone(), name.clone(), dir.clone()));
-            self.send(Cmd::StartDownload {
-                req_id,
-                file_id: id.clone(),
-                name: name.clone(),
-                dest_dir: dir.clone(),
-            });
+            self.enqueue_download_item(id.clone(), name.clone(), dir.clone(), None);
         }
         self.toast_ok(&format!("已加入下载队列 ({} 个文件)", items.len()));
+    }
+
+    /// 提交整目录下载: 后台先扫描目录树, 回 `Msg::FolderScanned` 后逐个入队。
+    pub(crate) fn enqueue_download_folder(
+        &mut self,
+        folder_id: String,
+        name: String,
+        dir: std::path::PathBuf,
+    ) -> u64 {
+        let req_id = self.alloc_req_id();
+        self.jobs.insert(
+            req_id,
+            DlJob::folder(folder_id.clone(), name.clone(), dir.clone()),
+        );
+        self.send(Cmd::StartDownloadFolder {
+            req_id,
+            folder_id,
+            name,
+            dest_dir: dir,
+        });
+        req_id
+    }
+
+    /// 递归下载单个云端目录。若已有默认下载目录则直接下载, 否则弹目录选择框。
+    pub(crate) fn download_single_folder(&mut self, id: String, name: String) {
+        let dir =
+            if !self.download_dir.is_empty() && std::path::Path::new(&self.download_dir).is_dir() {
+                std::path::PathBuf::from(&self.download_dir)
+            } else {
+                let Some(d) = self.choose_download_dir() else {
+                    return;
+                };
+                d
+            };
+        self.enqueue_download_folder(id, name, dir);
+        self.toast_ok("正在扫描目录…");
+    }
+
+    /// 依据子文件状态重算目录任务的聚合进度、各子目录计数与状态, 并在首次进入终态时写历史。
+    pub(crate) fn recompute_folder(&mut self, folder: u64) {
+        // 先把节点列表移出, 便于同时读取各子任务的进度而不产生借用冲突。
+        let Some(mut nodes) = self
+            .jobs
+            .get_mut(&folder)
+            .filter(|j| j.is_folder())
+            .map(|j| std::mem::take(&mut j.nodes))
+        else {
+            return;
+        };
+        let kids: Vec<&DlJob> = nodes
+            .iter()
+            .filter_map(|n| n.rid)
+            .filter_map(|rid| self.jobs.get(&rid))
+            .collect();
+        let (total, done, speed, status) = aggregate_children(kids.into_iter());
+        // 同步文件节点的完成标记, 再自底向上累加每个子目录的计数。
+        for n in nodes.iter_mut() {
+            if let Some(rid) = n.rid {
+                n.done = self
+                    .jobs
+                    .get(&rid)
+                    .map(|j| j.status == DlStatus::Done)
+                    .unwrap_or(false);
+            }
+        }
+        compute_dir_counts(&mut nodes);
+        let files_total = nodes.iter().filter(|n| !n.is_dir).count() as u32;
+        let files_done = nodes.iter().filter(|n| !n.is_dir && n.done).count() as u32;
+        let terminal = matches!(status, DlStatus::Done | DlStatus::Failed(_));
+        let mut write_record = false;
+        if let Some(f) = self.jobs.get_mut(&folder) {
+            // 扫描时已知合计大小, 优先保留; 未知(0)时用子文件汇总兜底。
+            if f.total == 0 {
+                f.total = total;
+            }
+            f.done = done;
+            f.speed = speed;
+            f.status = status.clone();
+            f.files_done = files_done;
+            f.files_total = files_total;
+            f.nodes = nodes;
+            write_record = terminal && f.record_id.is_empty();
+        }
+        if write_record {
+            self.persist_download_job(folder, dl_record_status(&status));
+        }
+    }
+
+    /// 写一条下载历史记录, 并回填任务行的 record_id / at。
+    /// 目录任务额外内联其子文件快照。
+    fn persist_download_job(&mut self, rid: u64, status: DownloadRecordStatus) {
+        let children = if self.jobs.get(&rid).map(|j| j.is_folder()).unwrap_or(false) {
+            self.snapshot_children(rid)
+        } else {
+            Vec::new()
+        };
+        let rec_id = Self::chrono_now();
+        let at = crate::format::now_unix();
+        let Some(j) = self.jobs.get_mut(&rid) else {
+            return;
+        };
+        j.record_id = rec_id.clone();
+        j.at = Some(at);
+        settings::append_download_record(DownloadRecord {
+            file_id: j.file_id.clone(),
+            name: j.name.clone(),
+            dir: j.dir.clone(),
+            total: j.total,
+            done: j.done,
+            status,
+            at,
+            timestamp: rec_id,
+            is_folder: j.is_folder(),
+            children,
+        });
+    }
+
+    /// 目录任务的树节点记录快照(按先序, 含子目录)。
+    fn snapshot_children(&self, folder: u64) -> Vec<DownloadChildRecord> {
+        let nodes = self
+            .jobs
+            .get(&folder)
+            .map(|j| j.nodes.clone())
+            .unwrap_or_default();
+        nodes
+            .iter()
+            .map(|n| {
+                let c = n.rid.and_then(|rid| self.jobs.get(&rid));
+                DownloadChildRecord {
+                    file_id: c.map(|c| c.file_id.clone()).unwrap_or_default(),
+                    name: n.name.clone(),
+                    dir: c.map(|c| c.dir.clone()).unwrap_or_default(),
+                    total: c.map(|c| c.total).unwrap_or(0),
+                    done: c.map(|c| c.done).unwrap_or(0),
+                    status: c
+                        .map(|c| dl_record_status(&c.status))
+                        .unwrap_or(DownloadRecordStatus::Done),
+                    at: c.and_then(|c| c.at).unwrap_or(0),
+                    is_dir: n.is_dir,
+                    depth: n.depth,
+                }
+            })
+            .collect()
     }
 
     /// 下载单个文件。若已有默认下载目录则直接下载, 否则弹目录选择框。
@@ -2233,5 +2686,95 @@ impl eframe::App for App {
         self.dialogs(ctx, &th);
         self.draw_toast(ctx);
         self.drop_overlay(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dl_job(status: DlStatus, total: u64, done: u64) -> DlJob {
+        let mut j = DlJob::queued("id".into(), "n".into(), std::path::PathBuf::from("/tmp"));
+        j.status = status;
+        j.total = total;
+        j.done = done;
+        j
+    }
+
+    #[test]
+    fn aggregate_sums_and_running_status() {
+        let a = dl_job(DlStatus::Running, 100, 40);
+        let b = dl_job(DlStatus::Done, 50, 50);
+        let (total, done, _speed, status) = aggregate_children([&a, &b].into_iter());
+        assert_eq!((total, done), (150, 90));
+        assert_eq!(status, DlStatus::Running);
+    }
+
+    #[test]
+    fn aggregate_all_done_is_done() {
+        let a = dl_job(DlStatus::Done, 10, 10);
+        let b = dl_job(DlStatus::Done, 5, 5);
+        let (total, done, _speed, status) = aggregate_children([&a, &b].into_iter());
+        assert_eq!((total, done), (15, 15));
+        assert_eq!(status, DlStatus::Done);
+    }
+
+    #[test]
+    fn aggregate_any_failure_wins() {
+        let a = dl_job(DlStatus::Done, 10, 10);
+        let f = dl_job(DlStatus::Failed("x".into()), 0, 0);
+        let (_t, _d, _s, status) = aggregate_children([&a, &f].into_iter());
+        assert!(matches!(status, DlStatus::Failed(_)));
+    }
+
+    #[test]
+    fn aggregate_queued_before_any_activity() {
+        let a = dl_job(DlStatus::Queued, 10, 0);
+        let (_t, _d, _s, status) = aggregate_children([&a].into_iter());
+        assert_eq!(status, DlStatus::Queued);
+    }
+
+    fn dir_node(name: &str, depth: u32) -> DlNode {
+        DlNode {
+            is_dir: true,
+            name: name.into(),
+            depth,
+            rid: None,
+            expanded: true,
+            files_done: 0,
+            files_total: 0,
+            done: false,
+        }
+    }
+
+    fn file_node(depth: u32, done: bool) -> DlNode {
+        DlNode {
+            is_dir: false,
+            name: "f".into(),
+            depth,
+            rid: Some(1),
+            expanded: false,
+            files_done: 0,
+            files_total: 0,
+            done,
+        }
+    }
+
+    #[test]
+    fn dir_counts_roll_up_subtree() {
+        // A/ (1): 自身 2 个文件(1 完成) + 子目录 B/ (2): 1 个文件(完成); C/ (1): 空。
+        let mut nodes = vec![
+            dir_node("A", 1),
+            file_node(2, true),
+            file_node(2, false),
+            dir_node("B", 2),
+            file_node(3, true),
+            dir_node("C", 1),
+        ];
+        compute_dir_counts(&mut nodes);
+        // A 汇总其整个子树: 3 个文件、2 个完成。
+        assert_eq!((nodes[0].files_done, nodes[0].files_total), (2, 3));
+        assert_eq!((nodes[3].files_done, nodes[3].files_total), (1, 1));
+        assert_eq!((nodes[5].files_done, nodes[5].files_total), (0, 0));
     }
 }

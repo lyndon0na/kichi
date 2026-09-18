@@ -8,7 +8,7 @@
 
 | 优先级 | 主题 | 项数 |
 | :-- | :-- | :-- |
-| **P0** | 用户可见的功能缺口 | 3 |
+| **P0** | 用户可见的功能缺口 | 2 |
 | **P1** | 正确性与健壮性 | 4 |
 | **P2** | 可维护性与工程 | 5 |
 | **P3** | 分发与发布 | 4 |
@@ -19,7 +19,6 @@
 
 | 编号 | 任务 | 主要文件 | 说明 / 验收 |
 | :-- | :-- | :-- | :-- |
-| P0-2 | 整目录递归下载 | `crates/kichi-gui/src/app/mod.rs`（`selected_plain_files`）<br>`crates/kichi-gui/src/worker.rs`（下载调度）<br>`crates/kichi-core/src/client.rs`（文件夹直链拒绝分支）<br>`crates/kichi-core/src/download.rs` | 现在选中文件夹会被跳过并提示「暂不支持整目录下载」。需递归展开目录、在本地按云端路径建目录 |
 | P0-3 | 真实缩略图 | `crates/kichi-core/src/types.rs`（`File::icon_link` / `thumbnail_link`，**已反序列化但全项目未使用**）<br>`crates/kichi-gui/src/app/files_page.rs`（`file_visual`、网格渲染）<br>`crates/kichi-gui/src/worker.rs`（下载 / 缓存缩略图） | 网格视图目前只画类型图标。注意缩略图直链的鉴权与落盘缓存（可复用 `preview_root` 思路） |
 | P0-4 | 全局搜索 | `crates/kichi-gui/src/app/mod.rs`（`visible_rows`）<br>`crates/kichi-gui/src/app/files_page.rs`（搜索框）<br>`crates/kichi-core/src/client.rs`（若无服务端搜索端点则需先调研） | 现在只对**当前已加载目录**做名称包含过滤；需求是跨目录 / 服务端搜索 |
 
@@ -58,6 +57,7 @@
 - [x] 文档失真修正：离线任务翻页说明、README 目录树补 `lib.rs` / `logging.rs`（`9c66bfa`）
 - [x] 工程杂项：`LICENSE`、`CHANGELOG.md`、`rustfmt.toml`，移除占位 `repository`，版本号去硬编码，`.gitignore` 扩充，全仓库 `cargo fmt`（`d6044a3`）
 - [x] P0-1 离线任务「加载更多」分页；顺带把离线任务 / 配额的自动轮询改为自适应节拍（`worker.rs` / `tasks_page.rs` / `app/mod.rs` / `msg.rs`）
+- [x] P0-2 整目录递归下载：`kichi-core::walk_folder` 递归遍历 + 本地按云端层级建目录；传输任务页聚合为单张目录卡片（显示「文件 已完成/全部」），展开后按层级显示目录树、子目录可单独折叠；重试仅重下失败子文件（`client.rs` / `worker.rs` / `app/mod.rs` / `files_page.rs` / `transfers_page.rs` / `settings.rs` / `msg.rs`）
 
 > [!TIP]
-> 建议下一轮从 **P0-2（整目录递归下载）** 入手：入口与提示已就位（当前选中文件夹会被跳过），改动集中在下载调度与本地按云端路径建目录。
+> 建议下一轮从 **P0-3（真实缩略图）** 入手：`File::icon_link` / `thumbnail_link` 已反序列化但未使用，可复用预览缓存的直链鉴权与落盘思路。

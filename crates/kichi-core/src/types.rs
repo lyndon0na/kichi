@@ -105,6 +105,15 @@ impl<'de> Deserialize<'de> for FileList {
     }
 }
 
+/// 目录递归遍历结果(整目录下载用)。
+#[derive(Debug, Clone, Default)]
+pub struct FolderWalk {
+    /// 相对根目录的目录组件序列; 根目录为空 vec。含空目录, 便于本地按层级建目录。
+    pub dirs: Vec<Vec<String>>,
+    /// 文件: (相对目录组件, 文件)。
+    pub files: Vec<(Vec<String>, File)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Quota {
     pub limit: i64,

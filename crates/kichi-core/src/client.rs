@@ -1,3 +1,4 @@
+use std::collections::{HashSet, VecDeque};
 use std::path::Path as StdPath;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -29,6 +30,10 @@ const OSS_UA: &str = "aliyun-sdk-android/2.9.5";
 
 /// OSS 分片并发的分片数。
 const OSS_UPLOAD_CONCURRENCY: usize = 4;
+
+/// 整目录下载递归遍历时的页大小与文件总数上限(超限返回错误, 避免异常数据失控)。
+const WALK_PAGE_SIZE: usize = 100;
+const WALK_MAX_FILES: usize = 20_000;
 
 #[derive(Default)]
 struct Auth {
@@ -446,6 +451,60 @@ impl KichiClient {
         let filters = default_file_filters();
         self.file_list_filtered(filters, parent_id, size, next_page_token)
             .await
+    }
+
+    /// 递归列出 `folder_id` 下的全部子目录与文件(整目录下载用)。
+    ///
+    /// 目录路径以「相对根目录的组件序列」表示(根为空 vec), 便于调用方在本地按
+    /// 云端层级建目录; 空目录也会出现在 `dirs` 中。用已访问 id 集合防环。
+    pub async fn walk_folder(&self, folder_id: &str) -> Result<FolderWalk, Error> {
+        let root = folder_id.trim();
+        if root.is_empty() {
+            return Err(Error::msg("目录 ID 为空"));
+        }
+        let mut walk = FolderWalk {
+            dirs: vec![Vec::new()],
+            files: Vec::new(),
+        };
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(root.to_string());
+        // (目录 id, 相对组件)
+        let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
+        queue.push_back((root.to_string(), Vec::new()));
+
+        while let Some((id, rel)) = queue.pop_front() {
+            let mut token: Option<String> = None;
+            loop {
+                let FileList {
+                    files,
+                    next_page_token,
+                } = self
+                    .file_list(Some(&id), WALK_PAGE_SIZE, token.as_deref())
+                    .await?;
+                for f in files {
+                    if f.is_folder() {
+                        if seen.insert(f.id.clone()) {
+                            let mut child_rel = rel.clone();
+                            child_rel.push(f.name.clone());
+                            walk.dirs.push(child_rel.clone());
+                            queue.push_back((f.id.clone(), child_rel));
+                        }
+                    } else {
+                        if walk.files.len() >= WALK_MAX_FILES {
+                            return Err(Error::msg(format!(
+                                "目录内文件过多(超过 {WALK_MAX_FILES} 个), 暂不支持整目录下载"
+                            )));
+                        }
+                        walk.files.push((rel.clone(), f));
+                    }
+                }
+                match next_page_token {
+                    Some(t) => token = Some(t),
+                    None => break,
+                }
+            }
+        }
+        Ok(walk)
     }
 
     /// 列出回收站内容(filters `trashed.eq=true`)。

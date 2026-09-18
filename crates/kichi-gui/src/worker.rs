@@ -12,7 +12,7 @@ use kichi_core::{session, Error, KichiClient};
 use tokio::sync::Semaphore;
 
 use crate::credentials;
-use crate::msg::{Cmd, Msg, QualityOption};
+use crate::msg::{Cmd, FolderItem, Msg, QualityOption};
 
 pub struct Worker {
     pub tx: Sender<Cmd>,
@@ -497,6 +497,14 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             dest_dir,
         } => {
             spawn_download(st, tx, req_id, file_id, name, dest_dir).await;
+        }
+        Cmd::StartDownloadFolder {
+            req_id,
+            folder_id,
+            name,
+            dest_dir,
+        } => {
+            spawn_folder_download(st, tx, req_id, folder_id, name, dest_dir).await;
         }
         Cmd::CancelDownload { req_id } => {
             let map = st.cancel.lock().await;
@@ -1104,6 +1112,95 @@ async fn spawn_download(
     });
 }
 
+/// 扫描云端目录树, 在本地按层级建目录, 再把文件清单回传 UI 逐个下载。
+async fn spawn_folder_download(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    req_id: u64,
+    folder_id: String,
+    name: String,
+    dest_dir: PathBuf,
+) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
+    let msg_tx = tx.clone();
+    tokio::spawn(async move {
+        match client.walk_folder(&folder_id).await {
+            Ok(walk) => {
+                let base = dest_dir.join(
+                    crate::format::safe_file_name(&name).unwrap_or_else(|| "download".to_string()),
+                );
+                // 按云端层级建本地目录(含空目录); 单个目录失败不阻断整体扫描。
+                for rel in &walk.dirs {
+                    let dir = join_local_path(&base, rel);
+                    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+                        tracing::warn!("创建本地目录失败 {}: {e}", dir.display());
+                    }
+                }
+                // 目录条目(跳过根)与文件条目合并后按路径先序排序, 供 UI 渲染层级。
+                let mut entries: Vec<(Vec<String>, FolderItem)> =
+                    Vec::with_capacity(walk.dirs.len() + walk.files.len());
+                for rel in &walk.dirs {
+                    if rel.is_empty() {
+                        continue;
+                    }
+                    entries.push((
+                        rel.clone(),
+                        FolderItem {
+                            is_dir: true,
+                            name: rel.last().cloned().unwrap_or_default(),
+                            depth: rel.len() as u32,
+                            file_id: String::new(),
+                            dir: join_local_path(&base, rel),
+                        },
+                    ));
+                }
+                let mut total_bytes = 0u64;
+                for (rel, f) in walk.files {
+                    total_bytes = total_bytes.saturating_add(f.size.max(0) as u64);
+                    let mut key = rel.clone();
+                    key.push(f.name.clone());
+                    entries.push((
+                        key,
+                        FolderItem {
+                            is_dir: false,
+                            name: f.name,
+                            depth: rel.len() as u32 + 1,
+                            file_id: f.id,
+                            dir: join_local_path(&base, &rel),
+                        },
+                    ));
+                }
+                // 先序: 同一路径前缀时目录排在同名文件之前。
+                entries.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.is_dir.cmp(&a.1.is_dir)));
+                let items: Vec<FolderItem> = entries.into_iter().map(|(_, it)| it).collect();
+                let _ = msg_tx.send(Msg::FolderScanned {
+                    req_id,
+                    items,
+                    total_bytes,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("扫描目录失败 req={req_id}: {e}");
+                let _ = msg_tx.send(Msg::FolderScanFailed {
+                    req_id,
+                    what: format!("扫描目录失败: {e}"),
+                });
+            }
+        }
+    });
+}
+
+/// 把云端相对目录组件逐级净化后拼到本地基目录上。
+fn join_local_path(base: &Path, rel: &[String]) -> PathBuf {
+    let mut p = base.to_path_buf();
+    for c in rel {
+        p.push(crate::format::safe_file_name(c).unwrap_or_else(|| "download".to_string()));
+    }
+    p
+}
+
 /// 取消下载时清理未完成的 `.part` 临时文件。
 fn discard_part(dest: &Path) {
     let _ = std::fs::remove_file(part_path(dest));
@@ -1694,4 +1791,31 @@ async fn refresh_tasks(st: &mut WorkerState, tx: &Sender<Msg>) {
         buckets,
         next_tokens: nexts,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_local_path_sanitizes_components() {
+        let base = Path::new("/tmp/dl/A");
+        // 空相对路径 = 目录本身。
+        assert_eq!(join_local_path(base, &[]), PathBuf::from("/tmp/dl/A"));
+        // 逐级拼接。
+        assert_eq!(
+            join_local_path(base, &["B".into(), "C".into()]),
+            PathBuf::from("/tmp/dl/A/B/C")
+        );
+    }
+
+    #[test]
+    fn join_local_path_strips_separators_and_rejects_traversal() {
+        let base = Path::new("/tmp/dl");
+        // 组件内的路径分隔被收敛为 basename, 路径穿越被拒。
+        assert_eq!(
+            join_local_path(base, &["../evil".into(), ".".into()]),
+            PathBuf::from("/tmp/dl/evil/download")
+        );
+    }
 }
