@@ -506,10 +506,18 @@ impl App {
         // Ctrl + 滚轮调整网格视图大小
         if matches!(self.view_mode, ViewMode::Icon) {
             ctx.input(|i| {
-                let scroll = i.smooth_scroll_delta.y;
-                if scroll.abs() > 0.0 && i.modifiers.ctrl {
-                    let delta = if scroll > 0.0 { 5.0 } else { -5.0 };
-                    self.grid_card_size = (self.grid_card_size + delta).clamp(80.0, 160.0);
+                for event in &i.events {
+                    if let egui::Event::MouseWheel {
+                        modifiers,
+                        delta,
+                        ..
+                    } = event
+                    {
+                        if modifiers.ctrl && delta.y.abs() > 0.0 {
+                            let step = if delta.y > 0.0 { 5.0 } else { -5.0 };
+                            self.grid_card_size = (self.grid_card_size + step).clamp(80.0, 160.0);
+                        }
+                    }
                 }
             });
         }
