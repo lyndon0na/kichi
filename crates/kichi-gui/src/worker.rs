@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use eframe::egui;
 use kichi_core::consts::OFFLINE_PHASES;
 use kichi_core::download::part_path;
 use kichi_core::upload::{OssContext, OssUploadState};
@@ -758,6 +759,9 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
+        Cmd::LoadThumbnail { file_id, url } => {
+            load_thumbnail(st, tx, file_id, url).await;
+        }
     }
 }
 
@@ -1015,6 +1019,83 @@ async fn preview_download(
                 req_id,
                 what: format!("准备预览文件失败: {e}"),
             });
+        }
+    }
+}
+
+// ---------------- 缩略图 ----------------
+
+/// 缩略图缓存目录: `~/.cache/kichi/thumbnails`。
+fn thumbnail_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("kichi")
+        .join("thumbnails")
+}
+
+/// 某文件缩略图的本地缓存路径: `<cache>/<file_id>.jpg`。
+fn thumbnail_cache_path(file_id: &str) -> PathBuf {
+    let safe: String = file_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let safe = if safe.is_empty() {
+        "unknown".to_string()
+    } else {
+        safe
+    };
+    thumbnail_cache_dir().join(format!("{safe}.jpg"))
+}
+
+/// 加载缩略图: 先检查磁盘缓存, 未命中则从 URL 下载, 解码为 RGBA 后发送给 UI。
+async fn load_thumbnail(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    file_id: String,
+    url: String,
+) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
+    let dest = thumbnail_cache_path(&file_id);
+
+    // 磁盘缓存未命中时下载。
+    if !dest.exists() {
+        if let Err(e) = client.download_thumbnail(&url, &dest).await {
+            tracing::debug!("缩略图下载失败 {}: {e}", file_id);
+            return;
+        }
+    }
+
+    // 从磁盘读取并解码。
+    let file_id_clone = file_id.clone();
+    let result = tokio::task::spawn_blocking(move || -> Option<(u32, u32, Vec<egui::Color32>)> {
+        let data = std::fs::read(&dest).ok()?;
+        let img = image::load_from_memory(&data).ok()?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let pixels: Vec<egui::Color32> = rgba
+            .pixels()
+            .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+            .collect();
+        Some((w, h, pixels))
+    })
+    .await;
+
+    match result {
+        Ok(Some((w, h, pixels))) => {
+            let _ = tx.send(Msg::ThumbnailReady {
+                file_id: file_id_clone,
+                width: w,
+                height: h,
+                pixels,
+            });
+        }
+        Ok(None) => {
+            tracing::debug!("缩略图解码失败 {}", file_id_clone);
+        }
+        Err(e) => {
+            tracing::debug!("缩略图解码任务失败 {}: {e}", file_id_clone);
         }
     }
 }

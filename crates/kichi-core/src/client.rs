@@ -1299,6 +1299,33 @@ impl KichiClient {
         }
         Ok(())
     }
+
+    /// 下载缩略图到本地缓存。缩略图 URL 自带签名, 无需额外鉴权。
+    pub async fn download_thumbnail(&self, url: &str, dest: &StdPath) -> Result<(), Error> {
+        if let Some(dir) = dest.parent() {
+            if !dir.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(dir).await?;
+            }
+        }
+        let (_, _, user_id, _) = self.current_auth().await;
+        let resp = self
+            .http
+            .get(url)
+            .header("User-Agent", build_user_agent(&self.device_id, &user_id))
+            .header("X-Device-Id", &self.device_id)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Error::HttpStatus {
+                status: status.as_u16(),
+                body: String::new(),
+            });
+        }
+        let bytes = resp.bytes().await?;
+        tokio::fs::write(dest, &bytes).await?;
+        Ok(())
+    }
 }
 
 fn truncate(s: &str, n: usize) -> String {

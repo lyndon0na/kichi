@@ -237,6 +237,11 @@ pub struct App {
     /// 正在解析清晰度的文件 id。
     pub(crate) quality_inflight: HashSet<String>,
 
+    /// 已加载的缩略图纹理(file_id -> TextureHandle)。
+    pub(crate) thumbnail_textures: HashMap<String, egui::TextureHandle>,
+    /// 正在加载缩略图的文件 id。
+    pub(crate) thumbnail_inflight: HashSet<String>,
+
     // 我的分享
     pub(crate) shares: Vec<Share>,
     pub(crate) shares_next: Option<String>,
@@ -556,6 +561,8 @@ impl App {
             preview_pending: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
+            thumbnail_textures: HashMap::new(),
+            thumbnail_inflight: HashSet::new(),
             shares: Vec::new(),
             shares_next: None,
             shares_loading: false,
@@ -661,7 +668,7 @@ impl App {
         let _ = self.tx.send(cmd);
     }
 
-    pub(crate) fn drain(&mut self) {
+    pub(crate) fn drain(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::LoginOk { username } => {
@@ -1393,6 +1400,24 @@ impl App {
                 }
                 Msg::ShareMoveRetryFailed { what } => {
                     self.toast_err(&what);
+                }
+                Msg::ThumbnailReady {
+                    file_id,
+                    width,
+                    height,
+                    pixels,
+                } => {
+                    self.thumbnail_inflight.remove(&file_id);
+                    let color_image = egui::ColorImage {
+                        size: [width as usize, height as usize],
+                        pixels,
+                    };
+                    let texture = ctx.load_texture(
+                        format!("thumb_{file_id}"),
+                        color_image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.thumbnail_textures.insert(file_id, texture);
                 }
             }
         }
@@ -2636,7 +2661,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.drain();
+        self.drain(ctx);
         self.poll_file_picker();
         self.poll_system_theme();
 

@@ -1,3 +1,4 @@
+use eframe::egui;
 use kichi_core::types::{FileList, Quota, ShareList, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -211,6 +212,11 @@ pub enum Cmd {
     /// 重试移动转存文件到目标目录(自动移动失败后手动重试)。
     RetryMoveShare {
         dest: String,
+    },
+    /// 加载缩略图: 从 URL 下载到本地缓存, 解码后发送 ThumbnailReady。
+    LoadThumbnail {
+        file_id: String,
+        url: String,
     },
 }
 
@@ -440,6 +446,13 @@ pub enum Msg {
     /// 重试移动失败。
     ShareMoveRetryFailed {
         what: String,
+    },
+    /// 缩略图已加载并解码为 RGBA 像素。
+    ThumbnailReady {
+        file_id: String,
+        width: u32,
+        height: u32,
+        pixels: Vec<egui::Color32>,
     },
     Error {
         what: String,

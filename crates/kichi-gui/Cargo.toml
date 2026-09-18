@@ -15,6 +15,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 keyring = "4.2.0"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [dependencies.eframe]
 version = "0.31"

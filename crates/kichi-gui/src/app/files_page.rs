@@ -1,11 +1,12 @@
 use eframe::egui::{
-    self, vec2, Align, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText, Stroke, UiBuilder,
+    self, vec2, Align, Color32, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText, Stroke, UiBuilder, pos2,
 };
 
 use kichi_core::types::File;
 
 use crate::format;
 use crate::icons::{self, Glyph};
+use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
 use super::helpers::{is_media_file, is_video_file, truncate_text};
@@ -1099,12 +1100,30 @@ impl App {
                             }
                         } else {
                             // 图标视图
-                            let card_w = 100.0;
-                            let card_h = 100.0;
+                            let card_w = 104.0;
+                            let card_h = 120.0;
                             let gap = 8.0;
                             let avail_w = inner.width();
                             let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
                             let total_rows = all_files.len().div_ceil(cols);
+
+                            // 请求可见文件的缩略图
+                            for f in &all_files {
+                                if !f.is_folder() {
+                                    if let Some(url) = &f.thumbnail_link {
+                                        if !self.thumbnail_textures.contains_key(&f.id)
+                                            && !self.thumbnail_inflight.contains(&f.id)
+                                        {
+                                            self.thumbnail_inflight.insert(f.id.clone());
+                                            self.send(Cmd::LoadThumbnail {
+                                                file_id: f.id.clone(),
+                                                url: url.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
                             for row in 0..total_rows {
                                 ui.horizontal(|ui| {
                                     ui.add_space(4.0);
@@ -1205,24 +1224,52 @@ impl App {
                                             ));
                                         }
 
-                                        // 文件图标（居中偏上）
-                                        let (glyph, color) = file_visual(f);
+                                        // 文件图标或缩略图（居中偏上）
                                         let icon_size = 36.0;
                                         let icon_rect = Rect::from_center_size(
                                             Pos2::new(rect.center().x, rect.min.y + 34.0),
                                             vec2(icon_size, icon_size),
                                         );
-                                        let tile_bg = if is_sel && th.breeze {
-                                            mix(
-                                                th.on_accent,
-                                                color,
-                                                if th.dark { 0.22 } else { 0.14 },
-                                            )
+
+                                        if let Some(texture) = self.thumbnail_textures.get(&f.id) {
+                                            // 渲染缩略图（保持宽高比）
+                                            let max_size = 90.0;
+                                            let tex_size = texture.size_vec2();
+                                            let aspect = tex_size.x / tex_size.y;
+                                            
+                                            let (w, h) = if aspect > 1.0 {
+                                                // 横向图片
+                                                (max_size, max_size / aspect)
+                                            } else {
+                                                // 纵向图片
+                                                (max_size * aspect, max_size)
+                                            };
+                                            
+                                            let thumb_rect = Rect::from_center_size(
+                                                Pos2::new(rect.center().x, rect.min.y + 48.0),
+                                                vec2(w, h),
+                                            );
+                                            painter.image(
+                                                texture.id(),
+                                                thumb_rect,
+                                                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                                                Color32::WHITE,
+                                            );
                                         } else {
-                                            mix(th.card, color, if th.dark { 0.16 } else { 0.10 })
-                                        };
-                                        painter.rect_filled(icon_rect, th.cr(8), tile_bg);
-                                        icons::paint(&painter, icon_rect.shrink(4.0), glyph, color);
+                                            // 回退到类型图标
+                                            let (glyph, color) = file_visual(f);
+                                            let tile_bg = if is_sel && th.breeze {
+                                                mix(
+                                                    th.on_accent,
+                                                    color,
+                                                    if th.dark { 0.22 } else { 0.14 },
+                                                )
+                                            } else {
+                                                mix(th.card, color, if th.dark { 0.16 } else { 0.10 })
+                                            };
+                                            painter.rect_filled(icon_rect, th.cr(8), tile_bg);
+                                            icons::paint(&painter, icon_rect.shrink(4.0), glyph, color);
+                                        }
 
                                         // 文件名（底部居中，最多 2 行）
                                         let name = &f.name;
