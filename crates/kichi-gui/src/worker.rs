@@ -1282,6 +1282,11 @@ async fn prepare_subtitles(
     paths
 }
 
+/// 预览缓存是否已命中(UI 侧用于跳过大文件确认)。
+pub(crate) fn preview_cached(file_id: &str, name: &str) -> bool {
+    preview_cache_path(file_id, name).exists()
+}
+
 /// 非媒体预览: 下载到本地缓存(命中缓存则跳过), 再交给系统查看器打开。
 async fn preview_download(
     client: &KichiClient,

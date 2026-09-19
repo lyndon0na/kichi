@@ -469,6 +469,14 @@ pub(crate) enum QualityMenuState<'a> {
     Ready(&'a QualityReady),
 }
 
+/// 大文件预览确认弹窗的状态: 非媒体预览需先整份下载, 超过阈值时先问一次。
+#[derive(Clone)]
+pub(crate) struct PreviewConfirm {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+}
+
 /// 分享创建成功后的结果展示。
 #[derive(Clone)]
 pub(crate) struct ShareResult {

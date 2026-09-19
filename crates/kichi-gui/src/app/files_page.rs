@@ -5,7 +5,7 @@ use eframe::egui::{
 
 use kichi_core::types::File;
 
-use crate::filetypes::{self, file_visual, FileType};
+use crate::filetypes::{self, file_visual, FileType, PreviewKind};
 use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
@@ -172,24 +172,31 @@ fn play_menu(
     });
 }
 
-/// 预览入口: 视频给「播放」子菜单(含清晰度), 音频给「播放」, 其余给「打开」。
+/// 预览入口: 视频给「播放」子菜单(含清晰度), 音频给「播放」, 其余给「打开」;
+/// 压缩包 / 镜像 / 可执行 / 种子不给入口, 只留「下载到本地」。
 fn preview_menu_items(
     ui: &mut egui::Ui,
     f: &File,
     quality: QualityMenuState<'_>,
     actions: &mut Vec<RowAction>,
 ) {
-    let label = match filetypes::classify_file(f) {
-        FileType::Video => {
+    let ft = filetypes::classify_file(f);
+    match filetypes::preview_kind(ft) {
+        PreviewKind::DownloadOnly => {}
+        PreviewKind::Play if ft == FileType::Video => {
             play_menu(ui, &f.id, &f.name, quality, actions);
-            return;
         }
-        FileType::Audio => "播放",
-        _ => "打开",
-    };
-    if ui.button(label).clicked() {
-        actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
-        ui.close_menu();
+        kind => {
+            let label = if kind == PreviewKind::Play {
+                "播放"
+            } else {
+                "打开"
+            };
+            if ui.button(label).clicked() {
+                actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
+                ui.close_menu();
+            }
+        }
     }
 }
 
@@ -868,7 +875,10 @@ impl App {
                             let single = sel_meta.len() == 1;
                             let open_sel = if single && !dl_candidates.is_empty() {
                                 let (id, name) = sel_meta[0].clone();
-                                Some((self.file_type(&id, &name), id, name))
+                                let ft = self.file_type(&id, &name);
+                                // 只下载类不给入口(双击由 open_preview 兜底提示)。
+                                (filetypes::preview_kind(ft) != PreviewKind::DownloadOnly)
+                                    .then_some((ft, id, name))
                             } else {
                                 None
                             };

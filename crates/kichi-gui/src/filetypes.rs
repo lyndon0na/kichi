@@ -19,6 +19,21 @@ pub(crate) enum FileType {
     Other,
 }
 
+/// 预览入口形态。
+///
+/// 政策是**排除名单口径**: 只有压缩包 / 镜像 / 可执行 / 种子不给预览入口,
+/// 其余(含未知扩展名)保留「打开」—— 文档白名单需覆盖 Office 全家桶 +
+/// WPS 专有格式, 易漏, 故不做白名单。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PreviewKind {
+    /// 交给 mpv 流式播放, 不落盘。
+    Play,
+    /// 下载到本地缓存后交给系统查看器。
+    Open,
+    /// 不提供预览入口, 只留「下载到本地」。
+    DownloadOnly,
+}
+
 /// 可用 mpv 播放的视频扩展名(小写)。
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "ts", "rmvb", "m4v", "m2ts", "mpg", "mpeg",
@@ -167,6 +182,15 @@ pub(crate) fn classify_file(f: &File) -> FileType {
     classify(&f.name, f.mime_type.as_deref())
 }
 
+/// 预览入口形态。
+pub(crate) fn preview_kind(ft: FileType) -> PreviewKind {
+    match ft {
+        FileType::Video | FileType::Audio => PreviewKind::Play,
+        FileType::Archive | FileType::Executable | FileType::Torrent => PreviewKind::DownloadOnly,
+        _ => PreviewKind::Open,
+    }
+}
+
 /// 类型 -> 图标 / 颜色。
 pub(crate) fn glyph_color(ft: FileType) -> (Glyph, Color32) {
     match ft {
@@ -267,6 +291,65 @@ mod tests {
             ),
             FileType::Executable
         );
+    }
+
+    #[test]
+    fn download_only_types() {
+        for name in [
+            "a.zip", "a.rar", "a.7z", "a.tar", "a.gz", "a.xz", "a.iso", "a.img", "a.dmg",
+        ] {
+            assert_eq!(
+                preview_kind(classify(name, None)),
+                PreviewKind::DownloadOnly,
+                "{name}"
+            );
+        }
+        for name in [
+            "a.exe",
+            "a.msi",
+            "a.deb",
+            "a.rpm",
+            "a.apk",
+            "a.appimage",
+            "a.bin",
+        ] {
+            assert_eq!(
+                preview_kind(classify(name, None)),
+                PreviewKind::DownloadOnly,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            preview_kind(classify("a.torrent", None)),
+            PreviewKind::DownloadOnly
+        );
+        // mime 侧同样生效。
+        assert_eq!(
+            preview_kind(classify("noext", Some("application/x-iso9660-image"))),
+            PreviewKind::DownloadOnly
+        );
+        assert_eq!(
+            preview_kind(classify(
+                "noext",
+                Some("application/vnd.microsoft.portable-executable")
+            )),
+            PreviewKind::DownloadOnly
+        );
+    }
+
+    #[test]
+    fn viewable_types_keep_open() {
+        // 排除名单口径: 未知 / 冷门扩展名保留「打开」。
+        for name in [
+            "a.pdf", "a.docx", "a.txt", "a.ass", "a.jpg", "a.psd", "a.wps", "a.dat", "noext",
+        ] {
+            assert_eq!(
+                preview_kind(classify(name, None)),
+                PreviewKind::Open,
+                "{name}"
+            );
+        }
+        assert_eq!(preview_kind(classify("song.mp3", None)), PreviewKind::Play);
     }
 
     #[test]

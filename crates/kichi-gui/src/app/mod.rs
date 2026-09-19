@@ -31,9 +31,12 @@ use crate::worker;
 use self::helpers::install_fonts;
 use self::types::{
     ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
-    OfflineTab, Page, QualityReady, ShareResult, SortBy, TransferTab, UlFilter, UlJob, UlStatus,
-    UploadPick, ViewMode,
+    OfflineTab, Page, PreviewConfirm, QualityReady, ShareResult, SortBy, TransferTab, UlFilter,
+    UlJob, UlStatus, UploadPick, ViewMode,
 };
+
+/// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
+const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;
 
 /// 下载任务状态 -> 持久化记录状态(非终态仅在异常情况下出现, 兜底标记未完成)。
 fn dl_record_status(s: &DlStatus) -> DownloadRecordStatus {
@@ -253,6 +256,8 @@ pub struct App {
 
     /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
     pub(crate) preview_pending: Option<(u64, String)>,
+    /// 待确认的大文件预览(非媒体预览需先整份下载, 超过阈值先问一次)。
+    pub(crate) preview_confirm: Option<PreviewConfirm>,
 
     /// 已解析的媒体文件清晰度缓存(file_id -> 清晰度+字幕)。
     pub(crate) quality_cache: HashMap<String, QualityReady>,
@@ -636,6 +641,7 @@ impl App {
             ul_last_clicked: None,
             upload_pick: None,
             preview_pending: None,
+            preview_confirm: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
             thumbnail_textures: HashMap::new(),
@@ -803,6 +809,7 @@ impl App {
                     self.last_clicked_dl = None;
                     self.clipboard = None;
                     self.preview_pending = None;
+                    self.preview_confirm = None;
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
                     self.dir_cache.clear();
@@ -836,6 +843,7 @@ impl App {
                     self.last_clicked_dl = None;
                     self.clipboard = None;
                     self.preview_pending = None;
+                    self.preview_confirm = None;
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
                     self.reset_stack();
@@ -2604,9 +2612,11 @@ impl App {
     }
 
     /// 预览云端文件: 音/视频交给 mpv 流式播放, 其他下载后交给系统查看器。
+    ///
+    /// 所有入口(双击 / 右键菜单 / 工具栏)都汇到这里: 只下载类直接拒绝并提示;
+    /// 非媒体预览要整份下载, 超过 [`PREVIEW_CONFIRM_BYTES`] 且未命中缓存时先确认。
     pub(crate) fn open_preview(&mut self, id: String, name: String) {
         let ft = self.file_type(&id, &name);
-        let media = matches!(ft, filetypes::FileType::Video | filetypes::FileType::Audio);
         tracing::debug!(
             "预览路由「{name}」: mime={:?} → {ft:?}",
             self.files
@@ -2614,6 +2624,36 @@ impl App {
                 .find(|f| f.id == id)
                 .and_then(|f| f.mime_type.as_deref())
         );
+        match filetypes::preview_kind(ft) {
+            filetypes::PreviewKind::DownloadOnly => {
+                self.toast_warn(&format!("「{name}」不支持预览, 可用「下载到本地」"));
+                return;
+            }
+            filetypes::PreviewKind::Open => {
+                let size = self.file_size(&id);
+                if size > PREVIEW_CONFIRM_BYTES && !worker::preview_cached(&id, &name) {
+                    self.preview_confirm = Some(PreviewConfirm { id, name, size });
+                    return;
+                }
+            }
+            filetypes::PreviewKind::Play => {}
+        }
+        self.start_preview(id, name);
+    }
+
+    /// 某文件的大小(查不到条目时按 0 处理, 不触发大文件确认)。
+    fn file_size(&self, id: &str) -> i64 {
+        self.files
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| f.size)
+            .unwrap_or(0)
+    }
+
+    /// 真正发起预览(供大文件确认通过后复用)。
+    fn start_preview(&mut self, id: String, name: String) {
+        let ft = self.file_type(&id, &name);
+        let media = matches!(ft, filetypes::FileType::Video | filetypes::FileType::Audio);
         let req_id = self.alloc_req_id();
         self.preview_pending = Some((req_id, name.clone()));
         // 同目录下的同集字幕, 播放时一并挂载(仅视频需要)。

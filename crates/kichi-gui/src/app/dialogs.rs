@@ -175,6 +175,46 @@ impl App {
             }
         }
 
+        if let Some(pc) = self.preview_confirm.clone() {
+            let mut confirmed = false;
+            let mut close = false;
+            egui::Window::new("预览大文件")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_max_width(360.0);
+                    ui.label(format!(
+                        "「{}」大小为 {}, 预览前需要先完整下载到本地缓存。",
+                        pc.name,
+                        crate::format::fmt_bytes(pc.size)
+                    ));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("继续预览").color(th.on_accent))
+                                    .fill(th.accent)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            confirmed = true;
+                            close = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if confirmed {
+                self.start_preview(pc.id.clone(), pc.name.clone());
+            }
+            if close {
+                self.preview_confirm = None;
+            }
+        }
+
         if self.logout_confirm {
             let mut confirmed = false;
             let mut close = false;
