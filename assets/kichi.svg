@@ -8,6 +8,6 @@
   </defs>
   <rect x="2" y="2" width="252" height="252" rx="56" fill="#ffffff" stroke="#DDE3EC" stroke-width="4"/>
   <rect x="86" y="54" width="34" height="148" rx="17" fill="url(#kichi-p)"/>
-  <circle cx="140" cy="100" r="48" fill="url(#kichi-p)"/>
-  <circle cx="146" cy="100" r="21" fill="#ffffff"/>
+  <path d="M103 130 L172 76" stroke="url(#kichi-p)" stroke-width="34" stroke-linecap="round" fill="none"/>
+  <path d="M103 126 L172 180" stroke="url(#kichi-p)" stroke-width="34" stroke-linecap="round" fill="none"/>
 </svg>
