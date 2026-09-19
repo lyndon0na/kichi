@@ -1,4 +1,5 @@
 mod app;
+mod cache;
 mod credentials;
 mod format;
 mod icons;

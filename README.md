@@ -194,7 +194,8 @@ crates/
 └── kichi-gui/                   # eframe(egui) 桌面应用
     └── src/
         ├── main.rs              # 入口
-        ├── logging.rs           # 日志初始化（stderr + ~/.cache/kichi/kichi.log）
+        ├── logging.rs           # 日志初始化（stderr + ~/.cache/kichi/kichi.log，按大小轮转）
+        ├── cache.rs             # 磁盘缓存淘汰（预览 / 缩略图共用的 mtime-LRU + 双上限）
         ├── app/                 # UI 模块（按职责拆分）
         │   ├── mod.rs           # App 结构体、初始化、消息处理、业务逻辑
         │   ├── types.rs         # Page / ViewMode / TransferTab / DlJob 等内部类型
@@ -266,9 +267,12 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 | `~/.config/kichi/settings.json` | 记住的账号、本地下载目录、是否记住密码 |
 | `~/.config/kichi/downloads.json` | 本地下载历史（最多 200 条，启动时恢复为任务列表） |
 | `~/.config/kichi/uploads.json` | 本地上传历史（最多 200 条，启动时恢复为任务列表） |
-| `~/.cache/kichi/kichi.log` | 运行日志（同时输出到 stderr）；级别由 `KICHI_LOG` / `RUST_LOG` 控制 |
-| `~/.cache/kichi/preview/` | 非流媒体文件的预览缓存（按文件 id 分目录） |
-| `~/.cache/kichi/thumbnails/` | 网格视图缩略图磁盘缓存（按文件 id 存储） |
+| `~/.cache/kichi/kichi.log` | 运行日志（同时输出到 stderr）。按大小轮转：单文件上限 1 MiB、保留 3 个 `.1`/`.2`/`.3` 备份（`KICHI_LOG_MAX_MB` / `KICHI_LOG_FILES` 可覆盖）；级别由 `KICHI_LOG` / `RUST_LOG` 控制 |
+| `~/.cache/kichi/preview/` | 非流媒体文件的预览缓存（按文件 id 分目录）。上限 512 MiB / 200 项，超限按「最久未使用」淘汰 |
+| `~/.cache/kichi/thumbnails/` | 网格视图缩略图磁盘缓存（按文件 id 存储）。上限 128 MiB / 1000 项，超限按「最久未使用」淘汰 |
+
+> [!NOTE]
+> 两个磁盘缓存都会在启动时整理一次，并在写入后按节流自动淘汰；正在预览 / 正在下载的条目不会被删，因此上限是「软上限」。设置页「缓存」卡片可查看当前占用并手动清空。
 
 > [!NOTE]
 > 「记住密码」的密码保存在**系统密钥环**（KDE Wallet / GNOME Keyring，Secret Service），不会明文写入上述配置文件；密钥环不可用时只记住账号，不影响正常登录。

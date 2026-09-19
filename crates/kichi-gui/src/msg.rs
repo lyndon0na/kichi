@@ -233,6 +233,11 @@ pub enum Cmd {
         part_concurrency: usize,
         max_attempts: usize,
     },
+    /// 维护磁盘缓存(预览 / 缩略图)。`purge=true` 清空, 否则只按上限淘汰。
+    /// 处理完回传 `Msg::CacheUsage`, 供设置页展示占用。
+    MaintainCache {
+        purge: bool,
+    },
 }
 
 /// 后台线程 -> UI 消息。
@@ -480,6 +485,12 @@ pub enum Msg {
         width: u32,
         height: u32,
         pixels: Vec<egui::Color32>,
+    },
+    /// 磁盘缓存占用(预览 + 缩略图)。`freed` 为本次操作释放的字节数。
+    CacheUsage {
+        bytes: u64,
+        entries: usize,
+        freed: u64,
     },
     Error {
         what: String,

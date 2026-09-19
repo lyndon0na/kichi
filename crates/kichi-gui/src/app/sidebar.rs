@@ -253,6 +253,10 @@ impl App {
             if p == Page::Trash && self.page != Page::Trash {
                 self.enter_trash();
             }
+            // 进入「设置」时让缓存占用重新统计(离开期间可能已经被淘汰过)。
+            if p == Page::Settings && self.page != Page::Settings {
+                self.cache_usage = None;
+            }
             self.page = p;
         }
 

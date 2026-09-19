@@ -58,6 +58,13 @@ impl Default for DirEntry {
     }
 }
 
+/// 磁盘缓存(预览 + 缩略图)的占用情况, 用于设置页展示。
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CacheUsage {
+    pub bytes: u64,
+    pub entries: usize,
+}
+
 #[derive(Clone)]
 pub(crate) enum RowAction {
     OpenFolder(String, String),

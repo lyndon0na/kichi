@@ -98,6 +98,132 @@ const TASKS_POLL_ACTIVE: Duration = Duration::from_secs(3);
 const TASKS_POLL_IDLE: Duration = Duration::from_secs(60);
 /// 配额轮询节拍: 变化慢, 且登录与删除等操作后已显式刷新。
 const QUOTA_POLL: Duration = Duration::from_secs(60);
+/// 磁盘缓存淘汰的节流: 距上次扫描超过该间隔就扫一次。
+const CACHE_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(60);
+/// 磁盘缓存淘汰的节流: 或累计新增超过该字节数时扫一次。
+const CACHE_SWEEP_MIN_NEW_BYTES: u64 = 8 << 20;
+
+/// 磁盘缓存的控制句柄: 「正在使用」登记 + 淘汰节流状态。
+///
+/// 从 `WorkerState` 里拆出来是为了能按值传进 spawn 出的任务。
+#[derive(Clone)]
+struct CacheCtl {
+    /// 正在写入 / 刚交给系统的缓存路径; 淘汰时跳过。
+    in_use: Arc<Mutex<HashSet<PathBuf>>>,
+    gate: Arc<Mutex<CacheGate>>,
+}
+
+/// 淘汰节流状态: 写入缓存后要累计到一定量或过一段时间, 才真去扫目录。
+struct CacheGate {
+    last: Instant,
+    new_bytes: u64,
+}
+
+/// 缓存路径的「正在使用」登记; drop 时自动注销。
+struct InUseGuard {
+    set: Arc<Mutex<HashSet<PathBuf>>>,
+    paths: Vec<PathBuf>,
+}
+
+impl Drop for InUseGuard {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.set.lock() {
+            for p in &self.paths {
+                s.remove(p);
+            }
+        }
+    }
+}
+
+impl CacheCtl {
+    fn new() -> Self {
+        Self {
+            in_use: Arc::new(Mutex::new(HashSet::new())),
+            gate: Arc::new(Mutex::new(CacheGate {
+                last: Instant::now(),
+                new_bytes: 0,
+            })),
+        }
+    }
+
+    /// 登记一组正在使用的缓存路径(下载目标与 `.part`), 返回的守卫 drop 时注销。
+    fn mark_in_use(&self, paths: &[PathBuf]) -> InUseGuard {
+        if let Ok(mut s) = self.in_use.lock() {
+            s.extend(paths.iter().cloned());
+        }
+        InUseGuard {
+            set: self.in_use.clone(),
+            paths: paths.to_vec(),
+        }
+    }
+
+    /// 记一笔缓存写入(字节数); 达到节流阈值就触发一次后台淘汰。
+    fn note_write(&self, bytes: u64) {
+        let due = {
+            let Ok(mut g) = self.gate.lock() else { return };
+            g.new_bytes = g.new_bytes.saturating_add(bytes);
+            if g.new_bytes < CACHE_SWEEP_MIN_NEW_BYTES
+                && g.last.elapsed() < CACHE_SWEEP_MIN_INTERVAL
+            {
+                false
+            } else {
+                g.last = Instant::now();
+                g.new_bytes = 0;
+                true
+            }
+        };
+        if due {
+            tokio::spawn(sweep_caches(self.clone(), false, None));
+        }
+    }
+}
+
+/// 扫描两个缓存根: `purge=false` 按上限淘汰, `purge=true` 清空。
+/// `reply` 非空时回传占用情况(设置页展示)。
+async fn sweep_caches(cache: CacheCtl, purge: bool, reply: Option<Sender<Msg>>) {
+    // 先取一次「正在使用」快照, 供整个扫描过程使用。
+    let snapshot: HashSet<PathBuf> = cache.in_use.lock().map(|g| g.clone()).unwrap_or_default();
+    let roots: [(PathBuf, crate::cache::Caps); 2] = [
+        (preview_root(), crate::cache::PREVIEW_CAPS),
+        (thumbnail_cache_dir(), crate::cache::THUMB_CAPS),
+    ];
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut total = crate::cache::Sweep::default();
+        for (root, caps) in &roots {
+            let s = if purge {
+                crate::cache::purge(root, &snapshot)
+            } else {
+                crate::cache::evict_lru(root, caps, &snapshot)
+            };
+            total.bytes += s.bytes;
+            total.entries += s.entries;
+            total.removed += s.removed;
+            total.freed += s.freed;
+        }
+        total
+    })
+    .await;
+
+    match (reply, result) {
+        (Some(tx), Ok(total)) => {
+            if total.removed > 0 {
+                tracing::info!(
+                    "缓存清理: 删除 {} 项, 释放 {} 字节",
+                    total.removed,
+                    total.freed
+                );
+            }
+            let _ = tx.send(Msg::CacheUsage {
+                bytes: total.bytes,
+                entries: total.entries,
+                freed: total.freed,
+            });
+        }
+        (_, Err(e)) => tracing::warn!("缓存扫描任务失败: {e}"),
+        _ => {}
+    }
+}
 
 struct WorkerState {
     client: Option<Arc<KichiClient>>,
@@ -111,6 +237,8 @@ struct WorkerState {
     max_attempts: u32,
     /// OSS 分片并发数, 应用于新建 client 与设置变更。
     part_concurrency: usize,
+    /// 磁盘缓存(预览 / 缩略图)的登记与淘汰节流。
+    cache: CacheCtl,
     /// 已占用的目标文件名集合(键: "目录\0文件名"), 用于同名去重。
     reserved: Arc<Mutex<HashSet<String>>>,
     /// 离线任务每 phase 已加载的页数(刷新时保持分页深度)。
@@ -151,6 +279,7 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
         ul_sem: Arc::new(Gate::new(saved.ul_concurrency)),
         max_attempts: saved.max_attempts as u32,
         part_concurrency: saved.part_concurrency,
+        cache: CacheCtl::new(),
         reserved: Arc::new(Mutex::new(HashSet::new())),
         tasks_pages: BTreeMap::new(),
         tasks_next: BTreeMap::new(),
@@ -160,6 +289,9 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
     };
 
     tracing::info!("后台 worker 已启动");
+    // 启动时后台清一次磁盘缓存: 上次运行可能在写满 / 超限的状态下退出。
+    // 丢给 spawn 是为了不挡首屏(自动登录、列目录都排在后面)。
+    tokio::spawn(sweep_caches(st.cache.clone(), false, None));
     loop {
         let msg = rx.recv_timeout(POLL_TICK);
 
@@ -627,11 +759,12 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 return;
             };
             let tx = tx.clone();
+            let cache = st.cache.clone();
             tokio::spawn(async move {
                 if media {
-                    preview_stream(&client, &tx, req_id, file_id, name, subtitles).await;
+                    preview_stream(&client, &tx, req_id, file_id, name, subtitles, cache).await;
                 } else {
-                    preview_download(&client, &tx, req_id, file_id, name).await;
+                    preview_download(&client, &tx, req_id, file_id, name, cache).await;
                 }
             });
         }
@@ -640,8 +773,9 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 return;
             };
             let tx = tx.clone();
+            let cache = st.cache.clone();
             tokio::spawn(async move {
-                preview_qualities(&client, &tx, file_id, subtitles).await;
+                preview_qualities(&client, &tx, file_id, subtitles, cache).await;
             });
         }
         Cmd::CreateShare {
@@ -856,6 +990,12 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 client.set_part_concurrency(part_concurrency);
             }
         }
+        Cmd::MaintainCache { purge } => {
+            // 扫描 / 删除都是阻塞 IO, 交给后台任务, 不占住 worker 主循环。
+            let cache = st.cache.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move { sweep_caches(cache, purge, Some(tx)).await });
+        }
     }
 }
 
@@ -1016,8 +1156,9 @@ async fn preview_stream(
     file_id: String,
     name: String,
     subtitles: Vec<(String, String)>,
+    cache: CacheCtl,
 ) {
-    let subs = prepare_subtitles(client, &subtitles).await;
+    let subs = prepare_subtitles(client, &subtitles, &cache).await;
     match client.file_download_link(&file_id).await {
         Ok(link) => {
             let headers = client.stream_headers(&link.url).await;
@@ -1044,8 +1185,9 @@ async fn preview_qualities(
     tx: &Sender<Msg>,
     file_id: String,
     subtitles: Vec<(String, String)>,
+    cache: CacheCtl,
 ) {
-    let subs = prepare_subtitles(client, &subtitles).await;
+    let subs = prepare_subtitles(client, &subtitles, &cache).await;
     match client.media_variants(&file_id).await {
         Ok(variants) => {
             // 每个清晰度单独探测所需请求头(通常 2~4 项)。
@@ -1075,23 +1217,32 @@ async fn preview_qualities(
 
 /// 下载同集外挂字幕到预览缓存, 返回本地路径。
 /// 尽力而为: 单条失败(解析直链或下载出错)时跳过, 不影响视频播放。
-async fn prepare_subtitles(client: &KichiClient, subtitles: &[(String, String)]) -> Vec<PathBuf> {
+async fn prepare_subtitles(
+    client: &KichiClient,
+    subtitles: &[(String, String)],
+    cache: &CacheCtl,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for (id, name) in subtitles {
         let dest = preview_cache_path(id, name);
         if dest.exists() {
+            // 命中缓存: 刷新 mtime, 让 LRU 知道它刚被用过。
+            crate::cache::touch(&dest);
             paths.push(dest);
             continue;
         }
         let Ok(link) = client.file_download_link(id).await else {
             continue;
         };
-        if client
-            .download_to(&link, &dest, None, |_, _| {})
-            .await
-            .is_ok()
-        {
-            paths.push(dest);
+        // 下载期间(含 `.part`)登记为使用中, 避免被并发的淘汰删掉。
+        let guard = cache.mark_in_use(&[dest.clone(), part_path(&dest)]);
+        match client.download_to(&link, &dest, None, |_, _| {}).await {
+            Ok(size) => {
+                drop(guard);
+                cache.note_write(size);
+                paths.push(dest);
+            }
+            Err(e) => tracing::debug!("字幕下载失败 {name}: {e}"),
         }
     }
     paths
@@ -1104,9 +1255,12 @@ async fn preview_download(
     req_id: u64,
     file_id: String,
     name: String,
+    cache: CacheCtl,
 ) {
     let dest = preview_cache_path(&file_id, &name);
     if dest.exists() {
+        // 命中缓存: 刷新 mtime, 让 LRU 知道它刚被用过。
+        crate::cache::touch(&dest);
         let _ = tx.send(Msg::PreviewReady {
             req_id,
             name,
@@ -1124,8 +1278,12 @@ async fn preview_download(
             return;
         }
     };
+    // 下载期间(含 `.part`)登记为使用中, 避免被并发的淘汰删掉。
+    let guard = cache.mark_in_use(&[dest.clone(), part_path(&dest)]);
     match client.download_to(&link, &dest, None, |_, _| {}).await {
-        Ok(_) => {
+        Ok(size) => {
+            drop(guard);
+            cache.note_write(size);
             let _ = tx.send(Msg::PreviewReady {
                 req_id,
                 name,
@@ -1172,18 +1330,26 @@ async fn load_thumbnail(st: &WorkerState, tx: &Sender<Msg>, file_id: String, url
     };
     let dest = thumbnail_cache_path(&file_id);
 
-    // 磁盘缓存未命中时下载。
+    // 磁盘缓存未命中时下载; 写入期间登记为使用中(缩略图是「写完即读」)。
     if !dest.exists() {
+        let guard = st.cache.mark_in_use(std::slice::from_ref(&dest));
         if let Err(e) = client.download_thumbnail(&url, &dest).await {
             tracing::debug!("缩略图下载失败 {}: {e}", file_id);
             return;
         }
+        let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        drop(guard);
+        st.cache.note_write(size);
+    } else {
+        // 命中缓存: 刷新 mtime, 让 LRU 知道它刚被用过。
+        crate::cache::touch(&dest);
     }
 
     // 从磁盘读取并解码。
     let file_id_clone = file_id.clone();
+    let read_path = dest.clone();
     let result = tokio::task::spawn_blocking(move || -> Option<(u32, u32, Vec<egui::Color32>)> {
-        let data = std::fs::read(&dest).ok()?;
+        let data = std::fs::read(&read_path).ok()?;
         let img = image::load_from_memory(&data).ok()?;
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();

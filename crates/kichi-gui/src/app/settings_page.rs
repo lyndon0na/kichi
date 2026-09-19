@@ -62,6 +62,11 @@ fn transfer_row(
 
 impl App {
     pub(super) fn settings_page(&mut self, ctx: &egui::Context, th: &Theme) {
+        // 进入页面时统计一次磁盘缓存占用(只读, 不删东西)。
+        if self.cache_usage.is_none() && !self.cache_usage_pending {
+            self.cache_usage_pending = true;
+            self.send(Cmd::MaintainCache { purge: false });
+        }
         egui::CentralPanel::default()
             .frame(Frame::new().fill(th.bg).inner_margin(Margin {
                 left: 20,
@@ -164,6 +169,62 @@ impl App {
                         part_concurrency: self.part_concurrency,
                         max_attempts: self.max_attempts,
                     });
+                }
+                ui.add_space(14.0);
+
+                // 磁盘缓存(预览 / 缩略图)
+                let usage = self.cache_usage;
+                let sweeping = self.cache_sweeping;
+                let mut purge = false;
+                settings_card(ui, th, "缓存", &mut |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(2.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("预览与缩略图缓存").color(th.text_weak));
+                            let text = if sweeping {
+                                "正在清理…".to_string()
+                            } else {
+                                match usage {
+                                    Some(u) => format!(
+                                        "{} · {} 项",
+                                        crate::format::fmt_bytes(u.bytes as i64),
+                                        u.entries
+                                    ),
+                                    None => "正在统计…".to_string(),
+                                }
+                            };
+                            ui.label(RichText::new(text).color(th.text_faint).size(12.0));
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !sweeping,
+                                    egui::Button::new(
+                                        RichText::new("清空缓存").color(th.text_weak),
+                                    )
+                                    .stroke(Stroke::new(1.0, th.border))
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .corner_radius(th.cr(8)),
+                                )
+                                .clicked()
+                            {
+                                purge = true;
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(
+                            "超过上限时按「最久未使用」自动淘汰; 正在预览或正在传输的项不会被删。",
+                        )
+                        .color(th.text_faint)
+                        .size(11.5),
+                    );
+                });
+                if purge {
+                    self.cache_sweeping = true;
+                    self.cache_usage_pending = true;
+                    self.send(Cmd::MaintainCache { purge: true });
                 }
                 ui.add_space(14.0);
 

@@ -262,6 +262,13 @@ pub struct App {
     pub(crate) thumbnail_textures: HashMap<String, egui::TextureHandle>,
     /// 正在加载缩略图的文件 id。
     pub(crate) thumbnail_inflight: HashSet<String>,
+
+    /// 磁盘缓存(预览 + 缩略图)占用; None = 未查询或查询中。
+    pub(crate) cache_usage: Option<types::CacheUsage>,
+    /// 是否已发出占用查询(避免每帧重复发)。
+    pub(crate) cache_usage_pending: bool,
+    /// 是否正在执行手动清理。
+    pub(crate) cache_sweeping: bool,
     /// 网格视图卡片大小(80-160)。
     pub(crate) grid_card_size: f32,
 
@@ -629,6 +636,9 @@ impl App {
             quality_inflight: HashSet::new(),
             thumbnail_textures: HashMap::new(),
             thumbnail_inflight: HashSet::new(),
+            cache_usage: None,
+            cache_usage_pending: false,
+            cache_sweeping: false,
             grid_card_size: 104.0,
             shares: Vec::new(),
             shares_next: None,
@@ -1489,6 +1499,21 @@ impl App {
                         egui::TextureOptions::LINEAR,
                     );
                     self.thumbnail_textures.insert(file_id, texture);
+                }
+                Msg::CacheUsage {
+                    bytes,
+                    entries,
+                    freed,
+                } => {
+                    self.cache_usage = Some(types::CacheUsage { bytes, entries });
+                    self.cache_usage_pending = false;
+                    self.cache_sweeping = false;
+                    if freed > 0 {
+                        self.toast_ok(&format!(
+                            "已清理缓存, 释放 {}",
+                            crate::format::fmt_bytes(freed as i64)
+                        ));
+                    }
                 }
             }
         }
