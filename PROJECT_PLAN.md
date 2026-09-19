@@ -39,7 +39,7 @@
 ## 三、里程碑
 
 > [!NOTE]
-> M0–M21 已全部完成；细节分别见[第四节](#四功能现状)与[第五节](#五关键实现笔记)。
+> M0–M22 已全部完成；细节分别见[第四节](#四功能现状)与[第五节](#五关键实现笔记)。
 
 - [x] **M0 · 调研 API**
   - 梳理端点、加签算法、登录 / 文件 / 离线任务的数据结构
@@ -137,6 +137,16 @@
   - 下载目录框不受影响：它本就用 `download_dir` 记忆，与上传的记忆互不干扰；原任务描述里的「新建 / 重命名对话框」是应用内纯文本弹框、没有本地目录参数，已按实际口径修正
   - 新增单测 3 项（记忆目录命中（含末尾分隔符）/ 失效与空值回退 / 记自身与父目录的推导）
 
+- [x] **M22 · 发行包与发布 CI（P3-1）**
+  - **AppImage**（`packaging/build-appimage.sh` + `packaging/appimage/AppRun`）：cargo 构建 release → 组装 AppDir（`usr/bin` + desktop + hicolor 图标 + 根目录同名 PNG 与 `.DirIcon`）→ appimagetool 出包；工具版本与 SHA256 写死在脚本里，缺失时自动下载到 `~/.cache/kichi-packaging`
+  - **appimagetool 1.9 的坑**：它只在 **AppDir 根目录**找 `*.desktop`，且 `G_FILE_TEST_IS_REGULAR` 要求是普通文件 —— `usr/share/applications/` 下的那份不算数，必须额外在根部放一份；光栅化器改为逐个试（rsvg-convert → ksvgtopng → magick → inkscape）并校验产物非空，因为 `ksvgtopng` 缺输出目录、`magick` 参数顺序不对时会「退出码 0 但没产物」
+  - **Flatpak**（`packaging/flatpak/io.github.lyndon0na.Kichi.yml` + `packaging/build-flatpak.sh`）：freedesktop 25.08 Platform / Sdk + `rust-stable` 扩展，沙箱内 `cargo build --release --locked` 后装进 `/app`（`skip` 掉 `target` / `dist` / `.git` / `.github`）
+  - **沙箱适配**（三处，UI 无差别）：沙箱里没有 mpv（freedesktop 运行时不带），播放改经 `flatpak-spawn --host mpv` 借宿主程序（`helpers::host_command` 统一两种形态，参数完全一致）；运行时字体不含中文，`install_fonts` 的候选表改为「挂载根 × 相对路径」两维展开，同时扫 `/usr/share/fonts` 与 flatpak 挂进来的 `/run/host/fonts`；`app_id` 取 `FLATPAK_ID`，让窗口能关联 `<应用 ID>.desktop`
+  - **构建期网络**：flatpak-builder 默认掐断构建沙箱网络（实测沙箱内 DNS 直接失败），清单里用 `build-options.build-args: [--share=network]` 放行（`--share-net` 是 bwrap 语法、flatpak 不认）；若日后要上 Flathub，需改为离线构建并提交 cargo 源清单
+  - **CI**（`.github/workflows/release.yml`）：AppImage 在 `ubuntu-22.04` 构建（glibc 门槛等于构建机 → 官方包可跑 Ubuntu 22.04+ / Debian 12+；本地在 Fedora 44 构建只能跑 Fedora 43+/滚动发行版），Flatpak 在 `ubuntu-24.04`（沙箱内自带运行时，与构建机发行版无关）；推 `v*` tag 构建完自动发 Release（已存在则 `--clobber` 覆盖上传），`workflow_dispatch` 只上传 artifacts
+  - 本地实测：AppImage 解包后二进制正常启动；Flatpak 装进用户级安装后沙箱内无缺失库、宿主字体与 `kdeglobals` 可见、`flatpak-spawn --host mpv` 可用、GUI 正常起窗（不暴露 X11，日志里会有一条 arboard 的 X11 剪贴板告警 —— 剪贴板实际走 Wayland 通道）
+  - 新增单测 2 项（宿主命令前缀 / 中文字体候选查找）
+
 ## 四、功能现状
 
 ### 已实现
@@ -232,6 +242,8 @@
 | 非媒体预览成本 | 预览前需整份下载到本地缓存（超过 64 MiB 且未命中缓存时先弹确认）—— 压缩包 / 镜像这类「看了也没用」的类型已收掉入口，但图片 / 文档仍可能是个大文件 |
 | 文件类型兜底 | 服务端 `mime_type` 缺失或为通用类型（`octet-stream` 等）时按扩展名判定，扩展名也未知则**保留「打开」**（排除名单口径）：宁可多给入口，也不因白名单漏项而让正常文件失去打开方式 |
 | 打开失败的判定 | 依赖 `xdg-open` 退出码 + stderr 措辞（KDE 分支实际调用 `kde-open`，文案无法从源码确认）：命中「no method available / no application / no handler」等措辞时提示「系统未关联打开…」，其余非零退出统一回退为「打开失败: <stderr 首行>」；阻塞型 handler 超过 1s 未退出即视为已启动，不再等待 |
+| 发行包 | 只提供 AppImage 与 Flatpak（rpm 不做）。AppImage 的 glibc 门槛等于构建机：官方产物在 `ubuntu-22.04` 构建（glibc 2.35），本地在 Fedora 44 构建只能跑 Fedora 43+ / 滚动发行版 |
+| Flatpak 沙箱 | 配置 / 缓存落在 `~/.var/app/io.github.lyndon0na.Kichi/`（首次需重新登录并重选下载目录）；音视频播放依赖**宿主**已安装的 `mpv`（经 `flatpak-spawn --host`）；不暴露 X11（剪贴板走 Wayland 通道，启动日志可能有一条 arboard 告警） |
 
 ## 五、关键实现笔记
 
@@ -401,16 +413,16 @@ classify(name, mime)              预览入口                       预览执�
 
 | 检查 | 结果 |
 | :-- | :-- |
-| `cargo test --workspace` | **74 项**（核心库 33 + GUI 41；本轮新增 filetypes 分类 9 + 打开探针措辞 1 + `de_number`/`de_string` 兼容 5） |
+| `cargo test --workspace` | **91 项**（核心库 33 + GUI 58；本轮新增宿主命令前缀 1 + 中文字体候选查找 1） |
 | `cargo check --workspace` | 零 warning |
 | `cargo clippy --workspace --all-targets` | 零 warning |
 | `cargo fmt --all -- --check` | 零差异（配置见 `rustfmt.toml`） |
-| 真机验证 | 登录、自动续期、目录加载、离线任务查询（用户账户实测） |
+| 真机验证 | 登录、自动续期、目录加载、离线任务查询（用户账户实测）；Flatpak 装进用户级安装后沙箱内无缺失库、宿主字体 / `kdeglobals` 可见、`flatpak-spawn --host mpv` 可用、GUI 起窗正常 |
 
 <details>
 <summary>测试覆盖范围</summary>
 
-加签 golden 向量、JSON 解析、token 边界、直链解析回退、清晰度解析、文件名净化、batchMove / batchCopy 请求体、媒体类型识别、分享列表 / 创建响应解析、回收站 trashed 过滤条件；目录下载的本地路径拼接 / 净化、目录子文件聚合进度与状态推导、目录树子目录计数上卷；日志的备份位移与最旧丢弃、只在行尾轮转、启动时兜底轮转超限文件；磁盘缓存的字节 / 条目上限淘汰顺序、目录条目按子树最新 mtime 计龄、豁免窗口与「正在使用」路径豁免、清空缓存、缺失根目录视为空；缩略图请求行区间的「可见区 ± 一屏」、滚动跟随、越界收敛与短列表截断；文件类型分类的强 mime 覆盖扩展名（`.ts` 三态）/ 通用 mime 回退扩展名 / 只下载类与保留打开类 / 图标与预览判定一致 / 字幕识别 / 文件夹判定；`xdg-open` 无关联程序措辞匹配（且不误判「文件不存在」）；`de_number` / `de_string` 的数字 / 字符串 / 浮点 / 布尔 / `null` / 缺字段兼容形式。
+加签 golden 向量、JSON 解析、token 边界、直链解析回退、清晰度解析、文件名净化、batchMove / batchCopy 请求体、媒体类型识别、分享列表 / 创建响应解析、回收站 trashed 过滤条件；目录下载的本地路径拼接 / 净化、目录子文件聚合进度与状态推导、目录树子目录计数上卷；日志的备份位移与最旧丢弃、只在行尾轮转、启动时兜底轮转超限文件；磁盘缓存的字节 / 条目上限淘汰顺序、目录条目按子树最新 mtime 计龄、豁免窗口与「正在使用」路径豁免、清空缓存、缺失根目录视为空；缩略图请求行区间的「可见区 ± 一屏」、滚动跟随、越界收敛与短列表截断；文件类型分类的强 mime 覆盖扩展名（`.ts` 三态）/ 通用 mime 回退扩展名 / 只下载类与保留打开类 / 图标与预览判定一致 / 字幕识别 / 文件夹判定；`xdg-open` 无关联程序措辞匹配（且不误判「文件不存在」）；`de_number` / `de_string` 的数字 / 字符串 / 浮点 / 布尔 / `null` / 缺字段兼容形式；宿主程序调用前缀（Flatpak 内 `flatpak-spawn --host` / 沙箱外直连）与中文字体候选的「挂载根 × 相对路径」查找顺序。
 
 </details>
 
@@ -425,7 +437,7 @@ classify(name, mime)              预览入口                       预览执�
   - 分享转存：解析 mypikpak 分享链接并保存到我的网盘（`share` / `share/detail` / `share/restore`），含分页 / 过滤 / 目标目录 / 移动重试；转存暂存目录（「转存自分享」）按持久化 ID 定位，ID 失效时回退名称匹配并刷新缓存
   - 回收站浏览 / 还原 / 彻底删除（含清空）
 - [ ] **体验继续** —— 全局搜索、任务详情进度
-- [ ] **分发** —— 完善 `desktop` 文件与图标、rpm / AppImage 打包、发布构建 CI
+- [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；`desktop` 文件与图标的进一步完善见 TODO P3-4
 
 ## 八、环境
 

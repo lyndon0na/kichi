@@ -3,12 +3,13 @@
 # Kichi — PikPak Linux 客户端
 
 <p>
-  <img alt="Rust" src="https://img.shields.io/badge/Rust-edition%202021-000000?logo=rust&logoColor=white">
-  <img alt="GUI" src="https://img.shields.io/badge/GUI-egui%20%2F%20eframe%200.31-1f6feb">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-blue">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="Unofficial" src="https://img.shields.io/badge/PikPak-unofficial-orange">
+  <a href="https://www.rust-lang.org/"><img alt="Rust" src="https://img.shields.io/badge/Rust-edition%202021-000000?logo=rust&logoColor=white"></a>
+  <a href="https://github.com/emilk/egui"><img alt="GUI" src="https://img.shields.io/badge/GUI-egui%20%2F%20eframe%200.31-1f6feb"></a>
+  <a href="https://github.com/lyndon0na/kichi#构建与运行"><img alt="Platform" src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black"></a>
+  <a href="https://github.com/lyndon0na/kichi/releases"><img alt="Version" src="https://img.shields.io/github/v/release/lyndon0na/kichi?label=version&color=blue&sort=semver"></a>
+  <a href="https://github.com/lyndon0na/kichi/actions/workflows/release.yml"><img alt="Build" src="https://github.com/lyndon0na/kichi/actions/workflows/release.yml/badge.svg"></a>
+  <a href="https://github.com/lyndon0na/kichi/blob/master/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="https://github.com/lyndon0na/kichi#免责声明"><img alt="Unofficial" src="https://img.shields.io/badge/PikPak-unofficial-orange"></a>
 </p>
 
 基于逆向私有 API 的 PikPak 云盘 Linux 桌面客户端 · Rust + egui · 单一二进制
@@ -220,6 +221,15 @@ crates/
         ├── msg.rs               # 前后台消息协议
         ├── settings.rs          # 设置与下载 / 上传历史持久化
         └── format.rs            # 大小 / 时间 / 状态文案格式化
+
+packaging/                       # 桌面集成与发行包
+├── kichi.desktop                # 桌面入口（原生运行 / AppImage 共用）
+├── install-icon.sh              # 安装 desktop + hicolor 图标（用户级）
+├── build-appimage.sh            # AppImage 出包（组装 AppDir + appimagetool）
+├── appimage/AppRun              # AppImage 入口脚本
+├── build-flatpak.sh             # Flatpak 出包（flatpak-builder + build-bundle）
+└── flatpak/io.github.lyndon0na.Kichi.yml   # Flatpak 清单（沙箱内源码构建）
+.github/workflows/release.yml    # 推 v* tag 自动打包 AppImage / Flatpak 并发 Release
 ```
 
 </details>
@@ -262,6 +272,26 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 
 脚本会写入 `kichi.desktop` 与 hicolor 图标（SVG 源文件位于 `assets/kichi.svg`）。应用启动时已声明 `app_id = "kichi"`，重启应用后任务栏 / 窗口即显示新图标。
 
+### 4. 打包（AppImage / Flatpak）
+
+发行包由 GitHub Actions 在推 `v*` tag 时自动构建并附到 Release（`.github/workflows/release.yml`；手动触发只产出 workflow artifacts）。本地可用同一套脚本出包：
+
+```bash
+# AppImage -> dist/Kichi-<版本>-x86_64.AppImage
+./packaging/build-appimage.sh
+
+# Flatpak bundle -> dist/Kichi-<版本>-x86_64.flatpak（加 --install 同时装入用户级 flatpak）
+./packaging/build-flatpak.sh [--install]
+```
+
+| 产物 | CI 构建环境 | 说明 |
+| :-- | :-- | :-- |
+| AppImage | `ubuntu-22.04` | 免安装，双击即可运行（系统无 FUSE 时用 `--appimage-extract-and-run`）。**glibc 门槛等于构建机**：官方产物 glibc ≥ 2.35，本地在 Fedora 44 构建的只能跑 Fedora 43+ / 滚动发行版 |
+| Flatpak | `ubuntu-24.04` | 单文件安装：`flatpak install --user ./Kichi-<版本>-x86_64.flatpak`。沙箱内用 freedesktop 25.08 SDK 源码构建，与构建机发行版无关 |
+
+> [!NOTE]
+> Flatpak 版与原生运行有几处差异：配置 / 缓存落在 `~/.var/app/io.github.lyndon0na.Kichi/`（首次需要重新登录并重选下载目录）；音视频播放调用**宿主**已安装的 `mpv`（经 `flatpak-spawn --host`，宿主没装时仍提示安装）；中文字体取自宿主字体（`/run/host/fonts`）；界面配色照旧跟随 KDE `kdeglobals`。沙箱不暴露 X11，启动日志里可能有一条 arboard（X11 剪贴板）告警，可忽略 —— 剪贴板实际走 Wayland 通道。
+
 ## 配置与数据
 
 | 文件 | 作用 |
@@ -302,3 +332,5 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 [rclone](https://github.com/rclone/rclone) 等，仅用于个人学习研究。
 
 详细路线见 [PROJECT_PLAN.md](./PROJECT_PLAN.md)。
+
+问题反馈 / 功能建议走 [GitHub Issues](https://github.com/lyndon0na/kichi/issues)；本仓库以 MIT 许可发布，见 [LICENSE](./LICENSE)。

@@ -114,6 +114,23 @@ pub(crate) fn open_url(url: &str) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// 是否运行在 Flatpak 沙箱内: 沙箱里没有 mpv 这类宿主程序, 需要经 flatpak-spawn 借用。
+pub(crate) fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists()
+}
+
+/// 构造调用宿主程序的命令: Flatpak 沙箱内走 `flatpak-spawn --host <程序>`,
+/// 沙箱外直接执行, 两种形态下后续参数完全一致。
+fn host_command(program: &str, flatpak: bool) -> std::process::Command {
+    if flatpak {
+        let mut cmd = std::process::Command::new("flatpak-spawn");
+        cmd.arg("--host").arg(program);
+        cmd
+    } else {
+        std::process::Command::new(program)
+    }
+}
+
 /// 用 mpv 流式播放直链, 并携带签名直链所需的请求头。
 /// `subs` 为同集外挂字幕的本地路径, 会作为 `--sub-file` 挂载。
 pub(crate) fn play_with_mpv(
@@ -122,7 +139,7 @@ pub(crate) fn play_with_mpv(
     headers: &[(String, String)],
     subs: &[PathBuf],
 ) -> std::io::Result<()> {
-    let mut cmd = std::process::Command::new("mpv");
+    let mut cmd = host_command("mpv", in_flatpak());
     cmd.arg("--force-window=yes");
     // 直链直接交给 ffmpeg 播放即可, 关闭 ytdl 钩子(否则会对直链跑 youtube-dl)。
     cmd.arg("--ytdl=no");
@@ -486,19 +503,35 @@ pub(crate) fn icon_action(
     resp.on_hover_text(tip).clicked()
 }
 
+/// 中文字体候选: 「挂载根 × 相对路径」两维展开。Flatpak 沙箱里运行时自带字体中
+/// 没有中文, 宿主字体由 flatpak 挂到 /run/host/fonts, 目录结构与 /usr/share/fonts 相同。
+const FONT_ROOTS: [&str; 2] = ["/usr/share/fonts", "/run/host/fonts"];
+const FONT_FILES: [&str; 7] = [
+    "google-droid-sans-fonts/DroidSansFallbackFull.ttf",
+    "wqy-zenhei-fonts/wqy-zenhei.ttc",
+    "truetype/wqy/wqy-zenhei.ttc",
+    "truetype/droid/DroidSansFallbackFull.ttf",
+    "noto-cjk/NotoSansCJK-Regular.ttc",
+    "opentype/noto/NotoSansCJK-Regular.ttc",
+    "google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
+];
+
+/// 按候选顺序返回第一款可读的中文字体。
+fn read_cjk_font_from(roots: &[&str], files: &[&str]) -> Option<Vec<u8>> {
+    for root in roots {
+        for rel in files {
+            if let Ok(bytes) = std::fs::read(format!("{root}/{rel}")) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
     let mut fonts = egui::FontDefinitions::default();
-    const CANDIDATES: [&str; 6] = [
-        "/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/wqy-zenhei-fonts/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    ];
-    let mut loaded = false;
-    for path in CANDIDATES {
-        if let Ok(bytes) = std::fs::read(path) {
+    let loaded = match read_cjk_font_from(&FONT_ROOTS, &FONT_FILES) {
+        Some(bytes) => {
             let name = "cjk".to_string();
             fonts
                 .font_data
@@ -506,17 +539,20 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
                 fonts.families.entry(family).or_default().push(name.clone());
             }
-            loaded = true;
-            break;
+            true
         }
-    }
+        None => false,
+    };
     ctx.set_fonts(fonts);
     loaded
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_no_handler, picked_dir, picker_start_dir, subtitle_of};
+    use super::{
+        host_command, looks_like_no_handler, picked_dir, picker_start_dir, read_cjk_font_from,
+        subtitle_of,
+    };
 
     #[test]
     fn picker_start_prefers_existing_remembered_dir() {
@@ -608,5 +644,37 @@ mod tests {
         assert!(!subtitle_of("ep01.mkv", "ep02.ass"));
         assert!(!subtitle_of("ep01.mkv", "extra.ass"));
         assert!(!subtitle_of("ep01.mkv", "noext"));
+    }
+
+    #[test]
+    fn flatpak_prefixes_host_spawn() {
+        let native = host_command("mpv", false);
+        assert_eq!(native.get_program(), "mpv");
+        assert_eq!(native.get_args().count(), 0);
+
+        let sandboxed = host_command("mpv", true);
+        assert_eq!(sandboxed.get_program(), "flatpak-spawn");
+        let args: Vec<String> = sandboxed
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--host", "mpv"]);
+    }
+
+    #[test]
+    fn cjk_font_lookup_scans_roots_then_files() {
+        let root = std::env::temp_dir().join(format!("kichi-font-{}", std::process::id()));
+        let rel = "wqy-zenhei-fonts/wqy-zenhei.ttc";
+        std::fs::create_dir_all(root.join("wqy-zenhei-fonts")).unwrap();
+        std::fs::write(root.join(rel), b"font").unwrap();
+
+        let files = ["nope/x.ttf", rel];
+        // 宿主根与沙箱根共用同一份相对路径表, 命中即止。
+        assert_eq!(
+            read_cjk_font_from(&["/nonexistent", root.to_str().unwrap()], &files).as_deref(),
+            Some(&b"font"[..])
+        );
+        assert_eq!(read_cjk_font_from(&["/nonexistent"], &files), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

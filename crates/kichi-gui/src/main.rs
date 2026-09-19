@@ -15,12 +15,13 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     logging::init();
+    // Wayland 下窗口图标由 app_id 关联桌面文件与图标主题: Flatpak 里应用 ID
+    // 就是沙箱标识(io.github.lyndon0na.Kichi), 原生运行时用 desktop 文件同名。
+    let app_id = std::env::var("FLATPAK_ID").unwrap_or_else(|_| "kichi".to_string());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Kichi")
-            // Wayland 下 winit 无法直接设置窗口图标; 这里声明 app_id,
-            // 由 KDE/GNOME 将其与 kichi.desktop 及主题图标关联。
-            .with_app_id("kichi")
+            .with_app_id(app_id)
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([900.0, 560.0]),
         centered: true,

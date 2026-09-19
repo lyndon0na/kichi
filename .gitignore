@@ -5,6 +5,7 @@ target/
 .delta/
 .commandcode/
 .workbuddy/
+dist/
 
 # 编辑器 / 系统
 *.swp

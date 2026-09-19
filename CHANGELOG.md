@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-19
+
 ### 新增
 
 - **登录 / 账户**：邮箱 / 手机号密码登录（captcha 流程）、会话持久化与自动续期、「记住密码」写入系统密钥环
@@ -19,6 +21,7 @@
 - **文件预览**：`mpv` 流式播放（清晰度选择 + 外挂字幕）、其它文件交系统查看器；非媒体预览下载期间显示进度条并可随时取消
 - **界面与体验**：侧边栏导航、KDE 主题跟随、中文字体与任务角标
 - **设置 · 缓存**：展示预览 / 缩略图缓存占用，并支持一键清空
+- **发行包与发布 CI**：新增 AppImage 与 Flatpak 打包 —— `packaging/build-appimage.sh`（组装 AppDir + 固定版本 appimagetool 出包）与 `packaging/build-flatpak.sh` + `packaging/flatpak/io.github.lyndon0na.Kichi.yml`（freedesktop 25.08 沙箱内源码构建，`--install` 可直接装入用户级 flatpak）；`.github/workflows/release.yml` 在推 `v*` tag 时自动构建两者并发 Release，手动触发只产出 workflow artifacts。Flatpak 内做了宿主桥接：音视频播放仍用**宿主**已装的 `mpv`（`flatpak-spawn --host`）、中文字体取自宿主（`/run/host/fonts`）、窗口 `app_id` 取 `FLATPAK_ID`（任务栏图标可正常关联）、界面配色照旧跟随 KDE `kdeglobals`
 
 ### 变更
 
@@ -26,6 +29,7 @@
 - **预览入口按类型分层**：压缩包 / 镜像 / 可执行 / 种子不再出现「打开」（只留「下载到本地」，双击时提示改用下载）；非媒体预览超过 64 MiB 且未命中缓存时先弹确认（需整份下载）；文件类型判定收敛为单点，`mime_type` 参与判定 —— `.ts` 之类二义扩展名不再被误送播放器，改名成 `.bin` / 无扩展名的视频也能走播放链路
 - **离线任务轮询**：自动刷新节拍随任务活动自适应（存在等待 / 下载中任务时约 3s，否则约 60s）；配额轮询降频，并由登录 / 删除 / 上传完成等操作显式刷新
 - **日志与磁盘缓存占用**：`kichi.log` 改为按大小轮转（单文件 1 MiB、保留 3 个备份，`KICHI_LOG_MAX_MB` / `KICHI_LOG_FILES` 可覆盖）；预览缓存与缩略图缓存按「最久未使用」自动淘汰（上限 512 MiB / 200 项、128 MiB / 1000 项），不再无限增长；正在预览或正在传输的条目不会被删
+- **仓库链接**：`Cargo.toml` 补回 `repository` 字段（workspace 定义、两个 crate 继承，`cargo metadata` 可读到）；README 顶部徽章全部改为可点击的仓库链接，其中版本徽章与新增的打包状态徽章跟随 GitHub Release / Actions 自动更新（不再手写版本号），免责声明末尾补 Issues 与 LICENSE 链接
 
 ### 修复
 

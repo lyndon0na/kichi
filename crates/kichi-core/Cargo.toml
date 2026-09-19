@@ -3,6 +3,7 @@ name = "kichi-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "kichi_core"

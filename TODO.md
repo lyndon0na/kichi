@@ -11,7 +11,7 @@
 | **P0** | 用户可见的功能缺口 | 0 |
 | **P1** | 正确性与健壮性 | 0 |
 | **P2** | 可维护性与工程 | 0 |
-| **P3** | 分发与发布 | 4 |
+| **P3** | 分发与发布 | 2 |
 
 ---
 
@@ -31,9 +31,7 @@
 
 | 编号 | 任务 | 主要文件 | 说明 / 验收 |
 | :-- | :-- | :-- | :-- |
-| P3-1 | 打包（rpm / AppImage / flatpak） | `packaging/`（新增 spec / AppImage 配置）<br>`assets/` | 目前只有 `.desktop` + `install-icon.sh`，无发行包 |
-| P3-2 | 发布构建 CI（**暂缓**） | 新增 `.github/workflows/` | 无任何 CI。当前是本地单人开发，暂不需要流水线（`cargo test` 手动跑即可）；待确定远端仓库、开始出发行包时再加 `fmt --check` / `clippy` / `test` + tag 触发打包，与 P3-3 一并推进 |
-| P3-3 | 补回 `repository` 字段 | `Cargo.toml` | 占位符已移除，确定远端仓库后填回，并同步 README 徽章 / 免责声明的链接 |
+| P3-2 | 常规 CI（**暂缓**） | `.github/workflows/` | 发布打包流水线已随 P3-1 落地（`release.yml`：tag 触发打包发 Release）；仍缺日常的 `fmt --check` / `clippy` / `test` 作业 —— 本地单人开发（`cargo test` 手动跑即可），需要时再加 |
 | P3-4 | desktop 文件完善 | `packaging/kichi.desktop`<br>`packaging/install-icon.sh` | 可按需补 `TryExec`、系统级安装路径等 |
 
 ---
@@ -66,5 +64,14 @@
 - [x] P2-8 缩略图纹理降采样 + 上限淘汰（`65fd939`，方向取「并用」）：`Cmd::LoadThumbnail` 带上 `max_edge`（UI 按最大卡片 160 × 0.85 × `pixels_per_point` 算出，钳 128–512），worker 解码后经 `fit_within_max_edge` 缩到最长边以内再上传 GPU —— 服务端实测 720×405（RGBA ≈ 1.17 MB/张）降到 136×76（≈ 41 KB）～272×153（≈ 166 KB）；`thumbnail_textures` 换成新 `app/thumbs.rs` 的 `ThumbTextures`——64 MiB / 512 张**双上限**（同 `cache.rs` 语义）+ 2s 宽限期，网格每帧 `mark_used` 可见 ± 一屏、绘制后 `evict`，视野内不会被淘汰后立刻重解码，淘汰项滚回时命中磁盘缓存重解码、不走网络。卡片尺寸常量（`GRID_CARD_MIN/MAX`、`THUMB_MAX_CARD_RATIO`）单点化消除数字漂移；新增单测 12 项（纹理 LRU 8 + `thumb_max_edge` 1 + `fit_within_max_edge` 3）
 - [x] P2-5 对话框起始目录记忆（`5281820`）：新增持久化字段 `Settings.last_dir`，上传文件 / 上传文件夹两个原生选择框改从「上次用过的目录」起（`helpers::picker_start_dir`：记忆目录仍存在 → 其本身，否则 `home_dir` → 进程 CWD），选择确认后回写（`helpers::picked_dir`：目录选择记其自身、文件多选记首个文件的父目录）；下载目录框沿用原有 `download_dir` 记忆，两者互不干扰。**原描述按实际口径修正**：新建 / 重命名是应用内纯文本弹框、没有本地目录参数，下载目录框也从未从 CWD 起（一直用 `download_dir` 兜底），真正用了 `std::env::current_dir()` 的只有上传的两个弹框。新增单测 3 项（记忆目录命中 / 失效与空值回退 / 记自身与父目录的推导）
 
+- [x] P3-1 发行包（AppImage / Flatpak）+ 发布 CI —— **rpm 不做**：
+  - **AppImage**：`packaging/build-appimage.sh` 构建 release → 组装 AppDir（二进制 / desktop / hicolor 图标 / 根目录同名 PNG 与 `.DirIcon`）→ 固定版 appimagetool（1.9.1，SHA256 写死、缺失时自动下载到 `~/.cache/kichi-packaging`）出包，入口为 `packaging/appimage/AppRun`。踩坑：appimagetool 1.9 只在 AppDir **根目录**找 `.desktop`、且必须是普通文件；光栅化器改为逐个试并校验产物非空（`ksvgtopng` 缺输出目录 / `magick` 参数顺序不对会「退出码 0 但没产物」）
+  - **Flatpak**：`packaging/flatpak/io.github.lyndon0na.Kichi.yml`（freedesktop 25.08 Platform/Sdk + `rust-stable` 扩展，沙箱内源码构建；构建期网络靠 `build-options.build-args: [--share=network]` 放行）与 `packaging/build-flatpak.sh`（可选 `--install` 装入用户级 flatpak）
+  - **沙箱适配**：播放经 `flatpak-spawn --host mpv` 借宿主 mpv（`helpers::host_command`，沙箱外形态不变）；中文字体候选改为「挂载根 × 相对路径」两维展开，加扫 flatpak 挂进来的 `/run/host/fonts`；`app_id` 取 `FLATPAK_ID` 以关联 `<应用 ID>.desktop`；`finish-args` 给 home 访问、`kdeglobals` 只读、Secret Service 与 Flatpak 桥接权限
+  - **CI**：`.github/workflows/release.yml` —— AppImage 在 `ubuntu-22.04` 构建（glibc 2.35 门槛）、Flatpak 在 `ubuntu-24.04`；推 `v*` tag 自动发 Release，`workflow_dispatch` 只上传 artifacts
+  - 新增单测 2 项；本地实测 AppImage 解包启动正常、Flatpak 安装后沙箱内无缺失库、宿主字体 / `kdeglobals` 可见、mpv 桥接可用、GUI 起窗正常（`helpers.rs` / `main.rs` / `packaging/` / `.github/workflows/release.yml`）
+
+- [x] P3-3 补回仓库链接：`Cargo.toml` 的 `[workspace.package]` 补 `repository = "https://github.com/lyndon0na/kichi"`，两个 crate 用 `repository.workspace = true` 继承（`cargo metadata` 可直接读到，只写 workspace 层不会传导到包）；README 顶部徽章全部改为可点链接并新增动态徽章 —— 版本徽章换成 shields 的 GitHub release 徽章（`sort=semver`，首个 tag 发布前显示 "no releases"）、新增 Release 工作流状态徽章；免责声明末尾补 Issues 与 LICENSE 链接（`Cargo.toml` / `crates/*/Cargo.toml` / `README.md`）
+
 > [!TIP]
-> P0、P1、P2 已全部完成，待办只剩 P3（分发与发布）；P3-2 / P3-3 待确定远端仓库后再做。
+> P0–P2 与 P3-1 / P3-3 已完成；待办剩 P3-2（常规 CI，暂缓）、P3-4（desktop 文件按需完善）。

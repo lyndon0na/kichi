@@ -1,0 +1,50 @@
+# Kichi 的 Flatpak 清单: 在 freedesktop SDK 沙箱里用源码构建。
+#
+# 本地 / CI 构建: packaging/build-flatpak.sh
+# 产物: dist/Kichi-<版本>-x86_64.flatpak
+app-id: io.github.lyndon0na.Kichi
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: kichi-gui
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+finish-args:
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # 下载目录由用户自选(设置里记住的任意目录), 因此需要家目录访问。
+  - --filesystem=home
+  # 跟随系统 Breeze 配色(kde.rs 读 $XDG_CONFIG_HOME/kdeglobals)。
+  - --filesystem=xdg-config/kdeglobals:ro
+  # 密钥环(KDE Wallet / GNOME Keyring)与「用宿主 mpv 播放」的 flatpak-spawn 通道。
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.freedesktop.Flatpak
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/kichi/cargo
+  # flatpak-builder 默认掐断构建沙箱的网络, 拉 crates.io 需要显式放行。
+  # (要上 Flathub 时应改为离线构建 + 提交 cargo 源清单)
+  build-args:
+    - --share=network
+modules:
+  - name: kichi
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked -p kichi-gui
+      - install -Dm755 target/release/kichi-gui /app/bin/kichi-gui
+      - install -Dm644 packaging/kichi.desktop /app/share/applications/io.github.lyndon0na.Kichi.desktop
+      # 沙箱内 app_id 即应用 ID(main.rs 读 FLATPAK_ID), 桌面文件与图标必须同名。
+      - sed -i -e 's/^Icon=kichi$/Icon=io.github.lyndon0na.Kichi/' -e 's/^StartupWMClass=kichi$/StartupWMClass=io.github.lyndon0na.Kichi/' /app/share/applications/io.github.lyndon0na.Kichi.desktop
+      - install -Dm644 assets/kichi.svg /app/share/icons/hicolor/scalable/apps/io.github.lyndon0na.Kichi.svg
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - dist
+          - .git
+          - .github

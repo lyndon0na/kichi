@@ -3,6 +3,7 @@ name = "kichi-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 kichi-core = { workspace = true }

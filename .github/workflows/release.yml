@@ -1,0 +1,103 @@
+name: Release
+
+# 推 v* tag 自动构建 AppImage / Flatpak 并发布 Release;
+# 手动触发(Actions 页面 Run workflow)只构建, 产物留在 workflow artifacts。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  appimage:
+    name: AppImage
+    # 用最老的可用 runner 构建: AppImage 的 glibc 门槛等于构建机, 22.04 = glibc 2.35
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo 依赖
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            librsvg2-bin pkg-config libssl-dev libxkbcommon-dev libwayland-dev
+
+      - name: 构建 AppImage
+        env:
+          KICHI_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: ./packaging/build-appimage.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+
+      - name: 缓存 flatpak 运行时
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/flatpak
+          key: ${{ runner.os }}-flatpak-25.08
+          restore-keys: ${{ runner.os }}-flatpak-
+
+      - name: 构建 Flatpak
+        env:
+          KICHI_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: ./packaging/build-flatpak.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    # tag 触发才发 Release; 手动触发只留 artifacts。
+    if: github.ref_type == 'tag'
+    needs: [appimage, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 创建 / 更新 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --title "Kichi $GITHUB_REF_NAME" --generate-notes dist/*
+          fi

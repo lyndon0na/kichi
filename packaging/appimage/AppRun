@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage 入口: 挂载点由运行时通过 APPDIR 传入, 直接转交 GUI 二进制。
+set -e
+exec "${APPDIR:-$(dirname "$(readlink -f "$0")")}/usr/bin/kichi-gui" "$@"
