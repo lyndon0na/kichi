@@ -10,7 +10,7 @@
 | :-- | :-- | :-- |
 | **P0** | 用户可见的功能缺口 | 0 |
 | **P1** | 正确性与健壮性 | 0 |
-| **P2** | 可维护性与工程 | 2 |
+| **P2** | 可维护性与工程 | 1 |
 | **P3** | 分发与发布 | 4 |
 
 ---
@@ -28,10 +28,9 @@
 | 编号 | 任务 | 主要文件 | 说明 / 验收 |
 | :-- | :-- | :-- | :-- |
 | P2-5 | 对话框起始目录记忆 | `crates/kichi-gui/src/app/mod.rs`（`std::env::current_dir()`） | 新建 / 重命名 / 选择目录对话框都从进程 CWD 起，应改用上次使用过的目录 |
-| P2-8 | 缩略图纹理显存无上限、无驱逐 | `crates/kichi-gui/src/app/mod.rs`（`thumbnail_textures`）<br>`crates/kichi-gui/src/worker.rs`（解码为 RGBA） | **P2-7 收尾时发现**：纹理按**解码后的原始尺寸**上传（`worker.rs` 里直接用 `rgba.dimensions()`，未按卡片实际显示尺寸降采样），且 `thumbnail_textures` 只增不删 —— 2000 张图 × 160px RGBA ≈ 200 MB 显存，切目录 / 刷新都不释放；P2-7 收窄了「下载多少」，没管「留住多少」。方向二选一或并用：① 解码前把超过卡片所需尺寸的图降采样（顺带省内存与上传带宽）；② 纹理按目录 / LRU 设上限淘汰。判据：反复进出几个大图目录后显存不持续增长，且卡片显示质量无可感下降 |
 
 > [!NOTE]
-> **P2 剩余两项无耦合**：`P2-5`（对话框起始目录记忆）体量小、改动集中在一处，适合先收；`P2-8`（缩略图纹理显存只增不减）是 `P2-7` 收尾时发现的新问题，需先定「降采样 / 上限淘汰」的方向再动手，收益是长时间浏览大图目录不再持续吃显存。
+> **P2 只剩 `P2-5`**（对话框起始目录记忆，体量小、改动集中在一处）。`P2-8`（缩略图纹理显存）已完成：解码降采样 + 纹理按字节 LRU，见下方「已完成」与 `PROJECT_PLAN.md` M20。
 
 ## P3 · 分发与发布
 
@@ -69,6 +68,7 @@
   - **进度与取消**：非媒体预览下载接入 `download_to` 的 cancel / on_progress 管线（150ms 节流），右下角常驻状态条显示文件名 + 进度条（总大小未知时走不确定动画）+ ✕ 取消；取消后 worker 丢弃未完成的 `.part` 并静默退出（新增 `Cmd::CancelPreview` / `Msg::PreviewProgress`）。
   - 新增单测 10 项：filetypes 分类 9（媒体扩展名 / 强 mime 覆盖 `.ts` / 通用 mime 回退 / 非媒体分类 / 只下载类 / 保留打开类 / 图标与判定一致 / 字幕识别 / 文件夹）+ 探针措辞匹配 1（`filetypes.rs` / `app/helpers.rs` / `app/mod.rs` / `app/files_page.rs` / `app/transfers_page.rs` / `app/dialogs.rs` / `app/types.rs` / `worker.rs` / `msg.rs` / `main.rs`）
 - [x] P2-4 补测试（唯一保留项）：`de_number` / `de_string` 的 serde 兼容性用例 5 项 —— `File.size` 与 `Quota` 覆盖数字 / 数字字符串 / 浮点截断 / `null` / 缺字段；`Share` 计数类字段覆盖数字 / 布尔 / `null` 统一转字符串；并把「无法解析的字符串静默归零」固化为已知取舍（`types.rs`，`7097890`）。其余子项按原评估继续搁置（`visible_rows` 需先抽自由函数，`app/*` 页面不追覆盖率）
+- [x] P2-8 缩略图纹理降采样 + 上限淘汰（方向取「并用」）：`Cmd::LoadThumbnail` 带上 `max_edge`（UI 按最大卡片 160 × 0.85 × `pixels_per_point` 算出，钳 128–512），worker 解码后经 `fit_within_max_edge` 缩到最长边以内再上传 GPU —— 服务端实测 720×405（RGBA ≈ 1.17 MB/张）降到 136×76（≈ 41 KB）～272×153（≈ 166 KB）；`thumbnail_textures` 换成新 `app/thumbs.rs` 的 `ThumbTextures`——64 MiB / 512 张**双上限**（同 `cache.rs` 语义）+ 2s 宽限期，网格每帧 `mark_used` 可见 ± 一屏、绘制后 `evict`，视野内不会被淘汰后立刻重解码，淘汰项滚回时命中磁盘缓存重解码、不走网络。卡片尺寸常量（`GRID_CARD_MIN/MAX`、`THUMB_MAX_CARD_RATIO`）单点化消除数字漂移；新增单测 12 项（纹理 LRU 8 + `thumb_max_edge` 1 + `fit_within_max_edge` 3）
 
 > [!TIP]
-> P0、P1 已全部完成，P2 只剩 `P2-5`（对话框起始目录记忆，体量小）与 `P2-8`（缩略图纹理显存，需先定方向）。P3-2 / P3-3 待确定远端仓库后再做。
+> P0、P1 已全部完成，P2 只剩 `P2-5`（对话框起始目录记忆，体量小）。P3-2 / P3-3 待确定远端仓库后再做。

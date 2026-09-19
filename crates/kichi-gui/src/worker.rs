@@ -1009,7 +1009,11 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
-        Cmd::LoadThumbnail { file_id, url } => {
+        Cmd::LoadThumbnail {
+            file_id,
+            url,
+            max_edge,
+        } => {
             // 不在此处 await: 缩略图下载若占住命令循环, 期间的目录加载 / 预览 /
             // 删除 / 配额刷新全都要排队。交给独立任务, 并用固定并发闸限流。
             let Some(client) = st.client.clone() else {
@@ -1022,7 +1026,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             let my_gen = gen.load(Ordering::Relaxed);
             let tx = tx.clone();
             tokio::spawn(async move {
-                load_thumbnail(&client, &tx, &cache, sem, gen, my_gen, file_id, url).await;
+                load_thumbnail(
+                    &client, &tx, &cache, sem, gen, my_gen, file_id, url, max_edge,
+                )
+                .await;
             });
         }
         Cmd::SetTransferLimits {
@@ -1425,8 +1432,23 @@ fn url_snippet(url: &str) -> String {
     s
 }
 
+/// 把解码后的图缩到最长边不超过 `max_edge`: 服务端缩略图(实测 720×405)远大于
+/// 卡片所需, 上传 GPU 前先降采样, 显存与上传量都按输出尺寸算。
+/// 已经足够小的图原样返回(不放大)。
+fn fit_within_max_edge(img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    let longest = w.max(h);
+    if longest <= max_edge {
+        return img;
+    }
+    let scale = max_edge as f64 / longest as f64;
+    let nw = ((w as f64 * scale).round() as u32).max(1);
+    let nh = ((h as f64 * scale).round() as u32).max(1);
+    img.thumbnail(nw, nh)
+}
+
 /// 加载缩略图: 先检查磁盘缓存, 未命中则从 URL 下载(有限次退避重试),
-/// 解码为 RGBA 后发送给 UI。
+/// 解码、按 `max_edge` 降采样为 RGBA 后发送给 UI。
 ///
 /// 失败一律回 `Msg::ThumbnailFailed`, 否则请求方的在途登记会悬空, 该文件
 /// 本次会话再也不会被请求(网格留空位); 目录代数过期则静默放弃, 不回包。
@@ -1440,6 +1462,7 @@ async fn load_thumbnail(
     my_gen: u64,
     file_id: String,
     url: String,
+    max_edge: u32,
 ) {
     if !is_usable_thumb_url(&url) {
         // 链接本身不可用(见 is_usable_thumb_url): 对这类文件来说「没有缩略图」是
@@ -1522,7 +1545,7 @@ async fn load_thumbnail(
     let result = tokio::task::spawn_blocking(move || -> Option<(u32, u32, Vec<egui::Color32>)> {
         let data = std::fs::read(&read_path).ok()?;
         let img = image::load_from_memory(&data).ok()?;
-        let rgba = img.to_rgba8();
+        let rgba = fit_within_max_edge(img, max_edge).to_rgba8();
         let (w, h) = rgba.dimensions();
         let pixels: Vec<egui::Color32> = rgba
             .pixels()
@@ -2411,5 +2434,27 @@ mod tests {
             .await
             .expect("槽位释放后未放行排队任务")
             .expect("排队任务 panic");
+    }
+
+    #[test]
+    fn fit_within_max_edge_downscales_and_keeps_aspect() {
+        // 服务端实测 720×405, 按 272 缩到 272×153(四舍五入)。
+        let img = image::DynamicImage::new_rgba8(720, 405);
+        let out = fit_within_max_edge(img, 272);
+        assert_eq!((out.width(), out.height()), (272, 153));
+    }
+
+    #[test]
+    fn fit_within_max_edge_uses_longest_side_for_portrait() {
+        let img = image::DynamicImage::new_rgba8(405, 720);
+        let out = fit_within_max_edge(img, 272);
+        assert_eq!((out.width(), out.height()), (153, 272));
+    }
+
+    #[test]
+    fn fit_within_max_edge_does_not_upscale_small_images() {
+        let img = image::DynamicImage::new_rgba8(136, 76);
+        let out = fit_within_max_edge(img, 272);
+        assert_eq!((out.width(), out.height()), (136, 76));
     }
 }

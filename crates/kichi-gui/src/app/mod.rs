@@ -6,6 +6,7 @@ mod settings_page;
 mod shares_page;
 mod sidebar;
 mod tasks_page;
+mod thumbs;
 mod transfers_page;
 mod trash_page;
 pub(crate) mod types;
@@ -268,8 +269,8 @@ pub struct App {
     /// 正在解析清晰度的文件 id。
     pub(crate) quality_inflight: HashSet<String>,
 
-    /// 已加载的缩略图纹理(file_id -> TextureHandle)。
-    pub(crate) thumbnail_textures: HashMap<String, egui::TextureHandle>,
+    /// 已加载的缩略图纹理(file_id -> TextureHandle), 带按字节上限的 LRU 淘汰。
+    pub(crate) thumbnail_textures: thumbs::ThumbTextures<egui::TextureHandle>,
     /// 正在加载缩略图的文件 id。
     pub(crate) thumbnail_inflight: HashSet<String>,
     /// 缩略图重试到底仍失败的文件 id(本次会话不再重复请求; 刷新目录 /
@@ -650,7 +651,7 @@ impl App {
             pending_open: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
-            thumbnail_textures: HashMap::new(),
+            thumbnail_textures: thumbs::ThumbTextures::new(),
             thumbnail_inflight: HashSet::new(),
             thumbnail_failed: HashSet::new(),
             cache_usage: None,
@@ -1567,7 +1568,16 @@ impl App {
                         color_image,
                         egui::TextureOptions::LINEAR,
                     );
-                    self.thumbnail_textures.insert(file_id, texture);
+                    // Color32 即 4 字节 RGBA; 纹理缓存按它记账并做上限淘汰。
+                    let bytes = width as usize * height as usize * 4;
+                    let now = Instant::now();
+                    self.thumbnail_textures.insert(file_id, texture, bytes, now);
+                    tracing::trace!(
+                        "缩略图纹理 {width}×{height} ({bytes} B), 缓存 {} 张 / {} B",
+                        self.thumbnail_textures.len(),
+                        self.thumbnail_textures.bytes()
+                    );
+                    self.thumbnail_textures.evict(now);
                 }
                 Msg::ThumbnailFailed { file_id } => {
                     // 结束在途登记并记住失败: 既不留下永不结束的 inflight,

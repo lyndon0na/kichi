@@ -224,10 +224,13 @@ pub enum Cmd {
     RetryMoveShare {
         dest: String,
     },
-    /// 加载缩略图: 从 URL 下载到本地缓存, 解码后发送 ThumbnailReady。
+    /// 加载缩略图: 从 URL 下载到本地缓存, 解码后按 `max_edge` 降采样再发送
+    /// ThumbnailReady(服务端缩略图远大于卡片所需, 按原始尺寸上传 GPU 白吃显存)。
     LoadThumbnail {
         file_id: String,
         url: String,
+        /// 纹理最长边的上限(物理像素), 由 UI 按卡片尺寸与屏幕像素密度算出。
+        max_edge: u32,
     },
     /// 更新传输并发/重试参数。并发即时生效(不打断在传任务),
     /// 重试与分片并发对之后新启动的任务生效。

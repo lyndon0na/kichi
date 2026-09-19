@@ -2,6 +2,7 @@ use eframe::egui::{
     self, pos2, vec2, Align, Color32, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText,
     Stroke, UiBuilder,
 };
+use std::time::Instant;
 
 use kichi_core::types::File;
 
@@ -25,6 +26,21 @@ fn thumb_row_range(clip: Rect, top: f32, row_h: f32, total_rows: usize) -> std::
     let first = ((clip.min.y - margin - top) / row_h).floor().max(0.0) as usize;
     let last = ((clip.max.y + margin - top) / row_h).ceil().max(0.0) as usize;
     first.min(total_rows)..last.min(total_rows)
+}
+
+/// 图标视图卡片大小的可调范围(Ctrl + 滚轮)。
+const GRID_CARD_MIN: f32 = 80.0;
+const GRID_CARD_MAX: f32 = 160.0;
+/// 缩略图在卡片内的最大占宽比(与网格绘制处一致)。
+const THUMB_MAX_CARD_RATIO: f32 = 0.85;
+
+/// 单张缩略图纹理最长边的上限(物理像素): 卡片最大显示尺寸 × 屏幕像素密度。
+///
+/// 服务端下发的缩略图(实测 720×405)远大于卡片所需, 不降采样就直接上传纹理
+/// 会让显存按原始尺寸记账。按此上限解码, 卡片放到最大、屏幕是 HiDPI 时也够清。
+fn thumb_max_edge(pixels_per_point: f32) -> u32 {
+    let px = GRID_CARD_MAX * THUMB_MAX_CARD_RATIO * pixels_per_point;
+    (px.ceil() as u32).clamp(128, 512)
 }
 
 /// 布局坐标。返回 (name_x, size_left, time_left)。
@@ -517,7 +533,8 @@ impl App {
                     {
                         if modifiers.ctrl && delta.y.abs() > 0.0 {
                             let step = if delta.y > 0.0 { 5.0 } else { -5.0 };
-                            self.grid_card_size = (self.grid_card_size + step).clamp(80.0, 160.0);
+                            self.grid_card_size =
+                                (self.grid_card_size + step).clamp(GRID_CARD_MIN, GRID_CARD_MAX);
                         }
                     }
                 }
@@ -1170,6 +1187,8 @@ impl App {
                             let row_h = card_h + ui.spacing().item_spacing.y;
                             let row_range =
                                 thumb_row_range(clip, ui.cursor().min.y, row_h, total_rows);
+                            let max_edge = thumb_max_edge(ui.ctx().pixels_per_point());
+                            let now = Instant::now();
                             for row in row_range {
                                 for col in 0..cols {
                                     let idx = row * cols + col;
@@ -1180,11 +1199,15 @@ impl App {
                                     if f.is_folder() {
                                         continue;
                                     }
+                                    // 纹理在 = 图正被看着: 刷新 LRU, 使其免于本轮淘汰。
+                                    if self.thumbnail_textures.contains(&f.id) {
+                                        self.thumbnail_textures.mark_used(&f.id, now);
+                                        continue;
+                                    }
                                     let Some(url) = &f.thumbnail_link else {
                                         continue;
                                     };
-                                    if self.thumbnail_textures.contains_key(&f.id)
-                                        || self.thumbnail_inflight.contains(&f.id)
+                                    if self.thumbnail_inflight.contains(&f.id)
                                         || self.thumbnail_failed.contains(&f.id)
                                     {
                                         continue;
@@ -1193,6 +1216,7 @@ impl App {
                                     self.send(Cmd::LoadThumbnail {
                                         file_id: f.id.clone(),
                                         url: url.clone(),
+                                        max_edge,
                                     });
                                 }
                             }
@@ -1306,7 +1330,7 @@ impl App {
 
                                         if let Some(texture) = self.thumbnail_textures.get(&f.id) {
                                             // 渲染缩略图（保持宽高比）
-                                            let max_size = card_w * 0.85;
+                                            let max_size = card_w * THUMB_MAX_CARD_RATIO;
                                             let tex_size = texture.size_vec2();
                                             let aspect = tex_size.x / tex_size.y;
 
@@ -1485,6 +1509,10 @@ impl App {
                                 });
                             }
                         }
+
+                        // 纹理上限淘汰放在绘制之后: 本帧点亮过的(可见 ± 一屏)还在
+                        // 宽限期内受保护, 只有久未露面且超限的纹理在此释放显存。
+                        self.thumbnail_textures.evict(Instant::now());
 
                         // 加载更多按钮
                         let has_more = if self.search_mode {
@@ -1848,5 +1876,15 @@ mod tests {
         assert_eq!(thumb_row_range(clip, 0.0, 100.0, 3), 0..3);
         // 滚过列表末尾(理论上不会发生)也不能越界。
         assert_eq!(thumb_row_range(clip, -20_000.0, 100.0, 50), 50..50);
+    }
+
+    #[test]
+    fn thumb_max_edge_covers_max_card_at_any_pixel_ratio() {
+        // 卡片放到最大仍要够清: 160 × 0.85 = 136 逻辑像素。
+        assert_eq!(thumb_max_edge(1.0), 136);
+        assert_eq!(thumb_max_edge(1.25), 170);
+        assert_eq!(thumb_max_edge(2.0), 272);
+        // 极端缩放不失控。
+        assert_eq!(thumb_max_edge(4.0), 512);
     }
 }
