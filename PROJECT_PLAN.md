@@ -144,6 +144,7 @@
   - **沙箱适配**（三处，UI 无差别）：沙箱里没有 mpv（freedesktop 运行时不带），播放改经 `flatpak-spawn --host mpv` 借宿主程序（`helpers::host_command` 统一两种形态，参数完全一致）；运行时字体不含中文，`install_fonts` 的候选表改为「挂载根 × 相对路径」两维展开，同时扫 `/usr/share/fonts` 与 flatpak 挂进来的 `/run/host/fonts`；`app_id` 取 `FLATPAK_ID`，让窗口能关联 `<应用 ID>.desktop`
   - **构建期网络**：flatpak-builder 默认掐断构建沙箱网络（实测沙箱内 DNS 直接失败），清单里用 `build-options.build-args: [--share=network]` 放行（`--share-net` 是 bwrap 语法、flatpak 不认）；若日后要上 Flathub，需改为离线构建并提交 cargo 源清单
   - **CI**（`.github/workflows/release.yml`）：AppImage 在 `ubuntu-22.04` 构建（glibc 门槛等于构建机 → 官方包可跑 Ubuntu 22.04+ / Debian 12+；本地在 Fedora 44 构建只能跑 Fedora 43+/滚动发行版），Flatpak 在 `ubuntu-24.04`（沙箱内自带运行时，与构建机发行版无关）；推 `v*` tag 构建完自动发 Release（已存在则 `--clobber` 覆盖上传），`workflow_dispatch` 只上传 artifacts
+  - **CI 首跑踩坑（图标导出校验）**：flatpak 导出阶段用**宿主** gdk-pixbuf 校验图标（`flatpak-validate-icon` 在 ro-bind 宿主 `/usr` 的沙箱里跑），Ubuntu 24.04 的 gdk-pixbuf 2.42 要从 `librsvg2-common` 加载 SVG —— 首次发 `v1.0.0` 时编译安装都成功，导出 `io.github.lyndon0na.Kichi.svg` 才报 `is not a valid icon: Format not recognized`；工作流 apt 列表补装该包解决（Fedora 的 gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地构建不复现）
   - 本地实测：AppImage 解包后二进制正常启动；Flatpak 装进用户级安装后沙箱内无缺失库、宿主字体与 `kdeglobals` 可见、`flatpak-spawn --host mpv` 可用、GUI 正常起窗（不暴露 X11，日志里会有一条 arboard 的 X11 剪贴板告警 —— 剪贴板实际走 Wayland 通道）
   - 新增单测 2 项（宿主命令前缀 / 中文字体候选查找）
 

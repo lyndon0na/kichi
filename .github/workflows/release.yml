@@ -58,7 +58,11 @@ jobs:
       - name: 安装 flatpak-builder
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          # librsvg2-common 提供 gdk-pixbuf 的 SVG 加载器: flatpak 导出时会用宿主
+          # gdk-pixbuf 校验图标, 缺它会把 SVG 图标判成 "Format not recognized"
+          # (Ubuntu 24.04 的 gdk-pixbuf 2.42 把 SVG 支持放在外部加载器里)。
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder librsvg2-common
 
       - name: 缓存 flatpak 运行时
         uses: actions/cache@v6

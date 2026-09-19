@@ -69,6 +69,7 @@
   - **Flatpak**：`packaging/flatpak/io.github.lyndon0na.Kichi.yml`（freedesktop 25.08 Platform/Sdk + `rust-stable` 扩展，沙箱内源码构建；构建期网络靠 `build-options.build-args: [--share=network]` 放行）与 `packaging/build-flatpak.sh`（可选 `--install` 装入用户级 flatpak）
   - **沙箱适配**：播放经 `flatpak-spawn --host mpv` 借宿主 mpv（`helpers::host_command`，沙箱外形态不变）；中文字体候选改为「挂载根 × 相对路径」两维展开，加扫 flatpak 挂进来的 `/run/host/fonts`；`app_id` 取 `FLATPAK_ID` 以关联 `<应用 ID>.desktop`；`finish-args` 给 home 访问、`kdeglobals` 只读、Secret Service 与 Flatpak 桥接权限
   - **CI**：`.github/workflows/release.yml` —— AppImage 在 `ubuntu-22.04` 构建（glibc 2.35 门槛）、Flatpak 在 `ubuntu-24.04`；推 `v*` tag 自动发 Release，`workflow_dispatch` 只上传 artifacts
+  - **CI 首跑踩坑（图标导出校验）**：flatpak 导出时用宿主 gdk-pixbuf 校验图标，Ubuntu 24.04（gdk-pixbuf 2.42）需从 `librsvg2-common` 加载 SVG —— 首次发 `v1.0.0` 时编译安装都成功，导出 `io.github.lyndon0na.Kichi.svg` 报 `is not a valid icon: Format not recognized`；工作流 apt 列表补装该包（Fedora / gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地不复现）
   - 新增单测 2 项；本地实测 AppImage 解包启动正常、Flatpak 安装后沙箱内无缺失库、宿主字体 / `kdeglobals` 可见、mpv 桥接可用、GUI 起窗正常（`helpers.rs` / `main.rs` / `packaging/` / `.github/workflows/release.yml`）
 
 - [x] P3-3 补回仓库链接：`Cargo.toml` 的 `[workspace.package]` 补 `repository = "https://github.com/lyndon0na/kichi"`，两个 crate 用 `repository.workspace = true` 继承（`cargo metadata` 可直接读到，只写 workspace 层不会传导到包）；README 顶部徽章全部改为可点链接并新增动态徽章 —— 版本徽章换成 shields 的 GitHub release 徽章（`sort=semver`，首个 tag 发布前显示 "no releases"）、新增 Release 工作流状态徽章；免责声明末尾补 Issues 与 LICENSE 链接（`Cargo.toml` / `crates/*/Cargo.toml` / `README.md`）

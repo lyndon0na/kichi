@@ -290,6 +290,9 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 | Flatpak | `ubuntu-24.04` | 单文件安装：`flatpak install --user ./Kichi-<版本>-x86_64.flatpak`。沙箱内用 freedesktop 25.08 SDK 源码构建，与构建机发行版无关 |
 
 > [!NOTE]
+> 本地构建 Flatpak 需要宿主能识别 SVG 图标：flatpak 导出阶段用宿主 gdk-pixbuf 校验图标，Debian / Ubuntu 需要 `librsvg2-common`（缺它会报 `<应用 ID>.svg is not a valid icon: Format not recognized`）；Fedora 的 gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，无需处理。CI 侧已在工作流里装好。
+
+> [!NOTE]
 > Flatpak 版与原生运行有几处差异：配置 / 缓存落在 `~/.var/app/io.github.lyndon0na.Kichi/`（首次需要重新登录并重选下载目录）；音视频播放调用**宿主**已安装的 `mpv`（经 `flatpak-spawn --host`，宿主没装时仍提示安装）；中文字体取自宿主字体（`/run/host/fonts`）；界面配色照旧跟随 KDE `kdeglobals`。沙箱不暴露 X11，启动日志里可能有一条 arboard（X11 剪贴板）告警，可忽略 —— 剪贴板实际走 Wayland 通道。
 
 ## 配置与数据

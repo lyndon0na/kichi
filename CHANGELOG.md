@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **Flatpak 首次 CI 出包失败（缺 SVG 加载器）**：flatpak 导出阶段用宿主 gdk-pixbuf 校验图标，Ubuntu 24.04 的 gdk-pixbuf 把 SVG 支持放在 `librsvg2-common` 里 —— 发布工作流的 apt 列表补装该包（首次发 `v1.0.0` 时 AppImage 成功、Flatpak 编译安装都通过，仅导出报 `Format not recognized`）；Fedora / gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地构建不受影响
+
 ## [1.0.0] - 2026-09-19
 
 ### 新增
