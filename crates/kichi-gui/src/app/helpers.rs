@@ -319,6 +319,27 @@ pub(crate) fn pick_files_async(
     rx
 }
 
+/// 本地选择框的起始目录: 记忆目录仍存在则用它, 否则 home, 再退回进程 CWD。
+pub(crate) fn picker_start_dir(remembered: &str) -> PathBuf {
+    let p = PathBuf::from(remembered);
+    if !remembered.is_empty() && p.is_dir() {
+        return p;
+    }
+    dirs::home_dir()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+}
+
+/// 本次选择要记住的目录: 目录选择记其自身, 文件选择记首个文件的父目录。
+pub(crate) fn picked_dir(paths: &[PathBuf], is_dir: bool) -> Option<PathBuf> {
+    let first = paths.first()?;
+    if is_dir {
+        Some(first.clone())
+    } else {
+        first.parent().map(std::path::Path::to_path_buf)
+    }
+}
+
 /// 在文字长度受限时做简单裁剪(带省略号)。
 pub(crate) fn truncate_text(
     painter: &egui::Painter,
@@ -495,7 +516,55 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_no_handler, subtitle_of};
+    use super::{looks_like_no_handler, picked_dir, picker_start_dir, subtitle_of};
+
+    #[test]
+    fn picker_start_prefers_existing_remembered_dir() {
+        let dir = std::env::temp_dir().join(format!("kichi-pick-{}-hit", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 末尾带分隔符的写法同样应被认作有效目录。
+        let trailing = format!("{}/", dir.to_str().unwrap());
+        for remembered in [dir.to_str().unwrap(), trailing.as_str()] {
+            assert_eq!(picker_start_dir(remembered), dir);
+        }
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn picker_start_falls_back_when_remembered_dir_gone() {
+        let missing =
+            std::env::temp_dir().join(format!("kichi-pick-{}-missing", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        for remembered in ["", missing.to_str().unwrap()] {
+            let start = picker_start_dir(remembered);
+            assert_ne!(start, missing);
+            // home 可用时优先 home, 否则退回进程 CWD, 都拿不到才是空路径。
+            match dirs::home_dir() {
+                Some(home) => assert_eq!(start, home),
+                None => assert_eq!(start, std::env::current_dir().unwrap_or_default()),
+            }
+        }
+    }
+
+    #[test]
+    fn picked_dir_remembers_self_for_dir_and_parent_for_files() {
+        let base = std::path::PathBuf::from("/tmp/kichi-pick-cases");
+        assert_eq!(picked_dir(&[base.join("a.zip")], false), Some(base.clone()));
+        // 多选时以第一个所选文件的位置为准。
+        assert_eq!(
+            picked_dir(
+                &[base.join("a.zip"), std::path::PathBuf::from("/etc/b.iso")],
+                false
+            ),
+            Some(base.clone())
+        );
+        assert_eq!(
+            picked_dir(&[base.join("sub")], true),
+            Some(base.join("sub"))
+        );
+        assert_eq!(picked_dir(&[], false), None);
+        assert_eq!(picked_dir(&[], true), None);
+    }
 
     #[test]
     fn detects_no_handler_wording() {

@@ -31,6 +31,9 @@ pub struct Settings {
     /// 上一次选择的本地下载目录(可空)。
     #[serde(default)]
     pub download_dir: String,
+    /// 上一次本地选择框停留的目录(上传文件/文件夹对话框共用, 可空)。
+    #[serde(default)]
+    pub last_dir: String,
     /// 是否把密码保存到系统密钥环, 用于自动登录。
     #[serde(default)]
     pub remember_password: bool,
@@ -53,6 +56,7 @@ impl Default for Settings {
         Self {
             username: String::new(),
             download_dir: String::new(),
+            last_dir: String::new(),
             remember_password: false,
             dl_concurrency: DEFAULT_DL_CONCURRENCY,
             ul_concurrency: DEFAULT_UL_CONCURRENCY,

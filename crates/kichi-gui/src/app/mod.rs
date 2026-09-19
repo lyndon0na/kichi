@@ -238,6 +238,8 @@ pub struct App {
 
     // 本地下载
     pub(crate) download_dir: String,
+    /// 上次本地选择框用过的目录(上传文件/文件夹共用, 持久化), 见 [`helpers::picker_start_dir`]。
+    pub(crate) last_dir: String,
     // 传输并发/重试(设置页可调, 改动即推送 worker)。
     pub(crate) dl_concurrency: usize,
     pub(crate) ul_concurrency: usize,
@@ -469,6 +471,7 @@ impl App {
             hidden: HashMap::new(),
             logout_confirm: false,
             download_dir: saved.download_dir.clone(),
+            last_dir: saved.last_dir.clone(),
             dl_concurrency: saved.dl_concurrency,
             ul_concurrency: saved.ul_concurrency,
             part_concurrency: saved.part_concurrency,
@@ -1676,6 +1679,7 @@ impl App {
         settings::save(&settings::Settings {
             username: name,
             download_dir: self.download_dir.clone(),
+            last_dir: self.last_dir.clone(),
             remember_password: self.remember_password,
             dl_concurrency: self.dl_concurrency,
             ul_concurrency: self.ul_concurrency,
@@ -2533,7 +2537,7 @@ impl App {
         if self.upload_pick.is_some() {
             return;
         }
-        let start = std::env::current_dir().unwrap_or_default();
+        let start = helpers::picker_start_dir(&self.last_dir);
         let parent = self.current_parent();
         let stack = self.current_stack_pairs();
         self.upload_pick = Some((false, parent, stack, helpers::pick_files_async(&start)));
@@ -2544,7 +2548,7 @@ impl App {
         if self.upload_pick.is_some() {
             return;
         }
-        let start = std::env::current_dir().unwrap_or_default();
+        let start = helpers::picker_start_dir(&self.last_dir);
         let parent = self.current_parent();
         let stack = self.current_stack_pairs();
         self.upload_pick = Some((true, parent, stack, helpers::pick_dir_async(&start)));
@@ -2611,6 +2615,7 @@ impl App {
                 if paths.is_empty() {
                     return;
                 }
+                self.remember_picked_dir(&paths, is_dir);
                 if is_dir {
                     for p in paths {
                         self.enqueue_upload_dir(p, parent.clone(), stack.clone());
@@ -2623,6 +2628,21 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.upload_pick = None;
             }
+        }
+    }
+
+    /// 记住本次选中的位置, 作为下次本地选择框的起始目录
+    /// (目录选择记其自身, 文件选择记首个文件的父目录)。
+    fn remember_picked_dir(&mut self, paths: &[std::path::PathBuf], is_dir: bool) {
+        let Some(dir) = helpers::picked_dir(paths, is_dir) else {
+            return;
+        };
+        let Some(dir) = dir.to_str() else {
+            return;
+        };
+        if self.last_dir != dir {
+            self.last_dir = dir.to_string();
+            self.persist_settings();
         }
     }
 
