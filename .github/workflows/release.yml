@@ -99,6 +99,9 @@ jobs:
       - name: 创建 / 更新 Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # 本 job 没有 checkout, 目录里没有 .git, gh 需要它才能定位仓库
+          # (否则报 "fatal: not a git repository (or any of the parent directories): .git")。
+          GH_REPO: ${{ github.repository }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
