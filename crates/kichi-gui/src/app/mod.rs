@@ -31,8 +31,8 @@ use crate::worker;
 use self::helpers::install_fonts;
 use self::types::{
     ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
-    OfflineTab, Page, PendingOpen, PreviewConfirm, QualityReady, ShareResult, SortBy, TransferTab,
-    UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+    OfflineTab, Page, PendingOpen, PreviewConfirm, PreviewProgress, QualityReady, ShareResult,
+    SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
 };
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
@@ -258,6 +258,8 @@ pub struct App {
     pub(crate) preview_pending: Option<(u64, String)>,
     /// 待确认的大文件预览(非媒体预览需先整份下载, 超过阈值先问一次)。
     pub(crate) preview_confirm: Option<PreviewConfirm>,
+    /// 非媒体预览的缓存下载进度(常驻进度条 + 取消)。
+    pub(crate) preview_progress: Option<PreviewProgress>,
     /// 待回传的「用系统程序打开」探针(避免 xdg-open 假成功)。
     pub(crate) pending_open: Option<PendingOpen>,
 
@@ -644,6 +646,7 @@ impl App {
             upload_pick: None,
             preview_pending: None,
             preview_confirm: None,
+            preview_progress: None,
             pending_open: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
@@ -813,6 +816,7 @@ impl App {
                     self.clipboard = None;
                     self.preview_pending = None;
                     self.preview_confirm = None;
+                    self.preview_progress = None;
                     self.pending_open = None;
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
@@ -848,6 +852,7 @@ impl App {
                     self.clipboard = None;
                     self.preview_pending = None;
                     self.preview_confirm = None;
+                    self.preview_progress = None;
                     self.pending_open = None;
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
@@ -1336,6 +1341,13 @@ impl App {
                     {
                         self.preview_pending = None;
                     }
+                    if self
+                        .preview_progress
+                        .as_ref()
+                        .is_some_and(|p| p.req_id == req_id)
+                    {
+                        self.preview_progress = None;
+                    }
                     match helpers::play_with_mpv(&name, &url, &headers, &subs) {
                         Ok(()) => self.toast_ok(&format!("正在用 mpv 播放「{name}」")),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1345,6 +1357,26 @@ impl App {
                         Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
                     }
                 }
+                Msg::PreviewProgress {
+                    req_id,
+                    total,
+                    done,
+                } => {
+                    // 只认当前在途的预览任务, 避免过期消息把进度条拉回来。
+                    let name = self
+                        .preview_pending
+                        .as_ref()
+                        .filter(|(id, _)| *id == req_id)
+                        .map(|(_, name)| name.clone());
+                    if let Some(name) = name {
+                        self.preview_progress = Some(PreviewProgress {
+                            req_id,
+                            name,
+                            total,
+                            done,
+                        });
+                    }
+                }
                 Msg::PreviewReady { req_id, name, path } => {
                     if self
                         .preview_pending
@@ -1352,6 +1384,13 @@ impl App {
                         .is_some_and(|(id, _)| *id == req_id)
                     {
                         self.preview_pending = None;
+                    }
+                    if self
+                        .preview_progress
+                        .as_ref()
+                        .is_some_and(|p| p.req_id == req_id)
+                    {
+                        self.preview_progress = None;
                     }
                     // 结果由后台探针回传(xdg-open 失败不再是假成功)。
                     self.pending_open = Some(PendingOpen {
@@ -1385,6 +1424,13 @@ impl App {
                         .is_some_and(|(id, _)| *id == req_id)
                     {
                         self.preview_pending = None;
+                    }
+                    if self
+                        .preview_progress
+                        .as_ref()
+                        .is_some_and(|p| p.req_id == req_id)
+                    {
+                        self.preview_progress = None;
                     }
                     self.toast_err(&what);
                 }
@@ -2710,6 +2756,22 @@ impl App {
         });
     }
 
+    /// 取消正在准备的非媒体预览(丢弃未完成的缓存下载)。
+    pub(crate) fn cancel_preview(&mut self) {
+        let Some(p) = self.preview_progress.take() else {
+            return;
+        };
+        self.send(Cmd::CancelPreview { req_id: p.req_id });
+        if self
+            .preview_pending
+            .as_ref()
+            .is_some_and(|(id, _)| *id == p.req_id)
+        {
+            self.preview_pending = None;
+        }
+        self.toast("已取消预览", self.theme().text_weak);
+    }
+
     /// 确保某媒体文件的可用清晰度已解析(供「播放」子菜单展示)。
     pub(crate) fn fetch_qualities(&mut self, id: String, name: String) {
         if self.quality_cache.contains_key(&id) || self.quality_inflight.contains(&id) {
@@ -3023,6 +3085,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.has_active_downloads()
             || self.has_active_uploads()
+            || self.preview_progress.is_some()
             || self.dir_loading
             || !self.dir_inflight.is_empty()
             || self.shares_loading
@@ -3043,6 +3106,7 @@ impl eframe::App for App {
         self.handle_dropped_files(ctx);
         self.app_shell(ctx, &th);
         self.dialogs(ctx, &th);
+        self.draw_preview_status(ctx);
         self.draw_toast(ctx);
         self.drop_overlay(ctx);
     }

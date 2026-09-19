@@ -781,13 +781,29 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             };
             let tx = tx.clone();
             let cache = st.cache.clone();
-            tokio::spawn(async move {
-                if media {
+            if media {
+                tokio::spawn(async move {
                     preview_stream(&client, &tx, req_id, file_id, name, subtitles, cache).await;
-                } else {
-                    preview_download(&client, &tx, req_id, file_id, name, cache).await;
+                });
+            } else {
+                // 非媒体预览需先完整下载到缓存, 登记取消标志供 UI 中止。
+                let cancel = Arc::new(AtomicBool::new(false));
+                let cancel_map = st.cancel.clone();
+                {
+                    let mut map = cancel_map.lock().await;
+                    map.insert(req_id, cancel.clone());
                 }
-            });
+                tokio::spawn(async move {
+                    preview_download(&client, &tx, req_id, file_id, name, cache, cancel).await;
+                    cancel_map.lock().await.remove(&req_id);
+                });
+            }
+        }
+        Cmd::CancelPreview { req_id } => {
+            let map = st.cancel.lock().await;
+            if let Some(flag) = map.get(&req_id) {
+                flag.store(true, Ordering::Relaxed);
+            }
         }
         Cmd::PreviewQualities { file_id, subtitles } => {
             let Some(client) = st.client.clone() else {
@@ -1295,6 +1311,7 @@ async fn preview_download(
     file_id: String,
     name: String,
     cache: CacheCtl,
+    cancel: Arc<AtomicBool>,
 ) {
     let dest = preview_cache_path(&file_id, &name);
     if dest.exists() {
@@ -1319,7 +1336,24 @@ async fn preview_download(
     };
     // 下载期间(含 `.part`)登记为使用中, 避免被并发的淘汰删掉。
     let guard = cache.mark_in_use(&[dest.clone(), part_path(&dest)]);
-    match client.download_to(&link, &dest, None, |_, _| {}).await {
+    // 进度转发限频, 与下载任务一致, 避免高频消息刷 UI。
+    let tx2 = tx.clone();
+    let mut last_send = Instant::now();
+    let mut on_progress = move |total: u64, done: u64| {
+        let now = Instant::now();
+        if done == 0 || now.duration_since(last_send) >= Duration::from_millis(150) {
+            last_send = now;
+            let _ = tx2.send(Msg::PreviewProgress {
+                req_id,
+                total,
+                done,
+            });
+        }
+    };
+    match client
+        .download_to(&link, &dest, Some(cancel.clone()), &mut on_progress)
+        .await
+    {
         Ok(size) => {
             drop(guard);
             cache.note_write(size);
@@ -1330,6 +1364,12 @@ async fn preview_download(
             });
         }
         Err(e) => {
+            if cancel.load(Ordering::Relaxed) {
+                // 取消: 丢弃未完成的 .part; UI 已自行清理状态, 无需回消息。
+                discard_part(&dest);
+                drop(guard);
+                return;
+            }
             let _ = tx.send(Msg::PreviewFailed {
                 req_id,
                 what: format!("准备预览文件失败: {e}"),

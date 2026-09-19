@@ -486,6 +486,16 @@ pub(crate) struct PreviewConfirm {
     pub size: i64,
 }
 
+/// 非媒体预览的缓存下载进度, 驱动常驻进度条与取消按钮。
+#[derive(Clone)]
+pub(crate) struct PreviewProgress {
+    pub req_id: u64,
+    pub name: String,
+    /// 总大小未知时为 0(进度条走不确定动画)。
+    pub total: u64,
+    pub done: u64,
+}
+
 /// 分享创建成功后的结果展示。
 #[derive(Clone)]
 pub(crate) struct ShareResult {

@@ -175,6 +175,10 @@ pub enum Cmd {
         media: bool,
         subtitles: Vec<(String, String)>,
     },
+    /// 取消非媒体预览的本地缓存下载。
+    CancelPreview {
+        req_id: u64,
+    },
     /// 解析媒体文件可用清晰度, 供预览时选择画质。
     PreviewQualities {
         file_id: String,
@@ -399,6 +403,12 @@ pub enum Msg {
         headers: Vec<(String, String)>,
         /// 已下载到本地的同集外挂字幕路径。
         subs: Vec<PathBuf>,
+    },
+    /// 非媒体预览下载进度。total 未知时为 0。
+    PreviewProgress {
+        req_id: u64,
+        total: u64,
+        done: u64,
     },
     /// 非媒体文件已下载到本地缓存, 可交给系统查看器打开。
     PreviewReady {
