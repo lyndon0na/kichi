@@ -35,6 +35,9 @@ const OSS_UPLOAD_CONCURRENCY: usize = 4;
 const WALK_PAGE_SIZE: usize = 100;
 const WALK_MAX_FILES: usize = 20_000;
 
+/// 缩略图响应体上限: 正常缩略图只有几十 KB, 超出说明拿到的不是缩略图。
+const THUMBNAIL_MAX_BYTES: u64 = 8 << 20;
+
 #[derive(Default)]
 struct Auth {
     access_token: String,
@@ -1378,6 +1381,9 @@ impl KichiClient {
     }
 
     /// 下载缩略图到本地缓存。缩略图 URL 自带签名, 无需额外鉴权。
+    ///
+    /// 先写 `<dest>.part` 再 rename: 直接写目标路径时若中途失败会留下截断文件,
+    /// 调用方的 `exists()` 判定会命中它, 解码必然失败且不会重下 —— 变成永久空洞。
     pub async fn download_thumbnail(&self, url: &str, dest: &StdPath) -> Result<(), Error> {
         if let Some(dir) = dest.parent() {
             if !dir.as_os_str().is_empty() {
@@ -1399,8 +1405,25 @@ impl KichiClient {
                 body: String::new(),
             });
         }
+        if resp
+            .content_length()
+            .is_some_and(|len| len > THUMBNAIL_MAX_BYTES)
+        {
+            return Err(Error::msg("缩略图响应过大, 已放弃"));
+        }
         let bytes = resp.bytes().await?;
-        tokio::fs::write(dest, &bytes).await?;
+        if bytes.len() as u64 > THUMBNAIL_MAX_BYTES {
+            return Err(Error::msg("缩略图响应过大, 已放弃"));
+        }
+        let tmp = part_path(dest);
+        if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e.into());
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, dest).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e.into());
+        }
         Ok(())
     }
 }

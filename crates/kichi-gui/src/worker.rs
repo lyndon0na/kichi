@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ use kichi_core::consts::OFFLINE_PHASES;
 use kichi_core::download::part_path;
 use kichi_core::upload::{OssContext, OssUploadState};
 use kichi_core::{session, Error, KichiClient};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::credentials;
 use crate::msg::{Cmd, FolderItem, Msg, QualityOption};
@@ -102,6 +102,12 @@ const QUOTA_POLL: Duration = Duration::from_secs(60);
 const CACHE_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// 磁盘缓存淘汰的节流: 或累计新增超过该字节数时扫一次。
 const CACHE_SWEEP_MIN_NEW_BYTES: u64 = 8 << 20;
+/// 缩略图下载并发: 与用户可配的下载并发解耦(缩略图很小, 不该排在
+/// 大文件下载后面, 也不该占用用户为下载预留的槽位)。
+const THUMB_CONCURRENCY: usize = 4;
+/// 缩略图下载的最大尝试次数与退避基数(第 n 次失败后睡 n × 基数)。
+const THUMB_MAX_ATTEMPTS: usize = 3;
+const THUMB_RETRY_BACKOFF: Duration = Duration::from_millis(600);
 
 /// 磁盘缓存的控制句柄: 「正在使用」登记 + 淘汰节流状态。
 ///
@@ -239,6 +245,11 @@ struct WorkerState {
     part_concurrency: usize,
     /// 磁盘缓存(预览 / 缩略图)的登记与淘汰节流。
     cache: CacheCtl,
+    /// 缩略图下载并发闸。
+    thumb_sem: Arc<Semaphore>,
+    /// 缩略图请求的目录代数: 目录切换 / 刷新 / 新搜索时自增,
+    /// 使在跑的旧任务在检查点自行放弃, 不再下载已经离开视野的图。
+    thumb_gen: Arc<AtomicU64>,
     /// 已占用的目标文件名集合(键: "目录\0文件名"), 用于同名去重。
     reserved: Arc<Mutex<HashSet<String>>>,
     /// 离线任务每 phase 已加载的页数(刷新时保持分页深度)。
@@ -280,6 +291,8 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
         max_attempts: saved.max_attempts as u32,
         part_concurrency: saved.part_concurrency,
         cache: CacheCtl::new(),
+        thumb_sem: Arc::new(Semaphore::new(THUMB_CONCURRENCY)),
+        thumb_gen: Arc::new(AtomicU64::new(0)),
         reserved: Arc::new(Mutex::new(HashSet::new())),
         tasks_pages: BTreeMap::new(),
         tasks_next: BTreeMap::new(),
@@ -434,6 +447,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             req_id,
         } => {
             let Some(client) = &st.client else { return };
+            if !append {
+                // 切换目录 / 刷新: 让在跑的缩略图任务作废(分页加载不算)。
+                st.thumb_gen.fetch_add(1, Ordering::Relaxed);
+            }
             match client
                 .file_list(parent.as_deref(), 100, token.as_deref())
                 .await
@@ -463,6 +480,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             let Some(client) = &st.client else {
                 return;
             };
+            if !append {
+                // 新一次搜索 = 换了一批显示内容, 旧的缩略图任务不再有意义。
+                st.thumb_gen.fetch_add(1, Ordering::Relaxed);
+            }
             match client.search_files(&keyword, 100, token.as_deref()).await {
                 Ok(list) => {
                     tracing::info!("搜索成功: 返回 {} 个结果", list.files.len());
@@ -973,7 +994,20 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             }
         }
         Cmd::LoadThumbnail { file_id, url } => {
-            load_thumbnail(st, tx, file_id, url).await;
+            // 不在此处 await: 缩略图下载若占住命令循环, 期间的目录加载 / 预览 /
+            // 删除 / 配额刷新全都要排队。交给独立任务, 并用固定并发闸限流。
+            let Some(client) = st.client.clone() else {
+                return;
+            };
+            let cache = st.cache.clone();
+            let sem = st.thumb_sem.clone();
+            let gen = st.thumb_gen.clone();
+            // 代数在此处取样, 保证与命令循环中「切目录即自增」的顺序一致。
+            let my_gen = gen.load(Ordering::Relaxed);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                load_thumbnail(&client, &tx, &cache, sem, gen, my_gen, file_id, url).await;
+            });
         }
         Cmd::SetTransferLimits {
             dl_concurrency,
@@ -1323,30 +1357,122 @@ fn thumbnail_cache_path(file_id: &str) -> PathBuf {
     thumbnail_cache_dir().join(format!("{safe}.jpg"))
 }
 
-/// 加载缩略图: 先检查磁盘缓存, 未命中则从 URL 下载, 解码为 RGBA 后发送给 UI。
-async fn load_thumbnail(st: &WorkerState, tx: &Sender<Msg>, file_id: String, url: String) {
-    let Some(client) = st.client.clone() else {
-        return;
-    };
-    let dest = thumbnail_cache_path(&file_id);
+/// 目录已切换 / 刷新时, 在跑的缩略图任务在检查点放弃。
+fn thumb_stale(gen: &AtomicU64, my_gen: u64) -> bool {
+    gen.load(Ordering::Relaxed) != my_gen
+}
 
-    // 磁盘缓存未命中时下载; 写入期间登记为使用中(缩略图是「写完即读」)。
-    if !dest.exists() {
-        let guard = st.cache.mark_in_use(std::slice::from_ref(&dest));
-        if let Err(e) = client.download_thumbnail(&url, &dest).await {
-            tracing::debug!("缩略图下载失败 {}: {e}", file_id);
-            return;
-        }
-        let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-        drop(guard);
-        st.cache.note_write(size);
-    } else {
-        // 命中缓存: 刷新 mtime, 让 LRU 知道它刚被用过。
-        crate::cache::touch(&dest);
+/// 服务端下发的 `thumbnail_link` 能不能当下载地址用。
+///
+/// 对没有缩略图的文件(多为非图片 / 视频), 服务端会下发空串或相对路径之类的值,
+/// 连请求都构造不出来(reqwest 报 "builder error")—— 这种失败重试多少次都一样。
+fn is_usable_thumb_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// 日志用的 URL 片段(空串显示为 `""`, 超长截断), 便于一眼看出服务端发了什么。
+fn url_snippet(url: &str) -> String {
+    const MAX: usize = 60;
+    let mut s: String = url.chars().take(MAX).collect();
+    if url.chars().count() > MAX {
+        s.push('…');
+    }
+    s
+}
+
+/// 加载缩略图: 先检查磁盘缓存, 未命中则从 URL 下载(有限次退避重试),
+/// 解码为 RGBA 后发送给 UI。
+///
+/// 失败一律回 `Msg::ThumbnailFailed`, 否则请求方的在途登记会悬空, 该文件
+/// 本次会话再也不会被请求(网格留空位); 目录代数过期则静默放弃, 不回包。
+#[allow(clippy::too_many_arguments)]
+async fn load_thumbnail(
+    client: &KichiClient,
+    tx: &Sender<Msg>,
+    cache: &CacheCtl,
+    sem: Arc<Semaphore>,
+    gen: Arc<AtomicU64>,
+    my_gen: u64,
+    file_id: String,
+    url: String,
+) {
+    if !is_usable_thumb_url(&url) {
+        // 链接本身不可用(见 is_usable_thumb_url): 对这类文件来说「没有缩略图」是
+        // 正常状态而非故障, 所以不下载、不重试, 回退类型图标即可。要查是哪些文件,
+        // 用 KICHI_LOG=kichi_gui=trace 跑一次。
+        tracing::trace!(
+            "缩略图链接不可用 {file_id} (长度 {}): {:?}",
+            url.len(),
+            url_snippet(&url)
+        );
+        let _ = tx.send(Msg::ThumbnailFailed { file_id });
+        return;
     }
 
-    // 从磁盘读取并解码。
-    let file_id_clone = file_id.clone();
+    let dest = thumbnail_cache_path(&file_id);
+    let mut _guard = None;
+
+    if dest.exists() {
+        // 命中缓存: 刷新 mtime, 让 LRU 知道它刚被用过。
+        crate::cache::touch(&dest);
+    } else {
+        // 缩略图不占用户下载槽位(不该排在大文件下载后面), 但要限并发,
+        // 否则大目录下会同时开出成百上千个连接。
+        let Ok(_permit) = sem.acquire_owned().await else {
+            return;
+        };
+        // 排队等槽位期间可能已被别的任务写好。
+        if !dest.exists() {
+            _guard = Some(cache.mark_in_use(&[dest.clone(), part_path(&dest)]));
+            let mut ok = false;
+            let mut last: Option<(usize, Error)> = None;
+            for attempt in 1..=THUMB_MAX_ATTEMPTS {
+                if thumb_stale(&gen, my_gen) {
+                    return;
+                }
+                match client.download_thumbnail(&url, &dest).await {
+                    Ok(()) => {
+                        ok = true;
+                        break;
+                    }
+                    Err(e) => {
+                        // 永久性失败(404 / 403 之类)重试多少次都一样, 直接收工。
+                        let transient = e.is_transient();
+                        last = Some((attempt, e));
+                        if !transient || attempt == THUMB_MAX_ATTEMPTS {
+                            break;
+                        }
+                        tokio::time::sleep(THUMB_RETRY_BACKOFF * attempt as u32).await;
+                    }
+                }
+            }
+            if !ok {
+                // 已在下载过程中切了目录就没必要再回失败(UI 侧那份登记随目录切换清掉了)。
+                if !thumb_stale(&gen, my_gen) {
+                    // 每个文件只在终态记一行: 逐次尝试都记会让一个坏链接刷 3 行日志。
+                    // 带 Debug 反查错误来源链(超时 / 连接被重置 / DNS 等)。
+                    let what = last
+                        .map(|(n, e)| format!("已试 {n} 次: {e:?}"))
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        "缩略图下载失败 {file_id} (长度 {}): {what} {:?}",
+                        url.len(),
+                        url_snippet(&url)
+                    );
+                    let _ = tx.send(Msg::ThumbnailFailed { file_id });
+                }
+                return;
+            }
+            let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+            cache.note_write(size);
+        }
+    }
+
+    if thumb_stale(&gen, my_gen) {
+        return;
+    }
+
+    // 解码期间保持 _guard(缩略图是「写完即读」), 避免文件刚落地就被并发淘汰删掉。
     let read_path = dest.clone();
     let result = tokio::task::spawn_blocking(move || -> Option<(u32, u32, Vec<egui::Color32>)> {
         let data = std::fs::read(&read_path).ok()?;
@@ -1361,20 +1487,29 @@ async fn load_thumbnail(st: &WorkerState, tx: &Sender<Msg>, file_id: String, url
     })
     .await;
 
+    if thumb_stale(&gen, my_gen) {
+        return;
+    }
     match result {
-        Ok(Some((w, h, pixels))) => {
+        Ok(Some((width, height, pixels))) => {
             let _ = tx.send(Msg::ThumbnailReady {
-                file_id: file_id_clone,
-                width: w,
-                height: h,
+                file_id,
+                width,
+                height,
                 pixels,
             });
         }
         Ok(None) => {
-            tracing::debug!("缩略图解码失败 {}", file_id_clone);
+            // 解码失败通常说明磁盘上的缓存文件已损坏(旧版本的非原子写入会留下
+            // 截断文件): 删掉它, 让「刷新后重试」能真正重新下载, 而不是永远失败。
+            let _ = std::fs::remove_file(&dest);
+            tracing::debug!("缩略图解码失败 {file_id}, 已丢弃缓存文件");
+            let _ = tx.send(Msg::ThumbnailFailed { file_id });
         }
         Err(e) => {
-            tracing::debug!("缩略图解码任务失败 {}: {e}", file_id_clone);
+            let _ = std::fs::remove_file(&dest);
+            tracing::debug!("缩略图解码任务失败 {file_id}: {e}, 已丢弃缓存文件");
+            let _ = tx.send(Msg::ThumbnailFailed { file_id });
         }
     }
 }

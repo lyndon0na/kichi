@@ -262,6 +262,9 @@ pub struct App {
     pub(crate) thumbnail_textures: HashMap<String, egui::TextureHandle>,
     /// 正在加载缩略图的文件 id。
     pub(crate) thumbnail_inflight: HashSet<String>,
+    /// 缩略图重试到底仍失败的文件 id(本次会话不再重复请求; 刷新目录 /
+    /// 重新搜索时清空以再试一次)。
+    pub(crate) thumbnail_failed: HashSet<String>,
 
     /// 磁盘缓存(预览 + 缩略图)占用; None = 未查询或查询中。
     pub(crate) cache_usage: Option<types::CacheUsage>,
@@ -636,6 +639,7 @@ impl App {
             quality_inflight: HashSet::new(),
             thumbnail_textures: HashMap::new(),
             thumbnail_inflight: HashSet::new(),
+            thumbnail_failed: HashSet::new(),
             cache_usage: None,
             cache_usage_pending: false,
             cache_sweeping: false,
@@ -867,6 +871,9 @@ impl App {
                         }
                     } else {
                         self.search_results = list.files;
+                        // 新一次搜索 = 重新开始, 与换目录同理。
+                        self.thumbnail_inflight.clear();
+                        self.thumbnail_failed.clear();
                     }
                 }
                 Msg::SearchFailed { what } => {
@@ -1500,6 +1507,12 @@ impl App {
                     );
                     self.thumbnail_textures.insert(file_id, texture);
                 }
+                Msg::ThumbnailFailed { file_id } => {
+                    // 结束在途登记并记住失败: 既不留下永不结束的 inflight,
+                    // 也不在下一帧立刻重新请求同一个失败的图。
+                    self.thumbnail_inflight.remove(&file_id);
+                    self.thumbnail_failed.insert(file_id);
+                }
                 Msg::CacheUsage {
                     bytes,
                     entries,
@@ -1893,6 +1906,10 @@ impl App {
             }
             if !append {
                 self.selected.clear();
+                // 换目录 / 刷新 = 重新开始: 清掉在途与失败的缩略图登记,
+                // 让重新可见的文件有机会再请求一次(worker 侧也已作废旧任务)。
+                self.thumbnail_inflight.clear();
+                self.thumbnail_failed.clear();
             }
         }
 

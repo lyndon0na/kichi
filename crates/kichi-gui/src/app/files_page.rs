@@ -14,6 +14,18 @@ use super::helpers::{is_media_file, is_video_file, truncate_text};
 use super::types::{ClipKind, ColDrag, Crumb, QualityMenuState, RowAction, SortBy, ViewMode};
 use super::App;
 
+/// 图标视图里需要请求缩略图的行区间: 可见行上下各扩一屏预取。
+///
+/// `top` 是首行在屏幕坐标里的 y(内容滚动后为负), `clip` 是滚动视口。
+/// 算错的后果是静默的 —— 区间偏小则网格长期留白, 偏大则等于整目录入队。
+fn thumb_row_range(clip: Rect, top: f32, row_h: f32, total_rows: usize) -> std::ops::Range<usize> {
+    let row_h = row_h.max(1.0);
+    let margin = clip.height();
+    let first = ((clip.min.y - margin - top) / row_h).floor().max(0.0) as usize;
+    let last = ((clip.max.y + margin - top) / row_h).ceil().max(0.0) as usize;
+    first.min(total_rows)..last.min(total_rows)
+}
+
 /// 文件类型 -> 图标 / 颜色。
 pub(super) fn file_visual(f: &File) -> (Glyph, egui::Color32) {
     let light_gray = egui::Color32::from_rgb(120, 126, 140);
@@ -1166,20 +1178,36 @@ impl App {
                             let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
                             let total_rows = all_files.len().div_ceil(cols);
 
-                            // 请求可见文件的缩略图
-                            for f in &all_files {
-                                if !f.is_folder() {
-                                    if let Some(url) = &f.thumbnail_link {
-                                        if !self.thumbnail_textures.contains_key(&f.id)
-                                            && !self.thumbnail_inflight.contains(&f.id)
-                                        {
-                                            self.thumbnail_inflight.insert(f.id.clone());
-                                            self.send(Cmd::LoadThumbnail {
-                                                file_id: f.id.clone(),
-                                                url: url.clone(),
-                                            });
-                                        }
+                            // 只请求「可见行 ± 一屏」的缩略图: 整目录一次性入队会让
+                            // worker 长时间啃已经滚出视野的图, 新滚到的位置反而排在后面。
+                            let clip = ui.clip_rect();
+                            let row_h = card_h + ui.spacing().item_spacing.y;
+                            let row_range =
+                                thumb_row_range(clip, ui.cursor().min.y, row_h, total_rows);
+                            for row in row_range {
+                                for col in 0..cols {
+                                    let idx = row * cols + col;
+                                    if idx >= all_files.len() {
+                                        break;
                                     }
+                                    let f = all_files[idx];
+                                    if f.is_folder() {
+                                        continue;
+                                    }
+                                    let Some(url) = &f.thumbnail_link else {
+                                        continue;
+                                    };
+                                    if self.thumbnail_textures.contains_key(&f.id)
+                                        || self.thumbnail_inflight.contains(&f.id)
+                                        || self.thumbnail_failed.contains(&f.id)
+                                    {
+                                        continue;
+                                    }
+                                    self.thumbnail_inflight.insert(f.id.clone());
+                                    self.send(Cmd::LoadThumbnail {
+                                        file_id: f.id.clone(),
+                                        url: url.clone(),
+                                    });
                                 }
                             }
 
@@ -1823,5 +1851,32 @@ impl App {
         if h1_resp.hovered() || h2_resp.hovered() || self.col_dragging.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumb_rows_cover_visible_plus_one_screen() {
+        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 400.0));
+        // 未滚动: 可见 0..4 行, 下侧预取一屏 => 0..8。
+        assert_eq!(thumb_row_range(clip, 0.0, 100.0, 50), 0..8);
+    }
+
+    #[test]
+    fn thumb_rows_follow_scroll_position() {
+        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 400.0));
+        // 内容上移 1000px: 可见 10..14 行, 上下各预取一屏 => 6..18。
+        assert_eq!(thumb_row_range(clip, -1000.0, 100.0, 50), 6..18);
+    }
+
+    #[test]
+    fn thumb_rows_clamp_to_total_and_stay_empty_when_past_end() {
+        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 400.0));
+        assert_eq!(thumb_row_range(clip, 0.0, 100.0, 3), 0..3);
+        // 滚过列表末尾(理论上不会发生)也不能越界。
+        assert_eq!(thumb_row_range(clip, -20_000.0, 100.0, 50), 50..50);
     }
 }

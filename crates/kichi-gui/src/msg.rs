@@ -486,6 +486,11 @@ pub enum Msg {
         height: u32,
         pixels: Vec<egui::Color32>,
     },
+    /// 缩略图以重试到底仍失败(下载或解码)。UI 据此结束在途登记并标记该文件,
+    /// 避免其缩略图在网格里永久留空却又反复重试。
+    ThumbnailFailed {
+        file_id: String,
+    },
     /// 磁盘缓存占用(预览 + 缩略图)。`freed` 为本次操作释放的字节数。
     CacheUsage {
         bytes: u64,
