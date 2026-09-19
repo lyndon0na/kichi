@@ -382,3 +382,79 @@ pub fn task_created(task: &Task) -> Option<String> {
 pub fn task_original_url(task: &Task) -> Option<String> {
     task_str(task, &["original_url"])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `size` 兼容数字 / 数字字符串 / null / 缺字段(服务端形式不定)。
+    #[test]
+    fn file_size_accepts_number_string_and_null() {
+        let f: File = serde_json::from_str(r#"{"id":"1","size":123}"#).unwrap();
+        assert_eq!(f.size, 123);
+        let f: File = serde_json::from_str(r#"{"id":"1","size":"456"}"#).unwrap();
+        assert_eq!(f.size, 456);
+        let f: File = serde_json::from_str(r#"{"id":"1","size":" 789 "}"#).unwrap();
+        assert_eq!(f.size, 789);
+        let f: File = serde_json::from_str(r#"{"id":"1","size":null}"#).unwrap();
+        assert_eq!(f.size, 0);
+        let f: File = serde_json::from_str(r#"{"id":"1"}"#).unwrap();
+        assert_eq!(f.size, 0);
+    }
+
+    /// 浮点截断; 无法解析的字符串静默归零 —— 服务端若换一种形式(如 "1.2GB"),
+    /// 大小会悄悄变成 0 而不报错, 这是已知取舍(P2-4 记录的静默失败面)。
+    #[test]
+    fn file_size_truncates_float_and_zeroes_garbage() {
+        let f: File = serde_json::from_str(r#"{"id":"1","size":17.9}"#).unwrap();
+        assert_eq!(f.size, 17);
+        let f: File = serde_json::from_str(r#"{"id":"1","size":"1.2GB"}"#).unwrap();
+        assert_eq!(f.size, 0);
+        let f: File = serde_json::from_str(r#"{"id":"1","size":"1.2"}"#).unwrap();
+        assert_eq!(f.size, 0);
+        let f: File = serde_json::from_str(r#"{"id":"1","size":""}"#).unwrap();
+        assert_eq!(f.size, 0);
+    }
+
+    /// 配额各字段同样走 de_number: 混合形式都不该解析失败。
+    #[test]
+    fn quota_mixes_number_forms() {
+        let q: QuotaResponse = serde_json::from_str(
+            r#"{"quota":{"limit":1099511627776,"usage":"12345","usage_in_trash":null,"play_times_limit":10.6}}"#,
+        )
+        .unwrap();
+        assert_eq!(q.quota.limit, 1099511627776);
+        assert_eq!(q.quota.usage, 12345);
+        assert_eq!(q.quota.usage_in_trash, 0);
+        assert_eq!(q.quota.play_times_limit, 10);
+        assert_eq!(q.quota.play_times_usage, 0);
+
+        let q: QuotaResponse = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(q.quota.limit, 0);
+    }
+
+    /// 分享计数类字段数字 / 布尔混用时统一转字符串。
+    #[test]
+    fn share_counts_accept_number_and_bool_forms() {
+        let s: Share = serde_json::from_str(
+            r#"{"share_id":"x","view_count":12,"restore_count":"7","expiration_days":-1,"share_status":null,"file_num":true}"#,
+        )
+        .unwrap();
+        assert_eq!(s.view_count, "12");
+        assert_eq!(s.restore_count, "7");
+        assert_eq!(s.expiration_days, "-1");
+        assert_eq!(s.file_num, "true");
+        assert!(s.share_status.is_empty());
+        // "true" 解析不出数量, file_count 静默归零(已知取舍)。
+        assert_eq!(s.file_count(), 0);
+    }
+
+    /// 浮点转字符串保留原样, 整数值不带 ".0"。
+    #[test]
+    fn share_de_string_formats_float() {
+        let s: Share = serde_json::from_str(r#"{"share_id":"x","view_count":1.5}"#).unwrap();
+        assert_eq!(s.view_count, "1.5");
+        let s: Share = serde_json::from_str(r#"{"share_id":"x","view_count":2.0}"#).unwrap();
+        assert_eq!(s.view_count, "2");
+    }
+}
