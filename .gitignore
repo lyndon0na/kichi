@@ -4,6 +4,7 @@ target/
 *.rs.bk
 .delta/
 .commandcode/
+.workbuddy/
 
 # 编辑器 / 系统
 *.swp
