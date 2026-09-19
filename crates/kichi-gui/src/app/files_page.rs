@@ -5,12 +5,13 @@ use eframe::egui::{
 
 use kichi_core::types::File;
 
+use crate::filetypes::{self, file_visual, FileType};
 use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
-use super::helpers::{is_media_file, is_video_file, truncate_text};
+use super::helpers::truncate_text;
 use super::types::{ClipKind, ColDrag, Crumb, QualityMenuState, RowAction, SortBy, ViewMode};
 use super::App;
 
@@ -24,43 +25,6 @@ fn thumb_row_range(clip: Rect, top: f32, row_h: f32, total_rows: usize) -> std::
     let first = ((clip.min.y - margin - top) / row_h).floor().max(0.0) as usize;
     let last = ((clip.max.y + margin - top) / row_h).ceil().max(0.0) as usize;
     first.min(total_rows)..last.min(total_rows)
-}
-
-/// 文件类型 -> 图标 / 颜色。
-pub(super) fn file_visual(f: &File) -> (Glyph, egui::Color32) {
-    let light_gray = egui::Color32::from_rgb(120, 126, 140);
-    if f.is_folder() {
-        return (Glyph::Folder, egui::Color32::from_rgb(232, 178, 84));
-    }
-    let ext = f
-        .name
-        .rsplit_once('.')
-        .map(|(_, e): (&str, &str)| e.to_lowercase())
-        .unwrap_or_default();
-    let videos = [
-        "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "ts", "rmvb", "m4v",
-    ];
-    let audio = ["mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "ape"];
-    let images = [
-        "jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "svg", "tiff",
-    ];
-    let docs = [
-        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "epub", "csv",
-    ];
-    let arch = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"];
-    if videos.contains(&ext.as_str()) {
-        (Glyph::Video, egui::Color32::from_rgb(196, 130, 220))
-    } else if audio.contains(&ext.as_str()) {
-        (Glyph::Audio, egui::Color32::from_rgb(104, 196, 136))
-    } else if images.contains(&ext.as_str()) {
-        (Glyph::Image, egui::Color32::from_rgb(96, 184, 200))
-    } else if docs.contains(&ext.as_str()) {
-        (Glyph::Doc, egui::Color32::from_rgb(214, 178, 96))
-    } else if arch.contains(&ext.as_str()) {
-        (Glyph::Archive, egui::Color32::from_rgb(208, 142, 110))
-    } else {
-        (Glyph::File, light_gray)
-    }
 }
 
 /// 布局坐标。返回 (name_x, size_left, time_left)。
@@ -206,6 +170,27 @@ fn play_menu(
             ui.add_enabled(false, egui::Button::new("无可用清晰度"));
         }
     });
+}
+
+/// 预览入口: 视频给「播放」子菜单(含清晰度), 音频给「播放」, 其余给「打开」。
+fn preview_menu_items(
+    ui: &mut egui::Ui,
+    f: &File,
+    quality: QualityMenuState<'_>,
+    actions: &mut Vec<RowAction>,
+) {
+    let label = match filetypes::classify_file(f) {
+        FileType::Video => {
+            play_menu(ui, &f.id, &f.name, quality, actions);
+            return;
+        }
+        FileType::Audio => "播放",
+        _ => "打开",
+    };
+    if ui.button(label).clicked() {
+        actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
+        ui.close_menu();
+    }
 }
 
 /// 列表行; 返回勾选变更的 id(仅点击复选框时)。
@@ -393,19 +378,7 @@ fn file_row(
                 ));
                 ui.close_menu();
             }
-            if is_video_file(&f_ctx.name) {
-                play_menu(ui, &f_ctx.id, &f_ctx.name, quality, actions);
-            } else {
-                let label = if is_media_file(&f_ctx.name) {
-                    "播放"
-                } else {
-                    "打开"
-                };
-                if ui.button(label).clicked() {
-                    actions.push(RowAction::OpenFile(f_ctx.id.clone(), f_ctx.name.clone()));
-                    ui.close_menu();
-                }
-            }
+            preview_menu_items(ui, &f_ctx, quality, actions);
         }
         ui.separator();
         if ui.button("分享").clicked() {
@@ -893,7 +866,12 @@ impl App {
                         } else {
                             // ---- 选中模式: 就地显示操作, 不新增行/不改变列表位置 ----
                             let single = sel_meta.len() == 1;
-                            let show_open = single && !dl_candidates.is_empty();
+                            let open_sel = if single && !dl_candidates.is_empty() {
+                                let (id, name) = sel_meta[0].clone();
+                                Some((self.file_type(&id, &name), id, name))
+                            } else {
+                                None
+                            };
 
                             // 取消(最右)
                             if ui
@@ -949,17 +927,15 @@ impl App {
                             {
                                 ask_rename = true;
                             }
-                            if show_open {
-                                let id = sel_meta[0].0.clone();
-                                let name = sel_meta[0].1.clone();
-                                if is_video_file(&name) {
+                            if let Some((ft, id, name)) = open_sel {
+                                if ft == FileType::Video {
                                     let quality = match self.quality_cache.get(&id) {
                                         Some(r) => QualityMenuState::Ready(r),
                                         None => QualityMenuState::Loading,
                                     };
                                     play_menu(ui, &id, &name, quality, &mut actions);
                                 } else {
-                                    let label = if is_media_file(&name) {
+                                    let label = if ft == FileType::Audio {
                                         "播放"
                                     } else {
                                         "打开"
@@ -1423,28 +1399,12 @@ impl App {
                                                     ));
                                                     ui.close_menu();
                                                 }
-                                                if is_video_file(&f_ctx.name) {
-                                                    play_menu(
-                                                        ui,
-                                                        &f_ctx.id,
-                                                        &f_ctx.name,
-                                                        quality,
-                                                        &mut actions,
-                                                    );
-                                                } else {
-                                                    let label = if is_media_file(&f_ctx.name) {
-                                                        "播放"
-                                                    } else {
-                                                        "打开"
-                                                    };
-                                                    if ui.button(label).clicked() {
-                                                        actions.push(RowAction::OpenFile(
-                                                            f_ctx.id.clone(),
-                                                            f_ctx.name.clone(),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                }
+                                                preview_menu_items(
+                                                    ui,
+                                                    &f_ctx,
+                                                    quality,
+                                                    &mut actions,
+                                                );
                                             }
                                             ui.separator();
                                             if ui.button("分享").clicked() {

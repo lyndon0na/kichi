@@ -8,12 +8,12 @@ use eframe::egui::{
 
 use kichi_core::types::File;
 
+use crate::filetypes::file_visual;
 use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
-use super::files_page::file_visual;
 use super::helpers::truncate_text;
 use super::App;
 

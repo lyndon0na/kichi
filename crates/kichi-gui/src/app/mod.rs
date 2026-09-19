@@ -18,6 +18,7 @@ use eframe::egui::{self, Color32};
 use kichi_core::session;
 use kichi_core::types::{task_id, File, FileList, Quota, Share, Task};
 
+use crate::filetypes;
 use crate::kde;
 use crate::msg::{Cmd, Msg};
 use crate::settings::{
@@ -2587,20 +2588,36 @@ impl App {
             .iter()
             .filter(|f| {
                 !f.is_folder()
-                    && helpers::is_subtitle_file(&f.name)
+                    && filetypes::is_subtitle(&f.name)
                     && helpers::subtitle_of(name, &f.name)
             })
             .map(|f| (f.id.clone(), f.name.clone()))
             .collect()
     }
 
+    /// 当前列表里某文件的类型(查不到条目时按文件名回退)。
+    pub(crate) fn file_type(&self, id: &str, name: &str) -> filetypes::FileType {
+        match self.files.iter().find(|f| f.id == id) {
+            Some(f) => filetypes::classify_file(f),
+            None => filetypes::classify(name, None),
+        }
+    }
+
     /// 预览云端文件: 音/视频交给 mpv 流式播放, 其他下载后交给系统查看器。
     pub(crate) fn open_preview(&mut self, id: String, name: String) {
-        let media = helpers::is_media_file(&name);
+        let ft = self.file_type(&id, &name);
+        let media = matches!(ft, filetypes::FileType::Video | filetypes::FileType::Audio);
+        tracing::debug!(
+            "预览路由「{name}」: mime={:?} → {ft:?}",
+            self.files
+                .iter()
+                .find(|f| f.id == id)
+                .and_then(|f| f.mime_type.as_deref())
+        );
         let req_id = self.alloc_req_id();
         self.preview_pending = Some((req_id, name.clone()));
         // 同目录下的同集字幕, 播放时一并挂载(仅视频需要)。
-        let subtitles = if helpers::is_video_file(&name) {
+        let subtitles = if ft == filetypes::FileType::Video {
             self.episode_subtitles(&name)
         } else {
             Vec::new()

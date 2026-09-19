@@ -71,40 +71,6 @@ pub(crate) fn play_with_mpv(
     cmd.spawn().map(|_| ())
 }
 
-/// 可用 mpv 播放的视频扩展名(小写, 单点维护)。
-const VIDEO_EXTS: &[&str] = &[
-    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "ts", "rmvb", "m4v", "m2ts", "mpg", "mpeg",
-];
-
-/// 可用 mpv 播放的音频扩展名(小写, 单点维护)。
-const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "ape"];
-
-/// 常见字幕扩展名(小写, 单点维护)。
-const SUBTITLE_EXTS: &[&str] = &["ass", "ssa", "srt", "sub", "vtt", "sbv", "sup"];
-
-/// 取小写扩展名(最后一段), 无扩展名时为空串。
-fn ext_lower(name: &str) -> String {
-    name.rsplit_once('.')
-        .map(|(_, e): (&str, &str)| e.to_lowercase())
-        .unwrap_or_default()
-}
-
-/// 判断文件名是否为可用 mpv 播放的音/视频。
-pub(crate) fn is_media_file(name: &str) -> bool {
-    let ext = ext_lower(name);
-    VIDEO_EXTS.contains(&ext.as_str()) || AUDIO_EXTS.contains(&ext.as_str())
-}
-
-/// 判断文件名是否为视频(只有视频需要考虑清晰度/转码流)。
-pub(crate) fn is_video_file(name: &str) -> bool {
-    VIDEO_EXTS.contains(&ext_lower(name).as_str())
-}
-
-/// 判断文件名是否为常见字幕格式。
-pub(crate) fn is_subtitle_file(name: &str) -> bool {
-    SUBTITLE_EXTS.contains(&ext_lower(name).as_str())
-}
-
 /// 判断字幕是否与某视频同集: 去掉扩展名后与视频名相同(忽略大小写), 或以视频名为前缀
 /// 且其后紧跟非字母数字分隔符(如 `.sc.ass` / `_chs.srt` / `.zh-CN.ass`)。
 pub(crate) fn subtitle_of(video: &str, sub: &str) -> bool {
@@ -452,40 +418,7 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_media_file, is_subtitle_file, is_video_file, subtitle_of};
-
-    #[test]
-    fn detects_audio_and_video() {
-        assert!(is_media_file("movie.MKV"));
-        assert!(is_media_file("song.flac"));
-        assert!(is_media_file("clip.mp4"));
-    }
-
-    #[test]
-    fn detects_only_video_as_video() {
-        assert!(is_video_file("movie.MKV"));
-        assert!(is_video_file("clip.mp4"));
-        assert!(!is_video_file("song.flac"));
-        assert!(!is_video_file("track.mp3"));
-        assert!(!is_video_file("photo.jpg"));
-    }
-
-    #[test]
-    fn rejects_non_media() {
-        assert!(!is_media_file("photo.jpg"));
-        assert!(!is_media_file("report.pdf"));
-        assert!(!is_media_file("archive.zip"));
-        assert!(!is_media_file("noext"));
-    }
-
-    #[test]
-    fn detects_subtitles() {
-        assert!(is_subtitle_file("x.ass"));
-        assert!(is_subtitle_file("x.SRT"));
-        assert!(is_subtitle_file("x.zh-CN.vtt"));
-        assert!(!is_subtitle_file("x.mkv"));
-        assert!(!is_subtitle_file("x.txt"));
-    }
+    use super::subtitle_of;
 
     #[test]
     fn matches_same_episode_subtitles() {

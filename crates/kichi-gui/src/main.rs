@@ -1,6 +1,7 @@
 mod app;
 mod cache;
 mod credentials;
+mod filetypes;
 mod format;
 mod icons;
 mod kde;
