@@ -31,8 +31,8 @@ use crate::worker;
 use self::helpers::install_fonts;
 use self::types::{
     ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
-    OfflineTab, Page, PreviewConfirm, QualityReady, ShareResult, SortBy, TransferTab, UlFilter,
-    UlJob, UlStatus, UploadPick, ViewMode,
+    OfflineTab, Page, PendingOpen, PreviewConfirm, QualityReady, ShareResult, SortBy, TransferTab,
+    UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
 };
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
@@ -258,6 +258,8 @@ pub struct App {
     pub(crate) preview_pending: Option<(u64, String)>,
     /// 待确认的大文件预览(非媒体预览需先整份下载, 超过阈值先问一次)。
     pub(crate) preview_confirm: Option<PreviewConfirm>,
+    /// 待回传的「用系统程序打开」探针(避免 xdg-open 假成功)。
+    pub(crate) pending_open: Option<PendingOpen>,
 
     /// 已解析的媒体文件清晰度缓存(file_id -> 清晰度+字幕)。
     pub(crate) quality_cache: HashMap<String, QualityReady>,
@@ -642,6 +644,7 @@ impl App {
             upload_pick: None,
             preview_pending: None,
             preview_confirm: None,
+            pending_open: None,
             quality_cache: HashMap::new(),
             quality_inflight: HashSet::new(),
             thumbnail_textures: HashMap::new(),
@@ -810,6 +813,7 @@ impl App {
                     self.clipboard = None;
                     self.preview_pending = None;
                     self.preview_confirm = None;
+                    self.pending_open = None;
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
                     self.dir_cache.clear();
@@ -844,6 +848,7 @@ impl App {
                     self.clipboard = None;
                     self.preview_pending = None;
                     self.preview_confirm = None;
+                    self.pending_open = None;
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
                     self.reset_stack();
@@ -1348,10 +1353,12 @@ impl App {
                     {
                         self.preview_pending = None;
                     }
-                    match helpers::open_path(&path) {
-                        Ok(()) => self.toast_ok(&format!("已打开「{name}」")),
-                        Err(e) => self.toast_err(&format!("打开文件失败: {e}")),
-                    }
+                    // 结果由后台探针回传(xdg-open 失败不再是假成功)。
+                    self.pending_open = Some(PendingOpen {
+                        rx: helpers::open_async(path),
+                        label: name,
+                        quiet_ok: false,
+                    });
                 }
                 Msg::PreviewQualities {
                     file_id,
@@ -2563,6 +2570,32 @@ impl App {
         }
     }
 
+    /// 回收「用系统程序打开」的探针结果(见 [`helpers::open_async`]), 给出诚实提示。
+    fn poll_pending_open(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_open.take() else {
+            return;
+        };
+        match pending.rx.try_recv() {
+            Ok(helpers::OpenOutcome::Launched) => {
+                if !pending.quiet_ok {
+                    self.toast_ok(&format!("已打开「{}」", pending.label));
+                }
+            }
+            Ok(helpers::OpenOutcome::NoHandler) => {
+                self.toast_warn(&format!("系统未关联打开「{}」的程序", pending.label));
+            }
+            Ok(helpers::OpenOutcome::Failed(e)) => {
+                self.toast_err(&format!("打开「{}」失败: {e}", pending.label));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // 探针还在等 xdg-open 退出(最多 1s), 保留结果下次再收。
+                self.pending_open = Some(pending);
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+
     /// 提交目录递归上传任务。
     pub(crate) fn enqueue_upload_dir(
         &mut self,
@@ -2962,6 +2995,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain(ctx);
         self.poll_file_picker();
+        self.poll_pending_open(ctx);
         self.poll_system_theme();
 
         // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。

@@ -469,6 +469,15 @@ pub(crate) enum QualityMenuState<'a> {
     Ready(&'a QualityReady),
 }
 
+/// 待回传的「用系统程序打开」动作(后台探针结果)。
+pub(crate) struct PendingOpen {
+    pub rx: std::sync::mpsc::Receiver<super::helpers::OpenOutcome>,
+    /// 提示里展示的目标名(文件名 / 目录路径)。
+    pub label: String,
+    /// 成功时不提示(打开目录保持安静, 只有失败才说话)。
+    pub quiet_ok: bool,
+}
+
 /// 大文件预览确认弹窗的状态: 非媒体预览需先整份下载, 超过阈值时先问一次。
 #[derive(Clone)]
 pub(crate) struct PreviewConfirm {

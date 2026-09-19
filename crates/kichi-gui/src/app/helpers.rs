@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, vec2, Color32, FontId, Painter, Pos2, Rect, Stroke};
 
@@ -14,19 +15,95 @@ pub(crate) fn input(text: &mut String) -> egui::TextEdit<'_> {
         .font(FontId::proportional(14.0))
 }
 
-pub(crate) fn open_dir(dir: &std::path::Path) {
-    if !dir.is_dir() {
-        return;
-    }
-    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+/// 「用系统默认程序打开」的结果(后台探针在 xdg-open 退出后回传)。
+pub(crate) enum OpenOutcome {
+    /// 已交给系统(退出码 0, 或 1s 内未退出, 视为已启动)。
+    Launched,
+    /// 系统没有可打开该目标的关联程序。
+    NoHandler,
+    /// 其它失败(附 xdg-open 的错误输出 / 退出码)。
+    Failed(String),
 }
 
-/// 用系统默认程序打开一个本地文件(尽量交给系统查看器)。
-pub(crate) fn open_path(path: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
+/// xdg-open 的观察窗口: 超时仍未退出即视为已启动。
+/// 个别 handler 会阻塞到程序关闭, 不能一直等。
+const OPEN_PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
+
+/// xdg-open(及其 KDE/GTK 后端)在「没有可用的关联程序」时的常见措辞。
+fn looks_like_no_handler(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    [
+        "no method available",
+        "no application",
+        "no default application",
+        "no handler",
+        "not supported",
+        "unhandled",
+    ]
+    .iter()
+    .any(|pat| e.contains(pat))
+}
+
+/// 用系统默认程序打开文件 / 目录 / URL。
+///
+/// `xdg-open` 只负责转发: 没有关联程序时它会失败退出, 但 `spawn` 察觉不到,
+/// 界面会「假成功」。这里在后台线程等它退出(最多 [`OPEN_PROBE_TIMEOUT`]),
+/// 结果经返回的通道回传, 由 UI 给出诚实的成功 / 失败提示。
+pub(crate) fn open_async(
+    target: impl Into<std::ffi::OsString>,
+) -> std::sync::mpsc::Receiver<OpenOutcome> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = target.into();
+    std::thread::spawn(move || {
+        let mut child = match std::process::Command::new("xdg-open")
+            .arg(&target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(OpenOutcome::Failed(e.to_string()));
+                return;
+            }
+        };
+        let deadline = Instant::now() + OPEN_PROBE_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break Some(s),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                Ok(None) => break None,
+                Err(e) => {
+                    let _ = tx.send(OpenOutcome::Failed(e.to_string()));
+                    return;
+                }
+            }
+        };
+        let outcome = match status {
+            // 超时仍在运行: 已交给系统, 不打断它。
+            None => OpenOutcome::Launched,
+            Some(s) if s.success() => OpenOutcome::Launched,
+            Some(s) => {
+                let mut err = String::new();
+                if let Some(pipe) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = pipe.take(4096).read_to_string(&mut err);
+                }
+                let err = err.trim();
+                if looks_like_no_handler(err) {
+                    OpenOutcome::NoHandler
+                } else if err.is_empty() {
+                    OpenOutcome::Failed(format!("xdg-open 退出码 {:?}", s.code()))
+                } else {
+                    OpenOutcome::Failed(err.lines().next().unwrap_or(err).to_string())
+                }
+            }
+        };
+        let _ = tx.send(outcome);
+    });
+    rx
 }
 
 /// 用系统默认浏览器打开一个 URL(交给 xdg-open, 同样适用于分享链接)。
@@ -418,7 +495,25 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::subtitle_of;
+    use super::{looks_like_no_handler, subtitle_of};
+
+    #[test]
+    fn detects_no_handler_wording() {
+        assert!(looks_like_no_handler(
+            "xdg-open: no method available for opening '/tmp/a.zzz'"
+        ));
+        assert!(looks_like_no_handler(
+            "No application is registered as handling this file"
+        ));
+        assert!(looks_like_no_handler(
+            "no default application for text/x-zzz"
+        ));
+        // 文件不存在等其它失败不能被误判成「无关联程序」。
+        assert!(!looks_like_no_handler(
+            "xdg-open: file '/tmp/a' does not exist"
+        ));
+        assert!(!looks_like_no_handler(""));
+    }
 
     #[test]
     fn matches_same_episode_subtitles() {
