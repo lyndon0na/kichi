@@ -7,6 +7,7 @@
   <a href="https://github.com/emilk/egui"><img alt="GUI" src="https://img.shields.io/badge/GUI-egui%20%2F%20eframe%200.31-1f6feb"></a>
   <a href="https://github.com/lyndon0na/kichi#构建与运行"><img alt="Platform" src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black"></a>
   <a href="https://github.com/lyndon0na/kichi/releases"><img alt="Version" src="https://img.shields.io/github/v/release/lyndon0na/kichi?label=version&color=blue&sort=semver"></a>
+  <a href="https://github.com/lyndon0na/kichi/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/lyndon0na/kichi/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/lyndon0na/kichi/actions/workflows/release.yml"><img alt="Build" src="https://github.com/lyndon0na/kichi/actions/workflows/release.yml/badge.svg"></a>
   <a href="https://github.com/lyndon0na/kichi/blob/master/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
   <a href="https://github.com/lyndon0na/kichi#免责声明"><img alt="Unofficial" src="https://img.shields.io/badge/PikPak-unofficial-orange"></a>
@@ -229,7 +230,10 @@ packaging/                       # 桌面集成与发行包
 ├── appimage/AppRun              # AppImage 入口脚本
 ├── build-flatpak.sh             # Flatpak 出包（flatpak-builder + build-bundle）
 └── flatpak/io.github.lyndon0na.Kichi.yml   # Flatpak 清单（沙箱内源码构建）
-.github/workflows/release.yml    # 推 v* tag 自动打包 AppImage / Flatpak 并发 Release
+
+.github/workflows/
+├── ci.yml                       # push master / PR 触发: fmt + clippy + test
+└── release.yml                  # 推 v* tag 自动打包 AppImage / Flatpak 并发 Release
 ```
 
 </details>
@@ -261,6 +265,8 @@ cargo build --release -p kichi-gui
 # 运行测试
 cargo test --workspace
 ```
+
+推送 `master` 与所有 PR 由 GitHub Actions 跑同一套闸门（`.github/workflows/ci.yml`）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` —— 本地命令与 CI 一致，只在 CI 上多出 `--locked` 与严格告警。
 
 ### 3. 桌面图标（KDE / Wayland）
 

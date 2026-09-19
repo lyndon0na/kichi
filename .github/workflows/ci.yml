@@ -1,0 +1,66 @@
+name: CI
+
+# 日常闸门: fmt / clippy / test。推送 master 与所有 PR 触发;
+# 发布打包是另一条流水线(release.yml, 推 v* tag 触发)。
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# 同一分支的新推送取消上一轮未跑完的检查
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # 只跑格式检查: 不需要系统依赖, 秒级出结果
+  fmt:
+    name: fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: cargo fmt --all --check
+
+  # clippy + test: 需要构建 kichi-gui(eframe) 的系统依赖
+  check:
+    name: clippy + test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # 缓存 key 与 release.yml 刻意区分: 同 key 时两个工作流互相覆盖,
+      # 且 release 的 AppImage 任务在 22.04 上构建, 复用其 target 无益。
+      - name: 缓存 cargo 依赖
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-ci-cargo-
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libxkbcommon-dev libwayland-dev
+
+      # --locked: Cargo.lock 与 Cargo.toml 不一致时直接失败(依赖漂移不进主干)
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --locked

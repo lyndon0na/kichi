@@ -39,7 +39,7 @@
 ## 三、里程碑
 
 > [!NOTE]
-> M0–M22 已全部完成；细节分别见[第四节](#四功能现状)与[第五节](#五关键实现笔记)。
+> M0–M23 已全部完成；细节分别见[第四节](#四功能现状)与[第五节](#五关键实现笔记)。
 
 - [x] **M0 · 调研 API**
   - 梳理端点、加签算法、登录 / 文件 / 离线任务的数据结构
@@ -148,6 +148,13 @@
   - **CI 首跑踩坑（发布任务）**：`release` job 只下载 artifacts、不做 checkout，`gh` 没有 `.git` 可推断目标仓库、在第一条 `gh release view` 就失败（`fatal: not a git repository (or any of the parent directories): .git`）—— 给该步骤补 `GH_REPO: ${{ github.repository }}`（此时 AppImage / Flatpak 两个 job 均已成功，只差最后一步）
   - 本地实测：AppImage 解包后二进制正常启动；Flatpak 装进用户级安装后沙箱内无缺失库、宿主字体与 `kdeglobals` 可见、`flatpak-spawn --host mpv` 可用、GUI 正常起窗（不暴露 X11，日志里会有一条 arboard 的 X11 剪贴板告警 —— 剪贴板实际走 Wayland 通道）
   - 新增单测 2 项（宿主命令前缀 / 中文字体候选查找）
+
+- [x] **M23 · 常规 CI（P3-2）**
+  - 新增 `.github/workflows/ci.yml`：`push` 到 `master` 与所有 PR 触发；`concurrency` 用 `ci-${{ github.ref }}` + `cancel-in-progress`（同分支新推送取消上一轮，省 runner 排队）
+  - 两个 job：`fmt`（只装 `rustfmt` 组件，跑 `cargo fmt --all --check` —— 无系统依赖、秒级反馈，失败不会被后面的 clippy / test 掩盖）与 `check`（`clippy` + `test`，apt 装 eframe 构建依赖，与 `release.yml` 的列表同源，缓存 `~/.cargo/registry` / `~/.cargo/git` / `target`）
+  - clippy 直接上严格模式（`cargo clippy --workspace --all-targets --locked -- -D warnings`）：本地实测早已 0 告警，不需要「先宽松后收紧」的过渡期；cargo 命令统一带 `--locked`，把依赖漂移挡在主干之外
+  - 缓存 key 用 `Linux-ci-cargo-*`，与 `release.yml` **刻意区分**：同 key 时两个工作流互相覆盖缓存，且 AppImage 任务在 `ubuntu-22.04` 构建、target 不通用
+  - 上 CI 前本地复跑三闸门确认基线：`cargo fmt --all --check` 通过、`cargo clippy --workspace --all-targets --locked -- -D warnings` 0 告警、`cargo test --workspace --locked` 58 项全过（GUI 侧；核心库 33 项合计 91）；README 顶部补 CI 状态徽章、目录树与「构建与运行」补 CI 说明
 
 ## 四、功能现状
 
@@ -419,6 +426,7 @@ classify(name, mime)              预览入口                       预览执�
 | `cargo check --workspace` | 零 warning |
 | `cargo clippy --workspace --all-targets` | 零 warning |
 | `cargo fmt --all -- --check` | 零差异（配置见 `rustfmt.toml`） |
+| CI（`.github/workflows/ci.yml`，P3-2 / M23） | 上表前三项由 push `master` / PR 自动执行（clippy 带 `-- -D warnings`、cargo 命令带 `--locked`） |
 | 真机验证 | 登录、自动续期、目录加载、离线任务查询（用户账户实测）；Flatpak 装进用户级安装后沙箱内无缺失库、宿主字体 / `kdeglobals` 可见、`flatpak-spawn --host mpv` 可用、GUI 起窗正常 |
 
 <details>
@@ -439,7 +447,7 @@ classify(name, mime)              预览入口                       预览执�
   - 分享转存：解析 mypikpak 分享链接并保存到我的网盘（`share` / `share/detail` / `share/restore`），含分页 / 过滤 / 目标目录 / 移动重试；转存暂存目录（「转存自分享」）按持久化 ID 定位，ID 失效时回退名称匹配并刷新缓存
   - 回收站浏览 / 还原 / 彻底删除（含清空）
 - [ ] **体验继续** —— 全局搜索、任务详情进度
-- [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；`desktop` 文件与图标的进一步完善见 TODO P3-4
+- [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）；`desktop` 文件与图标的进一步完善见 TODO P3-4
 
 ## 八、环境
 

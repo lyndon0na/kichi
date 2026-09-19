@@ -11,7 +11,7 @@
 | **P0** | 用户可见的功能缺口 | 0 |
 | **P1** | 正确性与健壮性 | 0 |
 | **P2** | 可维护性与工程 | 0 |
-| **P3** | 分发与发布 | 2 |
+| **P3** | 分发与发布 | 1 |
 
 ---
 
@@ -31,7 +31,6 @@
 
 | 编号 | 任务 | 主要文件 | 说明 / 验收 |
 | :-- | :-- | :-- | :-- |
-| P3-2 | 常规 CI（**暂缓**） | `.github/workflows/` | 发布打包流水线已随 P3-1 落地（`release.yml`：tag 触发打包发 Release）；仍缺日常的 `fmt --check` / `clippy` / `test` 作业 —— 本地单人开发（`cargo test` 手动跑即可），需要时再加 |
 | P3-4 | desktop 文件完善 | `packaging/kichi.desktop`<br>`packaging/install-icon.sh` | 可按需补 `TryExec`、系统级安装路径等 |
 
 ---
@@ -75,5 +74,7 @@
 
 - [x] P3-3 补回仓库链接：`Cargo.toml` 的 `[workspace.package]` 补 `repository = "https://github.com/lyndon0na/kichi"`，两个 crate 用 `repository.workspace = true` 继承（`cargo metadata` 可直接读到，只写 workspace 层不会传导到包）；README 顶部徽章全部改为可点链接并新增动态徽章 —— 版本徽章换成 shields 的 GitHub release 徽章（`sort=semver`，首个 tag 发布前显示 "no releases"）、新增 Release 工作流状态徽章；免责声明末尾补 Issues 与 LICENSE 链接（`Cargo.toml` / `crates/*/Cargo.toml` / `README.md`）
 
+- [x] P3-2 常规 CI：新增 `.github/workflows/ci.yml`（push `master` / PR 触发，同分支新推送取消旧跑）—— `fmt` 与 `clippy + test` 两个 job；clippy 走严格模式（`-- -D warnings`）、cargo 命令带 `--locked`（`Cargo.lock` 与 `Cargo.toml` 不一致直接失败）；缓存 key 用 `Linux-ci-cargo-*` 与 `release.yml` 区分（同 key 会互相覆盖，且 release 的 AppImage 在 `ubuntu-22.04` 构建、target 不通用）；README 顶部补 CI 状态徽章、目录树与「构建与运行」补 CI 说明（`.github/workflows/ci.yml` / `README.md`）
+
 > [!TIP]
-> P0–P2 与 P3-1 / P3-3 已完成；待办剩 P3-2（常规 CI，暂缓）、P3-4（desktop 文件按需完善）。
+> P0–P2 与 P3-1 / P3-2 / P3-3 已完成；待办剩 P3-4（desktop 文件按需完善）。

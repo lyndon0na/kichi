@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **日常 CI**：新增 `.github/workflows/ci.yml`，推送 `master` 与所有 PR 自动跑 `cargo fmt --all --check` 与 `cargo clippy --workspace --all-targets --locked -- -D warnings` + `cargo test --workspace --locked`（`fmt` 拆成独立 job：无系统依赖、秒级反馈；`--locked` 让依赖漂移不进主干；同分支新推送取消上一轮未跑完的检查）；缓存 key 用 `Linux-ci-cargo-*` 与 `release.yml` 区分，避免两个工作流互相覆盖缓存。README 顶部补 CI 状态徽章，本地开发命令不变
+
 ### 修复
 
 - **Flatpak 首次 CI 出包失败（缺 SVG 加载器）**：flatpak 导出阶段用宿主 gdk-pixbuf 校验图标，Ubuntu 24.04 的 gdk-pixbuf 把 SVG 支持放在 `librsvg2-common` 里 —— 发布工作流的 apt 列表补装该包（首次发 `v1.0.0` 时 AppImage 成功、Flatpak 编译安装都通过，仅导出报 `Format not recognized`）；Fedora / gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地构建不受影响
