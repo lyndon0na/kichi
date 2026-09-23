@@ -418,6 +418,22 @@ classify(name, mime)              预览入口                       预览执�
 - **打开不再假成功**：`xdg-open` 在无关联程序时也会「正常启动又失败」，只 `spawn` 看不出结果；改为后台线程等退出码（最多 1s，超时视为已启动，防阻塞式 handler 拖住提示），按 stderr 措辞区分「无关联程序」与其它失败，结果经通道回 UI。打开目录这类高频噪声只有失败才提示。
 - **预览进度与取消复用下载管线**：非媒体预览的缓存下载直接调 `download_to` 的 `cancel` / `on_progress`，不在预览里另造一套；取消同样走 `AtomicBool` 标志位，取消后丢弃未完成的 `.part`，UI 自己清状态（要求取消回包等于让「取消」多一种失败态）。
 
+### 11) 结构优化：巨型文件与 god object（P2-9 起，进行中）
+
+动机：AI 一次改动越容易「碰到隔壁逻辑」，评审 diff 的成本也越高；单次改动的爆炸半径要可见。目标是**按域建子目录**，不是「把文件切小」。
+
+判据（怎么切才算对）：① 职责能一句话命名、文件能一口气读完；② **目录 = 域的边界，文件 = 域内的角色**（文件名取里面的核心类型名）；③ **一起变的东西放一起** —— 同一处业务改动若总要同时改 3 个文件，说明切错了；④ 停止信号：出现 `utils.rs` / `common.rs`、叫不出文件名、一个类型的 `impl` 散落多文件（手写 trait impl 单独成文件属正常例外）、为「每文件 < 500 行」这类教条继续切。
+
+参照（本机 `~/.cargo` 源码 `wc -l` 实测）：egui 114 文件 / 中位 226 行，但 `src/context.rs` **4420 行**、`style.rs` 3163；eframe 28 文件 / 最大 1666；image 71 文件 / 最大 2476（`codecs/` 一个目录 39 文件，每种格式一个）；rustls 107 文件 / 最大 `msgs/handshake.rs` **3266 行**（协议消息表，形态类似 `worker::handle`）。结论：**大文件本身不是问题，一个文件里混着多个概念才是**；god object（`App` 的 100+ 方法与字段）光拆文件治不了。
+
+- **现状**：本节的判据、参照数据与目标形态来自一次专门讨论，**尚未动手**（代码零改动）。建议的第一刀是 `app/mod.rs` 的纯逻辑下沉：把 `dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed` 与对应的 8 项单测外移到 `app/transfers_model.rs`（无 UI 依赖、可直接单测），再把 `App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`；风险最低，用来验证整套做法
+- **待决策（动手前定一条，落进 `TODO.md` P2 节）**：
+  - **A（推荐）** 拆域时顺手 struct 化（`app/files/` 里直接放 `FilesPage` + `show()`，`App` 持 `files: FilesPage`）：一次到位，但触及所有 `self.xxx` 引用，逐页 UI 冒烟
+  - **B** 先只按职责切文件、不动结构：diff 小、好回滚，但要再搬一轮
+  - **C** 先做 `worker/`（管线边界清晰、无 UI 状态纠缠），页面结构化留最后：业务风险最低，`app/mod.rs` 期间仍在长
+- **目标形态**：`app/` 下 8–10 个页面 / 工具单文件 + 域目录（`files/` / `transfers/` / `browse/`）+ `worker/` 约 10 个文件，总量 25–30 个文件（与 eframe 同量级）；`app/mod.rs` 最终只剩 `App` 字段 + `new` + `drain` 分发 + `eframe::App`，约 300–500 行
+- **队列与逐项验收**：见 `TODO.md` 的 P2-9 ~ P2-14；每步都要 `cargo fmt` + `clippy -- -D warnings` + `cargo test` 全绿、`#[test]` 数不减，`worker/` 与上传 / 下载管线额外实机验证，路径变化同步 README 目录树与 `AGENTS.md` 代码地图
+
 ## 六、质量
 
 | 检查 | 结果 |
@@ -447,6 +463,7 @@ classify(name, mime)              预览入口                       预览执�
   - 分享转存：解析 mypikpak 分享链接并保存到我的网盘（`share` / `share/detail` / `share/restore`），含分页 / 过滤 / 目标目录 / 移动重试；转存暂存目录（「转存自分享」）按持久化 ID 定位，ID 失效时回退名称匹配并刷新缓存
   - 回收站浏览 / 还原 / 彻底删除（含清空）
 - [ ] **体验继续** —— 全局搜索、任务详情进度
+- [ ] **可维护性** —— 结构优化：巨型文件与 god object（P2-9 起，尚未动手）。判据、参照数据、目标形态与待决策的 A / B / C 三条路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
 - [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）；`desktop` 文件与图标的进一步完善见 TODO P3-4
 
 ## 八、环境

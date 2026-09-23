@@ -11,3 +11,5 @@ dist/
 *.swp
 *~
 .DS_Store
+AGENTS.md
+VIBE_CODING_NOTES.md
