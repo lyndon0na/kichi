@@ -115,3 +115,62 @@ pub(super) async fn load_more_tasks(st: &mut WorkerState, tx: &Sender<Msg>, phas
         }
     }
 }
+
+/// 添加离线下载任务。
+pub(super) async fn offline_create(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    url: String,
+    name: Option<String>,
+    parent: Option<String>,
+) {
+    let Some(client) = &st.client else { return };
+    match client
+        .offline_create(&url, name.as_deref(), parent.as_deref())
+        .await
+    {
+        Ok(_) => {
+            let _ = tx.send(Msg::OfflineCreated);
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::Error {
+                what: format!("添加离线下载失败: {e}"),
+            });
+        }
+    }
+}
+
+/// 重试离线任务。
+pub(super) async fn offline_retry(st: &WorkerState, tx: &Sender<Msg>, task_id: String) {
+    let Some(client) = &st.client else { return };
+    match client.offline_retry(&task_id).await {
+        Ok(_) => {
+            let _ = tx.send(Msg::OfflineRetried);
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::Error {
+                what: format!("重试任务失败: {e}"),
+            });
+        }
+    }
+}
+
+/// 删除离线任务(可选同时删除已落盘的文件)。
+pub(super) async fn offline_delete(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    task_ids: Vec<String>,
+    delete_files: bool,
+) {
+    let Some(client) = &st.client else { return };
+    match client.offline_delete(&task_ids, delete_files).await {
+        Ok(_) => {
+            let _ = tx.send(Msg::OfflineDeleted);
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::Error {
+                what: format!("删除任务失败: {e}"),
+            });
+        }
+    }
+}

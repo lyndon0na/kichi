@@ -448,20 +448,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             }
         }
         Cmd::OfflineCreate { url, name, parent } => {
-            let Some(client) = &st.client else { return };
-            match client
-                .offline_create(&url, name.as_deref(), parent.as_deref())
-                .await
-            {
-                Ok(_) => {
-                    let _ = tx.send(Msg::OfflineCreated);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("添加离线下载失败: {e}"),
-                    });
-                }
-            }
+            tasks::offline_create(st, tx, url, name, parent).await
         }
         Cmd::ListFolders { parent, req_id } => {
             let Some(client) = &st.client else { return };
@@ -486,35 +473,11 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
-        Cmd::OfflineRetry { task_id } => {
-            let Some(client) = &st.client else { return };
-            match client.offline_retry(&task_id).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::OfflineRetried);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("重试任务失败: {e}"),
-                    });
-                }
-            }
-        }
+        Cmd::OfflineRetry { task_id } => tasks::offline_retry(st, tx, task_id).await,
         Cmd::OfflineDelete {
             task_ids,
             delete_files,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client.offline_delete(&task_ids, delete_files).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::OfflineDeleted);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("删除任务失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => tasks::offline_delete(st, tx, task_ids, delete_files).await,
         Cmd::RefreshTasks => tasks::refresh_tasks(st, tx).await,
         Cmd::LoadMoreTasks { phase } => tasks::load_more_tasks(st, tx, phase).await,
         Cmd::RefreshQuota => refresh_quota(st, tx).await,
