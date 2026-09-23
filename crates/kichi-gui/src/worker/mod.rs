@@ -1,3 +1,4 @@
+mod auth;
 mod cache;
 mod download;
 mod gate;
@@ -156,7 +157,7 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
 async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
     match cmd {
         Cmd::Login { username, password } => {
-            do_login(st, tx, username, password).await;
+            auth::do_login(st, tx, username, password).await;
         }
         Cmd::AutoLogin { username } => {
             // 密钥环读取是阻塞的 D-Bus 调用, 放到阻塞线程池执行。
@@ -168,7 +169,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                     .flatten()
             };
             match lookup {
-                Some(password) => do_login(st, tx, username, password).await,
+                Some(password) => auth::do_login(st, tx, username, password).await,
                 None => {
                     let _ = tx.send(Msg::AutoLoginUnavailable);
                 }
@@ -201,7 +202,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 username: username.clone(),
             };
             let mut client = KichiClient::new(device_id);
-            install_saver(&mut client);
+            auth::install_saver(&mut client);
             client.set_part_concurrency(st.part_concurrency);
             client.set_session(&sess).await;
             let client = Arc::new(client);
@@ -927,46 +928,6 @@ async fn move_new_files(
 
     client.batch_move(&new_ids, Some(dest_id)).await?;
     Ok(())
-}
-
-/// 账号密码登录的公共实现(手动登录与密钥环自动登录共用)。
-async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, password: String) {
-    let device_id = kichi_core::captcha::generate_device_id();
-    let mut client = KichiClient::new(device_id.clone());
-    install_saver(&mut client);
-    client.set_part_concurrency(st.part_concurrency);
-    tracing::info!("开始登录: {username}");
-    match client.login(&username, &password).await {
-        Ok(sess) => {
-            if let Err(e) = session::save_session(&sess) {
-                let _ = tx.send(Msg::Error {
-                    what: e.to_string(),
-                });
-            }
-            st.client = Some(Arc::new(client));
-            tracing::info!("登录成功: {username}");
-            let _ = tx.send(Msg::LoginOk { username });
-            refresh_quota(st, tx).await;
-            tasks::refresh_tasks(st, tx).await;
-        }
-        Err(e) => {
-            tracing::warn!("登录失败: {e}");
-            let (what, verify_url) = match &e {
-                Error::CaptchaReview { url, description } => {
-                    (format!("需要人机验证: {description}"), url.clone())
-                }
-                other => (format!("登录失败: {other}"), None),
-            };
-            let _ = tx.send(Msg::LoginFailed { what, verify_url });
-        }
-    }
-}
-
-fn install_saver(client: &mut KichiClient) {
-    let saver: kichi_core::client::TokenSaver = Arc::new(|sess| {
-        let _ = session::save_session(sess);
-    });
-    client.set_token_saver(saver);
 }
 
 /// 取消下载时清理未完成的 `.part` 临时文件。
