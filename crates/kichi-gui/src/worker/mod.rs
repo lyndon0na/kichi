@@ -556,7 +556,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             name,
             media,
             subtitles,
-        } => preview::spawn_preview(st, tx, req_id, file_id, name, media, subtitles),
+        } => preview::spawn_preview(st, tx, req_id, file_id, name, media, subtitles).await,
         Cmd::CancelPreview { req_id } => cancel_task(st, req_id).await,
         Cmd::PreviewQualities { file_id, subtitles } => {
             preview::spawn_preview_qualities(st, tx, file_id, subtitles)
