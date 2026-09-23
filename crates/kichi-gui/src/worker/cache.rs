@@ -135,3 +135,8 @@ pub(super) async fn sweep_caches(cache: CacheCtl, purge: bool, reply: Option<Sen
         _ => {}
     }
 }
+
+/// 扫描 / 删除都是阻塞 IO, 交给后台任务, 不占住 worker 主循环。
+pub(super) fn maintain_cache(cache: CacheCtl, tx: Sender<Msg>, purge: bool) {
+    tokio::spawn(async move { sweep_caches(cache, purge, Some(tx)).await });
+}

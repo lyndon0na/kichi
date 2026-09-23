@@ -534,12 +534,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         } => {
             download::spawn_folder_download(st, tx, req_id, folder_id, name, dest_dir).await;
         }
-        Cmd::CancelDownload { req_id } => {
-            let map = st.cancel.lock().await;
-            if let Some(flag) = map.get(&req_id) {
-                flag.store(true, Ordering::Relaxed);
-            }
-        }
+        Cmd::CancelDownload { req_id } => cancel_task(st, req_id).await,
         Cmd::StartUpload {
             req_id,
             path,
@@ -554,12 +549,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         } => {
             upload::spawn_upload_dir(st, tx, req_id, path, parent).await;
         }
-        Cmd::CancelUpload { req_id } => {
-            let map = st.cancel.lock().await;
-            if let Some(flag) = map.get(&req_id) {
-                flag.store(true, Ordering::Relaxed);
-            }
-        }
+        Cmd::CancelUpload { req_id } => cancel_task(st, req_id).await,
         Cmd::Preview {
             req_id,
             file_id,
@@ -592,12 +582,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 });
             }
         }
-        Cmd::CancelPreview { req_id } => {
-            let map = st.cancel.lock().await;
-            if let Some(flag) = map.get(&req_id) {
-                flag.store(true, Ordering::Relaxed);
-            }
-        }
+        Cmd::CancelPreview { req_id } => cancel_task(st, req_id).await,
         Cmd::PreviewQualities { file_id, subtitles } => {
             let Some(client) = st.client.clone() else {
                 return;
@@ -831,22 +816,14 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             ul_concurrency,
             part_concurrency,
             max_attempts,
-        } => {
-            // 并发即时生效: 扩容立刻放行排队任务, 缩容只影响后续 acquire, 不打断在传任务。
-            st.sem.set_limit(dl_concurrency);
-            st.ul_sem.set_limit(ul_concurrency);
-            st.max_attempts = max_attempts as u32;
-            st.part_concurrency = part_concurrency;
-            if let Some(client) = &st.client {
-                client.set_part_concurrency(part_concurrency);
-            }
-        }
-        Cmd::MaintainCache { purge } => {
-            // 扫描 / 删除都是阻塞 IO, 交给后台任务, 不占住 worker 主循环。
-            let cache = st.cache.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move { sweep_caches(cache, purge, Some(tx)).await });
-        }
+        } => set_transfer_limits(
+            st,
+            dl_concurrency,
+            ul_concurrency,
+            part_concurrency,
+            max_attempts,
+        ),
+        Cmd::MaintainCache { purge } => cache::maintain_cache(st.cache.clone(), tx.clone(), purge),
     }
 }
 
@@ -859,6 +836,31 @@ fn discard_part(dest: &Path) {
 fn download_backoff(attempt: u32) -> Duration {
     let ms = 500u64.saturating_mul(1u64 << attempt.min(4));
     Duration::from_millis(ms.min(8000))
+}
+
+/// 置位取消标志: 下载 / 上传 / 预览共用同一取消注册表(按 req_id 索引)。
+async fn cancel_task(st: &WorkerState, req_id: u64) {
+    let map = st.cancel.lock().await;
+    if let Some(flag) = map.get(&req_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 并发即时生效: 扩容立刻放行排队任务, 缩容只影响后续 acquire, 不打断在传任务。
+fn set_transfer_limits(
+    st: &mut WorkerState,
+    dl_concurrency: usize,
+    ul_concurrency: usize,
+    part_concurrency: usize,
+    max_attempts: usize,
+) {
+    st.sem.set_limit(dl_concurrency);
+    st.ul_sem.set_limit(ul_concurrency);
+    st.max_attempts = max_attempts as u32;
+    st.part_concurrency = part_concurrency;
+    if let Some(client) = &st.client {
+        client.set_part_concurrency(part_concurrency);
+    }
 }
 
 async fn refresh_quota(st: &mut WorkerState, tx: &Sender<Msg>) {
