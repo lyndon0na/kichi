@@ -6,6 +6,7 @@ mod preview;
 mod shares;
 mod tasks;
 mod thumbs;
+mod trash;
 mod upload;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -348,79 +349,15 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
-        Cmd::Trash { ids } => {
-            let Some(client) = &st.client else { return };
-            match client.batch_trash(&ids).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::Trashed);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("删除失败: {e}"),
-                    });
-                }
-            }
-        }
+        Cmd::Trash { ids } => trash::trash_files(st, tx, ids).await,
         Cmd::ListTrash {
             token,
             append,
             req_id,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client.trash_list(100, token.as_deref()).await {
-                Ok(list) => {
-                    let _ = tx.send(Msg::TrashList {
-                        req_id,
-                        append,
-                        list,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::TrashFailed {
-                        what: format!("加载回收站失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::Untrash { ids } => {
-            let Some(client) = &st.client else { return };
-            match client.batch_untrash(&ids).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::TrashRestored { ids });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("还原失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::DeleteTrash { ids } => {
-            let Some(client) = &st.client else { return };
-            match client.batch_delete(&ids).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::TrashDeleted { ids });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("彻底删除失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::EmptyTrash => {
-            let Some(client) = &st.client else { return };
-            match client.empty_trash().await {
-                Ok(()) => {
-                    let _ = tx.send(Msg::TrashEmptied);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("清空回收站失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => trash::list_trash(st, tx, token, append, req_id).await,
+        Cmd::Untrash { ids } => trash::untrash_files(st, tx, ids).await,
+        Cmd::DeleteTrash { ids } => trash::delete_trash_files(st, tx, ids).await,
+        Cmd::EmptyTrash => trash::empty_trash(st, tx).await,
         Cmd::MoveTo { ids, dest, src } => {
             let Some(client) = &st.client else { return };
             match client.batch_move(&ids, dest.as_deref()).await {
