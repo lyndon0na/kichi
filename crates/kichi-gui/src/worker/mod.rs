@@ -17,10 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kichi_core::download::part_path;
-use kichi_core::{session, Error, KichiClient};
+use kichi_core::KichiClient;
 use tokio::sync::Semaphore;
 
-use crate::credentials;
 use crate::msg::{Cmd, Msg};
 
 use self::cache::{sweep_caches, CacheCtl};
@@ -161,34 +160,11 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         Cmd::Login { username, password } => {
             auth::do_login(st, tx, username, password).await;
         }
-        Cmd::AutoLogin { username } => {
-            // 密钥环读取是阻塞的 D-Bus 调用, 放到阻塞线程池执行。
-            let lookup = {
-                let username = username.clone();
-                tokio::task::spawn_blocking(move || credentials::load(&username))
-                    .await
-                    .ok()
-                    .flatten()
-            };
-            match lookup {
-                Some(password) => auth::do_login(st, tx, username, password).await,
-                None => {
-                    let _ = tx.send(Msg::AutoLoginUnavailable);
-                }
-            }
-        }
+        Cmd::AutoLogin { username } => auth::auto_login(st, tx, username).await,
         Cmd::RememberPassword { username, password } => {
-            let err = tokio::task::spawn_blocking(move || credentials::save(&username, &password))
-                .await
-                .ok()
-                .and_then(|r| r.err());
-            if let Some(what) = err {
-                let _ = tx.send(Msg::Error { what });
-            }
+            auth::remember_password(tx, username, password).await
         }
-        Cmd::ForgetPassword { username } => {
-            let _ = tokio::task::spawn_blocking(move || credentials::delete(&username)).await;
-        }
+        Cmd::ForgetPassword { username } => auth::forget_password(username).await,
         Cmd::Resume {
             device_id,
             access_token,
@@ -196,72 +172,18 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             user_id,
             username,
         } => {
-            let sess = session::Session {
-                device_id: device_id.clone(),
-                access_token: access_token.clone(),
-                refresh_token: refresh_token.clone(),
-                user_id: user_id.clone(),
-                username: username.clone(),
-            };
-            let mut client = KichiClient::new(device_id);
-            auth::install_saver(&mut client);
-            client.set_part_concurrency(st.part_concurrency);
-            client.set_session(&sess).await;
-            let client = Arc::new(client);
-            tracing::info!("尝试恢复登录态");
-            match client.quota().await {
-                Ok(_) => {
-                    st.client = Some(client);
-                    tracing::info!("恢复登录态成功");
-                    let _ = tx.send(Msg::LoginOk { username });
-                    refresh_quota(st, tx).await;
-                    tasks::refresh_tasks(st, tx).await;
-                }
-                // refresh token 已过期/被吊销: 明确要求重新登录。
-                Err(Error::AuthExpired(what)) => {
-                    tracing::warn!("会话失效(需重新登录): {what}");
-                    let _ = tx.send(Msg::SessionInvalid {
-                        reason: format!("登录已过期: {what}"),
-                    });
-                }
-                // 只有服务端明确判定凭据失效(API 错误)才强制重新登录;
-                // 其余(网络/解析等)先保留本地会话, 由后台周期刷新自动重试。
-                Err(e @ Error::Api { .. }) => {
-                    tracing::warn!("会话失效: {e}");
-                    let _ = tx.send(Msg::SessionInvalid {
-                        reason: format!("登录已过期: {e}"),
-                    });
-                }
-                Err(e) => {
-                    st.client = Some(client);
-                    tracing::warn!("会话暂不可用, 将自动重试: {e}");
-                    let _ = tx.send(Msg::LoginOk { username });
-                    let _ = tx.send(Msg::Error {
-                        what: format!("会话暂不可用, 稍后自动重试: {e}"),
-                    });
-                }
-            }
+            auth::resume_session(
+                st,
+                tx,
+                device_id,
+                access_token,
+                refresh_token,
+                user_id,
+                username,
+            )
+            .await
         }
-        Cmd::Logout => {
-            // 取消全部下载(含排队中的), 任务自行退出并清理。
-            {
-                let mut map = st.cancel.lock().await;
-                for flag in map.values() {
-                    flag.store(true, Ordering::Relaxed);
-                }
-                map.clear();
-            }
-            {
-                let mut r = st.reserved.lock().unwrap_or_else(|e| e.into_inner());
-                r.clear();
-            }
-            let _ = session::clear_session();
-            if let Some(c) = &st.client {
-                c.logout().await;
-            }
-            st.client = None;
-            let _ = tx.send(Msg::LoggedOut);
-        }
+        Cmd::Logout => auth::logout(st, tx).await,
         Cmd::ListFiles {
             parent,
             token,
