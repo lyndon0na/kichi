@@ -388,196 +388,29 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             expiration_days,
             need_password,
             label,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client
-                .share_create(&file_ids, expiration_days, need_password)
-                .await
-            {
-                Ok(c) => {
-                    let _ = tx.send(Msg::ShareCreated {
-                        url: c.share_url,
-                        pass_code: c.pass_code,
-                        share_text: c.share_text,
-                        label,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("创建分享失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => shares::create_share(st, tx, file_ids, expiration_days, need_password, label).await,
         Cmd::ListShares {
             token,
             append,
             req_id,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client.share_list(100, token.as_deref()).await {
-                Ok(list) => {
-                    let _ = tx.send(Msg::Shares {
-                        req_id,
-                        append,
-                        list,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::SharesFailed {
-                        what: format!("加载分享列表失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::DeleteShares { ids } => {
-            let Some(client) = &st.client else { return };
-            match client.share_batch_delete(&ids).await {
-                Ok(()) => {
-                    let _ = tx.send(Msg::SharesDeleted { ids });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("取消分享失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => shares::list_shares(st, tx, token, append, req_id).await,
+        Cmd::DeleteShares { ids } => shares::delete_shares(st, tx, ids).await,
         Cmd::ResolveShare {
             share_id,
             pass_code,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client.share_info(&share_id, &pass_code).await {
-                Ok(detail) => {
-                    let _ = tx.send(Msg::ShareResolved {
-                        share_id,
-                        title: detail.title,
-                        pass_code_token: detail.pass_code_token,
-                        files: detail.files,
-                        next_page_token: detail.next_page_token,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::ShareResolveFailed {
-                        what: format!("解析分享失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => shares::resolve_share(st, tx, share_id, pass_code).await,
         Cmd::LoadMoreShareFiles {
             share_id,
             pass_code_token,
             page_token,
-        } => {
-            let Some(client) = &st.client else { return };
-            match client
-                .share_detail(&share_id, &pass_code_token, &page_token)
-                .await
-            {
-                Ok(detail) => {
-                    let _ = tx.send(Msg::ShareFilesLoaded {
-                        files: detail.files,
-                        next_page_token: detail.next_page_token,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::ShareFilesLoadFailed {
-                        what: format!("加载更多文件失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => shares::load_more_share_files(st, tx, share_id, pass_code_token, page_token).await,
         Cmd::SaveShare {
             share_id,
             pass_code_token,
             file_ids,
             dest,
-        } => {
-            let Some(client) = &st.client else { return };
-
-            // 若用户指定了目标目录, 先快照「转存自分享」现有内容
-            let before_ids: Option<HashSet<String>> = if dest.is_some() {
-                shares::snapshot_pack_folder(client).await.ok()
-            } else {
-                None
-            };
-
-            match client
-                .share_restore(&share_id, &pass_code_token, &file_ids)
-                .await
-            {
-                Ok(_) => {
-                    // 若用户指定了目标目录, 等转存完成后只移动新增的文件
-                    if let Some(dest_id) = dest {
-                        if let Err(e) =
-                            shares::move_new_files(client, &dest_id, before_ids.unwrap_or_default())
-                                .await
-                        {
-                            tracing::warn!("自动移动转存文件失败: {e}");
-                            let _ = tx.send(Msg::ShareSaved {
-                                auto_move_failed: true,
-                            });
-                            return;
-                        }
-                    }
-                    let _ = tx.send(Msg::ShareSaved {
-                        auto_move_failed: false,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::ShareSaveFailed {
-                        what: format!("转存失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::RetryMoveShare { dest } => {
-            let Some(client) = &st.client else { return };
-            // 找到「转存自分享」文件夹
-            let folder = match shares::find_pack_folder(client).await {
-                Ok(Some(f)) => f,
-                Ok(None) => {
-                    let _ = tx.send(Msg::ShareMoveRetryFailed {
-                        what: "未找到「转存自分享」文件夹".to_string(),
-                    });
-                    return;
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::ShareMoveRetryFailed {
-                        what: format!("加载文件列表失败: {e}"),
-                    });
-                    return;
-                }
-            };
-            // 获取文件夹中的所有文件
-            let pack_list = match client.file_list(Some(&folder.id), 100, None).await {
-                Ok(list) => list,
-                Err(e) => {
-                    let _ = tx.send(Msg::ShareMoveRetryFailed {
-                        what: format!("加载转存文件失败: {e}"),
-                    });
-                    return;
-                }
-            };
-            if pack_list.files.is_empty() {
-                let _ = tx.send(Msg::ShareMoveRetryFailed {
-                    what: "「转存自分享」中没有文件".to_string(),
-                });
-                return;
-            }
-            let file_ids: Vec<String> = pack_list.files.iter().map(|f| f.id.clone()).collect();
-            match client.batch_move(&file_ids, Some(&dest)).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::ShareMoveRetried);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::ShareMoveRetryFailed {
-                        what: format!("移动失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => shares::save_share(st, tx, share_id, pass_code_token, file_ids, dest).await,
+        Cmd::RetryMoveShare { dest } => shares::retry_move_share(st, tx, dest).await,
         Cmd::LoadThumbnail {
             file_id,
             url,
