@@ -792,25 +792,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             file_id,
             url,
             max_edge,
-        } => {
-            // 不在此处 await: 缩略图下载若占住命令循环, 期间的目录加载 / 预览 /
-            // 删除 / 配额刷新全都要排队。交给独立任务, 并用固定并发闸限流。
-            let Some(client) = st.client.clone() else {
-                return;
-            };
-            let cache = st.cache.clone();
-            let sem = st.thumb_sem.clone();
-            let gen = st.thumb_gen.clone();
-            // 代数在此处取样, 保证与命令循环中「切目录即自增」的顺序一致。
-            let my_gen = gen.load(Ordering::Relaxed);
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                thumbs::load_thumbnail(
-                    &client, &tx, &cache, sem, gen, my_gen, file_id, url, max_edge,
-                )
-                .await;
-            });
-        }
+        } => thumbs::spawn_thumbnail(st, tx, file_id, url, max_edge),
         Cmd::SetTransferLimits {
             dl_concurrency,
             ul_concurrency,

@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use crate::msg::Msg;
 
 use super::cache::CacheCtl;
+use super::WorkerState;
 
 /// 缩略图下载并发: 与用户可配的下载并发解耦(缩略图很小, 不该排在
 /// 大文件下载后面, 也不该占用用户为下载预留的槽位)。
@@ -78,6 +79,32 @@ fn fit_within_max_edge(img: image::DynamicImage, max_edge: u32) -> image::Dynami
     let nw = ((w as f64 * scale).round() as u32).max(1);
     let nh = ((h as f64 * scale).round() as u32).max(1);
     img.thumbnail(nw, nh)
+}
+
+/// 派发缩略图加载: 不在命令循环里 await(下载若占住循环, 期间的目录加载 / 预览 /
+/// 删除 / 配额刷新全都要排队), 交给独立任务, 并用固定并发闸限流。
+pub(super) fn spawn_thumbnail(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    file_id: String,
+    url: String,
+    max_edge: u32,
+) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
+    let cache = st.cache.clone();
+    let sem = st.thumb_sem.clone();
+    let gen = st.thumb_gen.clone();
+    // 代数在此处取样, 保证与命令循环中「切目录即自增」的顺序一致。
+    let my_gen = gen.load(Ordering::Relaxed);
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        load_thumbnail(
+            &client, &tx, &cache, sem, gen, my_gen, file_id, url, max_edge,
+        )
+        .await;
+    });
 }
 
 /// 加载缩略图: 先检查磁盘缓存, 未命中则从 URL 下载(有限次退避重试),
