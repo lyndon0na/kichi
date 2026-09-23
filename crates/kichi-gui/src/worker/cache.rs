@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::msg::Msg;
 
 use super::preview::preview_root;
-use super::thumbnail_cache_dir;
+use super::thumbs::thumbnail_cache_dir;
 
 /// 磁盘缓存淘汰的节流: 距上次扫描超过该间隔就扫一次。
 const CACHE_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(60);
