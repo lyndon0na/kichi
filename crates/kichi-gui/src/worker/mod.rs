@@ -3,6 +3,7 @@ mod cache;
 mod download;
 mod gate;
 mod preview;
+mod shares;
 mod tasks;
 mod thumbs;
 mod upload;
@@ -722,7 +723,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
 
             // 若用户指定了目标目录, 先快照「转存自分享」现有内容
             let before_ids: Option<HashSet<String>> = if dest.is_some() {
-                snapshot_pack_folder(client).await.ok()
+                shares::snapshot_pack_folder(client).await.ok()
             } else {
                 None
             };
@@ -735,7 +736,8 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                     // 若用户指定了目标目录, 等转存完成后只移动新增的文件
                     if let Some(dest_id) = dest {
                         if let Err(e) =
-                            move_new_files(client, &dest_id, before_ids.unwrap_or_default()).await
+                            shares::move_new_files(client, &dest_id, before_ids.unwrap_or_default())
+                                .await
                         {
                             tracing::warn!("自动移动转存文件失败: {e}");
                             let _ = tx.send(Msg::ShareSaved {
@@ -758,7 +760,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         Cmd::RetryMoveShare { dest } => {
             let Some(client) = &st.client else { return };
             // 找到「转存自分享」文件夹
-            let folder = match find_pack_folder(client).await {
+            let folder = match shares::find_pack_folder(client).await {
                 Ok(Some(f)) => f,
                 Ok(None) => {
                     let _ = tx.send(Msg::ShareMoveRetryFailed {
@@ -846,88 +848,6 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             tokio::spawn(async move { sweep_caches(cache, purge, Some(tx)).await });
         }
     }
-}
-
-/// 定位服务端转存暂存目录(「转存自分享」/ "Pack From Shared")。
-/// 优先使用持久化的目录 ID; ID 失效(如用户删除后服务端重建)时回退到名称匹配,
-/// 并把新 ID 写回缓存。服务端从未产生过该目录时返回 None。
-async fn find_pack_folder(client: &KichiClient) -> Result<Option<kichi_core::types::File>, Error> {
-    let cached = crate::settings::load_pack_folder_id();
-    let root_list = client.file_list(None, 100, None).await?;
-    let found = root_list
-        .files
-        .iter()
-        .find(|f| f.is_folder() && Some(&f.id) == cached.as_ref())
-        .or_else(|| {
-            root_list.files.iter().find(|f| {
-                f.is_folder()
-                    && (f.name.contains("Pack From Shared") || f.name.contains("转存自分享"))
-            })
-        });
-    match found {
-        Some(f) => {
-            if Some(&f.id) != cached.as_ref() {
-                crate::settings::save_pack_folder_id(&f.id);
-            }
-            Ok(Some(f.clone()))
-        }
-        None => Ok(None),
-    }
-}
-
-/// 快照「转存自分享」文件夹中现有的文件 id 集合。
-async fn snapshot_pack_folder(client: &KichiClient) -> Result<HashSet<String>, Error> {
-    let Some(folder) = find_pack_folder(client).await? else {
-        return Ok(HashSet::new());
-    };
-    let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
-    Ok(pack_list.files.iter().map(|f| f.id.clone()).collect())
-}
-
-/// 转存后自动移动: 等待服务端写入完成, 找出「转存自分享」中新增的文件并移动到目标目录。
-/// 使用重试机制轮询等待服务端同步, 而非固定 sleep。
-async fn move_new_files(
-    client: &KichiClient,
-    dest_id: &str,
-    before_ids: HashSet<String>,
-) -> Result<(), Error> {
-    // 重试机制: 最多轮询 5 次, 间隔递增 (1s, 2s, 3s, 4s, 5s)
-    let max_attempts = 5;
-    let mut new_ids: Vec<String> = Vec::new();
-
-    for attempt in 0..max_attempts {
-        // 等待让服务端完成转存写入
-        tokio::time::sleep(Duration::from_secs(1 + attempt as u64)).await;
-
-        let Some(folder) = find_pack_folder(client).await? else {
-            if attempt == max_attempts - 1 {
-                return Err(Error::msg("未找到「转存自分享」文件夹"));
-            }
-            continue;
-        };
-
-        let pack_list = client.file_list(Some(&folder.id), 100, None).await?;
-        new_ids = pack_list
-            .files
-            .iter()
-            .filter(|f| !before_ids.contains(&f.id))
-            .map(|f| f.id.clone())
-            .collect();
-
-        // 如果找到新文件, 跳出重试循环
-        if !new_ids.is_empty() {
-            break;
-        }
-
-        tracing::debug!("自动移动: 第 {} 次轮询未发现新文件", attempt + 1);
-    }
-
-    if new_ids.is_empty() {
-        return Ok(());
-    }
-
-    client.batch_move(&new_ids, Some(dest_id)).await?;
-    Ok(())
 }
 
 /// 取消下载时清理未完成的 `.part` 临时文件。
