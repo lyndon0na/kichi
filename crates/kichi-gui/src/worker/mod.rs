@@ -2,6 +2,7 @@ mod cache;
 mod download;
 mod gate;
 mod preview;
+mod tasks;
 mod thumbs;
 mod upload;
 
@@ -12,7 +13,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kichi_core::consts::OFFLINE_PHASES;
 use kichi_core::download::part_path;
 use kichi_core::{session, Error, KichiClient};
 use tokio::sync::Semaphore;
@@ -22,6 +22,7 @@ use crate::msg::{Cmd, Msg};
 
 use self::cache::{sweep_caches, CacheCtl};
 use self::gate::Gate;
+use self::tasks::{TASKS_POLL_ACTIVE, TASKS_POLL_IDLE};
 use self::thumbs::THUMB_CONCURRENCY;
 // UI 侧「预览大文件」确认要查询缓存命中, 对外仍以 worker::preview_cached 暴露。
 pub(crate) use self::preview::preview_cached;
@@ -44,14 +45,8 @@ pub fn spawn() -> Worker {
     }
 }
 
-/// 离线任务每页条数。
-const TASK_PAGE_SIZE: usize = 100;
 /// 后台空闲轮询基节拍(仅作 recv 超时上限, 命令到达会立即唤醒)。
 const POLL_TICK: Duration = Duration::from_millis(800);
-/// 离线任务快刷节拍: 存在进行中(等待/下载中)任务时, 需要及时反映状态迁移。
-const TASKS_POLL_ACTIVE: Duration = Duration::from_secs(3);
-/// 离线任务慢刷节拍: 无进行中任务时, 仅等待新增/外部变更。
-const TASKS_POLL_IDLE: Duration = Duration::from_secs(60);
 /// 配额轮询节拍: 变化慢, 且登录与删除等操作后已显式刷新。
 const QUOTA_POLL: Duration = Duration::from_secs(60);
 
@@ -149,7 +144,7 @@ async fn rt_main(rx: Receiver<Cmd>, tx: Sender<Msg>) {
                         TASKS_POLL_IDLE
                     };
                     if now.duration_since(st.last_tasks_poll) >= tasks_interval {
-                        refresh_tasks(&mut st, &tx).await;
+                        tasks::refresh_tasks(&mut st, &tx).await;
                     }
                 }
             }
@@ -217,7 +212,7 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                     tracing::info!("恢复登录态成功");
                     let _ = tx.send(Msg::LoginOk { username });
                     refresh_quota(st, tx).await;
-                    refresh_tasks(st, tx).await;
+                    tasks::refresh_tasks(st, tx).await;
                 }
                 // refresh token 已过期/被吊销: 明确要求重新登录。
                 Err(Error::AuthExpired(what)) => {
@@ -518,38 +513,8 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
                 }
             }
         }
-        Cmd::RefreshTasks => refresh_tasks(st, tx).await,
-        Cmd::LoadMoreTasks { phase } => {
-            let Some(client) = st.client.clone() else {
-                return;
-            };
-            let Some(token) = st.tasks_next.get(&phase).cloned().flatten() else {
-                return;
-            };
-            // 手动翻页也算一次「刚拉过」, 避免紧接着又触发自动刷新。
-            st.last_tasks_poll = Instant::now();
-            match client
-                .offline_list_phase(&phase, TASK_PAGE_SIZE, Some(&token))
-                .await
-            {
-                Ok(page) => {
-                    *st.tasks_pages.entry(phase.clone()).or_insert(1) += 1;
-                    st.tasks_next
-                        .insert(phase.clone(), page.next_page_token.clone());
-                    let _ = tx.send(Msg::TasksMore {
-                        phase,
-                        tasks: page.tasks,
-                        next_page_token: page.next_page_token,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::TasksMoreFailed {
-                        phase,
-                        what: format!("加载更多任务失败: {e}"),
-                    });
-                }
-            }
-        }
+        Cmd::RefreshTasks => tasks::refresh_tasks(st, tx).await,
+        Cmd::LoadMoreTasks { phase } => tasks::load_more_tasks(st, tx, phase).await,
         Cmd::RefreshQuota => refresh_quota(st, tx).await,
         Cmd::StartDownload {
             req_id,
@@ -982,7 +947,7 @@ async fn do_login(st: &mut WorkerState, tx: &Sender<Msg>, username: String, pass
             tracing::info!("登录成功: {username}");
             let _ = tx.send(Msg::LoginOk { username });
             refresh_quota(st, tx).await;
-            refresh_tasks(st, tx).await;
+            tasks::refresh_tasks(st, tx).await;
         }
         Err(e) => {
             tracing::warn!("登录失败: {e}");
@@ -1029,73 +994,4 @@ async fn refresh_quota(st: &mut WorkerState, tx: &Sender<Msg>) {
             tracing::debug!("quota 刷新失败: {e}");
         }
     }
-}
-
-/// 会随时间自行变化的离线任务状态(其余状态只在用户操作时改变)。
-fn is_active_phase(phase: &str) -> bool {
-    matches!(phase, "PHASE_TYPE_PENDING" | "PHASE_TYPE_RUNNING")
-}
-
-async fn refresh_tasks(st: &mut WorkerState, tx: &Sender<Msg>) {
-    st.last_tasks_poll = Instant::now();
-    let Some(client) = st.client.clone() else {
-        return;
-    };
-    let mut buckets: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-    let mut nexts: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let mut active = false;
-    let mut active_unknown = false;
-    for phase in OFFLINE_PHASES {
-        // 保持用户已加载的分页深度(至少 1 页)。
-        let want = st.tasks_pages.get(phase).copied().unwrap_or(1).max(1);
-        let mut all: Vec<serde_json::Value> = Vec::new();
-        let mut token: Option<String> = None;
-        let mut fetched = 0usize;
-        let mut ok = true;
-        for _ in 0..want {
-            match client
-                .offline_list_phase(phase, TASK_PAGE_SIZE, token.as_deref())
-                .await
-            {
-                Ok(page) => {
-                    all.extend(page.tasks);
-                    token = page.next_page_token;
-                    fetched += 1;
-                }
-                Err(e) => {
-                    tracing::debug!("离线任务[{phase}] 刷新失败: {e}");
-                    ok = false;
-                    break;
-                }
-            }
-            if token.is_none() {
-                break;
-            }
-        }
-        if !ok {
-            // 单个分桶失败时保留旧数据(不插入), 连同其旧游标。
-            // 进行中分桶失败时状态未知, 维持上一轮的活动判定(避免误降频)。
-            if is_active_phase(phase) {
-                active_unknown = true;
-            }
-            continue;
-        }
-        if is_active_phase(phase) && !all.is_empty() {
-            active = true;
-        }
-        if all.is_empty() {
-            st.tasks_pages.remove(phase);
-            st.tasks_next.remove(phase);
-        } else {
-            st.tasks_pages.insert(phase.to_string(), fetched.max(1));
-            st.tasks_next.insert(phase.to_string(), token.clone());
-        }
-        buckets.insert(phase.to_string(), all);
-        nexts.insert(phase.to_string(), token);
-    }
-    st.tasks_active = active || (active_unknown && st.tasks_active);
-    let _ = tx.send(Msg::TasksAll {
-        buckets,
-        next_tokens: nexts,
-    });
 }
