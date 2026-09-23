@@ -11,6 +11,7 @@ use crate::msg::{Msg, QualityOption};
 
 use super::cache::CacheCtl;
 use super::discard_part;
+use super::WorkerState;
 
 /// 预览缓存目录: `~/.cache/kichi/preview`(取不到时退回临时目录)。
 pub(super) fn preview_root() -> PathBuf {
@@ -34,6 +35,40 @@ fn preview_cache_path(file_id: &str, name: &str) -> PathBuf {
     };
     let safe = crate::format::safe_file_name(name).unwrap_or_else(|| "preview".to_string());
     preview_root().join(dir).join(safe)
+}
+
+/// 派发预览: 媒体文件走流式直链, 其余先完整下载到缓存并登记取消标志供 UI 中止。
+pub(super) async fn spawn_preview(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    req_id: u64,
+    file_id: String,
+    name: String,
+    media: bool,
+    subtitles: Vec<(String, String)>,
+) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
+    let tx = tx.clone();
+    let cache = st.cache.clone();
+    if media {
+        tokio::spawn(async move {
+            preview_stream(&client, &tx, req_id, file_id, name, subtitles, cache).await;
+        });
+    } else {
+        // 非媒体预览需先完整下载到缓存, 登记取消标志供 UI 中止。
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_map = st.cancel.clone();
+        {
+            let mut map = cancel_map.lock().await;
+            map.insert(req_id, cancel.clone());
+        }
+        tokio::spawn(async move {
+            preview_download(&client, &tx, req_id, file_id, name, cache, cancel).await;
+            cancel_map.lock().await.remove(&req_id);
+        });
+    }
 }
 
 /// 媒体预览: 解析限时直链后交给 UI, 由外部播放器流式播放。
@@ -66,6 +101,23 @@ pub(super) async fn preview_stream(
             });
         }
     }
+}
+
+/// 派发清晰度列表探测, 连同同集字幕一起交给 UI 供选择。
+pub(super) fn spawn_preview_qualities(
+    st: &WorkerState,
+    tx: &Sender<Msg>,
+    file_id: String,
+    subtitles: Vec<(String, String)>,
+) {
+    let Some(client) = st.client.clone() else {
+        return;
+    };
+    let tx = tx.clone();
+    let cache = st.cache.clone();
+    tokio::spawn(async move {
+        preview_qualities(&client, &tx, file_id, subtitles, cache).await;
+    });
 }
 
 /// 解析媒体文件的可用清晰度列表, 连同同集字幕一起交给 UI 供选择。

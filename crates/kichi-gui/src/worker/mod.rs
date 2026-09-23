@@ -556,42 +556,10 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             name,
             media,
             subtitles,
-        } => {
-            let Some(client) = st.client.clone() else {
-                return;
-            };
-            let tx = tx.clone();
-            let cache = st.cache.clone();
-            if media {
-                tokio::spawn(async move {
-                    preview::preview_stream(&client, &tx, req_id, file_id, name, subtitles, cache)
-                        .await;
-                });
-            } else {
-                // 非媒体预览需先完整下载到缓存, 登记取消标志供 UI 中止。
-                let cancel = Arc::new(AtomicBool::new(false));
-                let cancel_map = st.cancel.clone();
-                {
-                    let mut map = cancel_map.lock().await;
-                    map.insert(req_id, cancel.clone());
-                }
-                tokio::spawn(async move {
-                    preview::preview_download(&client, &tx, req_id, file_id, name, cache, cancel)
-                        .await;
-                    cancel_map.lock().await.remove(&req_id);
-                });
-            }
-        }
+        } => preview::spawn_preview(st, tx, req_id, file_id, name, media, subtitles),
         Cmd::CancelPreview { req_id } => cancel_task(st, req_id).await,
         Cmd::PreviewQualities { file_id, subtitles } => {
-            let Some(client) = st.client.clone() else {
-                return;
-            };
-            let tx = tx.clone();
-            let cache = st.cache.clone();
-            tokio::spawn(async move {
-                preview::preview_qualities(&client, &tx, file_id, subtitles, cache).await;
-            });
+            preview::spawn_preview_qualities(st, tx, file_id, subtitles)
         }
         Cmd::CreateShare {
             file_ids,
