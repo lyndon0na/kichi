@@ -1,6 +1,7 @@
 mod auth;
 mod cache;
 mod download;
+mod files;
 mod gate;
 mod preview;
 mod shares;
@@ -189,88 +190,15 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             token,
             append,
             req_id,
-        } => {
-            let Some(client) = &st.client else { return };
-            if !append {
-                // 切换目录 / 刷新: 让在跑的缩略图任务作废(分页加载不算)。
-                st.thumb_gen.fetch_add(1, Ordering::Relaxed);
-            }
-            match client
-                .file_list(parent.as_deref(), 100, token.as_deref())
-                .await
-            {
-                Ok(list) => {
-                    let _ = tx.send(Msg::Files {
-                        parent,
-                        req_id,
-                        append,
-                        list,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::FilesFailed {
-                        parent,
-                        what: format!("加载文件列表失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => files::list_files(st, tx, parent, token, append, req_id).await,
         Cmd::SearchFiles {
             keyword,
             token,
             append,
             req_id,
-        } => {
-            let Some(client) = &st.client else {
-                return;
-            };
-            if !append {
-                // 新一次搜索 = 换了一批显示内容, 旧的缩略图任务不再有意义。
-                st.thumb_gen.fetch_add(1, Ordering::Relaxed);
-            }
-            match client.search_files(&keyword, 100, token.as_deref()).await {
-                Ok(list) => {
-                    tracing::info!("搜索成功: 返回 {} 个结果", list.files.len());
-                    let _ = tx.send(Msg::SearchResults {
-                        req_id,
-                        append,
-                        list,
-                    });
-                }
-                Err(e) => {
-                    tracing::error!("搜索失败: {}", e);
-                    let _ = tx.send(Msg::SearchFailed {
-                        what: format!("搜索失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::CreateFolder { name, parent } => {
-            let Some(client) = &st.client else { return };
-            match client.create_folder(&name, parent.as_deref()).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::FolderCreated);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("新建文件夹失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::Rename { id, name } => {
-            let Some(client) = &st.client else { return };
-            match client.rename(&id, &name).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::Renamed);
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("重命名失败: {e}"),
-                    });
-                }
-            }
-        }
+        } => files::search_files(st, tx, keyword, token, append, req_id).await,
+        Cmd::CreateFolder { name, parent } => files::create_folder(st, tx, name, parent).await,
+        Cmd::Rename { id, name } => files::rename(st, tx, id, name).await,
         Cmd::Trash { ids } => trash::trash_files(st, tx, ids).await,
         Cmd::ListTrash {
             token,
@@ -280,58 +208,12 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
         Cmd::Untrash { ids } => trash::untrash_files(st, tx, ids).await,
         Cmd::DeleteTrash { ids } => trash::delete_trash_files(st, tx, ids).await,
         Cmd::EmptyTrash => trash::empty_trash(st, tx).await,
-        Cmd::MoveTo { ids, dest, src } => {
-            let Some(client) = &st.client else { return };
-            match client.batch_move(&ids, dest.as_deref()).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::Moved { ids, src, dest });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("移动失败: {e}"),
-                    });
-                }
-            }
-        }
-        Cmd::CopyTo { ids, dest } => {
-            let Some(client) = &st.client else { return };
-            match client.batch_copy(&ids, dest.as_deref()).await {
-                Ok(_) => {
-                    let _ = tx.send(Msg::Copied { dest });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Error {
-                        what: format!("复制失败: {e}"),
-                    });
-                }
-            }
-        }
+        Cmd::MoveTo { ids, dest, src } => files::move_files(st, tx, ids, dest, src).await,
+        Cmd::CopyTo { ids, dest } => files::copy_files(st, tx, ids, dest).await,
         Cmd::OfflineCreate { url, name, parent } => {
             tasks::offline_create(st, tx, url, name, parent).await
         }
-        Cmd::ListFolders { parent, req_id } => {
-            let Some(client) = &st.client else { return };
-            match client.file_list(parent.as_deref(), 100, None).await {
-                Ok(list) => {
-                    let files: Vec<_> = list.files.into_iter().filter(|f| f.is_folder()).collect();
-                    let _ = tx.send(Msg::Folders {
-                        parent,
-                        req_id,
-                        files,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Folders {
-                        parent: parent.clone(),
-                        req_id,
-                        files: Vec::new(),
-                    });
-                    let _ = tx.send(Msg::Error {
-                        what: format!("加载目录失败: {e}"),
-                    });
-                }
-            }
-        }
+        Cmd::ListFolders { parent, req_id } => files::list_folders(st, tx, parent, req_id).await,
         Cmd::OfflineRetry { task_id } => tasks::offline_retry(st, tx, task_id).await,
         Cmd::OfflineDelete {
             task_ids,
