@@ -426,7 +426,7 @@ classify(name, mime)              预览入口                       预览执�
 
 参照（本机 `~/.cargo` 源码 `wc -l` 实测）：egui 114 文件 / 中位 226 行，但 `src/context.rs` **4420 行**、`style.rs` 3163；eframe 28 文件 / 最大 1666；image 71 文件 / 最大 2476（`codecs/` 一个目录 39 文件，每种格式一个）；rustls 107 文件 / 最大 `msgs/handshake.rs` **3266 行**（协议消息表，形态类似 `worker::handle`）。结论：**大文件本身不是问题，一个文件里混着多个概念才是**；god object（`App` 的 100+ 方法与字段）光拆文件治不了。
 
-- **现状**：本节的判据、参照数据与目标形态来自一次专门讨论，**尚未动手**（代码零改动）。建议的第一刀是 `app/mod.rs` 的纯逻辑下沉：把 `dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed` 与对应的 8 项单测外移到 `app/transfers_model.rs`（无 UI 依赖、可直接单测），再把 `App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`；风险最低，用来验证整套做法
+- **现状（2026-09-23）**：`worker/` 已按域拆完（P2-13，`9da37dd` 起 19 个提交）——`worker.rs` 2460 行拆成 `worker/` 下 12 个文件、入口 `worker/mod.rs` 降至 367 行，`handle` 的 43 个 `Cmd` 分支全部收敛为一行转调；每步 `fmt` 零差异 / `clippy` 0 告警 / 91 单测全绿，纯搬移零行为变更（实机冒烟待维护者确认）。下一步按队列（P2-9 起）做 `app/mod.rs` 的纯逻辑下沉：把 `dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed` 与对应的 8 项单测外移到 `app/transfers_model.rs`（无 UI 依赖、可直接单测），再把 `App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`
 - **待决策（动手前定一条，落进 `TODO.md` P2 节）**：
   - **A（推荐）** 拆域时顺手 struct 化（`app/files/` 里直接放 `FilesPage` + `show()`，`App` 持 `files: FilesPage`）：一次到位，但触及所有 `self.xxx` 引用，逐页 UI 冒烟
   - **B** 先只按职责切文件、不动结构：diff 小、好回滚，但要再搬一轮
@@ -463,7 +463,7 @@ classify(name, mime)              预览入口                       预览执�
   - 分享转存：解析 mypikpak 分享链接并保存到我的网盘（`share` / `share/detail` / `share/restore`），含分页 / 过滤 / 目标目录 / 移动重试；转存暂存目录（「转存自分享」）按持久化 ID 定位，ID 失效时回退名称匹配并刷新缓存
   - 回收站浏览 / 还原 / 彻底删除（含清空）
 - [ ] **体验继续** —— 全局搜索、任务详情进度
-- [ ] **可维护性** —— 结构优化：巨型文件与 god object（P2-9 起，尚未动手）。判据、参照数据、目标形态与待决策的 A / B / C 三条路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
+- [ ] **可维护性** —— 结构优化：巨型文件与 god object。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；余 P2-9 ~ P2-12 / P2-14（`app/` 侧）。判据、参照数据、目标形态与待决策的 A / B / C 三条路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
 - [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）；`desktop` 文件与图标的进一步完善见 TODO P3-4
 
 ## 八、环境

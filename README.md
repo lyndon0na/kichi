@@ -217,7 +217,19 @@ crates/
         ├── icons.rs             # 矢量图标库（painter 绘制，不依赖字体字形）
         ├── theme.rs             # 配色 / 圆角 / 间距参数与全局样式
         ├── kde.rs               # 读取 KDE 系统配色（kdeglobals），非 KDE 返回 None
-        ├── worker.rs            # 后台 tokio 线程 + channel 通信
+        ├── worker/              # 后台 tokio 线程，按域拆分
+        │   ├── mod.rs           # 命令循环 handle（43 个 Cmd 分支各一行转调）+ 跨域辅助
+        │   ├── download.rs      # 下载管线（断点续传 / 退避重试 / 取消登记）
+        │   ├── upload.rs        # 上传管线（gcid 秒传 + 阿里云 OSS 分片）
+        │   ├── preview.rs       # 预览：媒体走 mpv 流播，其余下载到缓存
+        │   ├── thumbs.rs        # 缩略图下载 / 解码 / 磁盘缓存
+        │   ├── files.rs         # 文件列表 / 搜索 / 新建 / 重命名 / 移动 / 复制
+        │   ├── tasks.rs         # 离线任务
+        │   ├── shares.rs        # 分享与转存
+        │   ├── trash.rs         # 回收站
+        │   ├── auth.rs          # 登录 / 会话恢复 / 密钥环
+        │   ├── gate.rs          # 动态并发闸（并发设置即时生效）
+        │   └── cache.rs         # 磁盘缓存淘汰（预览 / 缩略图共用）
         ├── credentials.rs       # 系统密钥环读写账号密码（Secret Service）
         ├── msg.rs               # 前后台消息协议
         ├── settings.rs          # 设置与下载 / 上传历史持久化
