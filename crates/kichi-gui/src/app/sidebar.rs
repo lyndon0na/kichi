@@ -175,7 +175,7 @@ impl App {
             "PHASE_TYPE_ERROR",
         ]
         .iter()
-        .map(|p| self.buckets.get(*p).map(|v| v.len()).unwrap_or(0))
+        .map(|p| self.tasks.buckets.get(*p).map(|v| v.len()).unwrap_or(0))
         .sum::<usize>();
         let active_dl = self
             .jobs

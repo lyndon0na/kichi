@@ -8,6 +8,7 @@ mod search;
 mod settings_page;
 mod shares;
 mod sidebar;
+mod tasks;
 mod tasks_page;
 mod thumbs;
 mod transfers_model;
@@ -15,13 +16,13 @@ mod transfers_page;
 mod trash;
 pub(crate) mod types;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use kichi_core::session;
-use kichi_core::types::{task_id, File, FileList, Quota, Task};
+use kichi_core::types::{File, FileList, Quota};
 
 use crate::filetypes;
 use crate::msg::{Cmd, Msg};
@@ -37,14 +38,15 @@ use self::helpers::install_fonts;
 use self::preview::PreviewPage;
 use self::search::SearchPage;
 use self::shares::SharesPage;
+use self::tasks::TasksPage;
 use self::thumbs::ThumbsPage;
 use self::transfers_model::{
     aggregate_children, compute_dir_counts, dl_record_status, sample_speed,
 };
 use self::trash::TrashPage;
 use self::types::{
-    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
-    OfflineTab, Page, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus, Page,
+    SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
 };
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
@@ -106,31 +108,8 @@ pub struct App {
     // Shift+Click 范围选择锚点
     pub(crate) last_clicked_dl: Option<u64>,
 
-    // 离线
-    pub(crate) offline_url: String,
-    pub(crate) offline_name: String,
-    /// 离线下载保存到的网盘目录 (id, 名称); None = 离线默认目录。
-    pub(crate) offline_dest: Option<(String, String)>,
-    /// 离线下载「保存到」网盘目录选择器状态。
-    pub(crate) offline_picker_open: bool,
-    pub(crate) offline_picker_stack: Vec<Crumb>,
-    pub(crate) offline_picker_folders: Vec<File>,
-    pub(crate) offline_picker_loading: bool,
-    pub(crate) offline_picker_req: u64,
-    pub(crate) buckets: BTreeMap<String, Vec<Task>>,
-    /// 离线任务每个 phase 的下一页游标; 缺失/None 表示没有更多。
-    pub(crate) buckets_next: BTreeMap<String, Option<String>>,
-    /// 正在「加载更多」的 phase 集合, 用于按钮禁用/转圈。
-    pub(crate) tasks_loading_more: BTreeSet<String>,
-    pub(crate) tasks_loading: bool,
-    /// 用户点击「刷新任务」后的进行中状态, 用于给出可见反馈。
-    pub(crate) tasks_refreshing: bool,
-    /// 离线任务页的阶段页签; None 表示尚未按已有数据自动选定。
-    pub(crate) tasks_tab: Option<OfflineTab>,
-    /// 离线任务选中项(task id)。
-    pub(crate) tasks_selected: HashSet<String>,
-    /// 离线任务 Shift 范围选择的锚点(task id)。
-    pub(crate) tasks_anchor: Option<String>,
+    /// 离线任务域: 分桶列表 / 选择 / 新建表单与「保存到」选择器。
+    pub(crate) tasks: TasksPage,
 
     pub(crate) quota: Option<Quota>,
 
@@ -231,25 +210,7 @@ impl App {
             dir_cache: HashMap::new(),
             dir_inflight: HashMap::new(),
             search: SearchPage::default(),
-            offline_url: String::new(),
-            offline_name: String::new(),
-            offline_dest: None,
-            offline_picker_open: false,
-            offline_picker_stack: vec![Crumb {
-                id: None,
-                label: "我的云盘".into(),
-            }],
-            offline_picker_folders: Vec::new(),
-            offline_picker_loading: false,
-            offline_picker_req: 0,
-            buckets: BTreeMap::new(),
-            buckets_next: BTreeMap::new(),
-            tasks_loading_more: BTreeSet::new(),
-            tasks_loading: false,
-            tasks_refreshing: false,
-            tasks_tab: None,
-            tasks_selected: HashSet::new(),
-            tasks_anchor: None,
+            tasks: TasksPage::default(),
             quota: None,
             mkdir_open: false,
             mkdir_name: String::new(),
@@ -535,11 +496,7 @@ impl App {
                             username: self.username.clone(),
                         });
                     }
-                    self.buckets.clear();
-                    self.buckets_next.clear();
-                    self.tasks_loading_more.clear();
-                    self.tasks_selected.clear();
-                    self.tasks_anchor = None;
+                    self.tasks.clear();
                     self.quota = None;
                     self.reset_browse();
                     self.send(Cmd::RefreshQuota);
@@ -582,11 +539,7 @@ impl App {
                     self.pending_remember = None;
                     self.persist_settings();
                     self.quota = None;
-                    self.buckets.clear();
-                    self.buckets_next.clear();
-                    self.tasks_loading_more.clear();
-                    self.tasks_selected.clear();
-                    self.tasks_anchor = None;
+                    self.tasks.clear();
                     self.files.clear();
                     self.selected.clear();
                     self.dir_cache.clear();
@@ -676,14 +629,9 @@ impl App {
                     self.dir_cache.remove(&dest);
                     self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
                 }
-                Msg::OfflineCreated => {
-                    self.toast_ok("已提交离线下载");
-                    self.offline_url.clear();
-                    self.offline_name.clear();
-                    self.send(Cmd::RefreshTasks);
-                }
-                Msg::OfflineRetried => self.send(Cmd::RefreshTasks),
-                Msg::OfflineDeleted => self.send(Cmd::RefreshTasks),
+                Msg::OfflineCreated => self.tasks.on_created(&mut self.global),
+                Msg::OfflineRetried => self.tasks.on_changed(&mut self.global),
+                Msg::OfflineDeleted => self.tasks.on_changed(&mut self.global),
                 Msg::Folders {
                     parent,
                     req_id,
@@ -692,57 +640,22 @@ impl App {
                     // 路由到对应的目录选择器
                     if self.shares.handles_picker(req_id) {
                         self.shares.on_folders(parent, files);
-                    } else if req_id == self.offline_picker_req {
-                        if parent != self.offline_picker_parent() {
-                            continue;
-                        }
-                        self.offline_picker_loading = false;
-                        self.offline_picker_folders = files;
+                    } else if self.tasks.handles_picker(req_id) {
+                        self.tasks.on_folders(parent, files);
                     }
                 }
                 Msg::Quota(quota) => self.quota = quota,
                 Msg::TasksAll {
                     buckets,
                     next_tokens,
-                } => {
-                    // 合并而非整体替换: 某个分桶刷新失败时保留其旧数据。
-                    for (phase, tasks) in buckets {
-                        if tasks.is_empty() {
-                            self.buckets.remove(&phase);
-                        } else {
-                            self.buckets.insert(phase.clone(), tasks);
-                        }
-                        if let Some(tok) = next_tokens.get(&phase) {
-                            self.buckets_next.insert(phase, tok.clone());
-                        }
-                    }
-                    self.tasks_loading = false;
-                    self.tasks_refreshing = false;
-                }
+                } => self.tasks.on_all(buckets, next_tokens),
                 Msg::TasksMore {
                     phase,
                     tasks,
                     next_page_token,
-                } => {
-                    self.tasks_loading_more.remove(&phase);
-                    // 按 task_id 去重追加, 避免与刷新回包交叠时重复。
-                    let known: HashSet<String> = self
-                        .buckets
-                        .get(&phase)
-                        .map(|v| v.iter().filter_map(task_id).collect())
-                        .unwrap_or_default();
-                    let entry = self.buckets.entry(phase.clone()).or_default();
-                    for t in tasks {
-                        match task_id(&t) {
-                            Some(id) if known.contains(&id) => {}
-                            _ => entry.push(t),
-                        }
-                    }
-                    self.buckets_next.insert(phase, next_page_token);
-                }
+                } => self.tasks.on_more(phase, tasks, next_page_token),
                 Msg::TasksMoreFailed { phase, what } => {
-                    self.tasks_loading_more.remove(&phase);
-                    self.toast_err(&what);
+                    self.tasks.on_more_failed(&mut self.global, phase, what)
                 }
                 Msg::DlProgress {
                     req_id,
@@ -1004,7 +917,7 @@ impl App {
                     self.toast_err(&what);
                 }
                 Msg::Error { what } => {
-                    self.tasks_refreshing = false;
+                    self.tasks.refreshing = false;
                     self.toast_err(&what);
                 }
                 Msg::PreviewStream {
@@ -1121,46 +1034,6 @@ impl App {
         self.global.toast_err(msg);
     }
 
-    /// 当前生效的离线任务页签: 未手动选择时按已有数据自动挑一个(优先「下载中」)。
-    pub(crate) fn active_tasks_tab(&mut self) -> OfflineTab {
-        if let Some(t) = self.tasks_tab {
-            return t;
-        }
-        let pick = [
-            OfflineTab::Running,
-            OfflineTab::Pending,
-            OfflineTab::Error,
-            OfflineTab::Complete,
-        ]
-        .into_iter()
-        .find(|t| self.buckets.get(t.phase()).is_some_and(|v| !v.is_empty()))
-        .unwrap_or(OfflineTab::Pending);
-        // 一旦某个阶段已有数据就固定下来, 避免页签自行跳变。
-        if self.buckets.values().any(|v| !v.is_empty()) {
-            self.tasks_tab = Some(pick);
-        }
-        pick
-    }
-
-    /// 加载某个 phase 的下一页离线任务。
-    pub(crate) fn load_more_tasks(&mut self, phase: &str) {
-        if self.tasks_loading_more.contains(phase) {
-            return;
-        }
-        if self
-            .buckets_next
-            .get(phase)
-            .and_then(|t| t.as_ref())
-            .is_none()
-        {
-            return;
-        }
-        self.tasks_loading_more.insert(phase.to_string());
-        self.send(Cmd::LoadMoreTasks {
-            phase: phase.to_string(),
-        });
-    }
-
     /// 生成一条历史记录的唯一标识(纳秒时间戳, 字符串形式)。
     fn chrono_now() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -1220,33 +1093,6 @@ impl App {
             .filter(|(_, j)| self.ul_filter.matches(j))
             .map(|(id, _)| *id)
             .collect()
-    }
-
-    /// 离线下载目录选择器当前所在目录。
-    pub(crate) fn offline_picker_parent(&self) -> Option<String> {
-        self.offline_picker_stack.last().and_then(|c| c.id.clone())
-    }
-
-    /// 打开离线下载「保存到」网盘目录选择器, 从根目录开始。
-    pub(crate) fn open_offline_picker(&mut self) {
-        self.offline_picker_open = true;
-        self.offline_picker_stack = vec![Crumb {
-            id: None,
-            label: "我的云盘".into(),
-        }];
-        self.offline_picker_list();
-    }
-
-    /// 请求选择器当前目录的子文件夹列表。
-    pub(crate) fn offline_picker_list(&mut self) {
-        self.offline_picker_loading = true;
-        self.offline_picker_folders.clear();
-        self.offline_picker_req += 1;
-        let req_id = self.offline_picker_req;
-        self.send(Cmd::ListFolders {
-            parent: self.offline_picker_parent(),
-            req_id,
-        });
     }
 
     pub(crate) fn reset_stack(&mut self) {
@@ -2258,7 +2104,7 @@ impl eframe::App for App {
             || !self.dir_inflight.is_empty()
             || self.shares.loading
             || self.trash.loading
-            || !self.tasks_loading_more.is_empty()
+            || !self.tasks.loading_more.is_empty()
         {
             // 目录请求在途(含后台静默校正)时加快轮询, 让结果尽快呈现。
             ctx.request_repaint_after(Duration::from_millis(80));

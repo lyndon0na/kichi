@@ -183,7 +183,7 @@ impl App {
         active: OfflineTab,
     ) {
         let selected = tab == active;
-        let count = self.buckets.get(tab.phase()).map_or(0, |v| v.len());
+        let count = self.tasks.buckets.get(tab.phase()).map_or(0, |v| v.len());
         let text = RichText::new(format!("{} {count}", format::phase_label(tab.phase())))
             .size(12.5)
             .color(if selected { th.on_accent } else { th.text_weak });
@@ -199,9 +199,9 @@ impl App {
             ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() && !selected {
-            self.tasks_tab = Some(tab);
-            self.tasks_selected.clear();
-            self.tasks_anchor = None;
+            self.tasks.tab = Some(tab);
+            self.tasks.selected.clear();
+            self.tasks.anchor = None;
         }
     }
 
@@ -212,8 +212,8 @@ impl App {
         let mut ops: Vec<TaskOp> = Vec::new();
 
         // 选中项批量操作条(底部固定, 与传输任务一致)
-        if !self.tasks_selected.is_empty() {
-            let active = self.active_tasks_tab();
+        if !self.tasks.selected.is_empty() {
+            let active = self.tasks.active_tab();
             egui::TopBottomPanel::bottom("tasks_action_bar")
                 .frame(Frame::new().fill(th.bg).inner_margin(Margin {
                     left: 20,
@@ -226,7 +226,7 @@ impl App {
                     ui.painter()
                         .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
                     ui.add_space(8.0);
-                    let selected: Vec<String> = self.tasks_selected.iter().cloned().collect();
+                    let selected: Vec<String> = self.tasks.selected.iter().cloned().collect();
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("已选择 {} 项", selected.len()))
@@ -247,8 +247,8 @@ impl App {
                                     task_ids: selected.clone(),
                                     delete_files: false,
                                 });
-                                self.tasks_selected.clear();
-                                self.tasks_anchor = None;
+                                self.tasks.selected.clear();
+                                self.tasks.anchor = None;
                             }
                             if active == OfflineTab::Error
                                 && ui
@@ -267,8 +267,8 @@ impl App {
                                         task_id: id.clone(),
                                     });
                                 }
-                                self.tasks_selected.clear();
-                                self.tasks_anchor = None;
+                                self.tasks.selected.clear();
+                                self.tasks.anchor = None;
                             }
                             if ui
                                 .add(
@@ -279,8 +279,8 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.tasks_selected.clear();
-                                self.tasks_anchor = None;
+                                self.tasks.selected.clear();
+                                self.tasks.anchor = None;
                             }
                         });
                     });
@@ -340,7 +340,7 @@ impl App {
                             let url_w =
                                 (ui.available_width() - name_label_w - NAME_W - 24.0).max(160.0);
                             let resp = ui.add(
-                                input(&mut self.offline_url)
+                                input(&mut self.tasks.url)
                                     .desired_width(url_w)
                                     .hint_text("magnet:?xt=... 或 https://..."),
                             );
@@ -350,7 +350,7 @@ impl App {
                             ui.add_space(10.0);
                             ui.label(RichText::new("文件名").color(th.text_weak));
                             ui.add(
-                                input(&mut self.offline_name)
+                                input(&mut self.tasks.name)
                                     .desired_width(NAME_W)
                                     .hint_text("可选, 留空自动识别"),
                             );
@@ -358,15 +358,15 @@ impl App {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("保存到").color(th.text_weak));
-                            let label = match &self.offline_dest {
+                            let label = match &self.tasks.dest {
                                 Some((_, name)) => format!("网盘目录 · {name}"),
                                 None => "离线默认目录".to_string(),
                             };
                             if ui.button(RichText::new(label).color(th.accent)).clicked() {
-                                self.open_offline_picker();
+                                self.tasks.open_picker(&mut self.global);
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let enabled = !self.offline_url.trim().is_empty();
+                                let enabled = !self.tasks.url.trim().is_empty();
                                 if ui
                                     .add_enabled(
                                         enabled,
@@ -387,8 +387,9 @@ impl App {
                 ui.add_space(8.0);
 
                 // 页签行的可见项(全选 / 计数用); 按点击前的页签计算, 点击后下方列表本帧即切换。
-                let row_active = self.active_tasks_tab();
+                let row_active = self.tasks.active_tab();
                 let row_ids: Vec<String> = self
+                    .tasks
                     .buckets
                     .get(row_active.phase())
                     .map(|v| v.iter().filter_map(task_id).collect())
@@ -400,7 +401,7 @@ impl App {
                         self.task_tab_button(ui, th, tab, row_active);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let refreshing = self.tasks_refreshing;
+                        let refreshing = self.tasks.refreshing;
                         let (r, ico) =
                             ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
                         icons::paint(ui.painter(), r, Glyph::Refresh, th.text_weak);
@@ -429,7 +430,7 @@ impl App {
                             let vis_total = row_ids.len();
                             let vis_selected = row_ids
                                 .iter()
-                                .filter(|id| self.tasks_selected.contains(*id))
+                                .filter(|id| self.tasks.selected.contains(*id))
                                 .count();
                             let master = if vis_total == 0 || vis_selected == 0 {
                                 CheckState::Unchecked
@@ -444,11 +445,11 @@ impl App {
                             if cb_resp.clicked() {
                                 if master == CheckState::Checked {
                                     for id in &row_ids {
-                                        self.tasks_selected.remove(id);
+                                        self.tasks.selected.remove(id);
                                     }
                                 } else {
                                     for id in &row_ids {
-                                        self.tasks_selected.insert(id.clone());
+                                        self.tasks.selected.insert(id.clone());
                                     }
                                 }
                             }
@@ -474,18 +475,20 @@ impl App {
                 ui.add_space(6.0);
 
                 // 点击页签后本帧立即生效(重新读取当前页签)。
-                let active = self.active_tasks_tab();
+                let active = self.tasks.active_tab();
                 let phase = active.phase();
                 let ids: Vec<String> = self
+                    .tasks
                     .buckets
                     .get(phase)
                     .map(|v| v.iter().filter_map(task_id).collect())
                     .unwrap_or_default();
-                let task_count = self.buckets.get(phase).map_or(0, |v| v.len());
+                let task_count = self.tasks.buckets.get(phase).map_or(0, |v| v.len());
 
                 // 剔除已不在当前页签的选中项。
                 let id_set: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
-                self.tasks_selected
+                self.tasks
+                    .selected
                     .retain(|id| id_set.contains(id.as_str()));
 
                 if task_count == 0 {
@@ -514,7 +517,12 @@ impl App {
                 let shift = ui.input(|i| i.modifiers.shift);
                 let mut sel_reqs: Vec<TaskSel> = Vec::new();
 
-                let tasks: &[Task] = self.buckets.get(phase).map(|v| v.as_slice()).unwrap_or(&[]);
+                let tasks: &[Task] = self
+                    .tasks
+                    .buckets
+                    .get(phase)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
                 let scroll_h = (ui.available_height() - 36.0).max(60.0);
                 egui::ScrollArea::vertical()
                     .id_salt("tasks_scroll")
@@ -524,7 +532,7 @@ impl App {
                         for i in range {
                             let t = &tasks[i];
                             let is_sel =
-                                task_id(t).is_some_and(|id| self.tasks_selected.contains(&id));
+                                task_id(t).is_some_and(|id| self.tasks.selected.contains(&id));
                             let (op, sel) = task_card(ui, th, active, i, t, is_sel, ctrl, shift);
                             if let Some(op) = op {
                                 ops.push(op);
@@ -539,18 +547,18 @@ impl App {
                 for sel in sel_reqs {
                     match sel {
                         TaskSel::Replace(id) => {
-                            self.tasks_selected.clear();
-                            self.tasks_selected.insert(id.clone());
-                            self.tasks_anchor = Some(id);
+                            self.tasks.selected.clear();
+                            self.tasks.selected.insert(id.clone());
+                            self.tasks.anchor = Some(id);
                         }
                         TaskSel::Toggle(id) => {
-                            if !self.tasks_selected.remove(&id) {
-                                self.tasks_selected.insert(id.clone());
+                            if !self.tasks.selected.remove(&id) {
+                                self.tasks.selected.insert(id.clone());
                             }
-                            self.tasks_anchor = Some(id);
+                            self.tasks.anchor = Some(id);
                         }
                         TaskSel::Range(id) => {
-                            if let Some(anchor) = self.tasks_anchor.clone() {
+                            if let Some(anchor) = self.tasks.anchor.clone() {
                                 let start = ids.iter().position(|x| *x == anchor).unwrap_or(0);
                                 let end = ids.iter().position(|x| *x == id).unwrap_or(0);
                                 let (from, to) = if start <= end {
@@ -559,16 +567,16 @@ impl App {
                                     (end, start)
                                 };
                                 if !ctrl {
-                                    self.tasks_selected.clear();
+                                    self.tasks.selected.clear();
                                 }
                                 for x in &ids[from..=to] {
-                                    self.tasks_selected.insert(x.clone());
+                                    self.tasks.selected.insert(x.clone());
                                 }
                             } else {
-                                self.tasks_selected.clear();
-                                self.tasks_selected.insert(id.clone());
+                                self.tasks.selected.clear();
+                                self.tasks.selected.insert(id.clone());
                             }
-                            self.tasks_anchor = Some(id);
+                            self.tasks.anchor = Some(id);
                         }
                     }
                 }
@@ -577,12 +585,13 @@ impl App {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let has_next = self
-                        .buckets_next
+                        .tasks
+                        .next_tokens
                         .get(phase)
                         .and_then(|t| t.as_ref())
                         .is_some();
                     if has_next {
-                        if self.tasks_loading_more.contains(phase) {
+                        if self.tasks.loading_more.contains(phase) {
                             ui.add(egui::Spinner::new().size(14.0).color(th.text_weak));
                             ui.label(RichText::new("正在加载…").color(th.text_weak).size(12.0));
                         } else if ui
@@ -596,25 +605,25 @@ impl App {
             });
 
         if create {
-            let url = self.offline_url.trim().to_string();
+            let url = self.tasks.url.trim().to_string();
             let name = {
-                let n = self.offline_name.trim();
+                let n = self.tasks.name.trim();
                 if n.is_empty() {
                     None
                 } else {
                     Some(n.to_string())
                 }
             };
-            let parent = self.offline_dest.as_ref().map(|(id, _)| id.clone());
+            let parent = self.tasks.dest.as_ref().map(|(id, _)| id.clone());
             self.send(Cmd::OfflineCreate { url, name, parent });
         }
         if do_refresh {
-            self.tasks_refreshing = true;
+            self.tasks.refreshing = true;
             self.send(Cmd::RefreshTasks);
         }
         if load_more {
-            let phase = self.active_tasks_tab().phase();
-            self.load_more_tasks(phase);
+            let phase = self.tasks.active_tab().phase();
+            self.tasks.load_more(&mut self.global, phase);
         }
         for op in ops {
             match op {
