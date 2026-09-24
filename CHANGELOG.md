@@ -13,10 +13,11 @@
 
 ### 变更
 
+- **工程：传输任务页拆进 `app/transfers/`**：`transfers_page.rs`（1951 行）拆成 `app/transfers/` 下四个文件 —— `mod.rs`（`TransfersPage`：下载 / 上传任务表、选中集、筛选与展开 + 生命周期与渲染入口）、`download.rs`（下载分栏：任务卡片 / 目录树 / 底部批量操作条）、`upload.rs`（上传分栏：任务卡片 / 底部批量操作条）、`model.rs`（原 `app/transfers_model.rs` 的纯逻辑：状态映射 / 进度聚合 / 目录树计数 / 速率取样）；沿用「渲染与动作分离」：`TransfersPage::show(...)` 只读写自身状态并返回 `Vec<TransfersAction>`，打开本地路径 / 打开下载目录 / 文件选择框 / 跳转「我的文件」四类跨域动作由 `App::apply_transfers_action` 在渲染后统一执行，页面不再需要 `&mut App`；`drain` 的 11 条传输消息臂收敛为一行转调（仅上传完成留 4 行跨域编排）；顺带把 `req_id` 分配器从 `FilesPage` 搬到 `Global` —— 下载 / 上传 / 预览共用 worker 里同一张按 req_id 索引的取消登记表，必须共用同一命名空间。`app/mod.rs` 1679 → 968 行。纯结构调整：用户可见行为零变化
 - **工程：文件浏览页拆进 `app/files/`**：`files_page.rs`（1891 行）拆成 `app/files/` 下五个文件 —— `mod.rs`（`FilesPage`：导航栈 / 目录缓存 SWR / 选中集 / 排序过滤 + 渲染入口）、`list.rs`（列表视图：列宽布局 / 表头 / 行集合）、`grid.rs`（网格视图：卡片绘制 + 缩略图预取行区间）、`row.rs`（列表行与右键菜单项）、`toolbar.rs`（顶部栏：面包屑 / 搜索框 / 视图切换 / 操作区）；顺带**渲染与动作分离**：`FilesPage::show(...)` 只读写自身状态并返回 `Vec<FilesAction>`，15 个跨域动作（弹窗 / 预览 / 播放 / 下载 / 分享 / 上传 / 搜索）由 `App::apply_files_action` 在渲染后统一执行，页面不再需要 `&mut App`。纯结构调整：用户可见行为零变化（唯一差异是取消选下载目录时不再少画一帧列表）
 - **工程：界面层按域 struct 化**：`app/` 的七个域收进各自模块 —— `app/global.rs::Global`（命令通道 / 提示条 / KDE 配色与主题轮询）、`app/trash.rs::TrashPage`、`app/shares.rs::SharesPage`（我的分享 + 转存分享）、`app/preview.rs::PreviewPage`（下载进度 / 清晰度 / 外部打开探针）、`app/search.rs::SearchPage`、`app/thumbs.rs::ThumbsPage`（纹理 LRU + 在途 / 失败登记）、`app/tasks.rs::TasksPage`（离线任务 + 「保存到」目录选择器）；`drain` 的 60 个 `Msg` 臂全部收敛为一行转调，`app/mod.rs` 3085 → 2127 行。纯结构调整，用户可见行为零变化
 - **工程：后台线程按域拆分**：`worker.rs`（2460 行）拆成 `worker/` 下 12 个文件（`mod` / `gate` / `cache` / `download` / `upload` / `preview` / `thumbs` / `files` / `tasks` / `shares` / `trash` / `auth`），命令循环 `handle` 的 43 个 `Cmd` 分支收敛为一行转调，入口 `worker/mod.rs` 降至 367 行。纯结构调整：用户可见行为、协议与并发语义零变化
-- **工程：界面层纯逻辑下沉**：`app/mod.rs` 的四个无界面依赖函数（下载记录状态映射 / 目录卡片进度聚合 / 目录树文件计数上卷 / 速率取样）连同单测迁到新模块 `app/transfers_model.rs`（另补两项覆盖：非终态兜底、短间隔不取样），`App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`。纯结构调整，用户可见行为零变化
+- **工程：界面层纯逻辑下沉**：`app/mod.rs` 的四个无界面依赖函数（下载记录状态映射 / 目录卡片进度聚合 / 目录树文件计数上卷 / 速率取样）连同单测迁到新模块（现为 `app/transfers/model.rs`，另补两项覆盖：非终态兜底、短间隔不取样），`App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`。纯结构调整，用户可见行为零变化
 
 ### 修复
 

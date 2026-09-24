@@ -205,7 +205,6 @@ crates/
         │   ├── mod.rs             # App 结构体、初始化、消息收敛与跨域编排（各域状态在域文件里）
         │   ├── global.rs          # 各域共用的全局句柄（命令通道 / 提示条 / 系统配色）
         │   ├── types.rs           # Page / ViewMode / TransferTab / DlJob 等内部类型
-        │   ├── transfers_model.rs # 传输纯逻辑（状态映射 / 进度聚合 / 目录树计数 / 速率取样）
         │   ├── login.rs           # 登录页
         │   ├── sidebar.rs         # 侧边栏 + 导航 + 账户 / 配额卡片
         │   ├── files/             # 文件浏览页（渲染与跨域动作分离）
@@ -216,7 +215,11 @@ crates/
         │   │   └── toolbar.rs     # 顶部栏（面包屑 / 搜索框 / 视图切换 / 操作区）
         │   ├── tasks_page.rs      # 离线下载页渲染
         │   ├── tasks.rs           # 离线任务域（任务分桶 / 分页轮询 / 「保存到」目录选择器）
-        │   ├── transfers_page.rs  # 传输任务页（上传 / 下载）
+        │   ├── transfers/         # 传输任务页（渲染与跨域动作分离）
+        │   │   ├── mod.rs         # TransfersPage：任务表 / 选中集 / 筛选 + 生命周期 + 渲染入口 show
+        │   │   ├── download.rs    # 下载分栏（任务卡片 / 目录树 / 底部批量操作条）
+        │   │   ├── upload.rs      # 上传分栏（任务卡片 / 底部批量操作条）
+        │   │   └── model.rs       # 传输纯逻辑（状态映射 / 进度聚合 / 目录树计数 / 速率取样）
         │   ├── settings_page.rs   # 设置页
         │   ├── shares_page.rs     # 我的分享页渲染
         │   ├── shares.rs          # 分享域（我的分享 + 转存分享 / 目标目录选择器）
