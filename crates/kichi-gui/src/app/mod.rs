@@ -609,38 +609,9 @@ impl App {
             toast: None,
         };
 
-        // 恢复 req_id 为历史记录中的最大值，避免 ID 冲突
-        app.req_id = app
-            .jobs
-            .keys()
-            .chain(app.ul_jobs.keys())
-            .max()
-            .copied()
-            .unwrap_or(0);
+        app.restore_req_id();
+        app.start_session();
 
-        match session::load_session() {
-            Ok(Some(s)) => {
-                app.auth_checking = true;
-                let _ = app.tx.send(Cmd::Resume {
-                    device_id: s.device_id,
-                    access_token: s.access_token,
-                    refresh_token: s.refresh_token,
-                    user_id: s.user_id,
-                    username: s.username,
-                });
-            }
-            Ok(None) => app.auto_login_if_possible(),
-            Err(e) => {
-                // 会话文件损坏/无法读取: 清掉以免每次启动都报错, 再尝试密钥环自动登录。
-                let _ = session::clear_session();
-                app.toast = Some((
-                    Color32::from_rgb(200, 90, 60),
-                    e.to_string(),
-                    Instant::now(),
-                ));
-                app.auto_login_if_possible();
-            }
-        }
         if !font_loaded && app.toast.is_none() {
             app.toast = Some((
                 Color32::from_rgb(200, 160, 60),
@@ -650,6 +621,44 @@ impl App {
             ));
         }
         app
+    }
+
+    /// 恢复 req_id 为历史记录中的最大值, 避免与恢复出来的历史任务 ID 冲突。
+    fn restore_req_id(&mut self) {
+        self.req_id = self
+            .jobs
+            .keys()
+            .chain(self.ul_jobs.keys())
+            .max()
+            .copied()
+            .unwrap_or(0);
+    }
+
+    /// 启动时恢复会话: 有存档则续期; 无存档或存档损坏时回退到密钥环自动登录。
+    fn start_session(&mut self) {
+        match session::load_session() {
+            Ok(Some(s)) => {
+                self.auth_checking = true;
+                let _ = self.tx.send(Cmd::Resume {
+                    device_id: s.device_id,
+                    access_token: s.access_token,
+                    refresh_token: s.refresh_token,
+                    user_id: s.user_id,
+                    username: s.username,
+                });
+            }
+            Ok(None) => self.auto_login_if_possible(),
+            Err(e) => {
+                // 会话文件损坏/无法读取: 清掉以免每次启动都报错, 再尝试密钥环自动登录。
+                let _ = session::clear_session();
+                self.toast = Some((
+                    Color32::from_rgb(200, 90, 60),
+                    e.to_string(),
+                    Instant::now(),
+                ));
+                self.auto_login_if_possible();
+            }
+        }
     }
 
     pub(crate) fn theme(&self) -> Theme {
