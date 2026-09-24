@@ -427,12 +427,14 @@ classify(name, mime)              预览入口                       预览执�
 参照（本机 `~/.cargo` 源码 `wc -l` 实测）：egui 114 文件 / 中位 226 行，但 `src/context.rs` **4420 行**、`style.rs` 3163；eframe 28 文件 / 最大 1666；image 71 文件 / 最大 2476（`codecs/` 一个目录 39 文件，每种格式一个）；rustls 107 文件 / 最大 `msgs/handshake.rs` **3266 行**（协议消息表，形态类似 `worker::handle`）。结论：**大文件本身不是问题，一个文件里混着多个概念才是**；god object（`App` 的 100+ 方法与字段）光拆文件治不了。
 
 - **现状（2026-09-24）**：`worker/` 已按域拆完（P2-13，`9da37dd` 起 19 个提交）——`worker.rs` 2460 行拆成 `worker/` 下 12 个文件、入口 `worker/mod.rs` 降至 367 行，`handle` 的 43 个 `Cmd` 分支全部收敛为一行转调；每步 `fmt` 零差异 / `clippy` 0 告警 / 单测全绿，纯搬移零行为变更，实机冒烟（登录 / 上传 / 下载 / 预览 / 转存）已确认。`app/` 侧第 1 步（P2-9）随后落地：`app/mod.rs` 的 4 个无 UI 依赖纯函数（`dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed`）连同 5 项相关单测外移到 `app/transfers_model.rs` 并另补 2 项（共 7 项，可直接单测），`App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`（`e85211b` / `caa89db` / `c9b57a3`），`app/mod.rs` 3264 → 3085 行；同样纯搬移零行为变更（函数体 / 文档注释逐字比对、抽取语句 `app.` → `self.` 逐行一致）
-- **下一步（P2-10 起）**：`app/` 按域外移（含拆 `drain`）与逐页 struct 化，路线取 **A**（已拍板：拆域时顺手 struct 化，P2-11 / P2-12 与 P2-14 合并），队列与逐项验收见 `TODO.md`
+- **下一步（P2-11 起）**：`files_page.rs` → `app/files/`（并吸收原列的 `browse/`：目录缓存 SWR / 导航栈 / 文件列表 = 文件页状态）与 `transfers_page.rs` → `app/transfers/`；路线取 **A**（已拍板：拆域时顺手 struct 化）；切法与提交序列见下条，队列与逐项验收见 `TODO.md`
+- **P2-10 切法（2026-09-24 细化）**：域 = 结构体 + 方法 + `drain` 一行转调（沿用 P2-13 的形态）；新增极小的共用句柄 `app/global.rs::Global`（`tx` / `toast` / KDE 配色与主题轮询），域方法签名 `fn on_x(&mut self, g: &mut Global, …)` —— App 侧 `self.trash.on_x(&mut self.global, …)` 是不相交字段借用，不引入 `Rc` / `RefCell`；`App::send` / `theme` / `toast_*` 保留转发壳，页面调用点零改动；跨域副作用（目录缓存作废、配额刷新、页面路由）留在 `drain` 臂里做 2–4 行编排。对原 TODO 条目的两处修正：① `app/browse/`（目录缓存 SWR / 导航栈 / 文件列表）并入 P2-11 的 `FilesPage`（本就是文件页状态，先搬会再收编一次）；② tasks 域（离线任务 + 「保存到」目录选择器）纳入 P2-10（原条目漏列）。`app/system.rs` / `app/dnd.rs` 取消（避免夹缝模块）：`poll_file_picker` / `upload_pick` / `last_dir` 归上传域（P2-12），`poll_pending_open` 归预览域，`persist_settings` / `chrono_now` / `choose_download_dir` 跟全局设置走。序列：D0 `app/global.rs` → D1 回收站 → D2 我的分享 → D3 转存分享 → D4 预览 / 清晰度 / 打开探针 → D5 搜索 → D6 缩略图在途 / 失败登记 → D7 离线任务；P2-14（`App` 字段按页面分组）由 P2-10 / P2-11 / P2-12 全覆盖，不再单独做
+- **进度（P2-10）**：**已完成**（D0 `935d3dd` · D1 `83f5ddd` · D2+D3 `72b670a` · D4 `7a6493b` · D5 `9e4b919` · D6 `d0be9fc` · D7 `73edc3e`）。七个域结构体落地：`Global`（命令通道 / 提示条 / 系统配色）、`TrashPage`、`SharesPage`（我的分享 + 转存分享）、`PreviewPage`、`SearchPage`、`ThumbsPage`（纹理 LRU + 在途 / 失败登记）、`TasksPage`（离线任务 + 「保存到」选择器），各持自身状态与 `on_x` 方法；`drain` 的 60 个 `Msg` 臂全部一行转调（跨域副作用留 2–4 行编排），`app/mod.rs` 3085 → 2127 行（`drain` 约 840 → 548 行），`App::new` 的 310 行字面量随各域 `Default` 自然消掉。每步纯搬移零行为变更：`fmt` 零差异 / clippy 0 告警 / 93 项单测全绿（各步不减），并逐个用归一化脚本比对旧新函数体（逐段 `ALL_MATCH`）；实机冒烟待维护者确认
 - **决策时的三选项（备查）**：
   - **A（已选）** 拆域时顺手 struct 化（`app/files/` 里直接放 `FilesPage` + `show()`，`App` 持 `files: FilesPage`）：一次到位，但触及所有 `self.xxx` 引用，逐页 UI 冒烟
   - **B** 先只按职责切文件、不动结构：diff 小、好回滚，但要再搬一轮
   - **C** 先做 `worker/`（管线边界清晰、无 UI 状态纠缠），页面结构化留最后：业务风险最低，`app/mod.rs` 期间仍在长
-- **目标形态**：`app/` 下 8–10 个页面 / 工具单文件 + 域目录（`files/` / `transfers/` / `browse/`）+ `worker/` 约 10 个文件，总量 25–30 个文件（与 eframe 同量级）；`app/mod.rs` 最终只剩 `App` 字段 + `new` + `drain` 分发 + `eframe::App`，约 300–500 行
+- **目标形态**：`app/` 下 8–10 个页面 / 工具单文件 + 域目录（`files/` / `transfers/`）+ `worker/` 约 10 个文件，总量 25–30 个文件（与 eframe 同量级）；`app/mod.rs` 最终只剩 `App` 字段 + `new` + `drain` 分发 + `eframe::App`，约 300–500 行
 - **队列与逐项验收**：见 `TODO.md` 的 P2-9 ~ P2-14；每步都要 `cargo fmt` + `clippy -- -D warnings` + `cargo test` 全绿、`#[test]` 数不减，`worker/` 与上传 / 下载管线额外实机验证，路径变化同步 README 目录树与 `AGENTS.md` 代码地图
 
 ## 六、质量
@@ -464,7 +466,7 @@ classify(name, mime)              预览入口                       预览执�
   - 分享转存：解析 mypikpak 分享链接并保存到我的网盘（`share` / `share/detail` / `share/restore`），含分页 / 过滤 / 目标目录 / 移动重试；转存暂存目录（「转存自分享」）按持久化 ID 定位，ID 失效时回退名称匹配并刷新缓存
   - 回收站浏览 / 还原 / 彻底删除（含清空）
 - [ ] **体验继续** —— 全局搜索、任务详情进度
-- [ ] **可维护性** —— 结构优化：巨型文件与 god object。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；`app/` 侧第 1 步（P2-9）已完成（纯逻辑外移到 `app/transfers_model.rs` + `App::new` 启动逻辑外抽），余 P2-10 ~ P2-12 / P2-14。判据、参照数据、目标形态与已定的 A 路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
+- [ ] **可维护性** —— 结构优化：巨型文件与 god object。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；`app/` 侧第 1 步（P2-9）已完成（纯逻辑外移到 `app/transfers_model.rs` + `App::new` 启动逻辑外抽），第 2 步（P2-10，按域 struct 化）也已完成（七个域结构体 + `drain` 60 臂一行转调，`app/mod.rs` 3085 → 2127 行），余 P2-11 / P2-12（P2-14 由三者覆盖）。判据、参照数据、目标形态与已定的 A 路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
 - [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）
 
 ## 八、环境

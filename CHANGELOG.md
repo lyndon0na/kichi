@@ -13,6 +13,7 @@
 
 ### 变更
 
+- **工程：界面层按域 struct 化**：`app/` 的七个域收进各自模块 —— `app/global.rs::Global`（命令通道 / 提示条 / KDE 配色与主题轮询）、`app/trash.rs::TrashPage`、`app/shares.rs::SharesPage`（我的分享 + 转存分享）、`app/preview.rs::PreviewPage`（下载进度 / 清晰度 / 外部打开探针）、`app/search.rs::SearchPage`、`app/thumbs.rs::ThumbsPage`（纹理 LRU + 在途 / 失败登记）、`app/tasks.rs::TasksPage`（离线任务 + 「保存到」目录选择器）；`drain` 的 60 个 `Msg` 臂全部收敛为一行转调，`app/mod.rs` 3085 → 2127 行。纯结构调整，用户可见行为零变化
 - **工程：后台线程按域拆分**：`worker.rs`（2460 行）拆成 `worker/` 下 12 个文件（`mod` / `gate` / `cache` / `download` / `upload` / `preview` / `thumbs` / `files` / `tasks` / `shares` / `trash` / `auth`），命令循环 `handle` 的 43 个 `Cmd` 分支收敛为一行转调，入口 `worker/mod.rs` 降至 367 行。纯结构调整：用户可见行为、协议与并发语义零变化
 - **工程：界面层纯逻辑下沉**：`app/mod.rs` 的四个无界面依赖函数（下载记录状态映射 / 目录卡片进度聚合 / 目录树文件计数上卷 / 速率取样）连同单测迁到新模块 `app/transfers_model.rs`（另补两项覆盖：非终态兜底、短间隔不取样），`App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`。纯结构调整，用户可见行为零变化
 

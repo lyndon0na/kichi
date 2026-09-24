@@ -13,7 +13,7 @@
 | **P2** | 可维护性与工程   | 5   |
 | **P3** | 分发与发布     | 0   |
 
-> 上表只统计主线队列（P0–P3）；另有一节独立的「P2 · 结构优化」队列（P2-9 ~ P2-14，进行中，剩 4 项），见下方专节。
+> 上表只统计主线队列（P0–P3）；另有一节独立的「P2 · 结构优化」队列（P2-9 ~ P2-14，进行中，剩 2 项 —— P2-9 / P2-10 / P2-13 已完成，P2-14 已由 P2-10 / P2-11 / P2-12 覆盖），见下方专节。
 
 ---
 
@@ -50,6 +50,8 @@
 
 **已定 A**：拆域时**顺手 struct 化** —— `app/files/` 里直接放 `FilesPage`（自身状态）+ `show()`，`App` 持 `files: FilesPage`；即 P2-11 / P2-12 与 P2-14 合并。下表为决策时的三选项，留作备查（B 要再搬一轮、C 让 god object 期间继续长，均未取）。
 
+**P2-10 切法（2026-09-24 细化）**：域 = 结构体 + 方法 + `drain` 一行转调（沿用 P2-13 的形态）；新增极小的共用句柄 `app/global.rs::Global`（`tx` / `toast` / KDE 配色与主题轮询），域方法签名 `fn on_x(&mut self, g: &mut Global, …)` —— App 侧写 `self.trash.on_x(&mut self.global, …)` 是不相交字段借用，不引入 `Rc` / `RefCell`；`App::send` / `theme` / `toast_*` 保留转发壳，页面调用点零改动；跨域副作用（目录缓存作废、配额刷新、页面路由）留在 `drain` 臂里做 2–4 行编排。对原条目的两处修正：① `app/browse/` 并入 P2-11 的 `FilesPage`（目录数据就是文件页的状态，先搬会再收编一次）；② tasks 域纳入 P2-10。`app/system.rs` / `app/dnd.rs` 取消（避免夹缝模块）：`poll_file_picker` / `upload_pick` / `last_dir` 归上传域（P2-12），`poll_pending_open` 归预览域，`persist_settings` / `chrono_now` / `choose_download_dir` 跟全局设置走。
+
 | 选项       | 做法                                                                                             | 代价                                                     |
 |:-------- |:---------------------------------------------------------------------------------------------- |:------------------------------------------------------ |
 | **A（推荐）** | 拆域时**顺手 struct 化**：`app/files/` 里直接放 `FilesPage`（自身状态）+ `show()`，`App` 持 `files: FilesPage`；即 P2-11 / P2-12 与 P2-14 合并 | 一次到位，不用同一批代码搬两次家；但触及所有 `self.xxx` 引用，diff 大，必须逐页 UI 冒烟 |
@@ -61,15 +63,15 @@
 | 编号    | 任务                                | 主要路径                                                                                       | 说明 / 验收                                                                                                                                      |
 |:------ |:--------------------------------- |:------------------------------------------------------------------------------------------ |:--------------------------------------------------------------------------------------------------------------------------------------------- |
 | P2-9   | `app/mod.rs` 纯逻辑下沉（第 1 步，建议先做） | `app/transfers_model.rs`                                                                   | **✅ 已完成**（`e85211b` 搬移 + `caa89db` 补测 + `c9b57a3` 抽 `restore_req_id` / `start_session`）。`dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed` 四个无 UI 依赖函数连同 5 项相关单测外移到新模块，另补 2 项（此前零覆盖：状态映射兜底、短间隔不取样防速率爆炸）→ 新模块共 7 项单测；`App::new` 只留装配与字体告警。`app/mod.rs` 3264 → 3085 行。零行为变更（函数体 / 文档注释逐字比对、抽取语句 `app.` → `self.` 逐行一致），`fmt` 零差异 / clippy 0 告警 / **93 单测**全绿（计划时写的「8 项单测」「89 项」为估算，按实况修正）；实机冒烟待维护者确认 |
-| P2-10  | `app/` 按域外移（含拆 `drain`）            | `app/browse/`（目录缓存 SWR）· `search.rs` · `dnd.rs` · `system.rs` · `preview.rs` · `shares.rs` · `trash.rs` | 未开始。要外移的方法：`send_list` / `fetch_dir` / `revalidate_dir` / `reload_dir` / `apply_files` / `evict_dir_cache` / `goto_folder` / `current_parent`；`poll_system_theme` / `poll_file_picker` / `remember_picked_dir` / `poll_pending_open` / `persist_settings` / `chrono_now`；`start_preview` / `episode_subtitles` / `file_size`。`drain`（约 840 行）与 `App::new`（约 310 行字面量）是重灾区；验收：`Msg` 分支一一对应不丢、行为零变更 |
-| P2-11  | `files_page.rs` → `app/files/`      | `app/files/{mod,list,grid,row,toolbar}.rs`                                                  | 未开始。`files_page()` 是单个约 1180 行的函数：`mod.rs` 收入口 / 空态 / 加载更多；`list.rs` 收表格与 `file_list_header` / `col_layout`；`grid.rs` 收网格与 `thumb_row_range` / `thumb_max_edge`；`row.rs` 收 `file_row` 与 `RowAction`；`toolbar.rs` 收面包屑 / 搜索框 / 视图切换 / 列宽拖拽。选 A 时此处同时落 `FilesPage` |
+| P2-10  | `app/` 按域 struct 化（含拆 `drain`）      | `app/{global,trash,shares,preview,search,thumbs,tasks}.rs`                                  | **✅ 已完成**（D0 `935d3dd` · D1 `83f5ddd` · D2+D3 `72b670a` · D4 `7a6493b` · D5 `9e4b919` · D6 `d0be9fc` · D7 `73edc3e`）。七个域结构体 `Global` / `TrashPage` / `SharesPage`（我的分享 + 转存分享）/ `PreviewPage` / `SearchPage` / `ThumbsPage` / `TasksPage` 各持自身状态与 `on_x` 方法，`App` 侧写 `self.trash.on_x(&mut self.global, …)`（不相交字段借用，无 `Rc` / `RefCell`）；`drain` 的 60 个 `Msg` 臂全部一行转调、跨域副作用留 2–4 行编排，`app/mod.rs` 3085 → 2127 行（`drain` 由约 840 行降至 548 行）。每步纯搬移零行为变更：`fmt` 零差异 / clippy 0 告警 / **93 项单测**全绿（core 33 + GUI 60，各步不减），并逐个用归一化脚本比对旧新函数体（逐段 `ALL_MATCH`）；`App::new` 的 310 行字面量随各域 `Default` 自然消掉。实机冒烟待维护者确认 |
+| P2-11  | `files_page.rs` → `app/files/`      | `app/files/{mod,list,grid,row,toolbar}.rs`                                                  | 未开始。`files_page()` 是单个约 1180 行的函数：`mod.rs` 收入口 / 空态 / 加载更多；`list.rs` 收表格与 `file_list_header` / `col_layout`；`grid.rs` 收网格与 `thumb_row_range` / `thumb_max_edge`；`row.rs` 收 `file_row` 与 `RowAction`；`toolbar.rs` 收面包屑 / 搜索框 / 视图切换 / 列宽拖拽。选 A 时此处同时落 `FilesPage`，并**吸收 P2-10 原列的 `browse/`**（目录缓存 SWR / 导航栈 / 文件列表本就是文件页状态：`send_list` / `fetch_dir` / `revalidate_dir` / `reload_dir` / `apply_files` / `evict_dir_cache` / `goto_folder` / `current_parent`），不再单独建 `app/browse/` |
 | P2-12  | `transfers_page.rs` → `app/transfers/` | `app/transfers/{mod,download,upload}.rs`                                                    | 未开始。`upload_tab` 约 910 行是重灾区，先按「空态 / 列表卡片 / 底部操作栏」抽三段子函数再分文件；`download.rs` 收 `dl_card` / `dl_dir_node` / `dl_file_node` / `status_line` / `paint_rails` / `paint_disclosure` / `node_h` / `tree_block_height` / `retry_folder` / `remove_download_job`；`upload.rs` 收 `ul_card` / `upload_status_line` / `retry_upload_job` / `remove_upload_job` / `navigate_to_stack` |
 | P2-13  | `worker.rs` → `worker/`            | `worker/{mod,gate,cache,auth,files,tasks,shares,download,upload,preview,thumbs}.rs`         | **✅ 已完成**（`9da37dd` 起 19 个提交：W1–W9 = `3d5e23c` `8a8861e` `2b5901c` `815e4a7` `6b26981` `1d888aa` `08eb956` `fcd8259` `f4532b7`；W10 收尾 = `2e3e122` `4721eb6` `2437def` + `320aa98`（补漏掉的 `.await`）`5ee58d9` `f2b96c4` `f618e6a` `174d34f` `5997c77`）。`worker.rs` 2460 行 → 12 个文件、入口 `worker/mod.rs` 367 行，`handle` 的 43 个 `Cmd` 分支全部一行转调；纯搬移零行为变更，每步 fmt 零差异 / clippy 0 告警 / 91 单测全绿。实机冒烟（登录 / 上传 / 下载 / 预览 / 转存）已确认 |
-| P2-14  | `App` 字段按页面分组为子结构                 | `app/mod.rs` + 各页面                                                                            | 未开始。目标形态：`FilesPage` / `TransfersPage` / `TasksPage` / `SharesPage` / `TrashPage` / `PreviewState` / `ThumbsState`，`App` 只留全局态（登录 / 传输汇总）与路由，最终 `app/mod.rs` 收到约 300–500 行。**选 A 时与 P2-11 / P2-12 合并；选 B 时最后做** |
+| P2-14  | `App` 字段按页面分组为子结构                 | `app/mod.rs` + 各页面                                                                            | **已并入 P2-10 / P2-11 / P2-12**（目标形态各有归属：`FilesPage` = P2-11、`TransfersPage` = P2-12、`TasksPage` / `SharesPage` / `TrashPage` / `PreviewState` / `ThumbsState` = P2-10），本条不再单独做，行内不再计为待办 |
 
 ### 每步的固定验收
 
-- `cargo fmt --all` → `cargo clippy --workspace --all-targets -- -D warnings`（0 告警）→ `cargo test --workspace` 全绿，`#[test]` 数不减。
+- `cargo fmt --all` → `cargo clippy --workspace --all-targets -- -D warnings`（0 告警）→ `cargo test --workspace` 全绿，`#[test]` 数不减（当前基线 **93 项**：core 33 + GUI 60）。
 - 一次一个域、独立提交（`refactor(gui): …`），**纯搬移、零行为变更**；`worker/` 与上传 / 下载管线额外实机验证。
 - 路径变了就必须同步 `README.md` 目录树与 `AGENTS.md` 代码地图，并在 `PROJECT_PLAN.md` 第五节 11) 追加进度。
 
