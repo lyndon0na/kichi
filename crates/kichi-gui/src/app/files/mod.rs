@@ -34,8 +34,6 @@ const DIR_CACHE_CAP: usize = 64;
 pub(crate) struct FilesPage {
     /// 导航栈; 首项固定为根目录。
     pub(crate) stack: Vec<Crumb>,
-    /// 列表请求 id 分配器(与传输任务 id 共用命名空间, 由 `App::restore_req_id` 修正起点)。
-    pub(crate) req_id: u64,
     /// 选中项 id 集合。
     pub(crate) selected: HashSet<String>,
     pub(crate) sort_by: SortBy,
@@ -77,7 +75,6 @@ impl Default for FilesPage {
                 id: None,
                 label: "我的云盘".into(),
             }],
-            req_id: 0,
             selected: HashSet::new(),
             sort_by: SortBy::Name,
             sort_desc: false,
@@ -157,8 +154,7 @@ impl FilesPage {
         token: Option<String>,
         append: bool,
     ) {
-        self.req_id += 1;
-        let req_id = self.req_id;
+        let req_id = g.alloc_req_id();
         if !append {
             self.dir_inflight.insert(parent.clone(), req_id);
         }

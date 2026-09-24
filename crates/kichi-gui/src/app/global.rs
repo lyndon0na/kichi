@@ -21,6 +21,10 @@ pub(crate) struct Global {
     pub(crate) kde_colors: Option<kde::KdeColors>,
     /// 上次轮询系统主题的时间。
     pub(crate) kde_checked: Instant,
+    /// 请求 id 分配器; 各域共用同一命名空间 —— worker 的取消注册表按 req_id
+    /// 索引下载 / 上传 / 预览三域, 重复的 id 会互相取消。启动起点由
+    /// `App::restore_req_id` 按历史任务的最大 id 修正。
+    pub(crate) req_id: u64,
 }
 
 impl Global {
@@ -30,11 +34,17 @@ impl Global {
             toast: None,
             kde_colors: kde::load(),
             kde_checked: Instant::now(),
+            req_id: 0,
         }
     }
 
     pub(crate) fn send(&self, cmd: Cmd) {
         let _ = self.tx.send(cmd);
+    }
+
+    pub(crate) fn alloc_req_id(&mut self) -> u64 {
+        self.req_id += 1;
+        self.req_id
     }
 
     pub(crate) fn theme(&self) -> Theme {

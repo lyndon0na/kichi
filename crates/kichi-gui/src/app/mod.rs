@@ -374,7 +374,7 @@ impl App {
 
     /// 恢复 req_id 为历史记录中的最大值, 避免与恢复出来的历史任务 ID 冲突。
     fn restore_req_id(&mut self) {
-        self.files.req_id = self
+        self.global.req_id = self
             .jobs
             .keys()
             .chain(self.ul_jobs.keys())
@@ -1053,11 +1053,6 @@ impl App {
         rows
     }
 
-    pub(crate) fn alloc_req_id(&mut self) -> u64 {
-        self.files.req_id += 1;
-        self.files.req_id
-    }
-
     pub(crate) fn has_active_downloads(&self) -> bool {
         self.jobs
             .values()
@@ -1099,7 +1094,7 @@ impl App {
         dir: std::path::PathBuf,
         parent: Option<u64>,
     ) -> u64 {
-        let req_id = self.alloc_req_id();
+        let req_id = self.global.alloc_req_id();
         let job = match parent {
             Some(p) => DlJob::child(file_id.clone(), name.clone(), dir.clone(), p),
             None => DlJob::queued(file_id.clone(), name.clone(), dir.clone()),
@@ -1136,7 +1131,7 @@ impl App {
         name: String,
         dir: std::path::PathBuf,
     ) -> u64 {
-        let req_id = self.alloc_req_id();
+        let req_id = self.global.alloc_req_id();
         self.jobs.insert(
             req_id,
             DlJob::folder(folder_id.clone(), name.clone(), dir.clone()),
@@ -1302,7 +1297,7 @@ impl App {
             if name.is_empty() {
                 continue;
             }
-            let req_id = self.alloc_req_id();
+            let req_id = self.global.alloc_req_id();
             self.ul_jobs.insert(
                 req_id,
                 UlJob::queued(path.clone(), name, parent.clone(), dest_stack.clone()),
@@ -1448,7 +1443,7 @@ impl App {
         if name.is_empty() {
             return;
         }
-        let req_id = self.alloc_req_id();
+        let req_id = self.global.alloc_req_id();
         self.ul_jobs.insert(
             req_id,
             UlJob::queued_dir(path.clone(), name, parent.clone(), dest_stack),
@@ -1569,7 +1564,7 @@ impl App {
     pub(crate) fn start_preview(&mut self, id: String, name: String) {
         let ft = self.files.file_type(&id, &name);
         let media = matches!(ft, filetypes::FileType::Video | filetypes::FileType::Audio);
-        let req_id = self.alloc_req_id();
+        let req_id = self.global.alloc_req_id();
         // 同目录下的同集字幕, 播放时一并挂载(仅视频需要)。
         let subtitles = if ft == filetypes::FileType::Video {
             self.episode_subtitles(&name)
