@@ -1,4 +1,5 @@
 mod dialogs;
+mod files;
 mod files_page;
 mod global;
 mod helpers;
@@ -16,13 +17,13 @@ mod transfers_page;
 mod trash;
 pub(crate) mod types;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use kichi_core::session;
-use kichi_core::types::{File, FileList, Quota};
+use kichi_core::types::Quota;
 
 use crate::filetypes;
 use crate::msg::{Cmd, Msg};
@@ -33,6 +34,7 @@ use crate::settings::{
 use crate::theme::{self, Theme};
 use crate::worker;
 
+use self::files::FilesPage;
 use self::global::Global;
 use self::helpers::install_fonts;
 use self::preview::PreviewPage;
@@ -45,17 +47,12 @@ use self::transfers_model::{
 };
 use self::trash::TrashPage;
 use self::types::{
-    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus, Page,
-    SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+    DlFilter, DlJob, DlNode, DlRow, DlStatus, Page, TransferTab, UlFilter, UlJob, UlStatus,
+    UploadPick,
 };
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
 const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;
-
-/// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
-const DIR_TTL: Duration = Duration::from_secs(60);
-/// 目录缓存上限, 超出按 LRU 淘汰(不淘汰当前目录)。
-const DIR_CACHE_CAP: usize = 64;
 
 pub struct App {
     rx: Receiver<Msg>,
@@ -80,30 +77,11 @@ pub struct App {
     pub(crate) transfer_tab: TransferTab,
 
     // 文件浏览
-    pub(crate) stack: Vec<Crumb>,
-    pub(crate) req_id: u64,
-    pub(crate) selected: HashSet<String>,
-    pub(crate) sort_by: SortBy,
-    pub(crate) sort_desc: bool,
-    pub(crate) filter: String,
-    pub(crate) files: Vec<File>,
-    pub(crate) dir_next: Option<String>,
-    pub(crate) dir_loading: bool,
-    /// 目录列表缓存: 目录 id -> 已加载内容(None = 根目录)。命中时导航不再发请求。
-    pub(crate) dir_cache: HashMap<Option<String>, DirEntry>,
-    /// 正在进行的首屏请求: 目录 id -> 请求 id, 用于避免重复的 revalidate。
-    pub(crate) dir_inflight: HashMap<Option<String>, u64>,
+    /// 文件浏览域: 导航栈 / 目录缓存(含 SWR 校正) / 列表数据 / 选中集 / 视图与列宽 / 剪贴板。
+    pub(crate) files: FilesPage,
 
     // 全局搜索
     pub(crate) search: SearchPage,
-
-    // 列宽 (名称列 = 剩余空间)
-    pub(crate) col_size_w: f32,
-    pub(crate) col_time_w: f32,
-    pub(crate) col_dragging: Option<ColDrag>,
-
-    // 视图模式
-    pub(crate) view_mode: ViewMode,
 
     // Shift+Click 范围选择锚点
     pub(crate) last_clicked_dl: Option<u64>,
@@ -119,16 +97,6 @@ pub struct App {
     pub(crate) rename_id: Option<String>,
     pub(crate) rename_name: String,
     pub(crate) trash_confirm: Option<Vec<(String, String)>>,
-
-    // 复制/剪切剪贴板(在目标目录粘贴)
-    pub(crate) clipboard: Option<Clipboard>,
-
-    /// 移动/复制成功后延迟重列目录的时间点(规避服务端列表最终一致性)。
-    pub(crate) relist_at: Option<Instant>,
-
-    /// 等待服务端列表同步、本地先行隐藏的 id -> 其应隐藏的目录(回收/移出的源目录)。
-    /// 用目录区分, 避免移动后的文件在目标目录里也被隐藏。
-    pub(crate) hidden: HashMap<String, Option<String>>,
 
     // 退出确认
     pub(crate) logout_confirm: bool,
@@ -166,8 +134,6 @@ pub struct App {
     pub(crate) cache_usage_pending: bool,
     /// 是否正在执行手动清理。
     pub(crate) cache_sweeping: bool,
-    /// 网格视图卡片大小(80-160)。
-    pub(crate) grid_card_size: f32,
 
     // 我的分享 + 转存分享
     pub(crate) shares: SharesPage,
@@ -195,20 +161,7 @@ impl App {
             pending_remember: None,
             page: Page::Files,
             transfer_tab: TransferTab::Download,
-            stack: vec![Crumb {
-                id: None,
-                label: "我的云盘".into(),
-            }],
-            req_id: 0, // Will be updated after loading history
-            selected: HashSet::new(),
-            sort_by: SortBy::Name,
-            sort_desc: false,
-            filter: String::new(),
-            files: Vec::new(),
-            dir_next: None,
-            dir_loading: false,
-            dir_cache: HashMap::new(),
-            dir_inflight: HashMap::new(),
+            files: FilesPage::default(),
             search: SearchPage::default(),
             tasks: TasksPage::default(),
             quota: None,
@@ -217,9 +170,6 @@ impl App {
             rename_id: None,
             rename_name: String::new(),
             trash_confirm: None,
-            clipboard: None,
-            relist_at: None,
-            hidden: HashMap::new(),
             logout_confirm: false,
             download_dir: saved.download_dir.clone(),
             last_dir: saved.last_dir.clone(),
@@ -404,13 +354,8 @@ impl App {
             cache_usage: None,
             cache_usage_pending: false,
             cache_sweeping: false,
-            grid_card_size: 104.0,
             shares: SharesPage::default(),
             trash: TrashPage::default(),
-            col_size_w: 100.0,
-            col_time_w: 160.0,
-            col_dragging: None,
-            view_mode: ViewMode::List,
             last_clicked_dl: None,
         };
 
@@ -430,7 +375,7 @@ impl App {
 
     /// 恢复 req_id 为历史记录中的最大值, 避免与恢复出来的历史任务 ID 冲突。
     fn restore_req_id(&mut self) {
-        self.req_id = self
+        self.files.req_id = self
             .jobs
             .keys()
             .chain(self.ul_jobs.keys())
@@ -498,7 +443,7 @@ impl App {
                     }
                     self.tasks.clear();
                     self.quota = None;
-                    self.reset_browse();
+                    self.files.reset_browse(&mut self.global);
                     self.send(Cmd::RefreshQuota);
                     self.send(Cmd::RefreshTasks);
                     self.persist_settings();
@@ -521,10 +466,8 @@ impl App {
                     self.jobs.clear();
                     self.selected_dl.clear();
                     self.last_clicked_dl = None;
-                    self.clipboard = None;
+                    self.files.invalidate_session();
                     self.preview.clear();
-                    self.dir_cache.clear();
-                    self.dir_inflight.clear();
                     self.shares.clear();
                     self.trash.clear();
                     // 登录态失效: 若保存过密码则尝试自动重登。
@@ -541,16 +484,10 @@ impl App {
                     self.quota = None;
                     self.tasks.clear();
                     self.files.clear();
-                    self.selected.clear();
-                    self.dir_cache.clear();
-                    self.dir_inflight.clear();
-                    self.hidden.clear();
                     self.jobs.clear();
                     self.selected_dl.clear();
                     self.last_clicked_dl = None;
-                    self.clipboard = None;
                     self.preview.clear();
-                    self.reset_stack();
                     self.shares.clear();
                     self.trash.clear();
                 }
@@ -562,7 +499,8 @@ impl App {
                 } => {
                     // 响应按 parent 路由进缓存; 即使已切换到别的目录, 迟到的
                     // 响应也能正确落位, 下次进入该目录即可命中。
-                    self.apply_files(parent, req_id, append, list);
+                    self.files
+                        .on_files(parent, req_id, append, list, &mut self.thumbs);
                 }
                 Msg::SearchResults {
                     req_id,
@@ -579,19 +517,18 @@ impl App {
                 }
                 Msg::FolderCreated => {
                     self.toast_ok("新建文件夹成功");
-                    self.reload_dir();
+                    self.files.reload_dir(&mut self.global);
                 }
                 Msg::Renamed => {
                     self.rename_id = None;
                     self.toast_ok("重命名成功");
-                    self.reload_dir();
+                    self.files.reload_dir(&mut self.global);
                 }
                 Msg::Trashed => {
                     self.trash_confirm = None;
-                    self.selected.clear();
                     // 回收站内容已变, 作废缓存。
                     self.trash.invalidate_cache();
-                    self.reload_dir();
+                    self.files.on_trashed(&mut self.global);
                 }
                 Msg::TrashList {
                     req_id,
@@ -602,33 +539,14 @@ impl App {
                 Msg::TrashRestored { ids } => {
                     self.trash.on_restored(&mut self.global, &ids);
                     // 还原可能回到被删时的原目录, 作废目录缓存以便下次重新加载。
-                    self.dir_cache.clear();
+                    self.files.invalidate_cache();
                 }
                 Msg::TrashDeleted { ids } => self.trash.on_deleted(&mut self.global, &ids),
                 Msg::TrashEmptied => self.trash.on_emptied(&mut self.global),
                 Msg::Moved { ids, src, dest } => {
-                    self.toast_ok("移动成功");
-                    // batchMove 返回后服务端列表未必立即同步, 先把被移走的项从源
-                    // 目录隐藏(服务端列表不再含该 id 后自动解除), 避免刷新前文件仍
-                    // 显示在原目录; 隐藏按源目录区分, 目标目录里仍会正常显示。
-                    for id in &ids {
-                        self.selected.remove(id);
-                        self.hidden.insert(id.clone(), src.clone());
-                    }
-                    // 同步更新源目录缓存, 并对目标目录作废缓存, 稍后重列。
-                    if let Some(entry) = self.dir_cache.get_mut(&src) {
-                        entry.files.retain(|f| !ids.contains(&f.id));
-                    }
-                    self.files.retain(|f| !ids.contains(&f.id));
-                    self.dir_cache.remove(&dest);
-                    self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
+                    self.files.on_moved(&mut self.global, &ids, &src, &dest);
                 }
-                Msg::Copied { dest } => {
-                    self.toast_ok("复制成功");
-                    // 复制的目标目录当前可能正在展示, 稍后重列以显示新文件。
-                    self.dir_cache.remove(&dest);
-                    self.relist_at = Some(Instant::now() + Duration::from_millis(1500));
-                }
+                Msg::Copied { dest } => self.files.on_copied(&mut self.global, dest),
                 Msg::OfflineCreated => self.tasks.on_created(&mut self.global),
                 Msg::OfflineRetried => self.tasks.on_changed(&mut self.global),
                 Msg::OfflineDeleted => self.tasks.on_changed(&mut self.global),
@@ -869,9 +787,9 @@ impl App {
                     });
                     if let Some(parent) = parent {
                         // 上传完成后目标目录内容已变, 作废缓存并按需刷新。
-                        self.dir_cache.remove(&parent);
-                        if parent == self.current_parent() {
-                            self.reload_dir();
+                        self.files.dir_cache.remove(&parent);
+                        if parent == self.files.current_parent() {
+                            self.files.reload_dir(&mut self.global);
                         }
                     }
                     // 上传占用空间, 显式刷新配额(自动轮询已降频)。
@@ -908,13 +826,7 @@ impl App {
                     self.toast_err(&format!("上传失败: {what}"));
                 }
                 Msg::FilesFailed { parent, what } => {
-                    // 结束该目录的加载态并释放在途登记; 若仍停留在该目录,
-                    // 无缓存数据时会显示空目录提示, 而非一直转圈。
-                    self.dir_inflight.remove(&parent);
-                    if parent == self.current_parent() {
-                        self.dir_loading = false;
-                    }
-                    self.toast_err(&what);
+                    self.files.on_files_failed(&mut self.global, parent, what);
                 }
                 Msg::Error { what } => {
                     self.tasks.refreshing = false;
@@ -993,7 +905,7 @@ impl App {
                 Msg::ShareSaveFailed { what } => self.shares.on_save_failed(what),
                 Msg::ShareMoveRetried => {
                     self.shares.on_move_retried(&mut self.global);
-                    self.reload_dir();
+                    self.files.reload_dir(&mut self.global);
                 }
                 Msg::ShareMoveRetryFailed { what } => {
                     self.shares.on_move_retry_failed(&mut self.global, what)
@@ -1074,18 +986,6 @@ impl App {
         }
     }
 
-    pub(crate) fn current_parent(&self) -> Option<String> {
-        self.stack.last().and_then(|c| c.id.clone())
-    }
-
-    /// 当前目录的层级快照 (id, label), 用于上传目标记录与导航。
-    pub(crate) fn current_stack_pairs(&self) -> Vec<(Option<String>, String)> {
-        self.stack
-            .iter()
-            .map(|c| (c.id.clone(), c.label.clone()))
-            .collect()
-    }
-
     /// 当前上传筛选下可见的任务 id(按 map 顺序)。
     pub(crate) fn visible_ul_ids(&self) -> Vec<u64> {
         self.ul_jobs
@@ -1095,403 +995,20 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn reset_stack(&mut self) {
-        self.stack = vec![Crumb {
-            id: None,
-            label: "我的云盘".into(),
-        }];
-        self.dir_next = None;
-        self.dir_loading = true;
-    }
-
-    pub(crate) fn reset_browse(&mut self) {
-        self.dir_cache.clear();
-        self.dir_inflight.clear();
-        self.reset_stack();
-        self.selected.clear();
-        self.fetch_dir(None);
-    }
-
-    /// 发送一次 ListFiles 并登记在途请求(首屏才登记, 用于去重)。
-    fn send_list(&mut self, parent: Option<String>, token: Option<String>, append: bool) {
-        self.req_id += 1;
-        let req_id = self.req_id;
-        if !append {
-            self.dir_inflight.insert(parent.clone(), req_id);
-        }
-        self.send(Cmd::ListFiles {
-            parent,
-            token,
-            append,
-            req_id,
-        });
-    }
-
-    /// 冷加载: 清空视图并显示加载态。
-    fn fetch_dir(&mut self, parent: Option<String>) {
-        self.files.clear();
-        self.dir_next = None;
-        self.dir_loading = true;
-        self.send_list(parent, None, false);
-    }
-
-    /// 静默校正: 保留当前视图(继续展示旧数据), 仅后台刷新缓存。
-    /// 该目录已有在途请求时跳过, 避免重复请求。
-    fn revalidate_dir(&mut self, parent: Option<String>) {
-        if self.dir_inflight.contains_key(&parent) {
-            return;
-        }
-        self.send_list(parent, None, false);
-    }
-
-    /// 打开当前目录。命中且新鲜则同帧渲染、零请求; 命中但过期先展示旧数据
-    /// 再后台静默校正; 未命中才冷加载。
-    pub(crate) fn show_dir(&mut self) {
-        self.selected.clear();
-        let parent = self.current_parent();
-        let cached = self.dir_cache.get(&parent).map(|e| {
-            (
-                e.files.clone(),
-                e.next_token.clone(),
-                e.fetched_at.elapsed(),
-            )
-        });
-        match cached {
-            Some((files, next, age)) => {
-                self.files = files;
-                self.dir_next = next;
-                self.dir_loading = false;
-                if let Some(entry) = self.dir_cache.get_mut(&parent) {
-                    entry.last_used = Instant::now();
-                }
-                if age > DIR_TTL {
-                    self.revalidate_dir(parent);
-                }
-            }
-            None if self.dir_inflight.contains_key(&parent) => {
-                // 已有请求在途: 保持加载态等待, 不重复发起。
-                self.files.clear();
-                self.dir_next = None;
-                self.dir_loading = true;
-            }
-            None => self.fetch_dir(parent),
-        }
-    }
-
-    /// 强制重新加载当前目录(F5 / 刷新按钮), 清空视图并显示加载态。
-    pub(crate) fn refresh_dir(&mut self) {
-        let parent = self.current_parent();
-        self.dir_cache.remove(&parent);
-        self.selected.clear();
-        self.fetch_dir(parent);
-    }
-
-    /// 变更后就地作废缓存并静默重列当前目录: 保留现有列表(避免闪烁),
-    /// 后台重新拉取以反映增删改。
-    fn reload_dir(&mut self) {
-        let parent = self.current_parent();
-        self.dir_cache.remove(&parent);
-        self.selected.clear();
-        self.send_list(parent, None, false);
-    }
-
     /// 触发全局搜索。
     pub(crate) fn trigger_search(&mut self) {
-        let keyword = self.filter.trim().to_string();
+        let keyword = self.files.filter.trim().to_string();
         tracing::info!("触发搜索: keyword='{}'", keyword);
         if keyword.is_empty() {
-            self.exit_search();
+            self.files.exit_search(&mut self.search);
             return;
         }
         self.search.start(&mut self.global, keyword);
     }
 
-    /// 退出搜索模式。
-    pub(crate) fn exit_search(&mut self) {
-        self.search.exit();
-        self.filter.clear();
-    }
-
     /// 加载更多搜索结果。
     pub(crate) fn load_more_search_results(&mut self) {
         self.search.load_more(&mut self.global);
-    }
-
-    /// 把一次 ListFiles 响应写入缓存, 并在其属于当前目录时同步到可见列表。
-    /// `entry.req` 保证乱序到达的旧响应不会覆盖新数据。
-    fn apply_files(&mut self, parent: Option<String>, req_id: u64, append: bool, list: FileList) {
-        let is_current = parent == self.current_parent();
-        {
-            let entry = self.dir_cache.entry(parent.clone()).or_default();
-            if req_id < entry.req {
-                return;
-            }
-            entry.req = req_id;
-            entry.fetched_at = Instant::now();
-            entry.last_used = entry.fetched_at;
-            if append {
-                let ids: HashSet<String> = entry.files.iter().map(|f| f.id.clone()).collect();
-                for f in list.files {
-                    if !ids.contains(&f.id) {
-                        entry.files.push(f);
-                    }
-                }
-            } else {
-                entry.files = list.files;
-            }
-            entry.next_token = list.next_page_token;
-        }
-        if !append && self.dir_inflight.get(&parent) == Some(&req_id) {
-            self.dir_inflight.remove(&parent);
-        }
-
-        if is_current {
-            self.dir_loading = false;
-            if let Some(entry) = self.dir_cache.get(&parent) {
-                if entry.req == req_id {
-                    self.files = entry.files.clone();
-                    self.dir_next = entry.next_token.clone();
-                }
-            }
-            if !append {
-                self.selected.clear();
-                // 换目录 / 刷新 = 重新开始: 清掉在途与失败的缩略图登记,
-                // 让重新可见的文件有机会再请求一次(worker 侧也已作废旧任务)。
-                self.thumbs.reset();
-            }
-        }
-
-        // 服务端列表已更新: 解除该目录中不再出现的隐藏项(最终一致性收敛)。
-        if !self.hidden.is_empty() {
-            let present: HashSet<String> = if is_current {
-                self.files.iter().map(|f| f.id.clone()).collect()
-            } else if let Some(entry) = self.dir_cache.get(&parent) {
-                entry.files.iter().map(|f| f.id.clone()).collect()
-            } else {
-                HashSet::new()
-            };
-            let listing_parent = parent.clone();
-            self.hidden
-                .retain(|id, hp| *hp != listing_parent || present.contains(id));
-        }
-
-        self.evict_dir_cache();
-    }
-
-    /// 缓存超限时按 LRU 淘汰, 跳过当前目录。
-    fn evict_dir_cache(&mut self) {
-        if self.dir_cache.len() <= DIR_CACHE_CAP {
-            return;
-        }
-        let current = self.current_parent();
-        let mut keys: Vec<(Option<String>, Instant)> = self
-            .dir_cache
-            .iter()
-            .map(|(k, e)| (k.clone(), e.last_used))
-            .collect();
-        keys.sort_by_key(|(_, t)| *t);
-        for (k, _) in keys {
-            if self.dir_cache.len() <= DIR_CACHE_CAP {
-                break;
-            }
-            if k == current {
-                continue;
-            }
-            self.dir_cache.remove(&k);
-        }
-    }
-
-    pub(crate) fn load_more(&mut self) {
-        if self.dir_next.is_none() {
-            return;
-        }
-        let parent = self.current_parent();
-        let token = self.dir_next.clone();
-        self.send_list(parent, token, true);
-    }
-
-    pub(crate) fn goto_folder(&mut self, id: &str, name: &str) {
-        self.exit_search();
-        self.stack.push(Crumb {
-            id: Some(id.to_string()),
-            label: name.to_string(),
-        });
-        self.show_dir();
-    }
-
-    // ---------- 复制/剪切/粘贴 ----------
-
-    /// 把当前选中项放入剪贴板。
-    pub(crate) fn clip_selection(&mut self, kind: ClipKind) {
-        let ids: Vec<String> = self
-            .files
-            .iter()
-            .filter(|f| self.selected.contains(&f.id))
-            .map(|f| f.id.clone())
-            .collect();
-        if ids.is_empty() {
-            self.toast_warn("请先选择要操作的文件");
-            return;
-        }
-        self.set_clipboard(kind, ids);
-    }
-
-    /// 右键单项: 若该项在多选中则操作整个选中集, 否则仅操作该项。
-    pub(crate) fn clip_item(&mut self, kind: ClipKind, id: String) {
-        let ids = if self.selected.contains(&id) && self.selected.len() > 1 {
-            self.files
-                .iter()
-                .filter(|f| self.selected.contains(&f.id))
-                .map(|f| f.id.clone())
-                .collect()
-        } else {
-            vec![id]
-        };
-        self.set_clipboard(kind, ids);
-    }
-
-    fn set_clipboard(&mut self, kind: ClipKind, ids: Vec<String>) {
-        let label = if ids.len() == 1 {
-            self.files
-                .iter()
-                .find(|f| f.id == ids[0])
-                .map(|f| f.name.clone())
-                .unwrap_or_else(|| "文件".to_string())
-        } else {
-            format!("{} 项", ids.len())
-        };
-        let src_parent = self.current_parent();
-        self.clipboard = Some(Clipboard {
-            kind,
-            ids,
-            src_parent,
-            label: label.clone(),
-        });
-        let act = match kind {
-            ClipKind::Copy => "复制",
-            ClipKind::Cut => "剪切",
-        };
-        self.toast_ok(&format!("已{act}「{label}」, 进入目标目录后粘贴"));
-    }
-
-    /// 粘贴到当前目录。
-    pub(crate) fn paste_clipboard(&mut self) {
-        let dest = self.current_parent();
-        self.paste_into(dest);
-    }
-
-    /// 粘贴到指定目录(None = 根目录)。
-    pub(crate) fn paste_into(&mut self, dest: Option<String>) {
-        let Some(clip) = self.clipboard.clone() else {
-            self.toast_warn("剪贴板为空, 请先复制或剪切");
-            return;
-        };
-        if let Some(d) = &dest {
-            if clip.ids.contains(d) {
-                self.toast_warn("不能粘贴到被操作的文件夹自身");
-                return;
-            }
-        }
-        if clip.kind == ClipKind::Cut && dest == clip.src_parent {
-            self.toast_warn("已在原目录, 无需粘贴");
-            return;
-        }
-        match clip.kind {
-            ClipKind::Copy => self.send(Cmd::CopyTo {
-                ids: clip.ids,
-                dest,
-            }),
-            ClipKind::Cut => {
-                self.send(Cmd::MoveTo {
-                    ids: clip.ids,
-                    dest,
-                    src: clip.src_parent,
-                });
-                // 剪切只生效一次, 粘贴后清空剪贴板。
-                self.clipboard = None;
-            }
-        }
-    }
-
-    /// 当前目录内过滤后的可见文件(文件夹在前, 组内按当前排序)。
-    pub(crate) fn visible_rows(&self) -> (Vec<File>, Vec<File>) {
-        // 搜索模式下使用搜索结果
-        let source: &[File] = if self.search.is_active() {
-            self.search.results()
-        } else {
-            &self.files
-        };
-
-        let kw = if self.search.is_active() {
-            String::new() // 搜索结果已经过滤过了
-        } else {
-            self.filter.trim().to_lowercase()
-        };
-        let cur = self.current_parent();
-        let mut folders: Vec<&File> = Vec::new();
-        let mut plain: Vec<&File> = Vec::new();
-        for f in source {
-            if !self.search.is_active() && self.hidden.get(&f.id).is_some_and(|hp| *hp == cur) {
-                continue;
-            }
-            let hit = kw.is_empty() || f.name.to_lowercase().contains(&kw);
-            if !hit {
-                continue;
-            }
-            if f.is_folder() {
-                folders.push(f);
-            } else {
-                plain.push(f);
-            }
-        }
-        let cmp = |a: &File, b: &File| -> std::cmp::Ordering {
-            let o = match self.sort_by {
-                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                SortBy::Size => a.size.cmp(&b.size),
-                SortBy::Modified => a
-                    .modified_time
-                    .as_deref()
-                    .or(a.created_time.as_deref())
-                    .cmp(&b.modified_time.as_deref().or(b.created_time.as_deref())),
-            };
-            if self.sort_desc {
-                o.reverse()
-            } else {
-                o
-            }
-        };
-        folders.sort_by(|a, b| cmp(a, b));
-        plain.sort_by(|a, b| cmp(a, b));
-        (
-            folders.into_iter().cloned().collect(),
-            plain.into_iter().cloned().collect(),
-        )
-    }
-
-    pub(crate) fn selected_names(&self) -> Vec<(String, String)> {
-        self.files
-            .iter()
-            .filter(|f| self.selected.contains(&f.id))
-            .map(|f| (f.id.clone(), f.name.clone()))
-            .collect()
-    }
-
-    /// 选中项里可下载的文件(id, name), 文件夹除外。
-    pub(crate) fn selected_plain_files(&self) -> Vec<(String, String)> {
-        self.files
-            .iter()
-            .filter(|f| self.selected.contains(&f.id) && !f.is_folder())
-            .map(|f| (f.id.clone(), f.name.clone()))
-            .collect()
-    }
-
-    /// 选中项里的文件夹(id, name), 用于整目录下载。
-    pub(crate) fn selected_folders(&self) -> Vec<(String, String)> {
-        self.files
-            .iter()
-            .filter(|f| self.selected.contains(&f.id) && f.is_folder())
-            .map(|f| (f.id.clone(), f.name.clone()))
-            .collect()
     }
 
     /// 当前筛选下可见的顶层任务 id(不含目录的子文件), 按最新在前排序。
@@ -1538,8 +1055,8 @@ impl App {
     }
 
     pub(crate) fn alloc_req_id(&mut self) -> u64 {
-        self.req_id += 1;
-        self.req_id
+        self.files.req_id += 1;
+        self.files.req_id
     }
 
     pub(crate) fn has_active_downloads(&self) -> bool {
@@ -1810,8 +1327,8 @@ impl App {
             return;
         }
         let start = helpers::picker_start_dir(&self.last_dir);
-        let parent = self.current_parent();
-        let stack = self.current_stack_pairs();
+        let parent = self.files.current_parent();
+        let stack = self.files.current_stack_pairs();
         self.upload_pick = Some((false, parent, stack, helpers::pick_files_async(&start)));
     }
 
@@ -1821,8 +1338,8 @@ impl App {
             return;
         }
         let start = helpers::picker_start_dir(&self.last_dir);
-        let parent = self.current_parent();
-        let stack = self.current_stack_pairs();
+        let parent = self.files.current_parent();
+        let stack = self.files.current_stack_pairs();
         self.upload_pick = Some((true, parent, stack, helpers::pick_dir_async(&start)));
     }
 
@@ -1832,8 +1349,8 @@ impl App {
         if dropped.is_empty() {
             return;
         }
-        let parent = self.current_parent();
-        let stack = self.current_stack_pairs();
+        let parent = self.files.current_parent();
+        let stack = self.files.current_stack_pairs();
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         let mut dirs: Vec<std::path::PathBuf> = Vec::new();
         for f in dropped {
@@ -1948,6 +1465,7 @@ impl App {
     /// 当前目录下与 `name` 同集的外挂字幕 (id, 文件名)。
     fn episode_subtitles(&self, name: &str) -> Vec<(String, String)> {
         self.files
+            .items
             .iter()
             .filter(|f| {
                 !f.is_folder()
@@ -1960,7 +1478,7 @@ impl App {
 
     /// 当前列表里某文件的类型(查不到条目时按文件名回退)。
     pub(crate) fn file_type(&self, id: &str, name: &str) -> filetypes::FileType {
-        match self.files.iter().find(|f| f.id == id) {
+        match self.files.items.iter().find(|f| f.id == id) {
             Some(f) => filetypes::classify_file(f),
             None => filetypes::classify(name, None),
         }
@@ -1975,6 +1493,7 @@ impl App {
         tracing::debug!(
             "预览路由「{name}」: mime={:?} → {ft:?}",
             self.files
+                .items
                 .iter()
                 .find(|f| f.id == id)
                 .and_then(|f| f.mime_type.as_deref())
@@ -1999,6 +1518,7 @@ impl App {
     /// 某文件的大小(查不到条目时按 0 处理, 不触发大文件确认)。
     fn file_size(&self, id: &str) -> i64 {
         self.files
+            .items
             .iter()
             .find(|f| f.id == id)
             .map(|f| f.size)
@@ -2031,6 +1551,7 @@ impl App {
     pub(crate) fn play_option(&mut self, id: String, opt: crate::msg::QualityOption) {
         let name = self
             .files
+            .items
             .iter()
             .find(|f| f.id == id)
             .map(|f| f.name.clone())
@@ -2042,7 +1563,7 @@ impl App {
 
     /// 从当前选中项打开「创建分享」设置框。
     pub(crate) fn share_selection(&mut self) {
-        let targets = self.selected_names();
+        let targets = self.files.selected_names();
         if targets.is_empty() {
             self.toast_warn("请先选择要分享的文件");
             return;
@@ -2052,10 +1573,11 @@ impl App {
 
     /// 右键单项分享: 若该项在多选内则分享整个选中集, 否则仅分享该项。
     pub(crate) fn share_item(&mut self, id: String) {
-        let targets = if self.selected.contains(&id) && self.selected.len() > 1 {
-            self.selected_names()
+        let targets = if self.files.selected.contains(&id) && self.files.selected.len() > 1 {
+            self.files.selected_names()
         } else {
             self.files
+                .items
                 .iter()
                 .filter(|f| f.id == id)
                 .map(|f| (f.id.clone(), f.name.clone()))
@@ -2074,17 +1596,7 @@ impl eframe::App for App {
         self.preview.poll_open_probe(ctx, &mut self.global);
         self.global.poll_system_theme();
 
-        // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
-        // 用静默校正而非强制刷新, 避免清空列表导致闪烁。
-        if let Some(at) = self.relist_at {
-            if Instant::now() >= at {
-                self.relist_at = None;
-                let parent = self.current_parent();
-                self.revalidate_dir(parent);
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(150));
-            }
-        }
+        self.files.poll_relist(ctx, &mut self.global);
 
         let th = self.theme();
         theme::configure(ctx, &th);
@@ -2100,8 +1612,8 @@ impl eframe::App for App {
         } else if self.has_active_downloads()
             || self.has_active_uploads()
             || self.preview.is_progressing()
-            || self.dir_loading
-            || !self.dir_inflight.is_empty()
+            || self.files.dir_loading
+            || !self.files.dir_inflight.is_empty()
             || self.shares.loading
             || self.trash.loading
             || !self.tasks.loading_more.is_empty()

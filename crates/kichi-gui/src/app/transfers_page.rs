@@ -954,12 +954,12 @@ impl App {
         if stack.is_empty() {
             return;
         }
-        self.stack = stack
+        self.files.stack = stack
             .into_iter()
             .map(|(id, label)| Crumb { id, label })
             .collect();
         self.page = Page::Files;
-        self.show_dir();
+        self.files.show_dir(&mut self.global);
     }
 
     /// 传输任务页「上传」分栏。

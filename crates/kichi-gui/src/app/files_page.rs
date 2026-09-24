@@ -54,8 +54,8 @@ impl App {
     const HEAD_H: f32 = 44.0;
 
     fn col_layout(&self, w: f32) -> (f32, f32, f32) {
-        let time_left = (w - self.col_time_w - Self::RIGHT_PAD).max(Self::NAME_X + 60.0);
-        let size_left = (time_left - self.col_size_w - 16.0).max(Self::NAME_X + 60.0);
+        let time_left = (w - self.files.col_time_w - Self::RIGHT_PAD).max(Self::NAME_X + 60.0);
+        let size_left = (time_left - self.files.col_size_w - 16.0).max(Self::NAME_X + 60.0);
         (Self::NAME_X, size_left, time_left)
     }
 }
@@ -456,21 +456,21 @@ fn file_row(
 impl App {
     pub(super) fn files_page(&mut self, ctx: &egui::Context, th: &Theme) {
         // 处理列拖拽 (在渲染之前, 确保 header 和 rows 看到一致的列宽)
-        if let Some(drag) = &self.col_dragging {
+        if let Some(drag) = &self.files.col_dragging {
             let delta = ctx.input(|i| {
                 i.pointer.hover_pos().map(|p| p.x).unwrap_or(drag.start_x) - drag.start_x
             });
             match drag.handle {
                 1 => {
-                    self.col_size_w = (drag.orig_size_w - delta).max(Self::MIN_SIZE_W);
+                    self.files.col_size_w = (drag.orig_size_w - delta).max(Self::MIN_SIZE_W);
                 }
                 2 => {
-                    self.col_time_w = (drag.orig_time_w - delta).max(Self::MIN_TIME_W);
+                    self.files.col_time_w = (drag.orig_time_w - delta).max(Self::MIN_TIME_W);
                 }
                 _ => {}
             }
             if ctx.input(|i| i.pointer.any_released()) {
-                self.col_dragging = None;
+                self.files.col_dragging = None;
             }
             ctx.request_repaint();
         }
@@ -490,41 +490,41 @@ impl App {
         if !ctx.wants_keyboard_input() {
             ctx.input(|i| {
                 if i.key_pressed(Key::F5) {
-                    self.refresh_dir();
+                    self.files.refresh_dir(&mut self.global);
                 }
                 if i.key_pressed(Key::A) && i.modifiers.ctrl {
-                    let (folders, plain) = self.visible_rows();
-                    self.selected = folders
+                    let (folders, plain) = self.files.visible_rows(&self.search);
+                    self.files.selected = folders
                         .iter()
                         .chain(plain.iter())
                         .map(|f| f.id.clone())
                         .collect();
                 }
                 if (i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
-                    && !self.selected.is_empty()
+                    && !self.files.selected.is_empty()
                 {
-                    let sel = self.selected_names();
+                    let sel = self.files.selected_names();
                     if !sel.is_empty() {
                         self.trash_confirm = Some(sel);
                     }
                 }
                 if i.key_pressed(Key::C) && i.modifiers.ctrl {
-                    self.clip_selection(ClipKind::Copy);
+                    self.files.clip_selection(&mut self.global, ClipKind::Copy);
                 }
                 if i.key_pressed(Key::X) && i.modifiers.ctrl {
-                    self.clip_selection(ClipKind::Cut);
+                    self.files.clip_selection(&mut self.global, ClipKind::Cut);
                 }
                 if i.key_pressed(Key::V) && i.modifiers.ctrl {
-                    self.paste_clipboard();
+                    self.files.paste_clipboard(&mut self.global);
                 }
-                if i.key_pressed(Key::Escape) && !self.selected.is_empty() {
-                    self.selected.clear();
+                if i.key_pressed(Key::Escape) && !self.files.selected.is_empty() {
+                    self.files.selected.clear();
                 }
             });
         }
 
         // Ctrl + 滚轮调整网格视图大小
-        if matches!(self.view_mode, ViewMode::Icon) {
+        if matches!(self.files.view_mode, ViewMode::Icon) {
             ctx.input(|i| {
                 for event in &i.events {
                     if let egui::Event::MouseWheel {
@@ -533,8 +533,8 @@ impl App {
                     {
                         if modifiers.ctrl && delta.y.abs() > 0.0 {
                             let step = if delta.y > 0.0 { 5.0 } else { -5.0 };
-                            self.grid_card_size =
-                                (self.grid_card_size + step).clamp(GRID_CARD_MIN, GRID_CARD_MAX);
+                            self.files.grid_card_size = (self.files.grid_card_size + step)
+                                .clamp(GRID_CARD_MIN, GRID_CARD_MAX);
                         }
                     }
                 }
@@ -557,12 +557,13 @@ impl App {
         let mut actions: Vec<RowAction> = Vec::new();
 
         // 当前可见行统计(过滤后)与选中项信息, 供顶部栏与选中栏使用。
-        let (folders, plain) = self.visible_rows();
+        let (folders, plain) = self.files.visible_rows(&self.search);
         let visible_total = folders.len() + plain.len();
-        let sel_meta = self.selected_names();
-        let dl_candidates = self.selected_plain_files();
-        let dl_folders = self.selected_folders();
+        let sel_meta = self.files.selected_names();
+        let dl_candidates = self.files.selected_plain_files();
+        let dl_folders = self.files.selected_folders();
         let clip_info = self
+            .files
             .clipboard
             .as_ref()
             .map(|c| (c.label.clone(), c.ids.len()));
@@ -586,7 +587,7 @@ impl App {
                         vec2(left_w, Self::HEAD_H),
                         Layout::left_to_right(Align::Center),
                         |ui| {
-                            let at_root = self.stack.len() <= 1;
+                            let at_root = self.files.stack.len() <= 1;
                             let (r, rresp) =
                                 ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
                             ui.painter().rect_filled(
@@ -634,7 +635,8 @@ impl App {
                                         });
                                     });
                                 ui.add_space(6.0);
-                            } else if let Some(i) = breadcrumbs(ui, th, &self.stack, crumbs_budget)
+                            } else if let Some(i) =
+                                breadcrumbs(ui, th, &self.files.stack, crumbs_budget)
                             {
                                 jumped = Some(i);
                             }
@@ -720,7 +722,7 @@ impl App {
                                         );
                                         ui.add_space(1.0);
                                         let _search_response = ui.add(
-                                            egui::TextEdit::singleline(&mut self.filter)
+                                            egui::TextEdit::singleline(&mut self.files.filter)
                                                 .id(egui::Id::new("file_search"))
                                                 .frame(false)
                                                 .desired_width(150.0)
@@ -731,7 +733,7 @@ impl App {
                                                 })
                                                 .font(FontId::proportional(13.5)),
                                         );
-                                        if !self.filter.is_empty() {
+                                        if !self.files.filter.is_empty() {
                                             let (xr, xresp) = ui.allocate_exact_size(
                                                 vec2(14.0, 14.0),
                                                 egui::Sense::click(),
@@ -747,7 +749,7 @@ impl App {
                                                 },
                                             );
                                             if xresp.clicked() {
-                                                self.exit_search();
+                                                self.files.exit_search(&mut self.search);
                                             }
                                         }
                                     });
@@ -829,14 +831,14 @@ impl App {
                             ui.painter().rect_filled(
                                 ri,
                                 th.cr(6),
-                                icon_bg(self.view_mode == ViewMode::Icon, ri_resp.hovered()),
+                                icon_bg(self.files.view_mode == ViewMode::Icon, ri_resp.hovered()),
                             );
                             let p = ui.painter();
                             let s = 3.0;
                             let gap = 2.0;
                             let cx = ri.center().x;
                             let cy = ri.center().y;
-                            let color = if self.view_mode == ViewMode::Icon {
+                            let color = if self.files.view_mode == ViewMode::Icon {
                                 th.accent
                             } else {
                                 th.text_weak
@@ -854,7 +856,7 @@ impl App {
                                 }
                             }
                             if ri_resp.clicked() {
-                                self.view_mode = ViewMode::Icon;
+                                self.files.view_mode = ViewMode::Icon;
                             }
                             ri_resp.on_hover_text("图标视图");
 
@@ -864,10 +866,10 @@ impl App {
                             ui.painter().rect_filled(
                                 li,
                                 th.cr(6),
-                                icon_bg(self.view_mode == ViewMode::List, li_resp.hovered()),
+                                icon_bg(self.files.view_mode == ViewMode::List, li_resp.hovered()),
                             );
                             let p = ui.painter();
-                            let color = if self.view_mode == ViewMode::List {
+                            let color = if self.files.view_mode == ViewMode::List {
                                 th.accent
                             } else {
                                 th.text_weak
@@ -884,7 +886,7 @@ impl App {
                                 );
                             }
                             if li_resp.clicked() {
-                                self.view_mode = ViewMode::List;
+                                self.files.view_mode = ViewMode::List;
                             }
                             li_resp.on_hover_text("列表视图");
                         } else {
@@ -905,7 +907,7 @@ impl App {
                                 .add(egui::Button::new(RichText::new("取消").color(th.text_weak)))
                                 .clicked()
                             {
-                                self.selected.clear();
+                                self.files.selected.clear();
                             }
                             if ui
                                 .add(
@@ -918,26 +920,26 @@ impl App {
                             {
                                 ask_trash = true;
                             }
-                            if self.clipboard.is_some()
+                            if self.files.clipboard.is_some()
                                 && ui
                                     .add(egui::Button::new(
                                         RichText::new("粘贴").color(th.text_weak),
                                     ))
                                     .clicked()
                             {
-                                self.paste_clipboard();
+                                self.files.paste_clipboard(&mut self.global);
                             }
                             if ui
                                 .add(egui::Button::new(RichText::new("剪切").color(th.text_weak)))
                                 .clicked()
                             {
-                                self.clip_selection(ClipKind::Cut);
+                                self.files.clip_selection(&mut self.global, ClipKind::Cut);
                             }
                             if ui
                                 .add(egui::Button::new(RichText::new("复制").color(th.text_weak)))
                                 .clicked()
                             {
-                                self.clip_selection(ClipKind::Copy);
+                                self.files.clip_selection(&mut self.global, ClipKind::Copy);
                             }
                             if ui
                                 .add(egui::Button::new(RichText::new("分享").color(th.text_weak)))
@@ -997,21 +999,21 @@ impl App {
             });
 
         if up {
-            self.exit_search();
-            self.stack.pop();
-            self.show_dir();
+            self.files.exit_search(&mut self.search);
+            self.files.stack.pop();
+            self.files.show_dir(&mut self.global);
         }
         if let Some(i) = jumped {
-            self.exit_search();
-            self.stack.truncate(i + 1);
-            self.show_dir();
+            self.files.exit_search(&mut self.search);
+            self.files.stack.truncate(i + 1);
+            self.files.show_dir(&mut self.global);
         }
         if mkdir {
             self.mkdir_open = true;
             self.mkdir_name = String::new();
         }
         if refresh {
-            self.refresh_dir();
+            self.files.refresh_dir(&mut self.global);
         }
         if upload {
             self.upload_here();
@@ -1022,7 +1024,7 @@ impl App {
 
         // 处理顶部栏产生的操作
         if clear_clip {
-            self.clipboard = None;
+            self.files.clipboard = None;
         }
         if ask_rename && sel_meta.len() == 1 {
             self.rename_id = Some(sel_meta[0].0.clone());
@@ -1073,7 +1075,7 @@ impl App {
                 bottom: 12,
             }))
             .show(ctx, |ui| {
-                if self.dir_loading && self.files.is_empty() {
+                if self.files.dir_loading && self.files.items.is_empty() {
                     ui.vertical_centered(|ui| {
                         ui.add_space(90.0);
                         ui.spinner();
@@ -1089,7 +1091,7 @@ impl App {
 
                 inner_ui.add_space(6.0);
                 // 列表视图时显示表头
-                if self.view_mode == ViewMode::List {
+                if self.files.view_mode == ViewMode::List {
                     self.file_list_header(&mut inner_ui, th, inner.width());
                     let sep_y = inner_ui.cursor().min.y;
                     ui.painter().line_segment(
@@ -1118,10 +1120,10 @@ impl App {
                             ui.id().with("file_list_bg"),
                             egui::Sense::click(),
                         );
-                        let has_clip = self.clipboard.is_some();
+                        let has_clip = self.files.clipboard.is_some();
                         bg_resp.context_menu(|ui| {
                             if has_clip && ui.button("粘贴").clicked() {
-                                self.paste_clipboard();
+                                self.files.paste_clipboard(&mut self.global);
                                 ui.close_menu();
                             }
                             if ui.button("上传文件").clicked() {
@@ -1138,7 +1140,7 @@ impl App {
                                 ui.close_menu();
                             }
                             if ui.button("刷新").clicked() {
-                                self.refresh_dir();
+                                self.files.refresh_dir(&mut self.global);
                                 ui.close_menu();
                             }
                         });
@@ -1147,10 +1149,10 @@ impl App {
                         let (cn_x, cs_x, ct_x) = self.col_layout(inner.width());
                         let all_files: Vec<&File> = folders.iter().chain(plain.iter()).collect();
 
-                        if self.view_mode == ViewMode::List {
+                        if self.files.view_mode == ViewMode::List {
                             // 列表视图
                             for f in &all_files {
-                                let is_sel = self.selected.contains(&f.id);
+                                let is_sel = self.files.selected.contains(&f.id);
                                 let quality = match self.preview.quality(&f.id) {
                                     Some(r) => QualityMenuState::Ready(r),
                                     None => QualityMenuState::Loading,
@@ -1174,8 +1176,8 @@ impl App {
                             }
                         } else {
                             // 图标视图
-                            let card_w = self.grid_card_size;
-                            let card_h = self.grid_card_size * 1.15;
+                            let card_w = self.files.grid_card_size;
+                            let card_h = self.files.grid_card_size * 1.15;
                             let gap = 8.0;
                             let avail_w = inner.width();
                             let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
@@ -1228,7 +1230,7 @@ impl App {
                                             break;
                                         }
                                         let f = all_files[idx];
-                                        let is_sel = self.selected.contains(&f.id);
+                                        let is_sel = self.files.selected.contains(&f.id);
                                         let quality = match self.preview.quality(&f.id) {
                                             Some(r) => QualityMenuState::Ready(r),
                                             None => QualityMenuState::Loading,
@@ -1516,7 +1518,7 @@ impl App {
                         let has_more = if self.search.is_active() {
                             self.search.has_more()
                         } else {
-                            self.dir_next.is_some()
+                            self.files.dir_next.is_some()
                         };
                         if has_more {
                             ui.add_space(4.0);
@@ -1536,7 +1538,7 @@ impl App {
                                     if self.search.is_active() {
                                         self.load_more_search_results();
                                     } else {
-                                        self.load_more();
+                                        self.files.load_more(&mut self.global);
                                     }
                                 }
                             });
@@ -1556,28 +1558,33 @@ impl App {
                                     );
                                 });
                             }
-                        } else if self.files.is_empty() && !self.dir_loading {
+                        } else if self.files.items.is_empty() && !self.files.dir_loading {
                             ui.add_space((list_avail_h * 0.3).max(20.0));
                             ui.vertical_centered(|ui| {
                                 ui.label(RichText::new("此文件夹为空").color(th.text_weak));
                             });
-                        } else if !self.filter.is_empty() && folders.is_empty() && plain.is_empty()
+                        } else if !self.files.filter.is_empty()
+                            && folders.is_empty()
+                            && plain.is_empty()
                         {
                             ui.add_space((list_avail_h * 0.3).max(20.0));
                             ui.vertical_centered(|ui| {
                                 ui.label(
-                                    RichText::new(format!("没有匹配「{}」的文件", self.filter))
-                                        .color(th.text_weak),
+                                    RichText::new(format!(
+                                        "没有匹配「{}」的文件",
+                                        self.files.filter
+                                    ))
+                                    .color(th.text_weak),
                                 );
                             });
                         }
 
                         // 处理复选框勾选请求
                         for id in sel_reqs {
-                            if self.selected.contains(&id) {
-                                self.selected.remove(&id);
+                            if self.files.selected.contains(&id) {
+                                self.files.selected.remove(&id);
                             } else {
-                                self.selected.insert(id);
+                                self.files.selected.insert(id);
                             }
                         }
                     });
@@ -1602,20 +1609,21 @@ impl App {
                             self.rename_name = name;
                         }
                         RowAction::CopyItem(id) => {
-                            self.clip_item(ClipKind::Copy, id);
+                            self.files.clip_item(&mut self.global, ClipKind::Copy, id);
                         }
                         RowAction::CutItem(id) => {
-                            self.clip_item(ClipKind::Cut, id);
+                            self.files.clip_item(&mut self.global, ClipKind::Cut, id);
                         }
                         RowAction::Share(id) => {
                             self.share_item(id);
                         }
                         RowAction::PasteInto(id) => {
-                            self.paste_into(Some(id));
+                            self.files.paste_into(&mut self.global, Some(id));
                         }
                         RowAction::Trash(id) => {
                             if let Some(name) = self
                                 .files
+                                .items
                                 .iter()
                                 .find(|f| f.id == id)
                                 .map(|f| f.name.clone())
@@ -1628,7 +1636,8 @@ impl App {
             });
 
         if let Some((id, name)) = open_folder {
-            self.goto_folder(&id, &name);
+            self.files
+                .goto_folder(&mut self.global, &mut self.search, &id, &name);
         }
     }
 
@@ -1641,10 +1650,10 @@ impl App {
         let x0 = rect.min.x;
 
         // 表头全选复选框
-        let (folders, plain) = self.visible_rows();
+        let (folders, plain) = self.files.visible_rows(&self.search);
         let total_visible = folders.len() + plain.len();
-        let all_selected = total_visible > 0 && self.selected.len() >= total_visible;
-        let some_selected = !self.selected.is_empty() && !all_selected;
+        let all_selected = total_visible > 0 && self.files.selected.len() >= total_visible;
+        let some_selected = !self.files.selected.is_empty() && !all_selected;
 
         let cb_size = 14.0;
         let cb_x = x0 + 6.0;
@@ -1702,11 +1711,11 @@ impl App {
         // 点击切换全选/取消全选(仅当前可见/过滤后的行)
         if cb_resp.clicked() {
             if all_selected {
-                self.selected.clear();
+                self.files.selected.clear();
             } else {
-                let (folders, plain) = self.visible_rows();
+                let (folders, plain) = self.files.visible_rows(&self.search);
                 for f in folders.iter().chain(plain.iter()) {
-                    self.selected.insert(f.id.clone());
+                    self.files.selected.insert(f.id.clone());
                 }
             }
         }
@@ -1738,7 +1747,7 @@ impl App {
             },
         ];
         for col in &cols {
-            let active = self.sort_by == col.by;
+            let active = self.files.sort_by == col.by;
             let color = if active { th.accent } else { th.text_faint };
             let crect = Rect::from_min_max(
                 Pos2::new(x0 + col.x - 8.0, top),
@@ -1764,7 +1773,7 @@ impl App {
                 let yc = top + h / 2.0;
                 let mx = x0 + col.x + label_w + 5.0;
                 let s = 8.0;
-                let pts: Vec<egui::Pos2> = if self.sort_desc {
+                let pts: Vec<egui::Pos2> = if self.files.sort_desc {
                     vec![
                         Pos2::new(mx, yc - s / 2.0),
                         Pos2::new(mx + s, yc - s / 2.0),
@@ -1781,10 +1790,10 @@ impl App {
             }
             if resp.clicked() {
                 if active {
-                    self.sort_desc = !self.sort_desc;
+                    self.files.sort_desc = !self.files.sort_desc;
                 } else {
-                    self.sort_by = col.by;
-                    self.sort_desc = false;
+                    self.files.sort_by = col.by;
+                    self.files.sort_desc = false;
                 }
             }
             let _ = resp.on_hover_text("点击排序");
@@ -1803,7 +1812,11 @@ impl App {
         let h1_resp = ui.interact(h1_rect, ui.id().with("col_drag_1"), egui::Sense::drag());
         let h1_active = h1_resp.hovered()
             || h1_resp.is_pointer_button_down_on()
-            || self.col_dragging.as_ref().is_some_and(|d| d.handle == 1);
+            || self
+                .files
+                .col_dragging
+                .as_ref()
+                .is_some_and(|d| d.handle == 1);
         if h1_active {
             painter.rect_filled(
                 Rect::from_center_size(Pos2::new(h1_x, top + h / 2.0), vec2(handle_w, h - 8.0)),
@@ -1812,11 +1825,11 @@ impl App {
             );
         }
         if h1_resp.drag_started() {
-            self.col_dragging = Some(ColDrag {
+            self.files.col_dragging = Some(ColDrag {
                 handle: 1,
                 start_x: h1_resp.interact_pointer_pos().map(|p| p.x).unwrap_or(h1_x),
-                orig_size_w: self.col_size_w,
-                orig_time_w: self.col_time_w,
+                orig_size_w: self.files.col_size_w,
+                orig_time_w: self.files.col_time_w,
             });
         }
 
@@ -1829,7 +1842,11 @@ impl App {
         let h2_resp = ui.interact(h2_rect, ui.id().with("col_drag_2"), egui::Sense::drag());
         let h2_active = h2_resp.hovered()
             || h2_resp.is_pointer_button_down_on()
-            || self.col_dragging.as_ref().is_some_and(|d| d.handle == 2);
+            || self
+                .files
+                .col_dragging
+                .as_ref()
+                .is_some_and(|d| d.handle == 2);
         if h2_active {
             painter.rect_filled(
                 Rect::from_center_size(Pos2::new(h2_x, top + h / 2.0), vec2(handle_w, h - 8.0)),
@@ -1838,16 +1855,16 @@ impl App {
             );
         }
         if h2_resp.drag_started() {
-            self.col_dragging = Some(ColDrag {
+            self.files.col_dragging = Some(ColDrag {
                 handle: 2,
                 start_x: h2_resp.interact_pointer_pos().map(|p| p.x).unwrap_or(h2_x),
-                orig_size_w: self.col_size_w,
-                orig_time_w: self.col_time_w,
+                orig_size_w: self.files.col_size_w,
+                orig_time_w: self.files.col_time_w,
             });
         }
 
         // 设置拖拽时的鼠标样式
-        if h1_resp.hovered() || h2_resp.hovered() || self.col_dragging.is_some() {
+        if h1_resp.hovered() || h2_resp.hovered() || self.files.col_dragging.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
     }

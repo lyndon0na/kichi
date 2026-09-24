@@ -11,7 +11,7 @@ use super::App;
 impl App {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context, th: &Theme) {
         if self.mkdir_open {
-            let parent = self.current_parent();
+            let parent = self.files.current_parent();
             let mut name = self.mkdir_name.clone();
             let mut confirmed = false;
             let mut close = false;
@@ -122,15 +122,15 @@ impl App {
                     });
                 });
             if confirmed {
-                let src = self.current_parent();
+                let src = self.files.current_parent();
                 for id in &ids {
-                    self.hidden.insert(id.clone(), src.clone());
-                    self.selected.remove(id);
+                    self.files.hidden.insert(id.clone(), src.clone());
+                    self.files.selected.remove(id);
                 }
-                if let Some(entry) = self.dir_cache.get_mut(&src) {
+                if let Some(entry) = self.files.dir_cache.get_mut(&src) {
                     entry.files.retain(|f| !ids.contains(&f.id));
                 }
-                self.files.retain(|f| !ids.contains(&f.id));
+                self.files.items.retain(|f| !ids.contains(&f.id));
                 self.send(Cmd::Trash { ids });
             }
             if close {
