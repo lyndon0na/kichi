@@ -1,3 +1,10 @@
+//! 「传输任务」域: 上传 / 下载两条任务列表的状态(筛选 / 选中 / 展开)、任务生命周期
+//! (入队 / 重试 / 移除 / 历史记录)与两条分栏的渲染。
+//!
+//! 状态与生命周期见 [`TransfersPage`]; 纯数据逻辑在 [`model`], 渲染按分栏落在
+//! `download` / `upload`。
+
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use eframe::egui::{
@@ -7,15 +14,225 @@ use eframe::egui::{
 use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
-use crate::settings;
+use crate::settings::{self, DownloadRecordStatus, UploadRecordStatus};
 use crate::theme::{mix, Theme};
 
 use super::helpers::{card_shell, icon_action, paint_checkbox, truncate_text, CheckState};
 use super::types::{
     Crumb, DlFilter, DlJob, DlNode, DlOp, DlRow, DlSel, DlStatus, Page, TransferTab, UlFilter,
-    UlJob, UlOp, UlStatus,
+    UlJob, UlOp, UlStatus, UploadPick,
 };
 use super::App;
+
+pub(crate) mod model;
+
+/// 传输任务域状态: 上传 / 下载两条任务列表与它们的筛选、选中、展开, 以及
+/// 本地上传的异步选择框。
+pub(crate) struct TransfersPage {
+    /// 传输任务页当前分栏(上传 / 下载)。
+    pub(crate) transfer_tab: TransferTab,
+    /// 本地下载任务(含从历史恢复的行与目录任务的子文件), 按 req_id 索引。
+    pub(crate) jobs: BTreeMap<u64, DlJob>,
+    pub(crate) selected_dl: HashSet<u64>,
+    pub(crate) dl_filter: DlFilter,
+    /// Shift+Click 范围选择锚点。
+    pub(crate) last_clicked_dl: Option<u64>,
+
+    /// 本地上传任务(含从历史恢复的行), 按 req_id 索引。
+    pub(crate) ul_jobs: BTreeMap<u64, UlJob>,
+    pub(crate) selected_ul: HashSet<u64>,
+    pub(crate) ul_filter: UlFilter,
+    pub(crate) ul_last_clicked: Option<u64>,
+    /// 进行中的异步选择 (是否目录, 目标目录, 目标路径展示, 结果通道), 避免阻塞 UI 线程。
+    pub(crate) upload_pick: Option<UploadPick>,
+}
+
+impl TransfersPage {
+    /// 装配页面: 下载 / 上传任务从历史记录恢复。历史文件按最新在前存储, 倒序分配
+    /// id 使 id 随时间递增(旧的 id 小)。
+    pub(crate) fn from_settings() -> Self {
+        let mut jobs = BTreeMap::new();
+        let mut next_id = 0u64;
+        for record in settings::load_download_history().into_iter().rev() {
+            if record.is_folder {
+                let folder_status = match record.status {
+                    DownloadRecordStatus::Done => DlStatus::Done,
+                    DownloadRecordStatus::Cancelled => continue,
+                    DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
+                };
+                let cloud_id = record.file_id.clone();
+                next_id += 1;
+                let folder_id = next_id;
+                let mut nodes: Vec<DlNode> = Vec::with_capacity(record.children.len());
+                for ch in &record.children {
+                    if ch.is_dir {
+                        nodes.push(DlNode {
+                            is_dir: true,
+                            name: ch.name.clone(),
+                            depth: ch.depth,
+                            rid: None,
+                            expanded: true,
+                            files_done: 0,
+                            files_total: 0,
+                            done: false,
+                        });
+                        continue;
+                    }
+                    let cstatus = match &ch.status {
+                        DownloadRecordStatus::Done => DlStatus::Done,
+                        DownloadRecordStatus::Cancelled => DlStatus::Failed("已取消".into()),
+                        DownloadRecordStatus::Failed(w) => DlStatus::Failed(w.clone()),
+                    };
+                    let done = cstatus == DlStatus::Done;
+                    next_id += 1;
+                    jobs.insert(
+                        next_id,
+                        DlJob {
+                            file_id: ch.file_id.clone(),
+                            record_id: String::new(),
+                            name: ch.name.clone(),
+                            dir: ch.dir.clone(),
+                            total: ch.total,
+                            done: ch.done,
+                            status: cstatus,
+                            speed: 0,
+                            last_done: 0,
+                            last_at: None,
+                            at: (ch.at != 0).then_some(ch.at),
+                            folder_id: None,
+                            parent: Some(folder_id),
+                            nodes: Vec::new(),
+                            expanded: false,
+                            files_done: 0,
+                            files_total: 0,
+                        },
+                    );
+                    nodes.push(DlNode {
+                        is_dir: false,
+                        name: ch.name.clone(),
+                        depth: ch.depth,
+                        rid: Some(next_id),
+                        expanded: false,
+                        files_done: 0,
+                        files_total: 0,
+                        done,
+                    });
+                }
+                model::compute_dir_counts(&mut nodes);
+                let files_total = nodes.iter().filter(|n| !n.is_dir).count() as u32;
+                let files_done = nodes.iter().filter(|n| !n.is_dir && n.done).count() as u32;
+                jobs.insert(
+                    folder_id,
+                    DlJob {
+                        file_id: cloud_id.clone(),
+                        record_id: record.timestamp,
+                        name: record.name,
+                        dir: record.dir,
+                        total: record.total,
+                        done: record.done,
+                        status: folder_status,
+                        speed: 0,
+                        last_done: 0,
+                        last_at: None,
+                        at: (record.at != 0).then_some(record.at),
+                        folder_id: Some(cloud_id),
+                        parent: None,
+                        nodes,
+                        expanded: false,
+                        files_done,
+                        files_total,
+                    },
+                );
+                continue;
+            }
+            let status = match record.status {
+                DownloadRecordStatus::Done => DlStatus::Done,
+                // 取消的任务不再保留在列表中(旧版本可能写入过取消记录)。
+                DownloadRecordStatus::Cancelled => continue,
+                DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
+            };
+            next_id += 1;
+            jobs.insert(
+                next_id,
+                DlJob {
+                    file_id: record.file_id,
+                    record_id: record.timestamp,
+                    name: record.name,
+                    dir: record.dir,
+                    total: record.total,
+                    done: record.done,
+                    status,
+                    speed: 0,
+                    last_done: 0,
+                    last_at: None,
+                    at: (record.at != 0).then_some(record.at),
+                    folder_id: None,
+                    parent: None,
+                    nodes: Vec::new(),
+                    expanded: false,
+                    files_done: 0,
+                    files_total: 0,
+                },
+            );
+        }
+
+        let mut ul_jobs = BTreeMap::new();
+        let mut next_id = 0u64;
+        // 历史按最新在前存储, 倒序分配 id 使 id 随时间递增。
+        for record in settings::load_upload_history().into_iter().rev() {
+            let status = match record.status {
+                UploadRecordStatus::Done => UlStatus::Done,
+                UploadRecordStatus::Failed(what) => UlStatus::Failed(what),
+            };
+            next_id += 1;
+            ul_jobs.insert(
+                next_id,
+                UlJob {
+                    local_path: record.local_path,
+                    name: record.name,
+                    parent: record.parent,
+                    dest_stack: record.dest_stack,
+                    total: record.total,
+                    done: record.done,
+                    status,
+                    speed: 0,
+                    last_done: 0,
+                    last_at: None,
+                    record_id: record.timestamp,
+                    is_dir: record.is_dir,
+                    files_done: 0,
+                    files_total: 0,
+                    current: String::new(),
+                    at: (record.at != 0).then_some(record.at),
+                },
+            );
+        }
+
+        Self {
+            transfer_tab: TransferTab::Download,
+            jobs,
+            selected_dl: HashSet::new(),
+            dl_filter: DlFilter::All,
+            last_clicked_dl: None,
+            ul_jobs,
+            selected_ul: HashSet::new(),
+            ul_filter: UlFilter::All,
+            ul_last_clicked: None,
+            upload_pick: None,
+        }
+    }
+
+    /// 历史任务里最大的 req_id(供 `App::restore_req_id` 修正发号起点, 避免与
+    /// 恢复出来的历史任务 id 冲突)。
+    pub(crate) fn max_job_id(&self) -> u64 {
+        self.jobs
+            .keys()
+            .chain(self.ul_jobs.keys())
+            .max()
+            .copied()
+            .unwrap_or(0)
+    }
+}
 
 /// 顶层任务卡片高度, 以及其后的间距。
 const DL_CARD_H: f32 = 72.0;
@@ -517,6 +734,7 @@ impl App {
     /// 目录树节点的行高。
     fn node_h(&self, folder: &u64, idx: usize) -> f32 {
         let is_dir = self
+            .transfers
             .jobs
             .get(folder)
             .and_then(|j| j.nodes.get(idx))
@@ -761,7 +979,7 @@ impl App {
         tab: TransferTab,
         label: &str,
     ) {
-        let selected = self.transfer_tab == tab;
+        let selected = self.transfers.transfer_tab == tab;
         let text = RichText::new(label).size(13.0).color(if selected {
             th.on_accent
         } else {
@@ -779,13 +997,13 @@ impl App {
             ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() {
-            self.transfer_tab = tab;
+            self.transfers.transfer_tab = tab;
         }
     }
 
     /// 下载列表的状态筛选按钮。
     fn dl_filter_button(&mut self, ui: &mut egui::Ui, th: &Theme, filter: DlFilter, label: &str) {
-        let selected = self.dl_filter == filter;
+        let selected = self.transfers.dl_filter == filter;
         let text = RichText::new(label).size(12.0).color(if selected {
             th.on_accent
         } else {
@@ -803,35 +1021,38 @@ impl App {
             ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() && !selected {
-            self.dl_filter = filter;
+            self.transfers.dl_filter = filter;
             // 切换筛选时清空选择, 避免被筛掉的项仍处于选中状态
-            self.selected_dl.clear();
-            self.last_clicked_dl = None;
+            self.transfers.selected_dl.clear();
+            self.transfers.last_clicked_dl = None;
         }
     }
 
     /// 从列表移除一个下载任务(运行中的普通文件先取消; 目录任务连同子文件一起移除)。
     fn remove_download_job(&mut self, rid: u64) {
-        let Some((is_folder, kids, rec, running, parent)) = self.jobs.get(&rid).map(|j| {
-            (
-                j.is_folder(),
-                j.file_rids().collect::<Vec<_>>(),
+        let Some((is_folder, kids, rec, running, parent)) =
+            self.transfers.jobs.get(&rid).map(|j| {
                 (
-                    j.record_id.clone(),
-                    j.file_id.clone(),
-                    j.name.clone(),
-                    j.dir.clone(),
-                ),
-                matches!(j.status, DlStatus::Queued | DlStatus::Running),
-                j.parent,
-            )
-        }) else {
+                    j.is_folder(),
+                    j.file_rids().collect::<Vec<_>>(),
+                    (
+                        j.record_id.clone(),
+                        j.file_id.clone(),
+                        j.name.clone(),
+                        j.dir.clone(),
+                    ),
+                    matches!(j.status, DlStatus::Queued | DlStatus::Running),
+                    j.parent,
+                )
+            })
+        else {
             return;
         };
         if is_folder {
             // 目录: 停止运行中的子任务并连同子行一起移除, 同时删除目录历史记录。
             for cid in kids {
                 let c_running = self
+                    .transfers
                     .jobs
                     .get(&cid)
                     .map(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
@@ -839,26 +1060,26 @@ impl App {
                 if c_running {
                     self.send(Cmd::CancelDownload { req_id: cid });
                 }
-                self.jobs.remove(&cid);
-                self.selected_dl.remove(&cid);
+                self.transfers.jobs.remove(&cid);
+                self.transfers.selected_dl.remove(&cid);
             }
             settings::remove_download_record(&rec.0, &rec.1, &rec.2, &rec.3);
-            self.jobs.remove(&rid);
-            self.selected_dl.remove(&rid);
-            if self.last_clicked_dl == Some(rid) {
-                self.last_clicked_dl = None;
+            self.transfers.jobs.remove(&rid);
+            self.transfers.selected_dl.remove(&rid);
+            if self.transfers.last_clicked_dl == Some(rid) {
+                self.transfers.last_clicked_dl = None;
             }
             return;
         }
         if let Some(p) = parent {
             // 子文件行(兜底路径): 从父目录的目录树中摘除后刷新聚合。
-            if let Some(pj) = self.jobs.get_mut(&p) {
+            if let Some(pj) = self.transfers.jobs.get_mut(&p) {
                 pj.nodes.retain(|n| n.rid != Some(rid));
             }
-            self.jobs.remove(&rid);
-            self.selected_dl.remove(&rid);
-            if self.last_clicked_dl == Some(rid) {
-                self.last_clicked_dl = None;
+            self.transfers.jobs.remove(&rid);
+            self.transfers.selected_dl.remove(&rid);
+            if self.transfers.last_clicked_dl == Some(rid) {
+                self.transfers.last_clicked_dl = None;
             }
             self.recompute_folder(p);
             return;
@@ -868,16 +1089,16 @@ impl App {
             return;
         }
         settings::remove_download_record(&rec.0, &rec.1, &rec.2, &rec.3);
-        self.jobs.remove(&rid);
-        self.selected_dl.remove(&rid);
-        if self.last_clicked_dl == Some(rid) {
-            self.last_clicked_dl = None;
+        self.transfers.jobs.remove(&rid);
+        self.transfers.selected_dl.remove(&rid);
+        if self.transfers.last_clicked_dl == Some(rid) {
+            self.transfers.last_clicked_dl = None;
         }
     }
 
     /// 上传列表的状态筛选按钮。
     fn ul_filter_button(&mut self, ui: &mut egui::Ui, th: &Theme, filter: UlFilter, label: &str) {
-        let selected = self.ul_filter == filter;
+        let selected = self.transfers.ul_filter == filter;
         let text = RichText::new(label).size(12.0).color(if selected {
             th.on_accent
         } else {
@@ -895,15 +1116,15 @@ impl App {
             ))
             .corner_radius(th.cr(8));
         if ui.add(btn).clicked() && !selected {
-            self.ul_filter = filter;
-            self.selected_ul.clear();
-            self.ul_last_clicked = None;
+            self.transfers.ul_filter = filter;
+            self.transfers.selected_ul.clear();
+            self.transfers.ul_last_clicked = None;
         }
     }
 
     /// 重试一个上传任务(移除旧行与历史后重新入队)。
     fn retry_upload_job(&mut self, rid: u64) {
-        let info = self.ul_jobs.get(&rid).map(|j| {
+        let info = self.transfers.ul_jobs.get(&rid).map(|j| {
             (
                 j.local_path.clone(),
                 j.parent.clone(),
@@ -915,10 +1136,10 @@ impl App {
         });
         if let Some((path, parent, rec_id, name, is_dir, stack)) = info {
             settings::remove_upload_record(&rec_id, &path, &name);
-            self.ul_jobs.remove(&rid);
-            self.selected_ul.remove(&rid);
-            if self.ul_last_clicked == Some(rid) {
-                self.ul_last_clicked = None;
+            self.transfers.ul_jobs.remove(&rid);
+            self.transfers.selected_ul.remove(&rid);
+            if self.transfers.ul_last_clicked == Some(rid) {
+                self.transfers.ul_last_clicked = None;
             }
             if is_dir {
                 self.enqueue_upload_dir(path, parent, stack);
@@ -931,6 +1152,7 @@ impl App {
     /// 从列表移除一个上传任务(运行中的取消; 其余删除行与历史记录)。
     fn remove_upload_job(&mut self, rid: u64) {
         let running = self
+            .transfers
             .ul_jobs
             .get(&rid)
             .map(|j| matches!(j.status, UlStatus::Queued | UlStatus::Running))
@@ -939,13 +1161,13 @@ impl App {
             self.send(Cmd::CancelUpload { req_id: rid });
             return;
         }
-        if let Some(job) = self.ul_jobs.get(&rid) {
+        if let Some(job) = self.transfers.ul_jobs.get(&rid) {
             settings::remove_upload_record(&job.record_id, &job.local_path, &job.name);
         }
-        self.ul_jobs.remove(&rid);
-        self.selected_ul.remove(&rid);
-        if self.ul_last_clicked == Some(rid) {
-            self.ul_last_clicked = None;
+        self.transfers.ul_jobs.remove(&rid);
+        self.transfers.selected_ul.remove(&rid);
+        if self.transfers.ul_last_clicked == Some(rid) {
+            self.transfers.ul_last_clicked = None;
         }
     }
 
@@ -997,7 +1219,7 @@ impl App {
         });
         ui.add_space(8.0);
 
-        if self.ul_jobs.is_empty() {
+        if self.transfers.ul_jobs.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.add_space(60.0);
                 let (r, _) = ui.allocate_exact_size(vec2(64.0, 64.0), egui::Sense::hover());
@@ -1019,18 +1241,21 @@ impl App {
         let now = format::now_unix();
         let mut clear_done = false;
         ui.horizontal(|ui| {
-            let total = self.ul_jobs.len();
+            let total = self.transfers.ul_jobs.len();
             let active = self
+                .transfers
                 .ul_jobs
                 .values()
                 .filter(|j| matches!(j.status, UlStatus::Queued | UlStatus::Running))
                 .count();
             let done_c = self
+                .transfers
                 .ul_jobs
                 .values()
                 .filter(|j| j.status == UlStatus::Done)
                 .count();
             let failed = self
+                .transfers
                 .ul_jobs
                 .values()
                 .filter(|j| matches!(j.status, UlStatus::Failed(_)))
@@ -1041,11 +1266,11 @@ impl App {
             self.ul_filter_button(ui, th, UlFilter::Failed, &format!("失败 {failed}"));
 
             let ids = self.visible_ul_ids();
-            self.selected_ul.retain(|id| ids.contains(id));
+            self.transfers.selected_ul.retain(|id| ids.contains(id));
             let vis_total = ids.len();
             let vis_selected = ids
                 .iter()
-                .filter(|id| self.selected_ul.contains(id))
+                .filter(|id| self.transfers.selected_ul.contains(id))
                 .count();
             let master = if vis_total == 0 || vis_selected == 0 {
                 CheckState::Unchecked
@@ -1073,11 +1298,11 @@ impl App {
                 if cb_resp.clicked() {
                     if master == CheckState::Checked {
                         for id in &ids {
-                            self.selected_ul.remove(id);
+                            self.transfers.selected_ul.remove(id);
                         }
                     } else {
                         for id in &ids {
-                            self.selected_ul.insert(*id);
+                            self.transfers.selected_ul.insert(*id);
                         }
                     }
                 }
@@ -1099,7 +1324,8 @@ impl App {
                 }
                 ui.add_space(12.0);
                 let (sum_done, sum_total, speed) =
-                    self.ul_jobs
+                    self.transfers
+                        .ul_jobs
                         .values()
                         .fold((0u64, 0u64, 0u64), |(d, t, s), j| {
                             let sp = if matches!(j.status, UlStatus::Running) {
@@ -1127,6 +1353,7 @@ impl App {
 
         if clear_done {
             let done_ids: Vec<u64> = self
+                .transfers
                 .ul_jobs
                 .iter()
                 .filter(|(_, j)| j.status == UlStatus::Done)
@@ -1162,10 +1389,10 @@ impl App {
             .show_rows(ui, DL_CARD_H, ids.len(), |ui, range| {
                 for i in range {
                     let rid = ids[i];
-                    let Some(job) = self.ul_jobs.get(&rid) else {
+                    let Some(job) = self.transfers.ul_jobs.get(&rid) else {
                         continue;
                     };
-                    let is_sel = self.selected_ul.contains(&rid);
+                    let is_sel = self.transfers.selected_ul.contains(&rid);
                     let (op, sel) = ul_card(ui, th, rid, job, is_sel, ctrl, shift, now);
                     if let Some(op) = op {
                         ops.push((rid, op));
@@ -1179,20 +1406,20 @@ impl App {
         for sel in sel_reqs {
             match sel {
                 DlSel::Replace(rid) => {
-                    self.selected_ul.clear();
-                    self.selected_ul.insert(rid);
-                    self.ul_last_clicked = Some(rid);
+                    self.transfers.selected_ul.clear();
+                    self.transfers.selected_ul.insert(rid);
+                    self.transfers.ul_last_clicked = Some(rid);
                 }
                 DlSel::Toggle(rid) => {
-                    if self.selected_ul.contains(&rid) {
-                        self.selected_ul.remove(&rid);
+                    if self.transfers.selected_ul.contains(&rid) {
+                        self.transfers.selected_ul.remove(&rid);
                     } else {
-                        self.selected_ul.insert(rid);
+                        self.transfers.selected_ul.insert(rid);
                     }
-                    self.ul_last_clicked = Some(rid);
+                    self.transfers.ul_last_clicked = Some(rid);
                 }
                 DlSel::Range(rid) => {
-                    if let Some(anchor) = self.ul_last_clicked {
+                    if let Some(anchor) = self.transfers.ul_last_clicked {
                         let start = ids.iter().position(|x| *x == anchor).unwrap_or(0);
                         let end = ids.iter().position(|x| *x == rid).unwrap_or(0);
                         let (from, to) = if start <= end {
@@ -1201,16 +1428,16 @@ impl App {
                             (end, start)
                         };
                         if !ctrl {
-                            self.selected_ul.clear();
+                            self.transfers.selected_ul.clear();
                         }
                         for id in &ids[from..=to] {
-                            self.selected_ul.insert(*id);
+                            self.transfers.selected_ul.insert(*id);
                         }
                     } else {
-                        self.selected_ul.clear();
-                        self.selected_ul.insert(rid);
+                        self.transfers.selected_ul.clear();
+                        self.transfers.selected_ul.insert(rid);
                     }
-                    self.ul_last_clicked = Some(rid);
+                    self.transfers.ul_last_clicked = Some(rid);
                 }
             }
         }
@@ -1221,7 +1448,11 @@ impl App {
                 UlOp::Remove => self.remove_upload_job(rid),
                 UlOp::Retry => self.retry_upload_job(rid),
                 UlOp::OpenInDrive => {
-                    let stack = self.ul_jobs.get(&rid).map(|j| j.dest_stack.clone());
+                    let stack = self
+                        .transfers
+                        .ul_jobs
+                        .get(&rid)
+                        .map(|j| j.dest_stack.clone());
                     if let Some(stack) = stack {
                         self.navigate_to_stack(stack);
                     }
@@ -1237,9 +1468,9 @@ impl App {
 
         // 底部批量操作条: 底部面板保证布局高度正确; 用页面同色铺底避免露出窗口
         // 底色, 顶部加一条分隔线, 整体是单层扁平工具条, 不再有嵌套盒子。
-        if self.transfer_tab == TransferTab::Download
-            && !self.jobs.is_empty()
-            && !self.selected_dl.is_empty()
+        if self.transfers.transfer_tab == TransferTab::Download
+            && !self.transfers.jobs.is_empty()
+            && !self.transfers.selected_dl.is_empty()
         {
             egui::TopBottomPanel::bottom("dl_action_bar")
                 .frame(Frame::new().fill(th.bg).inner_margin(Margin {
@@ -1255,17 +1486,22 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("已选择 {} 项", self.selected_dl.len()))
-                                .size(13.0)
-                                .color(th.text),
+                            RichText::new(format!(
+                                "已选择 {} 项",
+                                self.transfers.selected_dl.len()
+                            ))
+                            .size(13.0)
+                            .color(th.text),
                         );
                         // 选中项里可重试(已知云端 id 的取消/失败任务)的数量
                         let retryable: Vec<u64> = self
+                            .transfers
                             .selected_dl
                             .iter()
                             .copied()
                             .filter(|rid| {
-                                self.jobs
+                                self.transfers
+                                    .jobs
                                     .get(rid)
                                     .map(|j| {
                                         !j.file_id.is_empty()
@@ -1284,8 +1520,9 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                for rid in &self.selected_dl {
+                                for rid in &self.transfers.selected_dl {
                                     let running = self
+                                        .transfers
                                         .jobs
                                         .get(rid)
                                         .map(|j| {
@@ -1323,7 +1560,7 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.selected_dl.clear();
+                                self.transfers.selected_dl.clear();
                             }
                         });
                     });
@@ -1332,7 +1569,9 @@ impl App {
         }
 
         // 上传页底部批量操作条(与下载页一致)
-        if self.transfer_tab == TransferTab::Upload && !self.selected_ul.is_empty() {
+        if self.transfers.transfer_tab == TransferTab::Upload
+            && !self.transfers.selected_ul.is_empty()
+        {
             egui::TopBottomPanel::bottom("ul_action_bar")
                 .frame(Frame::new().fill(th.bg).inner_margin(Margin {
                     left: 20,
@@ -1346,17 +1585,19 @@ impl App {
                         .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
                     ui.add_space(8.0);
                     let retryable: Vec<u64> = self
+                        .transfers
                         .selected_ul
                         .iter()
                         .copied()
                         .filter(|rid| {
-                            self.ul_jobs
+                            self.transfers
+                                .ul_jobs
                                 .get(rid)
                                 .map(|j| matches!(j.status, UlStatus::Failed(_)))
                                 .unwrap_or(false)
                         })
                         .collect();
-                    let selected: Vec<u64> = self.selected_ul.iter().copied().collect();
+                    let selected: Vec<u64> = self.transfers.selected_ul.iter().copied().collect();
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("已选择 {} 项", selected.len()))
@@ -1402,8 +1643,8 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.selected_ul.clear();
-                                self.ul_last_clicked = None;
+                                self.transfers.selected_ul.clear();
+                                self.transfers.ul_last_clicked = None;
                             }
                         });
                     });
@@ -1435,7 +1676,7 @@ impl App {
                 ui.add_space(10.0);
 
                 // -------- 上传 --------
-                if self.transfer_tab == TransferTab::Upload {
+                if self.transfers.transfer_tab == TransferTab::Upload {
                     self.upload_tab(ui, th);
                     return;
                 }
@@ -1484,10 +1725,10 @@ impl App {
 
                 // 筛选栏: 状态分段 + 主复选框(全选/全不选) + 计数 (仅有任务时显示)
                 let mut dl_ids: Vec<u64> = Vec::new();
-                if !self.jobs.is_empty() {
+                if !self.transfers.jobs.is_empty() {
                     ui.horizontal(|ui| {
                         // 仅统计顶层任务(目录已聚合其子文件, 避免重复计数)。
-                        let top = self.jobs.values().filter(|j| j.parent.is_none());
+                        let top = self.transfers.jobs.values().filter(|j| j.parent.is_none());
                         let total = top.clone().count();
                         let active = top
                             .clone()
@@ -1511,11 +1752,11 @@ impl App {
                         // 当前筛选下可见项
                         dl_ids = self.visible_dl_ids();
                         // 剔除已不在当前筛选中的选中项(如进行中任务完成后被筛掉)
-                        self.selected_dl.retain(|id| dl_ids.contains(id));
+                        self.transfers.selected_dl.retain(|id| dl_ids.contains(id));
                         let vis_total = dl_ids.len();
                         let vis_selected = dl_ids
                             .iter()
-                            .filter(|id| self.selected_dl.contains(id))
+                            .filter(|id| self.transfers.selected_dl.contains(id))
                             .count();
                         let master = if vis_total == 0 || vis_selected == 0 {
                             CheckState::Unchecked
@@ -1545,11 +1786,11 @@ impl App {
                             if cb_resp.clicked() {
                                 if master == CheckState::Checked {
                                     for id in &dl_ids {
-                                        self.selected_dl.remove(id);
+                                        self.transfers.selected_dl.remove(id);
                                     }
                                 } else {
                                     for id in &dl_ids {
-                                        self.selected_dl.insert(*id);
+                                        self.transfers.selected_dl.insert(*id);
                                     }
                                 }
                             }
@@ -1571,6 +1812,7 @@ impl App {
                             }
                             ui.add_space(12.0);
                             let (sum_done, sum_total, speed) = self
+                                .transfers
                                 .jobs
                                 .values()
                                 .filter(|j| j.parent.is_none())
@@ -1603,7 +1845,7 @@ impl App {
                     ui.add_space(4.0);
                 }
 
-                if self.jobs.is_empty() {
+                if self.transfers.jobs.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.add_space(60.0);
                         let (r, _) = ui.allocate_exact_size(vec2(64.0, 64.0), egui::Sense::hover());
@@ -1653,8 +1895,8 @@ impl App {
                         for row in &dl_rows {
                             match row {
                                 DlRow::Job(id) => {
-                                    if let Some(job) = self.jobs.get(id) {
-                                        let is_sel = self.selected_dl.contains(id);
+                                    if let Some(job) = self.transfers.jobs.get(id) {
+                                        let is_sel = self.transfers.selected_dl.contains(id);
                                         let (op, sel) = dl_card(
                                             ui, th, *id, job, is_sel, ctrl, shift, now, true,
                                         );
@@ -1668,7 +1910,7 @@ impl App {
                                     ui.add_space(DL_CARD_GAP);
                                 }
                                 DlRow::Tree(folder, nodes) => {
-                                    let Some(job) = self.jobs.get(folder) else {
+                                    let Some(job) = self.transfers.jobs.get(folder) else {
                                         continue;
                                     };
                                     let shown = nodes.len().min(TREE_CHILD_CAP);
@@ -1688,9 +1930,9 @@ impl App {
                                         th,
                                         block,
                                         hovered,
-                                        self.selected_dl.contains(folder),
+                                        self.transfers.selected_dl.contains(folder),
                                     );
-                                    let is_sel = self.selected_dl.contains(folder);
+                                    let is_sel = self.transfers.selected_dl.contains(folder);
                                     let (op, sel) = dl_card(
                                         ui, th, *folder, job, is_sel, ctrl, shift, now, false,
                                     );
@@ -1703,8 +1945,11 @@ impl App {
                                     for idx in &nodes[..shown] {
                                         let idx = *idx;
                                         let h = self.node_h(folder, idx);
-                                        let Some(node) =
-                                            self.jobs.get(folder).and_then(|j| j.nodes.get(idx))
+                                        let Some(node) = self
+                                            .transfers
+                                            .jobs
+                                            .get(folder)
+                                            .and_then(|j| j.nodes.get(idx))
                                         else {
                                             ui.add_space(h + NODE_GAP);
                                             continue;
@@ -1714,7 +1959,7 @@ impl App {
                                                 ops.push((*folder, DlOp::ToggleDir(idx)));
                                             }
                                         } else if let Some(cid) = node.rid {
-                                            if let Some(cjob) = self.jobs.get(&cid) {
+                                            if let Some(cjob) = self.transfers.jobs.get(&cid) {
                                                 dl_file_node(ui, th, node, cjob, h);
                                             }
                                         }
@@ -1744,20 +1989,20 @@ impl App {
                 for sel in sel_reqs {
                     match sel {
                         DlSel::Replace(rid) => {
-                            self.selected_dl.clear();
-                            self.selected_dl.insert(rid);
-                            self.last_clicked_dl = Some(rid);
+                            self.transfers.selected_dl.clear();
+                            self.transfers.selected_dl.insert(rid);
+                            self.transfers.last_clicked_dl = Some(rid);
                         }
                         DlSel::Toggle(rid) => {
-                            if self.selected_dl.contains(&rid) {
-                                self.selected_dl.remove(&rid);
+                            if self.transfers.selected_dl.contains(&rid) {
+                                self.transfers.selected_dl.remove(&rid);
                             } else {
-                                self.selected_dl.insert(rid);
+                                self.transfers.selected_dl.insert(rid);
                             }
-                            self.last_clicked_dl = Some(rid);
+                            self.transfers.last_clicked_dl = Some(rid);
                         }
                         DlSel::Range(rid) => {
-                            if let Some(anchor) = self.last_clicked_dl {
+                            if let Some(anchor) = self.transfers.last_clicked_dl {
                                 let start_idx =
                                     dl_ids.iter().position(|x| *x == anchor).unwrap_or(0);
                                 let end_idx = dl_ids.iter().position(|x| *x == rid).unwrap_or(0);
@@ -1767,16 +2012,16 @@ impl App {
                                     (end_idx, start_idx)
                                 };
                                 if !ctrl {
-                                    self.selected_dl.clear();
+                                    self.transfers.selected_dl.clear();
                                 }
                                 for id in &dl_ids[from..=to] {
-                                    self.selected_dl.insert(*id);
+                                    self.transfers.selected_dl.insert(*id);
                                 }
                             } else {
-                                self.selected_dl.clear();
-                                self.selected_dl.insert(rid);
+                                self.transfers.selected_dl.clear();
+                                self.transfers.selected_dl.insert(rid);
                             }
-                            self.last_clicked_dl = Some(rid);
+                            self.transfers.last_clicked_dl = Some(rid);
                         }
                     }
                 }
@@ -1785,6 +2030,7 @@ impl App {
         // 处理操作
         if clear_done {
             let done_ids: Vec<u64> = self
+                .transfers
                 .jobs
                 .iter()
                 .filter(|(_, j)| j.parent.is_none() && j.status == DlStatus::Done)
@@ -1795,15 +2041,20 @@ impl App {
             }
         }
         for (rid, op) in ops {
-            let is_folder = self.jobs.get(&rid).map(|j| j.is_folder()).unwrap_or(false);
+            let is_folder = self
+                .transfers
+                .jobs
+                .get(&rid)
+                .map(|j| j.is_folder())
+                .unwrap_or(false);
             match op {
                 DlOp::Expand => {
-                    if let Some(j) = self.jobs.get_mut(&rid) {
+                    if let Some(j) = self.transfers.jobs.get_mut(&rid) {
                         j.expanded = !j.expanded;
                     }
                 }
                 DlOp::ToggleDir(idx) => {
-                    if let Some(j) = self.jobs.get_mut(&rid) {
+                    if let Some(j) = self.transfers.jobs.get_mut(&rid) {
                         if let Some(n) = j.nodes.get_mut(idx) {
                             n.expanded = !n.expanded;
                         }
@@ -1818,7 +2069,7 @@ impl App {
                     }
                 }
                 DlOp::OpenDir => {
-                    let dir = self.jobs.get(&rid).map(|job| job.dir.clone());
+                    let dir = self.transfers.jobs.get(&rid).map(|job| job.dir.clone());
                     if let Some(dir) = dir {
                         self.preview
                             .open_with_system(dir.clone(), dir.display().to_string(), true);
@@ -1826,6 +2077,7 @@ impl App {
                 }
                 DlOp::OpenFile => {
                     let opened = self
+                        .transfers
                         .jobs
                         .get(&rid)
                         .map(|job| (job.dir.join(&job.name), job.name.clone()));
@@ -1838,7 +2090,7 @@ impl App {
                         self.retry_folder(rid);
                     } else {
                         // 取出旧条目信息后移除旧行, 再重新入队, 避免同一文件被重复重试。
-                        let info = self.jobs.get(&rid).and_then(|j| {
+                        let info = self.transfers.jobs.get(&rid).and_then(|j| {
                             if j.file_id.is_empty() {
                                 None
                             } else {
@@ -1871,7 +2123,7 @@ impl App {
     /// 重试目录下载: 仅重下失败的子文件; 若尚未扫描出子文件(扫描阶段失败)则重新扫描。
     fn retry_folder(&mut self, rid: u64) {
         let Some((folder_id, name, dir, rec_id, file_id, has_files)) =
-            self.jobs.get(&rid).map(|j| {
+            self.transfers.jobs.get(&rid).map(|j| {
                 (
                     j.folder_id.clone(),
                     j.name.clone(),
@@ -1887,7 +2139,7 @@ impl App {
         if !has_files {
             // 扫描阶段失败(尚无文件节点): 重新扫描, 沿用同一 req_id。
             settings::remove_download_record(&rec_id, &file_id, &name, &dir);
-            if let Some(j) = self.jobs.get_mut(&rid) {
+            if let Some(j) = self.transfers.jobs.get_mut(&rid) {
                 j.record_id.clear();
                 j.at = None;
                 j.status = DlStatus::Queued;
@@ -1906,6 +2158,7 @@ impl App {
         }
         // 收集失败文件所在的节点下标, 只重下这些文件。
         let failed: Vec<(usize, String, String, PathBuf)> = self
+            .transfers
             .jobs
             .get(&rid)
             .map(|j| {
@@ -1913,7 +2166,7 @@ impl App {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, n)| {
-                        let c = self.jobs.get(&n.rid?)?;
+                        let c = self.transfers.jobs.get(&n.rid?)?;
                         match &c.status {
                             DlStatus::Failed(_) => {
                                 Some((i, c.file_id.clone(), c.name.clone(), c.dir.clone()))
@@ -1930,18 +2183,18 @@ impl App {
         for (idx, c_file_id, c_name, c_dir) in failed {
             let new_cid = self.enqueue_download_item(c_file_id, c_name, c_dir, Some(rid));
             let old = {
-                let Some(j) = self.jobs.get_mut(&rid) else {
+                let Some(j) = self.transfers.jobs.get_mut(&rid) else {
                     continue;
                 };
                 j.nodes.get_mut(idx).and_then(|n| n.rid.replace(new_cid))
             };
             if let Some(old) = old {
-                self.jobs.remove(&old);
-                self.selected_dl.remove(&old);
+                self.transfers.jobs.remove(&old);
+                self.transfers.selected_dl.remove(&old);
             }
         }
         settings::remove_download_record(&rec_id, &file_id, &name, &dir);
-        if let Some(j) = self.jobs.get_mut(&rid) {
+        if let Some(j) = self.transfers.jobs.get_mut(&rid) {
             j.record_id.clear();
             j.at = None;
             j.expanded = true;

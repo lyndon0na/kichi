@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use crate::settings::DownloadRecordStatus;
 
-use super::types::{DlJob, DlNode, DlStatus};
+use super::super::types::{DlJob, DlNode, DlStatus};
 
 /// 下载任务状态 -> 持久化记录状态(非终态仅在异常情况下出现, 兜底标记未完成)。
-pub(super) fn dl_record_status(s: &DlStatus) -> DownloadRecordStatus {
+pub(crate) fn dl_record_status(s: &DlStatus) -> DownloadRecordStatus {
     match s {
         DlStatus::Done => DownloadRecordStatus::Done,
         DlStatus::Failed(w) => DownloadRecordStatus::Failed(w.clone()),
@@ -17,7 +17,7 @@ pub(super) fn dl_record_status(s: &DlStatus) -> DownloadRecordStatus {
 }
 
 /// 汇总目录任务下所有子文件的进度与状态: (合计大小, 已下载, 合计速率, 聚合状态)。
-pub(super) fn aggregate_children<'a>(
+pub(crate) fn aggregate_children<'a>(
     children: impl Iterator<Item = &'a DlJob>,
 ) -> (u64, u64, u64, DlStatus) {
     let mut total = 0u64;
@@ -53,7 +53,7 @@ pub(super) fn aggregate_children<'a>(
 
 /// 依据文件节点的 `done` 标记, 自底向上累加每个子目录节点的子树文件计数。
 /// `nodes` 必须按先序排列(父节点先于其子孙)。
-pub(super) fn compute_dir_counts(nodes: &mut [DlNode]) {
+pub(crate) fn compute_dir_counts(nodes: &mut [DlNode]) {
     for n in nodes.iter_mut() {
         if n.is_dir {
             n.files_done = 0;
@@ -89,7 +89,7 @@ pub(super) fn compute_dir_counts(nodes: &mut [DlNode]) {
 /// `drain()` 会在单帧内一次性消费积压的多条进度消息, 若逐条按 `Instant::now()`
 /// 取样会出现 `dt≈0` 而使瞬时速率爆炸(截图里的 389 MB/s)。这里仅当距上次取样
 /// 满 `MIN_SAMPLE` 秒才计算一次, 短间隔消息只推进 `done` 不动速率。
-pub(super) fn sample_speed(
+pub(crate) fn sample_speed(
     speed: &mut u64,
     last_done: &mut u64,
     last_at: &mut Option<Instant>,

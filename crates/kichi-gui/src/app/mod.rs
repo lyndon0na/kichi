@@ -11,12 +11,10 @@ mod sidebar;
 mod tasks;
 mod tasks_page;
 mod thumbs;
-mod transfers_model;
-mod transfers_page;
+mod transfers;
 mod trash;
 pub(crate) mod types;
 
-use std::collections::{BTreeMap, HashSet};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -41,14 +39,12 @@ use self::search::SearchPage;
 use self::shares::SharesPage;
 use self::tasks::TasksPage;
 use self::thumbs::ThumbsPage;
-use self::transfers_model::{
+use self::transfers::model::{
     aggregate_children, compute_dir_counts, dl_record_status, sample_speed,
 };
+use self::transfers::TransfersPage;
 use self::trash::TrashPage;
-use self::types::{
-    DlFilter, DlJob, DlNode, DlRow, DlStatus, Page, TransferTab, UlFilter, UlJob, UlStatus,
-    UploadPick,
-};
+use self::types::{DlJob, DlNode, DlRow, DlStatus, Page, UlJob, UlStatus};
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
 const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;
@@ -72,8 +68,8 @@ pub struct App {
     pub(crate) pending_remember: Option<String>,
 
     pub(crate) page: Page,
-    /// 传输任务页当前分栏(上传 / 下载)。
-    pub(crate) transfer_tab: TransferTab,
+    /// 传输任务域: 上传 / 下载任务列表与选中、筛选、展开, 本地上传选择框。
+    pub(crate) transfers: TransfersPage,
 
     // 文件浏览
     /// 文件浏览域: 导航栈 / 目录缓存(含 SWR 校正) / 列表数据 / 选中集 / 视图与列宽 / 剪贴板。
@@ -81,9 +77,6 @@ pub struct App {
 
     // 全局搜索
     pub(crate) search: SearchPage,
-
-    // Shift+Click 范围选择锚点
-    pub(crate) last_clicked_dl: Option<u64>,
 
     /// 离线任务域: 分桶列表 / 选择 / 新建表单与「保存到」选择器。
     pub(crate) tasks: TasksPage,
@@ -109,17 +102,6 @@ pub struct App {
     pub(crate) ul_concurrency: usize,
     pub(crate) part_concurrency: usize,
     pub(crate) max_attempts: usize,
-    pub(crate) jobs: BTreeMap<u64, DlJob>,
-    pub(crate) selected_dl: HashSet<u64>,
-    pub(crate) dl_filter: DlFilter,
-
-    // 本地上传
-    pub(crate) ul_jobs: BTreeMap<u64, UlJob>,
-    pub(crate) selected_ul: HashSet<u64>,
-    pub(crate) ul_filter: UlFilter,
-    pub(crate) ul_last_clicked: Option<u64>,
-    /// 进行中的异步选择 (是否目录, 目标目录, 目标路径展示, 结果通道), 避免阻塞 UI 线程。
-    pub(crate) upload_pick: Option<UploadPick>,
 
     /// 预览域: 大文件确认 / 下载进度 / 清晰度 / 「系统打开」探针。
     pub(crate) preview: PreviewPage,
@@ -159,7 +141,7 @@ impl App {
             remember_password: saved.remember_password,
             pending_remember: None,
             page: Page::Files,
-            transfer_tab: TransferTab::Download,
+            transfers: TransfersPage::from_settings(),
             files: FilesPage::default(),
             search: SearchPage::default(),
             tasks: TasksPage::default(),
@@ -176,178 +158,6 @@ impl App {
             ul_concurrency: saved.ul_concurrency,
             part_concurrency: saved.part_concurrency,
             max_attempts: saved.max_attempts,
-            jobs: {
-                let mut jobs = BTreeMap::new();
-                let history = settings::load_download_history();
-                let mut next_id = 0u64;
-                // 历史文件按最新在前存储; 倒序分配 id, 使 id 随时间递增(旧的 id 小)。
-                for record in history.into_iter().rev() {
-                    if record.is_folder {
-                        let folder_status = match record.status {
-                            DownloadRecordStatus::Done => DlStatus::Done,
-                            DownloadRecordStatus::Cancelled => continue,
-                            DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
-                        };
-                        let cloud_id = record.file_id.clone();
-                        next_id += 1;
-                        let folder_id = next_id;
-                        let mut nodes: Vec<DlNode> = Vec::with_capacity(record.children.len());
-                        for ch in &record.children {
-                            if ch.is_dir {
-                                nodes.push(DlNode {
-                                    is_dir: true,
-                                    name: ch.name.clone(),
-                                    depth: ch.depth,
-                                    rid: None,
-                                    expanded: true,
-                                    files_done: 0,
-                                    files_total: 0,
-                                    done: false,
-                                });
-                                continue;
-                            }
-                            let cstatus = match &ch.status {
-                                DownloadRecordStatus::Done => DlStatus::Done,
-                                DownloadRecordStatus::Cancelled => {
-                                    DlStatus::Failed("已取消".into())
-                                }
-                                DownloadRecordStatus::Failed(w) => DlStatus::Failed(w.clone()),
-                            };
-                            let done = cstatus == DlStatus::Done;
-                            next_id += 1;
-                            jobs.insert(
-                                next_id,
-                                DlJob {
-                                    file_id: ch.file_id.clone(),
-                                    record_id: String::new(),
-                                    name: ch.name.clone(),
-                                    dir: ch.dir.clone(),
-                                    total: ch.total,
-                                    done: ch.done,
-                                    status: cstatus,
-                                    speed: 0,
-                                    last_done: 0,
-                                    last_at: None,
-                                    at: (ch.at != 0).then_some(ch.at),
-                                    folder_id: None,
-                                    parent: Some(folder_id),
-                                    nodes: Vec::new(),
-                                    expanded: false,
-                                    files_done: 0,
-                                    files_total: 0,
-                                },
-                            );
-                            nodes.push(DlNode {
-                                is_dir: false,
-                                name: ch.name.clone(),
-                                depth: ch.depth,
-                                rid: Some(next_id),
-                                expanded: false,
-                                files_done: 0,
-                                files_total: 0,
-                                done,
-                            });
-                        }
-                        compute_dir_counts(&mut nodes);
-                        let files_total = nodes.iter().filter(|n| !n.is_dir).count() as u32;
-                        let files_done =
-                            nodes.iter().filter(|n| !n.is_dir && n.done).count() as u32;
-                        jobs.insert(
-                            folder_id,
-                            DlJob {
-                                file_id: cloud_id.clone(),
-                                record_id: record.timestamp,
-                                name: record.name,
-                                dir: record.dir,
-                                total: record.total,
-                                done: record.done,
-                                status: folder_status,
-                                speed: 0,
-                                last_done: 0,
-                                last_at: None,
-                                at: (record.at != 0).then_some(record.at),
-                                folder_id: Some(cloud_id),
-                                parent: None,
-                                nodes,
-                                expanded: false,
-                                files_done,
-                                files_total,
-                            },
-                        );
-                        continue;
-                    }
-                    let status = match record.status {
-                        DownloadRecordStatus::Done => DlStatus::Done,
-                        // 取消的任务不再保留在列表中(旧版本可能写入过取消记录)。
-                        DownloadRecordStatus::Cancelled => continue,
-                        DownloadRecordStatus::Failed(what) => DlStatus::Failed(what),
-                    };
-                    next_id += 1;
-                    jobs.insert(
-                        next_id,
-                        DlJob {
-                            file_id: record.file_id,
-                            record_id: record.timestamp,
-                            name: record.name,
-                            dir: record.dir,
-                            total: record.total,
-                            done: record.done,
-                            status,
-                            speed: 0,
-                            last_done: 0,
-                            last_at: None,
-                            at: (record.at != 0).then_some(record.at),
-                            folder_id: None,
-                            parent: None,
-                            nodes: Vec::new(),
-                            expanded: false,
-                            files_done: 0,
-                            files_total: 0,
-                        },
-                    );
-                }
-                jobs
-            },
-            selected_dl: HashSet::new(),
-            dl_filter: DlFilter::All,
-            ul_jobs: {
-                let mut ul = BTreeMap::new();
-                let mut next_id = 0u64;
-                // 历史按最新在前存储, 倒序分配 id 使 id 随时间递增。
-                for record in settings::load_upload_history().into_iter().rev() {
-                    let status = match record.status {
-                        UploadRecordStatus::Done => UlStatus::Done,
-                        UploadRecordStatus::Failed(what) => UlStatus::Failed(what),
-                    };
-                    next_id += 1;
-                    ul.insert(
-                        next_id,
-                        UlJob {
-                            local_path: record.local_path,
-                            name: record.name,
-                            parent: record.parent,
-                            dest_stack: record.dest_stack,
-                            total: record.total,
-                            done: record.done,
-                            status,
-                            speed: 0,
-                            last_done: 0,
-                            last_at: None,
-                            record_id: record.timestamp,
-                            is_dir: record.is_dir,
-                            files_done: 0,
-                            files_total: 0,
-                            current: String::new(),
-                            at: (record.at != 0).then_some(record.at),
-                        },
-                    );
-                }
-                ul
-            },
-            selected_ul: HashSet::new(),
-            ul_filter: UlFilter::All,
-            ul_last_clicked: None,
-            upload_pick: None,
             preview: PreviewPage::default(),
             thumbs: ThumbsPage::default(),
             cache_usage: None,
@@ -355,7 +165,6 @@ impl App {
             cache_sweeping: false,
             shares: SharesPage::default(),
             trash: TrashPage::default(),
-            last_clicked_dl: None,
         };
 
         app.restore_req_id();
@@ -374,13 +183,7 @@ impl App {
 
     /// 恢复 req_id 为历史记录中的最大值, 避免与恢复出来的历史任务 ID 冲突。
     fn restore_req_id(&mut self) {
-        self.global.req_id = self
-            .jobs
-            .keys()
-            .chain(self.ul_jobs.keys())
-            .max()
-            .copied()
-            .unwrap_or(0);
+        self.global.req_id = self.transfers.max_job_id();
     }
 
     /// 启动时恢复会话: 有存档则续期; 无存档或存档损坏时回退到密钥环自动登录。
@@ -462,9 +265,9 @@ impl App {
                     self.username.clear();
                     self.auth_error = Some(reason);
                     self.auth_captcha_url = None;
-                    self.jobs.clear();
-                    self.selected_dl.clear();
-                    self.last_clicked_dl = None;
+                    self.transfers.jobs.clear();
+                    self.transfers.selected_dl.clear();
+                    self.transfers.last_clicked_dl = None;
                     self.files.invalidate_session();
                     self.preview.clear();
                     self.shares.clear();
@@ -483,9 +286,9 @@ impl App {
                     self.quota = None;
                     self.tasks.clear();
                     self.files.clear();
-                    self.jobs.clear();
-                    self.selected_dl.clear();
-                    self.last_clicked_dl = None;
+                    self.transfers.jobs.clear();
+                    self.transfers.selected_dl.clear();
+                    self.transfers.last_clicked_dl = None;
                     self.preview.clear();
                     self.shares.clear();
                     self.trash.clear();
@@ -579,7 +382,7 @@ impl App {
                     total,
                     done,
                 } => {
-                    if let Some(j) = self.jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.jobs.get_mut(&req_id) {
                         if j.status == DlStatus::Queued {
                             j.status = DlStatus::Running;
                         }
@@ -592,43 +395,43 @@ impl App {
                         }
                     }
                     // 子文件进度回传后刷新所属目录任务的聚合进度。
-                    if let Some(p) = self.jobs.get(&req_id).and_then(|j| j.parent) {
+                    if let Some(p) = self.transfers.jobs.get(&req_id).and_then(|j| j.parent) {
                         self.recompute_folder(p);
                     }
                 }
                 Msg::DlFinished { req_id, bytes } => {
-                    if let Some(j) = self.jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.jobs.get_mut(&req_id) {
                         j.status = DlStatus::Done;
                         j.done = bytes;
                         if bytes > 0 && j.total == 0 {
                             j.total = bytes;
                         }
                     }
-                    match self.jobs.get(&req_id).and_then(|j| j.parent) {
+                    match self.transfers.jobs.get(&req_id).and_then(|j| j.parent) {
                         Some(p) => self.recompute_folder(p),
                         None => self.persist_download_job(req_id, DownloadRecordStatus::Done),
                     }
                 }
                 Msg::DlCancelled { req_id } => {
                     // 取消后从列表移除且不保留记录; 未完成的 .part 已由下载线程删除。
-                    let parent = self.jobs.get(&req_id).and_then(|j| j.parent);
-                    self.jobs.remove(&req_id);
-                    self.selected_dl.remove(&req_id);
-                    if self.last_clicked_dl == Some(req_id) {
-                        self.last_clicked_dl = None;
+                    let parent = self.transfers.jobs.get(&req_id).and_then(|j| j.parent);
+                    self.transfers.jobs.remove(&req_id);
+                    self.transfers.selected_dl.remove(&req_id);
+                    if self.transfers.last_clicked_dl == Some(req_id) {
+                        self.transfers.last_clicked_dl = None;
                     }
                     if let Some(p) = parent {
-                        if let Some(pj) = self.jobs.get_mut(&p) {
+                        if let Some(pj) = self.transfers.jobs.get_mut(&p) {
                             pj.nodes.retain(|n| n.rid != Some(req_id));
                         }
                         self.recompute_folder(p);
                     }
                 }
                 Msg::DlFailed { req_id, what } => {
-                    if let Some(j) = self.jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.jobs.get_mut(&req_id) {
                         j.status = DlStatus::Failed(what.clone());
                     }
-                    match self.jobs.get(&req_id).and_then(|j| j.parent) {
+                    match self.transfers.jobs.get(&req_id).and_then(|j| j.parent) {
                         Some(p) => self.recompute_folder(p),
                         None => {
                             self.persist_download_job(req_id, DownloadRecordStatus::Failed(what))
@@ -641,6 +444,7 @@ impl App {
                     total_bytes,
                 } => {
                     if !self
+                        .transfers
                         .jobs
                         .get(&req_id)
                         .map(|j| j.is_folder())
@@ -663,7 +467,7 @@ impl App {
                                 done: false,
                             })
                             .collect();
-                        if let Some(j) = self.jobs.get_mut(&req_id) {
+                        if let Some(j) = self.transfers.jobs.get_mut(&req_id) {
                             j.status = DlStatus::Done;
                             j.total = 0;
                             j.done = 0;
@@ -709,7 +513,7 @@ impl App {
                             }
                         }
                         compute_dir_counts(&mut nodes);
-                        if let Some(j) = self.jobs.get_mut(&req_id) {
+                        if let Some(j) = self.transfers.jobs.get_mut(&req_id) {
                             j.nodes = nodes;
                             j.total = total_bytes;
                             j.done = 0;
@@ -721,7 +525,7 @@ impl App {
                     }
                 }
                 Msg::FolderScanFailed { req_id, what } => {
-                    if let Some(j) = self.jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.jobs.get_mut(&req_id) {
                         j.status = DlStatus::Failed(what.clone());
                     }
                     self.persist_download_job(req_id, DownloadRecordStatus::Failed(what.clone()));
@@ -732,7 +536,7 @@ impl App {
                     total,
                     done,
                 } => {
-                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.ul_jobs.get_mut(&req_id) {
                         if j.status == UlStatus::Queued {
                             j.status = UlStatus::Running;
                         }
@@ -751,7 +555,7 @@ impl App {
                     total,
                     current,
                 } => {
-                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.ul_jobs.get_mut(&req_id) {
                         j.files_done = done;
                         j.files_total = total;
                         j.current = current;
@@ -761,7 +565,7 @@ impl App {
                     }
                 }
                 Msg::UlFinished { req_id } => {
-                    let parent = self.ul_jobs.get_mut(&req_id).map(|j| {
+                    let parent = self.transfers.ul_jobs.get_mut(&req_id).map(|j| {
                         j.status = UlStatus::Done;
                         if j.total > 0 {
                             j.done = j.total;
@@ -796,14 +600,14 @@ impl App {
                     self.toast_ok("上传完成");
                 }
                 Msg::UlCancelled { req_id } => {
-                    self.ul_jobs.remove(&req_id);
-                    self.selected_ul.remove(&req_id);
-                    if self.ul_last_clicked == Some(req_id) {
-                        self.ul_last_clicked = None;
+                    self.transfers.ul_jobs.remove(&req_id);
+                    self.transfers.selected_ul.remove(&req_id);
+                    if self.transfers.ul_last_clicked == Some(req_id) {
+                        self.transfers.ul_last_clicked = None;
                     }
                 }
                 Msg::UlFailed { req_id, what } => {
-                    if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+                    if let Some(j) = self.transfers.ul_jobs.get_mut(&req_id) {
                         j.status = UlStatus::Failed(what.clone());
                         // 写入上传历史。
                         let rec_id = Self::chrono_now();
@@ -987,9 +791,10 @@ impl App {
 
     /// 当前上传筛选下可见的任务 id(按 map 顺序)。
     pub(crate) fn visible_ul_ids(&self) -> Vec<u64> {
-        self.ul_jobs
+        self.transfers
+            .ul_jobs
             .iter()
-            .filter(|(_, j)| self.ul_filter.matches(j))
+            .filter(|(_, j)| self.transfers.ul_filter.matches(j))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -1013,9 +818,10 @@ impl App {
     /// 当前筛选下可见的顶层任务 id(不含目录的子文件), 按最新在前排序。
     pub(crate) fn visible_dl_ids(&self) -> Vec<u64> {
         let mut ids: Vec<u64> = self
+            .transfers
             .jobs
             .iter()
-            .filter(|(_, j)| j.parent.is_none() && self.dl_filter.matches(j))
+            .filter(|(_, j)| j.parent.is_none() && self.transfers.dl_filter.matches(j))
             .map(|(id, _)| *id)
             .collect();
         ids.sort_unstable_by(|a, b| b.cmp(a));
@@ -1026,7 +832,7 @@ impl App {
     pub(crate) fn dl_rows(&self) -> Vec<DlRow> {
         let mut rows = Vec::new();
         for id in self.visible_dl_ids() {
-            let Some(j) = self.jobs.get(&id) else {
+            let Some(j) = self.transfers.jobs.get(&id) else {
                 continue;
             };
             if !j.is_folder() || !j.expanded {
@@ -1054,14 +860,16 @@ impl App {
     }
 
     pub(crate) fn has_active_downloads(&self) -> bool {
-        self.jobs
+        self.transfers
+            .jobs
             .values()
             .any(|j| j.status == DlStatus::Queued || j.status == DlStatus::Running)
     }
 
     /// 是否有进行中的上传任务(排队或上传中), 用于加快进度轮询。
     pub(crate) fn has_active_uploads(&self) -> bool {
-        self.ul_jobs
+        self.transfers
+            .ul_jobs
             .values()
             .any(|j| j.status == UlStatus::Queued || j.status == UlStatus::Running)
     }
@@ -1099,7 +907,7 @@ impl App {
             Some(p) => DlJob::child(file_id.clone(), name.clone(), dir.clone(), p),
             None => DlJob::queued(file_id.clone(), name.clone(), dir.clone()),
         };
-        self.jobs.insert(req_id, job);
+        self.transfers.jobs.insert(req_id, job);
         self.send(Cmd::StartDownload {
             req_id,
             file_id,
@@ -1132,7 +940,7 @@ impl App {
         dir: std::path::PathBuf,
     ) -> u64 {
         let req_id = self.global.alloc_req_id();
-        self.jobs.insert(
+        self.transfers.jobs.insert(
             req_id,
             DlJob::folder(folder_id.clone(), name.clone(), dir.clone()),
         );
@@ -1164,6 +972,7 @@ impl App {
     pub(crate) fn recompute_folder(&mut self, folder: u64) {
         // 先把节点列表移出, 便于同时读取各子任务的进度而不产生借用冲突。
         let Some(mut nodes) = self
+            .transfers
             .jobs
             .get_mut(&folder)
             .filter(|j| j.is_folder())
@@ -1174,13 +983,14 @@ impl App {
         let kids: Vec<&DlJob> = nodes
             .iter()
             .filter_map(|n| n.rid)
-            .filter_map(|rid| self.jobs.get(&rid))
+            .filter_map(|rid| self.transfers.jobs.get(&rid))
             .collect();
         let (total, done, speed, status) = aggregate_children(kids.into_iter());
         // 同步文件节点的完成标记, 再自底向上累加每个子目录的计数。
         for n in nodes.iter_mut() {
             if let Some(rid) = n.rid {
                 n.done = self
+                    .transfers
                     .jobs
                     .get(&rid)
                     .map(|j| j.status == DlStatus::Done)
@@ -1192,7 +1002,7 @@ impl App {
         let files_done = nodes.iter().filter(|n| !n.is_dir && n.done).count() as u32;
         let terminal = matches!(status, DlStatus::Done | DlStatus::Failed(_));
         let mut write_record = false;
-        if let Some(f) = self.jobs.get_mut(&folder) {
+        if let Some(f) = self.transfers.jobs.get_mut(&folder) {
             // 扫描时已知合计大小, 优先保留; 未知(0)时用子文件汇总兜底。
             if f.total == 0 {
                 f.total = total;
@@ -1213,14 +1023,20 @@ impl App {
     /// 写一条下载历史记录, 并回填任务行的 record_id / at。
     /// 目录任务额外内联其子文件快照。
     fn persist_download_job(&mut self, rid: u64, status: DownloadRecordStatus) {
-        let children = if self.jobs.get(&rid).map(|j| j.is_folder()).unwrap_or(false) {
+        let children = if self
+            .transfers
+            .jobs
+            .get(&rid)
+            .map(|j| j.is_folder())
+            .unwrap_or(false)
+        {
             self.snapshot_children(rid)
         } else {
             Vec::new()
         };
         let rec_id = Self::chrono_now();
         let at = crate::format::now_unix();
-        let Some(j) = self.jobs.get_mut(&rid) else {
+        let Some(j) = self.transfers.jobs.get_mut(&rid) else {
             return;
         };
         j.record_id = rec_id.clone();
@@ -1242,6 +1058,7 @@ impl App {
     /// 目录任务的树节点记录快照(按先序, 含子目录)。
     fn snapshot_children(&self, folder: u64) -> Vec<DownloadChildRecord> {
         let nodes = self
+            .transfers
             .jobs
             .get(&folder)
             .map(|j| j.nodes.clone())
@@ -1249,7 +1066,7 @@ impl App {
         nodes
             .iter()
             .map(|n| {
-                let c = n.rid.and_then(|rid| self.jobs.get(&rid));
+                let c = n.rid.and_then(|rid| self.transfers.jobs.get(&rid));
                 DownloadChildRecord {
                     file_id: c.map(|c| c.file_id.clone()).unwrap_or_default(),
                     name: n.name.clone(),
@@ -1298,7 +1115,7 @@ impl App {
                 continue;
             }
             let req_id = self.global.alloc_req_id();
-            self.ul_jobs.insert(
+            self.transfers.ul_jobs.insert(
                 req_id,
                 UlJob::queued(path.clone(), name, parent.clone(), dest_stack.clone()),
             );
@@ -1317,24 +1134,25 @@ impl App {
     /// 选择本地文件并上传到当前网盘目录(异步弹框, 不阻塞 UI)。
     pub(crate) fn upload_here(&mut self) {
         // 已在选择中时忽略重复点击。
-        if self.upload_pick.is_some() {
+        if self.transfers.upload_pick.is_some() {
             return;
         }
         let start = helpers::picker_start_dir(&self.last_dir);
         let parent = self.files.current_parent();
         let stack = self.files.current_stack_pairs();
-        self.upload_pick = Some((false, parent, stack, helpers::pick_files_async(&start)));
+        self.transfers.upload_pick =
+            Some((false, parent, stack, helpers::pick_files_async(&start)));
     }
 
     /// 选择本地文件夹并递归上传到当前网盘目录(异步弹框, 不阻塞 UI)。
     pub(crate) fn upload_dir_here(&mut self) {
-        if self.upload_pick.is_some() {
+        if self.transfers.upload_pick.is_some() {
             return;
         }
         let start = helpers::picker_start_dir(&self.last_dir);
         let parent = self.files.current_parent();
         let stack = self.files.current_stack_pairs();
-        self.upload_pick = Some((true, parent, stack, helpers::pick_dir_async(&start)));
+        self.transfers.upload_pick = Some((true, parent, stack, helpers::pick_dir_async(&start)));
     }
 
     /// 处理拖拽到窗口的本地文件/文件夹(上传到当前网盘目录)。
@@ -1386,7 +1204,7 @@ impl App {
 
     /// 每帧检查异步选择结果; 选好后按当时的目标目录入队。
     fn poll_file_picker(&mut self) {
-        let Some((is_dir, parent, stack, rx)) = &self.upload_pick else {
+        let Some((is_dir, parent, stack, rx)) = &self.transfers.upload_pick else {
             return;
         };
         let is_dir = *is_dir;
@@ -1394,7 +1212,7 @@ impl App {
             Ok(paths) => {
                 let parent = parent.clone();
                 let stack = stack.clone();
-                self.upload_pick = None;
+                self.transfers.upload_pick = None;
                 if paths.is_empty() {
                     return;
                 }
@@ -1409,7 +1227,7 @@ impl App {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.upload_pick = None;
+                self.transfers.upload_pick = None;
             }
         }
     }
@@ -1444,7 +1262,7 @@ impl App {
             return;
         }
         let req_id = self.global.alloc_req_id();
-        self.ul_jobs.insert(
+        self.transfers.ul_jobs.insert(
             req_id,
             UlJob::queued_dir(path.clone(), name, parent.clone(), dest_stack),
         );
@@ -1641,7 +1459,7 @@ impl eframe::App for App {
         } else if self.preview.has_inflight_qualities() {
             // 清晰度解析中, 加快轮询让「播放」子菜单尽快展开选项。
             ctx.request_repaint_after(Duration::from_millis(100));
-        } else if self.upload_pick.is_some() {
+        } else if self.transfers.upload_pick.is_some() {
             // 文件选择进行中, 加快轮询以尽快取回结果。
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.has_active_downloads()

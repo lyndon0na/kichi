@@ -190,6 +190,7 @@ impl App {
         .map(|p| self.tasks.buckets.get(*p).map(|v| v.len()).unwrap_or(0))
         .sum::<usize>();
         let active_dl = self
+            .transfers
             .jobs
             .values()
             .filter(|j| matches!(j.status, DlStatus::Queued | DlStatus::Running))
