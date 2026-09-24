@@ -1,32 +1,27 @@
 //! 「文件浏览」域: 导航栈 / 目录缓存(含 SWR 校正) / 选中集 / 排序过滤 / 视图与列宽 / 剪贴板。
 //!
-//! 页面渲染留在 `files_page.rs`(继续按渲染角色拆进 `app/files/`, 见 TODO.md 的 P2-11);
-//! 本模块负责文件列表数据、目录缓存与导航状态。
+//! 本模块持有 `FilesPage` 的状态与导航逻辑, 以及渲染入口 `show`(渲染与动作分离,
+//! 跨域动作见 [`FilesAction`]); 各渲染角色分别落在 `list` / `grid` / `row` / `toolbar`。
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{
-    self, pos2, vec2, Color32, FontId, Frame, Key, Margin, Pos2, Rect, RichText, Stroke, UiBuilder,
-};
+use eframe::egui::{self, Frame, Key, Margin, Pos2, RichText, Stroke, UiBuilder};
 
 use kichi_core::types::{File, FileList};
 
-use crate::filetypes::{self, file_visual};
-use crate::icons;
+use crate::filetypes;
 use crate::msg::{Cmd, QualityOption};
-use crate::theme::{mix, Theme};
+use crate::theme::Theme;
 
 use super::global::Global;
-use super::helpers::truncate_text;
 use super::preview::PreviewPage;
 use super::search::SearchPage;
 use super::thumbs::ThumbsPage;
-use super::types::{
-    ClipKind, Clipboard, ColDrag, Crumb, DirEntry, QualityMenuState, RowAction, SortBy, ViewMode,
-};
+use super::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, RowAction, SortBy, ViewMode};
 
 pub(super) mod grid;
+pub(super) mod list;
 pub(super) mod row;
 pub(super) mod toolbar;
 
@@ -668,14 +663,6 @@ impl FilesPage {
     /// 标题栏统一行高: 选中态与普通态使用同一高度, 避免切换时列表位移。
     const HEAD_H: f32 = 44.0;
 
-    /// 布局坐标。返回 (name_x, size_left, time_left)。
-    /// 名称列占据剩余空间; size_w / time_w 来自自身状态。
-    fn col_layout(&self, w: f32) -> (f32, f32, f32) {
-        let time_left = (w - self.col_time_w - Self::RIGHT_PAD).max(Self::NAME_X + 60.0);
-        let size_left = (time_left - self.col_size_w - 16.0).max(Self::NAME_X + 60.0);
-        (Self::NAME_X, size_left, time_left)
-    }
-
     /// 文件页入口: 顶部栏 + 列表 / 网格 + 空态与加载更多。
     /// 返回本帧产生的跨域动作, 由 `App` 按序执行。
     pub(crate) fn show(
@@ -947,369 +934,36 @@ impl FilesPage {
                             }
                         });
 
-                        let mut even = false;
-                        let (cn_x, cs_x, ct_x) = self.col_layout(inner.width());
                         let all_files: Vec<&File> = folders.iter().chain(plain.iter()).collect();
 
                         if self.view_mode == ViewMode::List {
-                            // 列表视图
-                            for f in &all_files {
-                                let is_sel = self.selected.contains(&f.id);
-                                let quality = match preview.quality(&f.id) {
-                                    Some(r) => QualityMenuState::Ready(r),
-                                    None => QualityMenuState::Loading,
-                                };
-                                if let Some(id) = row::file_row(
-                                    ui,
+                            self.list_rows(
+                                ui,
+                                list::ListCtx {
                                     th,
-                                    f,
-                                    is_sel,
-                                    even,
+                                    preview,
+                                    files: &all_files,
                                     has_clip,
-                                    quality,
-                                    &mut actions,
-                                    cn_x,
-                                    cs_x,
-                                    ct_x,
-                                ) {
-                                    sel_reqs.push(id);
-                                }
-                                even = !even;
-                            }
+                                    col_w: inner.width(),
+                                    actions: &mut actions,
+                                    sel_reqs: &mut sel_reqs,
+                                },
+                            );
                         } else {
-                            // 图标视图
-                            let card_w = self.grid_card_size;
-                            let card_h = self.grid_card_size * 1.15;
-                            let gap = 8.0;
-                            let avail_w = inner.width();
-                            let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
-                            let total_rows = all_files.len().div_ceil(cols);
-
-                            // 只请求「可见行 ± 一屏」的缩略图: 整目录一次性入队会让
-                            // worker 长时间啃已经滚出视野的图, 新滚到的位置反而排在后面。
-                            let clip = ui.clip_rect();
-                            let row_h = card_h + ui.spacing().item_spacing.y;
-                            let row_range =
-                                grid::thumb_row_range(clip, ui.cursor().min.y, row_h, total_rows);
-                            let max_edge = grid::thumb_max_edge(ui.ctx().pixels_per_point());
-                            let now = Instant::now();
-                            for row in row_range {
-                                for col in 0..cols {
-                                    let idx = row * cols + col;
-                                    if idx >= all_files.len() {
-                                        break;
-                                    }
-                                    let f = all_files[idx];
-                                    if f.is_folder() {
-                                        continue;
-                                    }
-                                    // 纹理在 = 图正被看着: 刷新 LRU, 使其免于本轮淘汰。
-                                    if thumbs.textures.contains(&f.id) {
-                                        thumbs.textures.mark_used(&f.id, now);
-                                        continue;
-                                    }
-                                    let Some(url) = &f.thumbnail_link else {
-                                        continue;
-                                    };
-                                    if !thumbs.needs_request(&f.id) {
-                                        continue;
-                                    }
-                                    thumbs.mark_inflight(f.id.clone());
-                                    g.send(Cmd::LoadThumbnail {
-                                        file_id: f.id.clone(),
-                                        url: url.clone(),
-                                        max_edge,
-                                    });
-                                }
-                            }
-
-                            for row in 0..total_rows {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(4.0);
-                                    for col in 0..cols {
-                                        let idx = row * cols + col;
-                                        if idx >= all_files.len() {
-                                            break;
-                                        }
-                                        let f = all_files[idx];
-                                        let is_sel = self.selected.contains(&f.id);
-                                        let quality = match preview.quality(&f.id) {
-                                            Some(r) => QualityMenuState::Ready(r),
-                                            None => QualityMenuState::Loading,
-                                        };
-                                        let (rect, resp) = ui.allocate_exact_size(
-                                            vec2(card_w, card_h),
-                                            egui::Sense::click(),
-                                        );
-                                        let painter = ui.painter().clone();
-
-                                        // 背景
-                                        let bg = if is_sel {
-                                            if th.breeze {
-                                                th.accent
-                                            } else {
-                                                mix(
-                                                    th.card,
-                                                    th.accent,
-                                                    if th.dark { 0.22 } else { 0.12 },
-                                                )
-                                            }
-                                        } else if resp.hovered() {
-                                            mix(
-                                                th.card,
-                                                th.text,
-                                                if th.dark { 0.07 } else { 0.045 },
-                                            )
-                                        } else {
-                                            egui::Color32::TRANSPARENT
-                                        };
-                                        painter.rect_filled(rect, th.cr(10), bg);
-                                        if is_sel && !th.breeze {
-                                            painter.rect_stroke(
-                                                rect,
-                                                th.cr(10),
-                                                Stroke::new(2.0, th.accent),
-                                                egui::StrokeKind::Inside,
-                                            );
-                                        }
-
-                                        // 左上角复选框
-                                        let cb_size = 14.0;
-                                        let cb_x = rect.min.x + 6.0;
-                                        let cb_y = rect.min.y + 6.0;
-                                        let cb_rect = Rect::from_min_max(
-                                            Pos2::new(cb_x, cb_y),
-                                            Pos2::new(cb_x + cb_size, cb_y + cb_size),
-                                        );
-                                        let cb_resp = ui.interact(
-                                            cb_rect,
-                                            ui.id().with(("cb", f.id.clone())),
-                                            egui::Sense::click(),
-                                        );
-                                        let cb_on_accent = is_sel && th.breeze;
-                                        let cb_bg = if cb_on_accent {
-                                            th.on_accent
-                                        } else if is_sel {
-                                            th.accent
-                                        } else {
-                                            mix(th.card, th.text, if th.dark { 0.3 } else { 0.2 })
-                                        };
-                                        let cb_stroke = if is_sel {
-                                            Stroke::NONE
-                                        } else {
-                                            Stroke::new(1.0, th.text_faint)
-                                        };
-                                        painter.rect_filled(cb_rect, th.cr(3), cb_bg);
-                                        painter.rect_stroke(
-                                            cb_rect,
-                                            th.cr(3),
-                                            cb_stroke,
-                                            egui::StrokeKind::Inside,
-                                        );
-                                        if is_sel {
-                                            let check_pts = [
-                                                Pos2::new(cb_x + 3.0, cb_y + cb_size / 2.0),
-                                                Pos2::new(cb_x + 5.5, cb_y + cb_size / 2.0 + 2.5),
-                                                Pos2::new(cb_x + cb_size - 2.5, cb_y + 2.5),
-                                            ];
-                                            let tick = if cb_on_accent {
-                                                th.accent
-                                            } else {
-                                                th.on_accent
-                                            };
-                                            painter.add(egui::Shape::line(
-                                                check_pts.to_vec(),
-                                                Stroke::new(1.8, tick),
-                                            ));
-                                        }
-
-                                        // 文件图标或缩略图（居中偏上）
-                                        let icon_size = card_w * 0.45;
-                                        let icon_rect = Rect::from_center_size(
-                                            Pos2::new(rect.center().x, rect.min.y + card_h * 0.35),
-                                            vec2(icon_size, icon_size),
-                                        );
-
-                                        if let Some(texture) = thumbs.textures.get(&f.id) {
-                                            // 渲染缩略图（保持宽高比）
-                                            let max_size = card_w * grid::THUMB_MAX_CARD_RATIO;
-                                            let tex_size = texture.size_vec2();
-                                            let aspect = tex_size.x / tex_size.y;
-
-                                            let (w, h) = if aspect > 1.0 {
-                                                // 横向图片
-                                                (max_size, max_size / aspect)
-                                            } else {
-                                                // 纵向图片
-                                                (max_size * aspect, max_size)
-                                            };
-
-                                            let thumb_rect = Rect::from_center_size(
-                                                Pos2::new(
-                                                    rect.center().x,
-                                                    rect.min.y + card_h * 0.4,
-                                                ),
-                                                vec2(w, h),
-                                            );
-                                            painter.image(
-                                                texture.id(),
-                                                thumb_rect,
-                                                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                                                Color32::WHITE,
-                                            );
-                                        } else {
-                                            // 回退到类型图标
-                                            let (glyph, color) = file_visual(f);
-                                            let tile_bg = if is_sel && th.breeze {
-                                                mix(
-                                                    th.on_accent,
-                                                    color,
-                                                    if th.dark { 0.22 } else { 0.14 },
-                                                )
-                                            } else {
-                                                mix(
-                                                    th.card,
-                                                    color,
-                                                    if th.dark { 0.16 } else { 0.10 },
-                                                )
-                                            };
-                                            painter.rect_filled(icon_rect, th.cr(8), tile_bg);
-                                            icons::paint(
-                                                &painter,
-                                                icon_rect.shrink(4.0),
-                                                glyph,
-                                                color,
-                                            );
-                                        }
-
-                                        // 文件名（底部居中，最多 2 行）
-                                        let name = &f.name;
-                                        let max_w = card_w - 8.0;
-                                        let name_color = if is_sel && th.breeze {
-                                            th.on_accent
-                                        } else {
-                                            th.text
-                                        };
-                                        let font_size = (card_w * 0.11).clamp(9.0, 14.0);
-                                        let name_g = truncate_text(
-                                            &painter,
-                                            name,
-                                            max_w,
-                                            FontId::proportional(font_size),
-                                            name_color,
-                                        );
-                                        let name_h = name_g.size().y.min(card_h * 0.25);
-                                        let name_y = rect.max.y - 8.0 - name_h;
-                                        painter.galley(
-                                            Pos2::new(
-                                                rect.center().x - name_g.size().x / 2.0,
-                                                name_y,
-                                            ),
-                                            name_g,
-                                            name_color,
-                                        );
-
-                                        // 右键菜单
-                                        let f_ctx = f.clone();
-                                        let _menu = resp.context_menu(|ui| {
-                                            if f_ctx.is_folder() {
-                                                if ui.button("打开").clicked() {
-                                                    actions.push(RowAction::OpenFolder(
-                                                        f_ctx.id.clone(),
-                                                        f_ctx.name.clone(),
-                                                    ));
-                                                    ui.close_menu();
-                                                }
-                                                if ui.button("下载到本地…").clicked() {
-                                                    actions.push(RowAction::DownloadFolder(
-                                                        f_ctx.id.clone(),
-                                                        f_ctx.name.clone(),
-                                                    ));
-                                                    ui.close_menu();
-                                                }
-                                            } else {
-                                                if ui.button("下载到本地…").clicked() {
-                                                    actions.push(RowAction::DownloadFile(
-                                                        f_ctx.id.clone(),
-                                                        f_ctx.name.clone(),
-                                                    ));
-                                                    ui.close_menu();
-                                                }
-                                                row::preview_menu_items(
-                                                    ui,
-                                                    &f_ctx,
-                                                    quality,
-                                                    &mut actions,
-                                                );
-                                            }
-                                            ui.separator();
-                                            if ui.button("分享").clicked() {
-                                                actions.push(RowAction::Share(f_ctx.id.clone()));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("复制").clicked() {
-                                                actions.push(RowAction::CopyItem(f_ctx.id.clone()));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("剪切").clicked() {
-                                                actions.push(RowAction::CutItem(f_ctx.id.clone()));
-                                                ui.close_menu();
-                                            }
-                                            if has_clip
-                                                && f_ctx.is_folder()
-                                                && ui.button("粘贴到此处").clicked()
-                                            {
-                                                actions
-                                                    .push(RowAction::PasteInto(f_ctx.id.clone()));
-                                                ui.close_menu();
-                                            }
-                                            ui.separator();
-                                            if ui.button("重命名").clicked() {
-                                                actions.push(RowAction::Rename(
-                                                    f_ctx.id.clone(),
-                                                    f_ctx.name.clone(),
-                                                ));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("复制名称").clicked() {
-                                                actions
-                                                    .push(RowAction::CopyName(f_ctx.name.clone()));
-                                                ui.close_menu();
-                                            }
-                                            ui.separator();
-                                            if ui
-                                                .button(
-                                                    RichText::new("移入回收站").color(th.danger),
-                                                )
-                                                .clicked()
-                                            {
-                                                actions.push(RowAction::Trash(f_ctx.id.clone()));
-                                                ui.close_menu();
-                                            }
-                                        });
-
-                                        // 点击处理
-                                        let dbl = resp.double_clicked();
-                                        // 只有点击复选框才勾选; 单击卡片不改变选择。
-                                        if cb_resp.clicked() {
-                                            sel_reqs.push(f.id.clone());
-                                        } else if dbl {
-                                            if f.is_folder() {
-                                                actions.push(RowAction::OpenFolder(
-                                                    f.id.clone(),
-                                                    f.name.clone(),
-                                                ));
-                                            } else {
-                                                actions.push(RowAction::OpenFile(
-                                                    f.id.clone(),
-                                                    f.name.clone(),
-                                                ));
-                                            }
-                                        }
-                                        ui.add_space(4.0);
-                                    }
-                                });
-                            }
+                            self.grid_cards(
+                                ui,
+                                grid::GridCtx {
+                                    th,
+                                    g,
+                                    thumbs,
+                                    preview,
+                                    files: &all_files,
+                                    avail_w: inner.width(),
+                                    has_clip,
+                                    actions: &mut actions,
+                                    sel_reqs: &mut sel_reqs,
+                                },
+                            );
                         }
 
                         // 纹理上限淘汰放在绘制之后: 本帧点亮过的(可见 ± 一屏)还在
@@ -1440,225 +1094,5 @@ impl FilesPage {
         }
 
         effects
-    }
-
-    fn file_list_header(&mut self, ui: &mut egui::Ui, th: &Theme, w: f32, search: &SearchPage) {
-        let (name_x, size_left, time_left) = self.col_layout(w);
-        let h = 30.0;
-        let (rect, _) = ui.allocate_exact_size(vec2(w, h), egui::Sense::hover());
-        let painter = ui.painter().clone();
-        let top = rect.min.y;
-        let x0 = rect.min.x;
-
-        // 表头全选复选框
-        let (folders, plain) = self.visible_rows(search);
-        let total_visible = folders.len() + plain.len();
-        let all_selected = total_visible > 0 && self.selected.len() >= total_visible;
-        let some_selected = !self.selected.is_empty() && !all_selected;
-
-        let cb_size = 14.0;
-        let cb_x = x0 + 6.0;
-        let cb_y = top + (h - cb_size) / 2.0;
-        let cb_rect = Rect::from_min_max(
-            Pos2::new(cb_x, cb_y),
-            Pos2::new(cb_x + cb_size, cb_y + cb_size),
-        );
-        let cb_resp = ui.interact(cb_rect, ui.id().with("header_cb"), egui::Sense::click());
-
-        // 复选框背景
-        let cb_bg = if all_selected {
-            th.accent
-        } else if some_selected {
-            mix(th.accent, th.bg, 0.5)
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        let cb_stroke = if all_selected || some_selected {
-            Stroke::NONE
-        } else {
-            Stroke::new(1.0, th.text_faint)
-        };
-        painter.rect_filled(cb_rect, th.cr(3), cb_bg);
-        painter.rect_stroke(cb_rect, th.cr(3), cb_stroke, egui::StrokeKind::Inside);
-
-        // 全选时绘制勾号
-        if all_selected {
-            let check_pts = [
-                Pos2::new(cb_x + 3.0, cb_y + cb_size / 2.0),
-                Pos2::new(cb_x + 5.5, cb_y + cb_size / 2.0 + 2.5),
-                Pos2::new(cb_x + cb_size - 2.5, cb_y + 2.5),
-            ];
-            painter.add(egui::Shape::line(
-                check_pts.to_vec(),
-                Stroke::new(1.8, th.on_accent),
-            ));
-        }
-        // 部分选中时绘制横线
-        if some_selected {
-            painter.line_segment(
-                [
-                    Pos2::new(cb_x + 3.0, cb_y + cb_size / 2.0),
-                    Pos2::new(cb_x + cb_size - 3.0, cb_y + cb_size / 2.0),
-                ],
-                Stroke::new(2.0, th.on_accent),
-            );
-        }
-
-        // 悬停效果
-        if cb_resp.hovered() {
-            painter.rect_filled(cb_rect, th.cr(3), mix(th.accent, th.bg, 0.85));
-        }
-
-        // 点击切换全选/取消全选(仅当前可见/过滤后的行)
-        if cb_resp.clicked() {
-            if all_selected {
-                self.selected.clear();
-            } else {
-                let (folders, plain) = self.visible_rows(search);
-                for f in folders.iter().chain(plain.iter()) {
-                    self.selected.insert(f.id.clone());
-                }
-            }
-        }
-
-        struct Col {
-            x: f32,
-            label: &'static str,
-            by: SortBy,
-            w: f32,
-        }
-        let cols = [
-            Col {
-                x: name_x,
-                label: "名称",
-                by: SortBy::Name,
-                w: size_left - name_x,
-            },
-            Col {
-                x: size_left,
-                label: "大小",
-                by: SortBy::Size,
-                w: time_left - size_left,
-            },
-            Col {
-                x: time_left,
-                label: "修改时间",
-                by: SortBy::Modified,
-                w: w - time_left - Self::RIGHT_PAD,
-            },
-        ];
-        for col in &cols {
-            let active = self.sort_by == col.by;
-            let color = if active { th.accent } else { th.text_faint };
-            let crect = Rect::from_min_max(
-                Pos2::new(x0 + col.x - 8.0, top),
-                Pos2::new((x0 + col.x + col.w).min(rect.right()), top + h),
-            );
-            let resp = ui.interact(
-                crect,
-                ui.id().with(("header", col.by)),
-                egui::Sense::click(),
-            );
-            if resp.hovered() {
-                painter.rect_filled(crect, th.cr(6), th.hover);
-            }
-            let g =
-                painter.layout_no_wrap(col.label.to_string(), FontId::proportional(12.5), color);
-            let label_w = g.size().x;
-            painter.galley(
-                Pos2::new(x0 + col.x, top + (h - g.size().y) / 2.0),
-                g,
-                color,
-            );
-            if active {
-                let yc = top + h / 2.0;
-                let mx = x0 + col.x + label_w + 5.0;
-                let s = 8.0;
-                let pts: Vec<egui::Pos2> = if self.sort_desc {
-                    vec![
-                        Pos2::new(mx, yc - s / 2.0),
-                        Pos2::new(mx + s, yc - s / 2.0),
-                        Pos2::new(mx + s / 2.0, yc + s / 2.0 - 1.0),
-                    ]
-                } else {
-                    vec![
-                        Pos2::new(mx, yc + s / 2.0),
-                        Pos2::new(mx + s, yc + s / 2.0),
-                        Pos2::new(mx + s / 2.0, yc - s / 2.0 + 1.0),
-                    ]
-                };
-                painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
-            }
-            if resp.clicked() {
-                if active {
-                    self.sort_desc = !self.sort_desc;
-                } else {
-                    self.sort_by = col.by;
-                    self.sort_desc = false;
-                }
-            }
-            let _ = resp.on_hover_text("点击排序");
-        }
-
-        // ---- 拖拽分割线 ----
-        let cursor_range = 6.0f32;
-        let handle_w = 4.0f32;
-
-        // Handle 1: 名称 | 大小
-        let h1_x = x0 + size_left;
-        let h1_rect = Rect::from_min_max(
-            Pos2::new(h1_x - cursor_range, top),
-            Pos2::new(h1_x + cursor_range, top + h),
-        );
-        let h1_resp = ui.interact(h1_rect, ui.id().with("col_drag_1"), egui::Sense::drag());
-        let h1_active = h1_resp.hovered()
-            || h1_resp.is_pointer_button_down_on()
-            || self.col_dragging.as_ref().is_some_and(|d| d.handle == 1);
-        if h1_active {
-            painter.rect_filled(
-                Rect::from_center_size(Pos2::new(h1_x, top + h / 2.0), vec2(handle_w, h - 8.0)),
-                th.cr(2),
-                th.text_faint,
-            );
-        }
-        if h1_resp.drag_started() {
-            self.col_dragging = Some(ColDrag {
-                handle: 1,
-                start_x: h1_resp.interact_pointer_pos().map(|p| p.x).unwrap_or(h1_x),
-                orig_size_w: self.col_size_w,
-                orig_time_w: self.col_time_w,
-            });
-        }
-
-        // Handle 2: 大小 | 修改时间
-        let h2_x = x0 + time_left;
-        let h2_rect = Rect::from_min_max(
-            Pos2::new(h2_x - cursor_range, top),
-            Pos2::new(h2_x + cursor_range, top + h),
-        );
-        let h2_resp = ui.interact(h2_rect, ui.id().with("col_drag_2"), egui::Sense::drag());
-        let h2_active = h2_resp.hovered()
-            || h2_resp.is_pointer_button_down_on()
-            || self.col_dragging.as_ref().is_some_and(|d| d.handle == 2);
-        if h2_active {
-            painter.rect_filled(
-                Rect::from_center_size(Pos2::new(h2_x, top + h / 2.0), vec2(handle_w, h - 8.0)),
-                th.cr(2),
-                th.text_faint,
-            );
-        }
-        if h2_resp.drag_started() {
-            self.col_dragging = Some(ColDrag {
-                handle: 2,
-                start_x: h2_resp.interact_pointer_pos().map(|p| p.x).unwrap_or(h2_x),
-                orig_size_w: self.col_size_w,
-                orig_time_w: self.col_time_w,
-            });
-        }
-
-        // 设置拖拽时的鼠标样式
-        if h1_resp.hovered() || h2_resp.hovered() || self.col_dragging.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        }
     }
 }
