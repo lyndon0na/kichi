@@ -32,7 +32,7 @@ impl App {
         match self.page {
             Page::Files => self.files_page(ctx, th),
             Page::Shares => self.shares_page(ctx, th),
-            Page::Trash => self.trash_page(ctx, th),
+            Page::Trash => self.trash.draw(ctx, &mut self.global, th),
             Page::Tasks => self.tasks_page(ctx, th),
             Page::Transfers => self.transfers_page(ctx, th),
             Page::Settings => self.settings_page(ctx, th),
@@ -251,7 +251,7 @@ impl App {
             }
             // 进入「回收站」时按新鲜度决定是否刷新。
             if p == Page::Trash && self.page != Page::Trash {
-                self.enter_trash();
+                self.trash.enter(&mut self.global);
             }
             // 进入「设置」时让缓存占用重新统计(离开期间可能已经被淘汰过)。
             if p == Page::Settings && self.page != Page::Settings {
