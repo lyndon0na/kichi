@@ -202,18 +202,19 @@ crates/
         ├── cache.rs             # 磁盘缓存淘汰（预览 / 缩略图共用的 mtime-LRU + 双上限）
         ├── filetypes.rs         # 文件类型分类与预览路由（mime + 扩展名单点维护）
         ├── app/                 # UI 模块（按职责拆分）
-        │   ├── mod.rs           # App 结构体、初始化、消息处理、业务逻辑
-        │   ├── types.rs         # Page / ViewMode / TransferTab / DlJob 等内部类型
-        │   ├── login.rs         # 登录页
-        │   ├── sidebar.rs       # 侧边栏 + 导航 + 账户 / 配额卡片
-        │   ├── files_page.rs    # 文件浏览页 + 列表行 / 网格渲染
-        │   ├── tasks_page.rs    # 离线下载页
-        │   ├── transfers_page.rs # 传输任务页（上传 / 下载）
-        │   ├── settings_page.rs # 设置页
-        │   ├── shares_page.rs   # 我的分享页（列出 / 创建 / 复制 / 取消 / 转存）
-        │   ├── trash_page.rs    # 回收站页（列出 / 还原 / 彻底删除）
-        │   ├── dialogs.rs       # 弹窗：新建 / 重命名 / 回收站 / 分享 / 转存分享 + 目标目录 / 退出确认
-        │   └── helpers.rs       # 工具函数（字体、目录选择、mpv 播放、文本裁剪等）
+        │   ├── mod.rs             # App 结构体、初始化、消息处理、业务逻辑
+        │   ├── types.rs           # Page / ViewMode / TransferTab / DlJob 等内部类型
+        │   ├── transfers_model.rs # 传输纯逻辑（状态映射 / 进度聚合 / 目录树计数 / 速率取样）
+        │   ├── login.rs           # 登录页
+        │   ├── sidebar.rs         # 侧边栏 + 导航 + 账户 / 配额卡片
+        │   ├── files_page.rs      # 文件浏览页 + 列表行 / 网格渲染
+        │   ├── tasks_page.rs      # 离线下载页
+        │   ├── transfers_page.rs  # 传输任务页（上传 / 下载）
+        │   ├── settings_page.rs   # 设置页
+        │   ├── shares_page.rs     # 我的分享页（列出 / 创建 / 复制 / 取消 / 转存）
+        │   ├── trash_page.rs      # 回收站页（列出 / 还原 / 彻底删除）
+        │   ├── dialogs.rs         # 弹窗：新建 / 重命名 / 回收站 / 分享 / 转存分享 + 目标目录 / 退出确认
+        │   └── helpers.rs         # 工具函数（字体、目录选择、mpv 播放、文本裁剪等）
         ├── icons.rs             # 矢量图标库（painter 绘制，不依赖字体字形）
         ├── theme.rs             # 配色 / 圆角 / 间距参数与全局样式
         ├── kde.rs               # 读取 KDE 系统配色（kdeglobals），非 KDE 返回 None

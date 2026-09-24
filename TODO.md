@@ -13,6 +13,8 @@
 | **P2** | 可维护性与工程   | 5   |
 | **P3** | 分发与发布     | 0   |
 
+> 上表只统计主线队列（P0–P3）；另有一节独立的「P2 · 结构优化」队列（P2-9 ~ P2-14，进行中，剩 4 项），见下方专节。
+
 ---
 
 ## P0 · 用户可见的功能缺口
@@ -44,7 +46,9 @@
 > 参照（本机 `~/.cargo` 源码实测，`wc -l`）：egui 114 文件 / 中位 226 行，但 `context.rs` **4420 行**、`style.rs` 3163；eframe 28 文件 / 最大 1666；image 71 文件 / 最大 2476（`codecs/` 一个目录 39 文件，每种格式一个）；rustls 107 文件 / 最大 `msgs/handshake.rs` **3266 行**（协议消息表，形态类似 `worker::handle`）—— **大文件本身不是问题，一个文件里混着多个概念才是**。
 > 因此本仓库**不追「一个函数一个文件」**；`App` 这种 god object（100+ 方法与字段）光拆文件治不了，页面结构化才是正解。
 
-### 待决策（动手前先定一条，选定后写在本节）
+### 路线（2026-09-23 拍板）
+
+**已定 A**：拆域时**顺手 struct 化** —— `app/files/` 里直接放 `FilesPage`（自身状态）+ `show()`，`App` 持 `files: FilesPage`；即 P2-11 / P2-12 与 P2-14 合并。下表为决策时的三选项，留作备查（B 要再搬一轮、C 让 god object 期间继续长，均未取）。
 
 | 选项       | 做法                                                                                             | 代价                                                     |
 |:-------- |:---------------------------------------------------------------------------------------------- |:------------------------------------------------------ |
@@ -56,7 +60,7 @@
 
 | 编号    | 任务                                | 主要路径                                                                                       | 说明 / 验收                                                                                                                                      |
 |:------ |:--------------------------------- |:------------------------------------------------------------------------------------------ |:--------------------------------------------------------------------------------------------------------------------------------------------- |
-| P2-9   | `app/mod.rs` 纯逻辑下沉（第 1 步，建议先做） | `app/transfers_model.rs`                                                                   | 未开始。把 `dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed` 连同 8 项单测外移到新模块（无 UI 依赖，可直接单测）；`App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`。验收：行为零变更、`#[test]` 总数 89 项不减、clippy 0 告警、实机冒烟 |
+| P2-9   | `app/mod.rs` 纯逻辑下沉（第 1 步，建议先做） | `app/transfers_model.rs`                                                                   | **✅ 已完成**（`e85211b` 搬移 + `caa89db` 补测 + `c9b57a3` 抽 `restore_req_id` / `start_session`）。`dl_record_status` / `aggregate_children` / `compute_dir_counts` / `sample_speed` 四个无 UI 依赖函数连同 5 项相关单测外移到新模块，另补 2 项（此前零覆盖：状态映射兜底、短间隔不取样防速率爆炸）→ 新模块共 7 项单测；`App::new` 只留装配与字体告警。`app/mod.rs` 3264 → 3085 行。零行为变更（函数体 / 文档注释逐字比对、抽取语句 `app.` → `self.` 逐行一致），`fmt` 零差异 / clippy 0 告警 / **93 单测**全绿（计划时写的「8 项单测」「89 项」为估算，按实况修正）；实机冒烟待维护者确认 |
 | P2-10  | `app/` 按域外移（含拆 `drain`）            | `app/browse/`（目录缓存 SWR）· `search.rs` · `dnd.rs` · `system.rs` · `preview.rs` · `shares.rs` · `trash.rs` | 未开始。要外移的方法：`send_list` / `fetch_dir` / `revalidate_dir` / `reload_dir` / `apply_files` / `evict_dir_cache` / `goto_folder` / `current_parent`；`poll_system_theme` / `poll_file_picker` / `remember_picked_dir` / `poll_pending_open` / `persist_settings` / `chrono_now`；`start_preview` / `episode_subtitles` / `file_size`。`drain`（约 840 行）与 `App::new`（约 310 行字面量）是重灾区；验收：`Msg` 分支一一对应不丢、行为零变更 |
 | P2-11  | `files_page.rs` → `app/files/`      | `app/files/{mod,list,grid,row,toolbar}.rs`                                                  | 未开始。`files_page()` 是单个约 1180 行的函数：`mod.rs` 收入口 / 空态 / 加载更多；`list.rs` 收表格与 `file_list_header` / `col_layout`；`grid.rs` 收网格与 `thumb_row_range` / `thumb_max_edge`；`row.rs` 收 `file_row` 与 `RowAction`；`toolbar.rs` 收面包屑 / 搜索框 / 视图切换 / 列宽拖拽。选 A 时此处同时落 `FilesPage` |
 | P2-12  | `transfers_page.rs` → `app/transfers/` | `app/transfers/{mod,download,upload}.rs`                                                    | 未开始。`upload_tab` 约 910 行是重灾区，先按「空态 / 列表卡片 / 底部操作栏」抽三段子函数再分文件；`download.rs` 收 `dl_card` / `dl_dir_node` / `dl_file_node` / `status_line` / `paint_rails` / `paint_disclosure` / `node_h` / `tree_block_height` / `retry_folder` / `remove_download_job`；`upload.rs` 收 `ul_card` / `upload_status_line` / `retry_upload_job` / `remove_upload_job` / `navigate_to_stack` |
