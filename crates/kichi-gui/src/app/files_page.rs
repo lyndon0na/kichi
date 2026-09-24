@@ -616,7 +616,7 @@ impl App {
                                 (ui.available_width() - count_reserve - clip_reserve).max(48.0);
 
                             // 搜索模式指示器
-                            if self.search_mode {
+                            if self.search.is_active() {
                                 egui::Frame::new()
                                     .fill(th.accent_soft())
                                     .corner_radius(th.cr(7))
@@ -626,7 +626,7 @@ impl App {
                                             ui.label(
                                                 RichText::new(format!(
                                                     "搜索: {}",
-                                                    self.search_keyword
+                                                    self.search.keyword()
                                                 ))
                                                 .color(th.accent)
                                                 .size(12.0),
@@ -724,7 +724,7 @@ impl App {
                                                 .id(egui::Id::new("file_search"))
                                                 .frame(false)
                                                 .desired_width(150.0)
-                                                .hint_text(if self.search_mode {
+                                                .hint_text(if self.search.is_active() {
                                                     "搜索中..."
                                                 } else {
                                                     "按 Enter 全局搜索"
@@ -1515,24 +1515,27 @@ impl App {
                         self.thumbnail_textures.evict(Instant::now());
 
                         // 加载更多按钮
-                        let has_more = if self.search_mode {
-                            self.search_next.is_some()
+                        let has_more = if self.search.is_active() {
+                            self.search.has_more()
                         } else {
                             self.dir_next.is_some()
                         };
                         if has_more {
                             ui.add_space(4.0);
                             ui.vertical_centered(|ui| {
-                                let btn_text = if self.search_loading {
+                                let btn_text = if self.search.is_loading() {
                                     "搜索中..."
                                 } else {
                                     "加载更多"
                                 };
                                 if ui
-                                    .add_enabled(!self.search_loading, egui::Button::new(btn_text))
+                                    .add_enabled(
+                                        !self.search.is_loading(),
+                                        egui::Button::new(btn_text),
+                                    )
                                     .clicked()
                                 {
-                                    if self.search_mode {
+                                    if self.search.is_active() {
                                         self.load_more_search_results();
                                     } else {
                                         self.load_more();
@@ -1542,14 +1545,14 @@ impl App {
                             ui.add_space(2.0);
                         }
                         // 空状态提示
-                        if self.search_mode {
-                            if self.search_results.is_empty() && !self.search_loading {
+                        if self.search.is_active() {
+                            if self.search.is_empty() && !self.search.is_loading() {
                                 ui.add_space((list_avail_h * 0.3).max(20.0));
                                 ui.vertical_centered(|ui| {
                                     ui.label(
                                         RichText::new(format!(
                                             "没有找到匹配「{}」的文件",
-                                            self.search_keyword
+                                            self.search.keyword()
                                         ))
                                         .color(th.text_weak),
                                     );
