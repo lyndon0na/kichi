@@ -84,6 +84,15 @@ pub(crate) fn compute_dir_counts(nodes: &mut [DlNode]) {
     }
 }
 
+/// 历史记录的唯一标识(纳秒时间戳串, 免计数器且天然单调)。
+pub(crate) fn record_id_now() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{nanos}")
+}
+
 /// 用时间加权 EMA 刷新任务速率。
 ///
 /// `drain()` 会在单帧内一次性消费积压的多条进度消息, 若逐条按 `Instant::now()`
