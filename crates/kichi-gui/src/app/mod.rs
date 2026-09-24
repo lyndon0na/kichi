@@ -37,6 +37,7 @@ use self::helpers::install_fonts;
 use self::preview::PreviewPage;
 use self::search::SearchPage;
 use self::shares::SharesPage;
+use self::thumbs::ThumbsPage;
 use self::transfers_model::{
     aggregate_children, compute_dir_counts, dl_record_status, sample_speed,
 };
@@ -177,13 +178,8 @@ pub struct App {
     /// 预览域: 大文件确认 / 下载进度 / 清晰度 / 「系统打开」探针。
     pub(crate) preview: PreviewPage,
 
-    /// 已加载的缩略图纹理(file_id -> TextureHandle), 带按字节上限的 LRU 淘汰。
-    pub(crate) thumbnail_textures: thumbs::ThumbTextures<egui::TextureHandle>,
-    /// 正在加载缩略图的文件 id。
-    pub(crate) thumbnail_inflight: HashSet<String>,
-    /// 缩略图重试到底仍失败的文件 id(本次会话不再重复请求; 刷新目录 /
-    /// 重新搜索时清空以再试一次)。
-    pub(crate) thumbnail_failed: HashSet<String>,
+    /// 缩略图域: 纹理缓存 + 在途 / 失败登记。
+    pub(crate) thumbs: ThumbsPage,
 
     /// 磁盘缓存(预览 + 缩略图)占用; None = 未查询或查询中。
     pub(crate) cache_usage: Option<types::CacheUsage>,
@@ -443,9 +439,7 @@ impl App {
             ul_last_clicked: None,
             upload_pick: None,
             preview: PreviewPage::default(),
-            thumbnail_textures: thumbs::ThumbTextures::new(),
-            thumbnail_inflight: HashSet::new(),
-            thumbnail_failed: HashSet::new(),
+            thumbs: ThumbsPage::default(),
             cache_usage: None,
             cache_usage_pending: false,
             cache_sweeping: false,
@@ -624,8 +618,7 @@ impl App {
                 } => {
                     if self.search.on_results(req_id, append, list) {
                         // 新一次搜索 = 重新开始, 与换目录同理。
-                        self.thumbnail_inflight.clear();
-                        self.thumbnail_failed.clear();
+                        self.thumbs.reset();
                     }
                 }
                 Msg::SearchFailed { what } => {
@@ -1097,34 +1090,8 @@ impl App {
                     width,
                     height,
                     pixels,
-                } => {
-                    self.thumbnail_inflight.remove(&file_id);
-                    let color_image = egui::ColorImage {
-                        size: [width as usize, height as usize],
-                        pixels,
-                    };
-                    let texture = ctx.load_texture(
-                        format!("thumb_{file_id}"),
-                        color_image,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    // Color32 即 4 字节 RGBA; 纹理缓存按它记账并做上限淘汰。
-                    let bytes = width as usize * height as usize * 4;
-                    let now = Instant::now();
-                    self.thumbnail_textures.insert(file_id, texture, bytes, now);
-                    tracing::trace!(
-                        "缩略图纹理 {width}×{height} ({bytes} B), 缓存 {} 张 / {} B",
-                        self.thumbnail_textures.len(),
-                        self.thumbnail_textures.bytes()
-                    );
-                    self.thumbnail_textures.evict(now);
-                }
-                Msg::ThumbnailFailed { file_id } => {
-                    // 结束在途登记并记住失败: 既不留下永不结束的 inflight,
-                    // 也不在下一帧立刻重新请求同一个失败的图。
-                    self.thumbnail_inflight.remove(&file_id);
-                    self.thumbnail_failed.insert(file_id);
-                }
+                } => self.thumbs.on_ready(ctx, file_id, width, height, pixels),
+                Msg::ThumbnailFailed { file_id } => self.thumbs.on_failed(file_id),
                 Msg::CacheUsage {
                     bytes,
                     entries,
@@ -1444,8 +1411,7 @@ impl App {
                 self.selected.clear();
                 // 换目录 / 刷新 = 重新开始: 清掉在途与失败的缩略图登记,
                 // 让重新可见的文件有机会再请求一次(worker 侧也已作废旧任务)。
-                self.thumbnail_inflight.clear();
-                self.thumbnail_failed.clear();
+                self.thumbs.reset();
             }
         }
 

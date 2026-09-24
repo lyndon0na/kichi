@@ -1200,19 +1200,17 @@ impl App {
                                         continue;
                                     }
                                     // 纹理在 = 图正被看着: 刷新 LRU, 使其免于本轮淘汰。
-                                    if self.thumbnail_textures.contains(&f.id) {
-                                        self.thumbnail_textures.mark_used(&f.id, now);
+                                    if self.thumbs.textures.contains(&f.id) {
+                                        self.thumbs.textures.mark_used(&f.id, now);
                                         continue;
                                     }
                                     let Some(url) = &f.thumbnail_link else {
                                         continue;
                                     };
-                                    if self.thumbnail_inflight.contains(&f.id)
-                                        || self.thumbnail_failed.contains(&f.id)
-                                    {
+                                    if !self.thumbs.needs_request(&f.id) {
                                         continue;
                                     }
-                                    self.thumbnail_inflight.insert(f.id.clone());
+                                    self.thumbs.mark_inflight(f.id.clone());
                                     self.send(Cmd::LoadThumbnail {
                                         file_id: f.id.clone(),
                                         url: url.clone(),
@@ -1328,7 +1326,7 @@ impl App {
                                             vec2(icon_size, icon_size),
                                         );
 
-                                        if let Some(texture) = self.thumbnail_textures.get(&f.id) {
+                                        if let Some(texture) = self.thumbs.textures.get(&f.id) {
                                             // 渲染缩略图（保持宽高比）
                                             let max_size = card_w * THUMB_MAX_CARD_RATIO;
                                             let tex_size = texture.size_vec2();
@@ -1512,7 +1510,7 @@ impl App {
 
                         // 纹理上限淘汰放在绘制之后: 本帧点亮过的(可见 ± 一屏)还在
                         // 宽限期内受保护, 只有久未露面且超限的纹理在此释放显存。
-                        self.thumbnail_textures.evict(Instant::now());
+                        self.thumbs.textures.evict(Instant::now());
 
                         // 加载更多按钮
                         let has_more = if self.search.is_active() {

@@ -1,7 +1,9 @@
-//! 缩略图纹理缓存: 按字节数 / 张数设上限的 LRU。
+//! 「缩略图」域: 纹理缓存(按字节 / 张数设上限的 LRU)与在途 / 失败登记。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+
+use eframe::egui;
 
 /// 纹理缓存上限(解码后的 RGBA 字节数)。
 pub(crate) const TEXTURE_CAP_BYTES: usize = 64 * 1024 * 1024;
@@ -121,6 +123,84 @@ impl<V> ThumbTextures<V> {
             );
         }
         freed
+    }
+}
+
+/// 「缩略图」域: 纹理缓存 + 在途 / 失败登记。
+pub(crate) struct ThumbsPage {
+    /// 已加载的缩略图纹理(file_id -> TextureHandle), 带按字节上限的 LRU 淘汰。
+    pub(crate) textures: ThumbTextures<egui::TextureHandle>,
+    /// 正在加载缩略图的文件 id。
+    inflight: HashSet<String>,
+    /// 缩略图重试到底仍失败的文件 id(本次会话不再重复请求; 刷新目录 /
+    /// 重新搜索时清空以再试一次)。
+    failed: HashSet<String>,
+}
+
+impl Default for ThumbsPage {
+    fn default() -> Self {
+        Self {
+            textures: ThumbTextures::new(),
+            inflight: HashSet::new(),
+            failed: HashSet::new(),
+        }
+    }
+}
+
+impl ThumbsPage {
+    /// 该文件是否还需要请求缩略图(在途或已失败都不必再发)。
+    pub(crate) fn needs_request(&self, id: &str) -> bool {
+        !self.inflight.contains(id) && !self.failed.contains(id)
+    }
+
+    /// 登记一次在途请求。
+    pub(crate) fn mark_inflight(&mut self, id: String) {
+        self.inflight.insert(id);
+    }
+
+    /// 清空在途与失败登记, 让重新可见的文件有机会再请求一次(换目录 / 刷新 /
+    /// 新一次搜索时调用; worker 侧也已作废旧任务)。
+    pub(crate) fn reset(&mut self) {
+        self.inflight.clear();
+        self.failed.clear();
+    }
+
+    /// 缩略图就绪: 上传为纹理并按上限淘汰。
+    pub(crate) fn on_ready(
+        &mut self,
+        ctx: &egui::Context,
+        file_id: String,
+        width: u32,
+        height: u32,
+        pixels: Vec<egui::Color32>,
+    ) {
+        self.inflight.remove(&file_id);
+        let color_image = egui::ColorImage {
+            size: [width as usize, height as usize],
+            pixels,
+        };
+        let texture = ctx.load_texture(
+            format!("thumb_{file_id}"),
+            color_image,
+            egui::TextureOptions::LINEAR,
+        );
+        // Color32 即 4 字节 RGBA; 纹理缓存按它记账并做上限淘汰。
+        let bytes = width as usize * height as usize * 4;
+        let now = Instant::now();
+        self.textures.insert(file_id, texture, bytes, now);
+        tracing::trace!(
+            "缩略图纹理 {width}×{height} ({bytes} B), 缓存 {} 张 / {} B",
+            self.textures.len(),
+            self.textures.bytes()
+        );
+        self.textures.evict(now);
+    }
+
+    /// 缩略图失败: 结束在途登记并记住失败 —— 既不留下永不结束的 inflight,
+    /// 也不在下一帧立刻重新请求同一个失败的图。
+    pub(crate) fn on_failed(&mut self, file_id: String) {
+        self.inflight.remove(&file_id);
+        self.failed.insert(file_id);
     }
 }
 
