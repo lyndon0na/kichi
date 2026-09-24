@@ -36,9 +36,9 @@ use self::search::SearchPage;
 use self::shares::SharesPage;
 use self::tasks::TasksPage;
 use self::thumbs::ThumbsPage;
-use self::transfers::TransfersPage;
+use self::transfers::{TransfersAction, TransfersPage};
 use self::trash::TrashPage;
-use self::types::Page;
+use self::types::{Crumb, Page};
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
 const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;
@@ -735,6 +735,41 @@ impl App {
             FilesAction::UploadFolder => self.upload_dir_here(),
             FilesAction::Search => self.trigger_search(),
             FilesAction::LoadMoreSearch => self.load_more_search_results(),
+        }
+    }
+
+    /// 执行传输页本帧产生的跨域动作(渲染与动作分离, 见 `transfers::TransfersAction`)。
+    fn apply_transfers_action(&mut self, a: TransfersAction) {
+        match a {
+            TransfersAction::OpenPath(path, label, quiet_ok) => {
+                self.preview.open_with_system(path, label, quiet_ok)
+            }
+            TransfersAction::PickFiles => self.upload_here(),
+            TransfersAction::PickFolder => self.upload_dir_here(),
+            TransfersAction::NavigateTo(stack) => {
+                self.files.stack = stack
+                    .into_iter()
+                    .map(|(id, label)| Crumb { id, label })
+                    .collect();
+                self.page = Page::Files;
+                self.files.show_dir(&mut self.global);
+            }
+            TransfersAction::OpenDownloadDir => {
+                let dir = if !self.download_dir.is_empty()
+                    && std::path::Path::new(&self.download_dir).is_dir()
+                {
+                    Some(std::path::PathBuf::from(&self.download_dir))
+                } else {
+                    dirs::download_dir().filter(|d| d.is_dir())
+                };
+                match dir {
+                    Some(d) => {
+                        self.preview
+                            .open_with_system(d.clone(), d.display().to_string(), true)
+                    }
+                    None => self.toast_warn("无法定位下载目录, 请在「设置」中手动选择保存位置"),
+                }
+            }
         }
     }
 
