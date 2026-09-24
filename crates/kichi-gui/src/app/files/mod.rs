@@ -17,6 +17,10 @@ use super::search::SearchPage;
 use super::thumbs::ThumbsPage;
 use super::types::{ClipKind, Clipboard, ColDrag, Crumb, DirEntry, SortBy, ViewMode};
 
+pub(super) mod grid;
+pub(super) mod row;
+pub(super) mod toolbar;
+
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
 /// 目录缓存上限, 超出按 LRU 淘汰(不淘汰当前目录)。

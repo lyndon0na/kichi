@@ -7,44 +7,16 @@ use std::time::Instant;
 use kichi_core::types::File;
 
 use crate::filetypes::{self, file_visual, FileType, PreviewKind};
-use crate::format;
 use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
 use super::helpers::truncate_text;
-use super::types::{ClipKind, ColDrag, Crumb, QualityMenuState, RowAction, SortBy, ViewMode};
+use super::types::{ClipKind, ColDrag, QualityMenuState, RowAction, SortBy, ViewMode};
 use super::App;
 
-/// 图标视图里需要请求缩略图的行区间: 可见行上下各扩一屏预取。
-///
-/// `top` 是首行在屏幕坐标里的 y(内容滚动后为负), `clip` 是滚动视口。
-/// 算错的后果是静默的 —— 区间偏小则网格长期留白, 偏大则等于整目录入队。
-fn thumb_row_range(clip: Rect, top: f32, row_h: f32, total_rows: usize) -> std::ops::Range<usize> {
-    let row_h = row_h.max(1.0);
-    let margin = clip.height();
-    let first = ((clip.min.y - margin - top) / row_h).floor().max(0.0) as usize;
-    let last = ((clip.max.y + margin - top) / row_h).ceil().max(0.0) as usize;
-    first.min(total_rows)..last.min(total_rows)
-}
+use super::files::{grid, row, toolbar};
 
-/// 图标视图卡片大小的可调范围(Ctrl + 滚轮)。
-const GRID_CARD_MIN: f32 = 80.0;
-const GRID_CARD_MAX: f32 = 160.0;
-/// 缩略图在卡片内的最大占宽比(与网格绘制处一致)。
-const THUMB_MAX_CARD_RATIO: f32 = 0.85;
-
-/// 单张缩略图纹理最长边的上限(物理像素): 卡片最大显示尺寸 × 屏幕像素密度。
-///
-/// 服务端下发的缩略图(实测 720×405)远大于卡片所需, 不降采样就直接上传纹理
-/// 会让显存按原始尺寸记账。按此上限解码, 卡片放到最大、屏幕是 HiDPI 时也够清。
-fn thumb_max_edge(pixels_per_point: f32) -> u32 {
-    let px = GRID_CARD_MAX * THUMB_MAX_CARD_RATIO * pixels_per_point;
-    (px.ceil() as u32).clamp(128, 512)
-}
-
-/// 布局坐标。返回 (name_x, size_left, time_left)。
-/// 名称列占据剩余空间; size_w / time_w 从 App 状态读取。
 impl App {
     const NAME_X: f32 = 54.0; // 复选框(8+16=24) + 图标(38+11=49) + 间距
     const RIGHT_PAD: f32 = 8.0;
@@ -58,399 +30,6 @@ impl App {
         let size_left = (time_left - self.files.col_size_w - 16.0).max(Self::NAME_X + 60.0);
         (Self::NAME_X, size_left, time_left)
     }
-}
-
-/// 面包屑导航: 宽度不足时从左侧省略中间层级, 始终保留当前目录(必要时截断)。
-/// 返回被点击的层级索引。
-fn breadcrumbs(ui: &mut egui::Ui, th: &Theme, crumbs: &[Crumb], budget: f32) -> Option<usize> {
-    if crumbs.is_empty() {
-        return None;
-    }
-    let painter = ui.painter().clone();
-    let font = FontId::proportional(15.0);
-    let pad = 8.0f32;
-    let sep = 16.0f32;
-    let row_h = 26.0f32;
-    let n = crumbs.len();
-
-    let mut galleys: Vec<_> = crumbs
-        .iter()
-        .map(|c| painter.layout_no_wrap(c.label.clone(), font.clone(), th.text))
-        .collect();
-    let mut widths: Vec<f32> = galleys.iter().map(|g| g.size().x + pad * 2.0).collect();
-
-    // 从最后一项往前塞, 放不下就省略更早的层级。
-    let ell_w = painter
-        .layout_no_wrap("…".to_string(), font.clone(), th.text_faint)
-        .size()
-        .x
-        + pad * 2.0;
-    let mut start = n - 1;
-    let mut used = widths[start];
-    while start > 0 {
-        let cand = widths[start - 1] + sep;
-        let extra_ell = if start - 1 > 0 { ell_w + sep } else { 0.0 };
-        if used + cand + extra_ell <= budget {
-            used += cand;
-            start -= 1;
-        } else {
-            break;
-        }
-    }
-
-    // 当前目录仍放不下时单独截断。
-    if start == n - 1 && widths[n - 1] > budget {
-        let w = (budget - pad * 2.0).max(24.0);
-        galleys[n - 1] = truncate_text(&painter, &crumbs[n - 1].label, w, font.clone(), th.text);
-        widths[n - 1] = galleys[n - 1].size().x + pad * 2.0;
-    }
-
-    let mut clicked = None;
-    if start > 0 {
-        let (er, _) = ui.allocate_exact_size(vec2(ell_w, row_h), egui::Sense::hover());
-        let ec = er.center();
-        for dx in [-4.0f32, 0.0, 4.0] {
-            painter.circle_filled(Pos2::new(ec.x + dx, ec.y), 1.4, th.text_faint);
-        }
-        let (sr, _) = ui.allocate_exact_size(vec2(sep, row_h), egui::Sense::hover());
-        icons::paint(
-            &painter,
-            Rect::from_center_size(sr.center(), vec2(11.0, 11.0)),
-            Glyph::ChevronRight,
-            th.text_faint,
-        );
-    }
-    for i in start..n {
-        if i > start {
-            let (sr, _) = ui.allocate_exact_size(vec2(sep, row_h), egui::Sense::hover());
-            icons::paint(
-                &painter,
-                Rect::from_center_size(sr.center(), vec2(11.0, 11.0)),
-                Glyph::ChevronRight,
-                th.text_faint,
-            );
-        }
-        let last = i == n - 1;
-        let (rect, resp) = ui.allocate_exact_size(vec2(widths[i], row_h), egui::Sense::click());
-        if !last && resp.hovered() {
-            painter.rect_filled(rect, th.cr(6), th.hover);
-        }
-        let color = if last { th.text } else { th.text_weak };
-        let g = galleys[i].clone();
-        painter.galley(
-            Pos2::new(
-                rect.center().x - g.size().x / 2.0,
-                rect.center().y - g.size().y / 2.0,
-            ),
-            g,
-            color,
-        );
-        if !last && resp.clicked() {
-            clicked = Some(i);
-        }
-    }
-    clicked
-}
-
-/// 「播放」子菜单: 原画直达 + 已解析出的清晰度。
-/// 子菜单打开时会请求(若尚未缓存)该文件的清晰度列表。
-fn play_menu(
-    ui: &mut egui::Ui,
-    id: &str,
-    name: &str,
-    state: QualityMenuState<'_>,
-    actions: &mut Vec<RowAction>,
-) {
-    actions.push(RowAction::FetchQualities(id.to_string(), name.to_string()));
-    ui.menu_button("播放", |ui| match state {
-        QualityMenuState::Loading => {
-            if ui.button("原画（直接播放）").clicked() {
-                actions.push(RowAction::OpenFile(id.to_string(), name.to_string()));
-                ui.close_menu();
-            }
-            ui.add_enabled(false, egui::Button::new("加载清晰度…"));
-        }
-        QualityMenuState::Ready(r) if !r.options.is_empty() => {
-            for opt in &r.options {
-                if ui.button(&opt.label).clicked() {
-                    actions.push(RowAction::PlayOption(id.to_string(), opt.clone()));
-                    ui.close_menu();
-                }
-            }
-        }
-        QualityMenuState::Ready(_) => {
-            if ui.button("原画（直接播放）").clicked() {
-                actions.push(RowAction::OpenFile(id.to_string(), name.to_string()));
-                ui.close_menu();
-            }
-            ui.add_enabled(false, egui::Button::new("无可用清晰度"));
-        }
-    });
-}
-
-/// 预览入口: 视频给「播放」子菜单(含清晰度), 音频给「播放」, 其余给「打开」;
-/// 压缩包 / 镜像 / 可执行 / 种子不给入口, 只留「下载到本地」。
-fn preview_menu_items(
-    ui: &mut egui::Ui,
-    f: &File,
-    quality: QualityMenuState<'_>,
-    actions: &mut Vec<RowAction>,
-) {
-    let ft = filetypes::classify_file(f);
-    match filetypes::preview_kind(ft) {
-        PreviewKind::DownloadOnly => {}
-        PreviewKind::Play if ft == FileType::Video => {
-            play_menu(ui, &f.id, &f.name, quality, actions);
-        }
-        kind => {
-            let label = if kind == PreviewKind::Play {
-                "播放"
-            } else {
-                "打开"
-            };
-            if ui.button(label).clicked() {
-                actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
-                ui.close_menu();
-            }
-        }
-    }
-}
-
-/// 列表行; 返回勾选变更的 id(仅点击复选框时)。
-#[allow(clippy::too_many_arguments)]
-fn file_row(
-    ui: &mut egui::Ui,
-    th: &Theme,
-    f: &File,
-    is_sel: bool,
-    even: bool,
-    has_clip: bool,
-    quality: QualityMenuState<'_>,
-    actions: &mut Vec<RowAction>,
-    name_x: f32,
-    size_left: f32,
-    time_left: f32,
-) -> Option<String> {
-    let row_h = 40.0;
-    let w = ui.available_width().max(320.0);
-    let (rect, row_resp) = ui.allocate_exact_size(vec2(w, row_h), egui::Sense::click());
-    let painter = ui.painter().clone();
-
-    let hovered = row_resp.hovered();
-
-    let bg = if is_sel {
-        if th.breeze {
-            th.accent
-        } else {
-            mix(th.card, th.accent, if th.dark { 0.22 } else { 0.12 })
-        }
-    } else if hovered {
-        mix(th.card, th.text, if th.dark { 0.07 } else { 0.045 })
-    } else if even && !th.breeze {
-        mix(th.card, th.text, if th.dark { 0.018 } else { 0.012 })
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    painter.rect_filled(rect.shrink2(vec2(2.0, 2.0)), th.cr(8), bg);
-    if is_sel && !th.breeze {
-        painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(rect.min.x + 3.0, rect.min.y + 7.0),
-                Pos2::new(rect.min.x + 5.0, rect.max.y - 7.0),
-            ),
-            th.cr(2),
-            th.accent,
-        );
-    }
-
-    // 复选框
-    let cb_size = 16.0;
-    let cb_x = rect.min.x + 8.0;
-    let cb_y = rect.center().y - cb_size / 2.0;
-    let cb_rect = Rect::from_min_max(
-        Pos2::new(cb_x, cb_y),
-        Pos2::new(cb_x + cb_size, cb_y + cb_size),
-    );
-    let cb_resp = ui.interact(
-        cb_rect,
-        ui.id().with(("cb", f.id.clone())),
-        egui::Sense::click(),
-    );
-
-    // 复选框背景
-    let cb_on_accent = is_sel && th.breeze;
-    let cb_bg = if cb_on_accent {
-        th.on_accent
-    } else if is_sel {
-        th.accent
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    let cb_stroke = if is_sel {
-        Stroke::NONE
-    } else {
-        Stroke::new(1.5, th.text_faint)
-    };
-    painter.rect_filled(cb_rect, th.cr(3), cb_bg);
-    painter.rect_stroke(cb_rect, th.cr(3), cb_stroke, egui::StrokeKind::Inside);
-
-    // 选中时绘制勾号
-    if is_sel {
-        let check_pts = [
-            Pos2::new(cb_x + 3.5, cb_y + cb_size / 2.0),
-            Pos2::new(cb_x + 6.5, cb_y + cb_size / 2.0 + 3.0),
-            Pos2::new(cb_x + cb_size - 3.0, cb_y + 3.0),
-        ];
-        let tick = if cb_on_accent {
-            th.accent
-        } else {
-            th.on_accent
-        };
-        painter.add(egui::Shape::line(
-            check_pts.to_vec(),
-            Stroke::new(2.0, tick),
-        ));
-    }
-
-    // 复选框悬停效果
-    if cb_resp.hovered() {
-        painter.rect_filled(cb_rect, th.cr(3), mix(th.accent, th.bg, 0.85));
-    }
-
-    let yc = rect.center().y;
-    let (glyph, color) = file_visual(f);
-    let icon_rect = Rect::from_center_size(Pos2::new(rect.min.x + 38.0, yc), vec2(22.0, 22.0));
-    painter.rect_filled(
-        icon_rect,
-        th.cr(6),
-        mix(th.card, color, if th.dark { 0.16 } else { 0.10 }),
-    );
-    icons::paint(&painter, icon_rect.shrink(2.5), glyph, color);
-
-    let x0 = rect.min.x;
-    let name_color = if is_sel && th.breeze {
-        th.on_accent
-    } else {
-        th.text
-    };
-    let dim_color = if is_sel && th.breeze {
-        mix(th.on_accent, th.accent, 0.25)
-    } else {
-        th.text_weak
-    };
-
-    let name_w = (size_left - 12.0 - name_x).max(24.0);
-    let name_g = truncate_text(
-        &painter,
-        &f.name,
-        name_w,
-        FontId::proportional(14.0),
-        name_color,
-    );
-    painter.galley(
-        Pos2::new(x0 + name_x, yc - name_g.size().y / 2.0),
-        name_g,
-        name_color,
-    );
-
-    if !f.is_folder() {
-        let g = painter.layout_no_wrap(
-            format::fmt_bytes(f.size),
-            FontId::proportional(12.5),
-            dim_color,
-        );
-        painter.galley(
-            Pos2::new(x0 + size_left, yc - g.size().y / 2.0),
-            g,
-            dim_color,
-        );
-    }
-    let t = f
-        .modified_time
-        .as_deref()
-        .or(f.created_time.as_deref())
-        .unwrap_or("");
-    let g = painter.layout_no_wrap(format::fmt_time(t), FontId::proportional(12.5), dim_color);
-    painter.galley(
-        Pos2::new(x0 + time_left, yc - g.size().y / 2.0),
-        g,
-        dim_color,
-    );
-
-    // 右键菜单
-    let f_ctx = f.clone();
-    let dbl = row_resp.double_clicked();
-    let _menu = row_resp.context_menu(|ui| {
-        if f_ctx.is_folder() {
-            if ui.button("打开").clicked() {
-                actions.push(RowAction::OpenFolder(f_ctx.id.clone(), f_ctx.name.clone()));
-                ui.close_menu();
-            }
-            if ui.button("下载到本地…").clicked() {
-                actions.push(RowAction::DownloadFolder(
-                    f_ctx.id.clone(),
-                    f_ctx.name.clone(),
-                ));
-                ui.close_menu();
-            }
-        } else {
-            if ui.button("下载到本地…").clicked() {
-                actions.push(RowAction::DownloadFile(
-                    f_ctx.id.clone(),
-                    f_ctx.name.clone(),
-                ));
-                ui.close_menu();
-            }
-            preview_menu_items(ui, &f_ctx, quality, actions);
-        }
-        ui.separator();
-        if ui.button("分享").clicked() {
-            actions.push(RowAction::Share(f_ctx.id.clone()));
-            ui.close_menu();
-        }
-        if ui.button("复制").clicked() {
-            actions.push(RowAction::CopyItem(f_ctx.id.clone()));
-            ui.close_menu();
-        }
-        if ui.button("剪切").clicked() {
-            actions.push(RowAction::CutItem(f_ctx.id.clone()));
-            ui.close_menu();
-        }
-        if has_clip && f_ctx.is_folder() && ui.button("粘贴到此处").clicked() {
-            actions.push(RowAction::PasteInto(f_ctx.id.clone()));
-            ui.close_menu();
-        }
-        ui.separator();
-        if ui.button("重命名").clicked() {
-            actions.push(RowAction::Rename(f_ctx.id.clone(), f_ctx.name.clone()));
-            ui.close_menu();
-        }
-        if ui.button("复制名称").clicked() {
-            actions.push(RowAction::CopyName(f_ctx.name.clone()));
-            ui.close_menu();
-        }
-        ui.separator();
-        if ui
-            .button(RichText::new("移入回收站").color(th.danger))
-            .clicked()
-        {
-            actions.push(RowAction::Trash(f_ctx.id.clone()));
-            ui.close_menu();
-        }
-    });
-
-    let mut sel: Option<String> = None;
-    // 只有点击复选框才会勾选/取消; 单击行本身不改变选择。
-    if cb_resp.clicked() {
-        sel = Some(f.id.clone());
-    } else if dbl {
-        if f.is_folder() {
-            actions.push(RowAction::OpenFolder(f.id.clone(), f.name.clone()));
-        } else {
-            actions.push(RowAction::OpenFile(f.id.clone(), f.name.clone()));
-        }
-    }
-    sel
 }
 
 impl App {
@@ -534,7 +113,7 @@ impl App {
                         if modifiers.ctrl && delta.y.abs() > 0.0 {
                             let step = if delta.y > 0.0 { 5.0 } else { -5.0 };
                             self.files.grid_card_size = (self.files.grid_card_size + step)
-                                .clamp(GRID_CARD_MIN, GRID_CARD_MAX);
+                                .clamp(grid::GRID_CARD_MIN, grid::GRID_CARD_MAX);
                         }
                     }
                 }
@@ -636,7 +215,7 @@ impl App {
                                     });
                                 ui.add_space(6.0);
                             } else if let Some(i) =
-                                breadcrumbs(ui, th, &self.files.stack, crumbs_budget)
+                                toolbar::breadcrumbs(ui, th, &self.files.stack, crumbs_budget)
                             {
                                 jumped = Some(i);
                             }
@@ -962,7 +541,7 @@ impl App {
                                         Some(r) => QualityMenuState::Ready(r),
                                         None => QualityMenuState::Loading,
                                     };
-                                    play_menu(ui, &id, &name, quality, &mut actions);
+                                    row::play_menu(ui, &id, &name, quality, &mut actions);
                                 } else {
                                     let label = if ft == FileType::Audio {
                                         "播放"
@@ -1157,7 +736,7 @@ impl App {
                                     Some(r) => QualityMenuState::Ready(r),
                                     None => QualityMenuState::Loading,
                                 };
-                                if let Some(id) = file_row(
+                                if let Some(id) = row::file_row(
                                     ui,
                                     th,
                                     f,
@@ -1188,8 +767,8 @@ impl App {
                             let clip = ui.clip_rect();
                             let row_h = card_h + ui.spacing().item_spacing.y;
                             let row_range =
-                                thumb_row_range(clip, ui.cursor().min.y, row_h, total_rows);
-                            let max_edge = thumb_max_edge(ui.ctx().pixels_per_point());
+                                grid::thumb_row_range(clip, ui.cursor().min.y, row_h, total_rows);
+                            let max_edge = grid::thumb_max_edge(ui.ctx().pixels_per_point());
                             let now = Instant::now();
                             for row in row_range {
                                 for col in 0..cols {
@@ -1330,7 +909,7 @@ impl App {
 
                                         if let Some(texture) = self.thumbs.textures.get(&f.id) {
                                             // 渲染缩略图（保持宽高比）
-                                            let max_size = card_w * THUMB_MAX_CARD_RATIO;
+                                            let max_size = card_w * grid::THUMB_MAX_CARD_RATIO;
                                             let tex_size = texture.size_vec2();
                                             let aspect = tex_size.x / tex_size.y;
 
@@ -1433,7 +1012,7 @@ impl App {
                                                     ));
                                                     ui.close_menu();
                                                 }
-                                                preview_menu_items(
+                                                row::preview_menu_items(
                                                     ui,
                                                     &f_ctx,
                                                     quality,
@@ -1867,42 +1446,5 @@ impl App {
         if h1_resp.hovered() || h2_resp.hovered() || self.files.col_dragging.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thumb_rows_cover_visible_plus_one_screen() {
-        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 400.0));
-        // 未滚动: 可见 0..4 行, 下侧预取一屏 => 0..8。
-        assert_eq!(thumb_row_range(clip, 0.0, 100.0, 50), 0..8);
-    }
-
-    #[test]
-    fn thumb_rows_follow_scroll_position() {
-        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 400.0));
-        // 内容上移 1000px: 可见 10..14 行, 上下各预取一屏 => 6..18。
-        assert_eq!(thumb_row_range(clip, -1000.0, 100.0, 50), 6..18);
-    }
-
-    #[test]
-    fn thumb_rows_clamp_to_total_and_stay_empty_when_past_end() {
-        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(600.0, 400.0));
-        assert_eq!(thumb_row_range(clip, 0.0, 100.0, 3), 0..3);
-        // 滚过列表末尾(理论上不会发生)也不能越界。
-        assert_eq!(thumb_row_range(clip, -20_000.0, 100.0, 50), 50..50);
-    }
-
-    #[test]
-    fn thumb_max_edge_covers_max_card_at_any_pixel_ratio() {
-        // 卡片放到最大仍要够清: 160 × 0.85 = 136 逻辑像素。
-        assert_eq!(thumb_max_edge(1.0), 136);
-        assert_eq!(thumb_max_edge(1.25), 170);
-        assert_eq!(thumb_max_edge(2.0), 272);
-        // 极端缩放不失控。
-        assert_eq!(thumb_max_edge(4.0), 512);
     }
 }
