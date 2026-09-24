@@ -1,5 +1,6 @@
 mod dialogs;
 mod files_page;
+mod global;
 mod helpers;
 mod login;
 mod settings_page;
@@ -13,7 +14,7 @@ mod trash_page;
 pub(crate) mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
@@ -21,7 +22,6 @@ use kichi_core::session;
 use kichi_core::types::{task_id, File, FileList, Quota, Share, Task};
 
 use crate::filetypes;
-use crate::kde;
 use crate::msg::{Cmd, Msg};
 use crate::settings::{
     self, DownloadChildRecord, DownloadRecord, DownloadRecordStatus, UploadRecord,
@@ -30,6 +30,7 @@ use crate::settings::{
 use crate::theme::{self, Theme};
 use crate::worker;
 
+use self::global::Global;
 use self::helpers::install_fonts;
 use self::transfers_model::{
     aggregate_children, compute_dir_counts, dl_record_status, sample_speed,
@@ -53,8 +54,9 @@ const TRASH_TTL: Duration = Duration::from_secs(60);
 const DIR_CACHE_CAP: usize = 64;
 
 pub struct App {
-    tx: Sender<Cmd>,
     rx: Receiver<Msg>,
+    /// 各域共用的全局句柄(命令通道 / 提示条 / 系统配色)。
+    pub(crate) global: Global,
 
     // 认证
     pub(crate) auth_checking: bool,
@@ -68,10 +70,6 @@ pub struct App {
     pub(crate) remember_password: bool,
     /// 手动登录成功后待写入密钥环的密码。
     pub(crate) pending_remember: Option<String>,
-    /// 系统(KDE)配色; 非 KDE 时为 None。
-    pub(crate) kde_colors: Option<kde::KdeColors>,
-    /// 上次轮询系统主题的时间。
-    pub(crate) kde_checked: Instant,
 
     pub(crate) page: Page,
     /// 传输任务页当前分栏(上传 / 下载)。
@@ -293,8 +291,6 @@ pub struct App {
     pub(crate) trash_delete_confirm: Option<Vec<(String, String)>>,
     /// 清空回收站确认。
     pub(crate) trash_empty_confirm: bool,
-
-    pub(crate) toast: Option<(Color32, String, Instant)>,
 }
 
 impl App {
@@ -304,8 +300,8 @@ impl App {
         let saved = settings::load();
 
         let mut app = App {
-            tx,
             rx,
+            global: Global::new(tx),
             auth_checking: false,
             username: String::new(),
             login_username: saved.username.clone(),
@@ -314,8 +310,6 @@ impl App {
             auth_captcha_url: None,
             remember_password: saved.remember_password,
             pending_remember: None,
-            kde_colors: kde::load(),
-            kde_checked: Instant::now(),
             page: Page::Files,
             transfer_tab: TransferTab::Download,
             stack: vec![Crumb {
@@ -606,14 +600,13 @@ impl App {
             col_dragging: None,
             view_mode: ViewMode::List,
             last_clicked_dl: None,
-            toast: None,
         };
 
         app.restore_req_id();
         app.start_session();
 
-        if !font_loaded && app.toast.is_none() {
-            app.toast = Some((
+        if !font_loaded && app.global.toast.is_none() {
+            app.global.toast = Some((
                 Color32::from_rgb(200, 160, 60),
                 "未找到中文字体，中文可能显示为方块。请安装 wqy-zenhei 或 google-droid-sans-fonts"
                     .into(),
@@ -639,7 +632,7 @@ impl App {
         match session::load_session() {
             Ok(Some(s)) => {
                 self.auth_checking = true;
-                let _ = self.tx.send(Cmd::Resume {
+                self.send(Cmd::Resume {
                     device_id: s.device_id,
                     access_token: s.access_token,
                     refresh_token: s.refresh_token,
@@ -651,7 +644,7 @@ impl App {
             Err(e) => {
                 // 会话文件损坏/无法读取: 清掉以免每次启动都报错, 再尝试密钥环自动登录。
                 let _ = session::clear_session();
-                self.toast = Some((
+                self.global.toast = Some((
                     Color32::from_rgb(200, 90, 60),
                     e.to_string(),
                     Instant::now(),
@@ -662,14 +655,11 @@ impl App {
     }
 
     pub(crate) fn theme(&self) -> Theme {
-        match &self.kde_colors {
-            Some(k) => Theme::from_kde(k),
-            None => Theme::fallback(),
-        }
+        self.global.theme()
     }
 
     pub(crate) fn send(&self, cmd: Cmd) {
-        let _ = self.tx.send(cmd);
+        self.global.send(cmd);
     }
 
     pub(crate) fn drain(&mut self, ctx: &egui::Context) {
@@ -1514,16 +1504,16 @@ impl App {
     }
 
     pub(crate) fn toast(&mut self, msg: &str, color: Color32) {
-        self.toast = Some((color, msg.to_string(), Instant::now()));
+        self.global.toast(msg, color);
     }
     pub(crate) fn toast_ok(&mut self, msg: &str) {
-        self.toast(msg, self.theme().ok);
+        self.global.toast_ok(msg);
     }
     pub(crate) fn toast_warn(&mut self, msg: &str) {
-        self.toast(msg, self.theme().warn);
+        self.global.toast_warn(msg);
     }
     pub(crate) fn toast_err(&mut self, msg: &str) {
-        self.toast(msg, self.theme().danger);
+        self.global.toast_err(msg);
     }
 
     /// 当前生效的离线任务页签: 未手动选择时按已有数据自动挑一个(优先「下载中」)。
@@ -1603,25 +1593,6 @@ impl App {
             self.auth_error = None;
             self.auth_captcha_url = None;
             self.send(Cmd::AutoLogin { username });
-        }
-    }
-
-    /// 定期重读 kdeglobals, 让系统换主题后应用即时更新。
-    fn poll_system_theme(&mut self) {
-        if self.kde_checked.elapsed() < Duration::from_millis(1500) {
-            return;
-        }
-        self.kde_checked = Instant::now();
-        let fresh = kde::load();
-        let changed = match (&self.kde_colors, &fresh) {
-            (Some(a), Some(b)) => {
-                a.accent != b.accent || a.dark != b.dark || a.view_bg != b.view_bg
-            }
-            (None, Some(_)) | (Some(_), None) => true,
-            (None, None) => false,
-        };
-        if changed {
-            self.kde_colors = fresh;
         }
     }
 
@@ -1817,7 +1788,7 @@ impl App {
         self.search_loading = true;
         self.search_req_id += 1;
         tracing::info!("发送搜索命令: req_id={}", self.search_req_id);
-        let _ = self.tx.send(Cmd::SearchFiles {
+        self.send(Cmd::SearchFiles {
             keyword,
             token: None,
             append: false,
@@ -1842,7 +1813,7 @@ impl App {
         }
         self.search_loading = true;
         let token = self.search_next.clone().unwrap();
-        let _ = self.tx.send(Cmd::SearchFiles {
+        self.send(Cmd::SearchFiles {
             keyword: self.search_keyword.clone(),
             token: Some(token),
             append: true,
@@ -2994,7 +2965,7 @@ impl eframe::App for App {
         self.drain(ctx);
         self.poll_file_picker();
         self.poll_pending_open(ctx);
-        self.poll_system_theme();
+        self.global.poll_system_theme();
 
         // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
         // 用静默校正而非强制刷新, 避免清空列表导致闪烁。

@@ -620,12 +620,10 @@ impl App {
             match op {
                 TaskOp::Download(fid, name) => self.download_single(fid, name),
                 TaskOp::Retry(id) => {
-                    let tx = self.tx.clone();
-                    let _ = tx.send(Cmd::OfflineRetry { task_id: id });
+                    self.send(Cmd::OfflineRetry { task_id: id });
                 }
                 TaskOp::Delete(id) => {
-                    let tx = self.tx.clone();
-                    let _ = tx.send(Cmd::OfflineDelete {
+                    self.send(Cmd::OfflineDelete {
                         task_ids: vec![id],
                         delete_files: false,
                     });

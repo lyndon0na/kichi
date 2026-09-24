@@ -1135,11 +1135,11 @@ impl App {
     }
 
     pub(super) fn draw_toast(&mut self, ctx: &egui::Context) {
-        let Some((color, msg, since)) = self.toast.clone() else {
+        let Some((color, msg, since)) = self.global.toast.clone() else {
             return;
         };
         if since.elapsed() > Duration::from_secs(6) {
-            self.toast = None;
+            self.global.toast = None;
             return;
         }
         let cr = self.theme().cr(10);
