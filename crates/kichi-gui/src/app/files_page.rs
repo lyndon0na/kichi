@@ -956,7 +956,7 @@ impl App {
                             }
                             if let Some((ft, id, name)) = open_sel {
                                 if ft == FileType::Video {
-                                    let quality = match self.quality_cache.get(&id) {
+                                    let quality = match self.preview.quality(&id) {
                                         Some(r) => QualityMenuState::Ready(r),
                                         None => QualityMenuState::Loading,
                                     };
@@ -1151,7 +1151,7 @@ impl App {
                             // 列表视图
                             for f in &all_files {
                                 let is_sel = self.selected.contains(&f.id);
-                                let quality = match self.quality_cache.get(&f.id) {
+                                let quality = match self.preview.quality(&f.id) {
                                     Some(r) => QualityMenuState::Ready(r),
                                     None => QualityMenuState::Loading,
                                 };
@@ -1231,7 +1231,7 @@ impl App {
                                         }
                                         let f = all_files[idx];
                                         let is_sel = self.selected.contains(&f.id);
-                                        let quality = match self.quality_cache.get(&f.id) {
+                                        let quality = match self.preview.quality(&f.id) {
                                             Some(r) => QualityMenuState::Ready(r),
                                             None => QualityMenuState::Loading,
                                         };

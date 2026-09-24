@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use eframe::egui::{self, vec2, Align2, Color32, Key, RichText, Stroke};
 
-use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
@@ -140,44 +139,9 @@ impl App {
             }
         }
 
-        if let Some(pc) = self.preview_confirm.clone() {
-            let mut confirmed = false;
-            let mut close = false;
-            egui::Window::new("预览大文件")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.set_max_width(360.0);
-                    ui.label(format!(
-                        "「{}」大小为 {}, 预览前需要先完整下载到本地缓存。",
-                        pc.name,
-                        crate::format::fmt_bytes(pc.size)
-                    ));
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(RichText::new("继续预览").color(th.on_accent))
-                                    .fill(th.accent)
-                                    .stroke(Stroke::NONE),
-                            )
-                            .clicked()
-                        {
-                            confirmed = true;
-                            close = true;
-                        }
-                        if ui.button("取消").clicked() {
-                            close = true;
-                        }
-                    });
-                });
-            if confirmed {
-                self.start_preview(pc.id.clone(), pc.name.clone());
-            }
-            if close {
-                self.preview_confirm = None;
-            }
+        if let Some((id, name)) = self.preview.draw_confirm(ctx, th) {
+            // 用户已确认大文件预览: 跳过尺寸检查直接发起。
+            self.start_preview(id, name);
         }
 
         if self.logout_confirm {
@@ -355,71 +319,5 @@ impl App {
                         ui.add_space(2.0);
                     });
             });
-    }
-
-    /// 非媒体预览的缓存下载状态条(常驻于 toast 上方, 带进度与取消)。
-    pub(super) fn draw_preview_status(&mut self, ctx: &egui::Context) {
-        let Some(p) = self.preview_progress.clone() else {
-            return;
-        };
-        let th = self.theme();
-        let cr = th.cr(10);
-        let shown: String = if p.name.chars().count() > 22 {
-            format!("{}…", p.name.chars().take(20).collect::<String>())
-        } else {
-            p.name.clone()
-        };
-        let frac = if p.total > 0 {
-            (p.done as f64 / p.total as f64).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
-        let text = if p.total > 0 {
-            format!(
-                "{} / {}",
-                crate::format::fmt_bytes(p.done as i64),
-                crate::format::fmt_bytes(p.total as i64)
-            )
-        } else {
-            crate::format::fmt_bytes(p.done as i64)
-        };
-        let mut cancel = false;
-        egui::Area::new(egui::Id::new("preview-status"))
-            .anchor(Align2::RIGHT_BOTTOM, [-16.0, -64.0])
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style())
-                    .corner_radius(cr)
-                    .show(ui, |ui| {
-                        ui.set_max_width(300.0);
-                        ui.add_space(2.0);
-                        ui.label(
-                            RichText::new(format!("预览下载中「{shown}」"))
-                                .color(th.text)
-                                .size(12.5),
-                        );
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::ProgressBar::new(frac)
-                                    .desired_width(240.0)
-                                    .corner_radius(th.cr(4))
-                                    .fill(th.accent)
-                                    .animate(p.total == 0)
-                                    .text(RichText::new(text).size(11.0)),
-                            );
-                            ui.add_space(2.0);
-                            let (r, resp) =
-                                ui.allocate_exact_size(vec2(20.0, 20.0), egui::Sense::click());
-                            icons::paint(ui.painter(), r, Glyph::Close, th.text_weak);
-                            if resp.on_hover_text("取消预览").clicked() {
-                                cancel = true;
-                            }
-                        });
-                        ui.add_space(2.0);
-                    });
-            });
-        if cancel {
-            self.cancel_preview();
-        }
     }
 }

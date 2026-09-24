@@ -10,10 +10,10 @@ use crate::msg::Cmd;
 use crate::settings;
 use crate::theme::{mix, Theme};
 
-use super::helpers::{self, card_shell, icon_action, paint_checkbox, truncate_text, CheckState};
+use super::helpers::{card_shell, icon_action, paint_checkbox, truncate_text, CheckState};
 use super::types::{
-    Crumb, DlFilter, DlJob, DlNode, DlOp, DlRow, DlSel, DlStatus, Page, PendingOpen, TransferTab,
-    UlFilter, UlJob, UlOp, UlStatus,
+    Crumb, DlFilter, DlJob, DlNode, DlOp, DlRow, DlSel, DlStatus, Page, TransferTab, UlFilter,
+    UlJob, UlOp, UlStatus,
 };
 use super::App;
 
@@ -1468,11 +1468,11 @@ impl App {
                             };
                             match dir {
                                 Some(d) => {
-                                    self.pending_open = Some(PendingOpen {
-                                        label: d.display().to_string(),
-                                        rx: helpers::open_async(d),
-                                        quiet_ok: true,
-                                    });
+                                    self.preview.open_with_system(
+                                        d.clone(),
+                                        d.display().to_string(),
+                                        true,
+                                    );
                                 }
                                 None => self
                                     .toast_warn("无法定位下载目录, 请在「设置」中手动选择保存位置"),
@@ -1820,11 +1820,8 @@ impl App {
                 DlOp::OpenDir => {
                     let dir = self.jobs.get(&rid).map(|job| job.dir.clone());
                     if let Some(dir) = dir {
-                        self.pending_open = Some(PendingOpen {
-                            label: dir.display().to_string(),
-                            rx: helpers::open_async(dir),
-                            quiet_ok: true,
-                        });
+                        self.preview
+                            .open_with_system(dir.clone(), dir.display().to_string(), true);
                     }
                 }
                 DlOp::OpenFile => {
@@ -1833,11 +1830,7 @@ impl App {
                         .get(&rid)
                         .map(|job| (job.dir.join(&job.name), job.name.clone()));
                     if let Some((path, label)) = opened {
-                        self.pending_open = Some(PendingOpen {
-                            rx: helpers::open_async(path),
-                            label,
-                            quiet_ok: false,
-                        });
+                        self.preview.open_with_system(path, label, false);
                     }
                 }
                 DlOp::Retry => {

@@ -3,6 +3,7 @@ mod files_page;
 mod global;
 mod helpers;
 mod login;
+mod preview;
 mod settings_page;
 mod shares;
 mod sidebar;
@@ -32,6 +33,7 @@ use crate::worker;
 
 use self::global::Global;
 use self::helpers::install_fonts;
+use self::preview::PreviewPage;
 use self::shares::SharesPage;
 use self::transfers_model::{
     aggregate_children, compute_dir_counts, dl_record_status, sample_speed,
@@ -39,8 +41,7 @@ use self::transfers_model::{
 use self::trash::TrashPage;
 use self::types::{
     ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
-    OfflineTab, Page, PendingOpen, PreviewConfirm, PreviewProgress, QualityReady, SortBy,
-    TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+    OfflineTab, Page, SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
 };
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
@@ -182,19 +183,8 @@ pub struct App {
     /// 进行中的异步选择 (是否目录, 目标目录, 目标路径展示, 结果通道), 避免阻塞 UI 线程。
     pub(crate) upload_pick: Option<UploadPick>,
 
-    /// 正在准备中的预览任务 (req_id, 文件名); 用于给出加载反馈。
-    pub(crate) preview_pending: Option<(u64, String)>,
-    /// 待确认的大文件预览(非媒体预览需先整份下载, 超过阈值先问一次)。
-    pub(crate) preview_confirm: Option<PreviewConfirm>,
-    /// 非媒体预览的缓存下载进度(常驻进度条 + 取消)。
-    pub(crate) preview_progress: Option<PreviewProgress>,
-    /// 待回传的「用系统程序打开」探针(避免 xdg-open 假成功)。
-    pub(crate) pending_open: Option<PendingOpen>,
-
-    /// 已解析的媒体文件清晰度缓存(file_id -> 清晰度+字幕)。
-    pub(crate) quality_cache: HashMap<String, QualityReady>,
-    /// 正在解析清晰度的文件 id。
-    pub(crate) quality_inflight: HashSet<String>,
+    /// 预览域: 大文件确认 / 下载进度 / 清晰度 / 「系统打开」探针。
+    pub(crate) preview: PreviewPage,
 
     /// 已加载的缩略图纹理(file_id -> TextureHandle), 带按字节上限的 LRU 淘汰。
     pub(crate) thumbnail_textures: thumbs::ThumbTextures<egui::TextureHandle>,
@@ -466,12 +456,7 @@ impl App {
             ul_filter: UlFilter::All,
             ul_last_clicked: None,
             upload_pick: None,
-            preview_pending: None,
-            preview_confirm: None,
-            preview_progress: None,
-            pending_open: None,
-            quality_cache: HashMap::new(),
-            quality_inflight: HashSet::new(),
+            preview: PreviewPage::default(),
             thumbnail_textures: thumbs::ThumbTextures::new(),
             thumbnail_inflight: HashSet::new(),
             thumbnail_failed: HashSet::new(),
@@ -600,12 +585,7 @@ impl App {
                     self.selected_dl.clear();
                     self.last_clicked_dl = None;
                     self.clipboard = None;
-                    self.preview_pending = None;
-                    self.preview_confirm = None;
-                    self.preview_progress = None;
-                    self.pending_open = None;
-                    self.quality_cache.clear();
-                    self.quality_inflight.clear();
+                    self.preview.clear();
                     self.dir_cache.clear();
                     self.dir_inflight.clear();
                     self.shares.clear();
@@ -636,12 +616,7 @@ impl App {
                     self.selected_dl.clear();
                     self.last_clicked_dl = None;
                     self.clipboard = None;
-                    self.preview_pending = None;
-                    self.preview_confirm = None;
-                    self.preview_progress = None;
-                    self.pending_open = None;
-                    self.quality_cache.clear();
-                    self.quality_inflight.clear();
+                    self.preview.clear();
                     self.reset_stack();
                     self.shares.clear();
                     self.trash.clear();
@@ -1074,106 +1049,28 @@ impl App {
                     url,
                     headers,
                     subs,
-                } => {
-                    if self
-                        .preview_pending
-                        .as_ref()
-                        .is_some_and(|(id, _)| *id == req_id)
-                    {
-                        self.preview_pending = None;
-                    }
-                    if self
-                        .preview_progress
-                        .as_ref()
-                        .is_some_and(|p| p.req_id == req_id)
-                    {
-                        self.preview_progress = None;
-                    }
-                    match helpers::play_with_mpv(&name, &url, &headers, &subs) {
-                        Ok(()) => self.toast_ok(&format!("正在用 mpv 播放「{name}」")),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            // 音视频流式播放依赖 mpv, 缺失时只提示, 不下载回退。
-                            self.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
-                        }
-                        Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
-                    }
-                }
+                } => self
+                    .preview
+                    .on_stream(&mut self.global, req_id, name, url, headers, subs),
                 Msg::PreviewProgress {
                     req_id,
                     total,
                     done,
-                } => {
-                    // 只认当前在途的预览任务, 避免过期消息把进度条拉回来。
-                    let name = self
-                        .preview_pending
-                        .as_ref()
-                        .filter(|(id, _)| *id == req_id)
-                        .map(|(_, name)| name.clone());
-                    if let Some(name) = name {
-                        self.preview_progress = Some(PreviewProgress {
-                            req_id,
-                            name,
-                            total,
-                            done,
-                        });
-                    }
-                }
+                } => self.preview.on_progress(req_id, total, done),
                 Msg::PreviewReady { req_id, name, path } => {
-                    if self
-                        .preview_pending
-                        .as_ref()
-                        .is_some_and(|(id, _)| *id == req_id)
-                    {
-                        self.preview_pending = None;
-                    }
-                    if self
-                        .preview_progress
-                        .as_ref()
-                        .is_some_and(|p| p.req_id == req_id)
-                    {
-                        self.preview_progress = None;
-                    }
-                    // 结果由后台探针回传(xdg-open 失败不再是假成功)。
-                    self.pending_open = Some(PendingOpen {
-                        rx: helpers::open_async(path),
-                        label: name,
-                        quiet_ok: false,
-                    });
+                    self.preview.on_ready(req_id, name, path)
                 }
                 Msg::PreviewQualities {
                     file_id,
                     qualities,
                     subs,
-                } => {
-                    self.quality_inflight.remove(&file_id);
-                    self.quality_cache.insert(
-                        file_id,
-                        QualityReady {
-                            options: qualities,
-                            subs,
-                        },
-                    );
-                }
+                } => self.preview.on_qualities(file_id, qualities, subs),
                 Msg::QualitiesFailed { file_id, what } => {
-                    self.quality_inflight.remove(&file_id);
-                    self.toast_err(&what);
+                    self.preview
+                        .on_qualities_failed(&mut self.global, file_id, what)
                 }
                 Msg::PreviewFailed { req_id, what } => {
-                    if self
-                        .preview_pending
-                        .as_ref()
-                        .is_some_and(|(id, _)| *id == req_id)
-                    {
-                        self.preview_pending = None;
-                    }
-                    if self
-                        .preview_progress
-                        .as_ref()
-                        .is_some_and(|p| p.req_id == req_id)
-                    {
-                        self.preview_progress = None;
-                    }
-                    self.toast_err(&what);
+                    self.preview.on_failed(&mut self.global, req_id, what)
                 }
                 Msg::ShareCreated {
                     url,
@@ -1276,9 +1173,6 @@ impl App {
         }
     }
 
-    pub(crate) fn toast(&mut self, msg: &str, color: Color32) {
-        self.global.toast(msg, color);
-    }
     pub(crate) fn toast_ok(&mut self, msg: &str) {
         self.global.toast_ok(msg);
     }
@@ -2267,32 +2161,6 @@ impl App {
         }
     }
 
-    /// 回收「用系统程序打开」的探针结果(见 [`helpers::open_async`]), 给出诚实提示。
-    fn poll_pending_open(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.pending_open.take() else {
-            return;
-        };
-        match pending.rx.try_recv() {
-            Ok(helpers::OpenOutcome::Launched) => {
-                if !pending.quiet_ok {
-                    self.toast_ok(&format!("已打开「{}」", pending.label));
-                }
-            }
-            Ok(helpers::OpenOutcome::NoHandler) => {
-                self.toast_warn(&format!("系统未关联打开「{}」的程序", pending.label));
-            }
-            Ok(helpers::OpenOutcome::Failed(e)) => {
-                self.toast_err(&format!("打开「{}」失败: {e}", pending.label));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                // 探针还在等 xdg-open 退出(最多 1s), 保留结果下次再收。
-                self.pending_open = Some(pending);
-                ctx.request_repaint_after(Duration::from_millis(100));
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
-        }
-    }
-
     /// 提交目录递归上传任务。
     pub(crate) fn enqueue_upload_dir(
         &mut self,
@@ -2362,7 +2230,7 @@ impl App {
             filetypes::PreviewKind::Open => {
                 let size = self.file_size(&id);
                 if size > PREVIEW_CONFIRM_BYTES && !worker::preview_cached(&id, &name) {
-                    self.preview_confirm = Some(PreviewConfirm { id, name, size });
+                    self.preview.confirm_big(id, name, size);
                     return;
                 }
             }
@@ -2381,81 +2249,36 @@ impl App {
     }
 
     /// 真正发起预览(供大文件确认通过后复用)。
-    fn start_preview(&mut self, id: String, name: String) {
+    pub(crate) fn start_preview(&mut self, id: String, name: String) {
         let ft = self.file_type(&id, &name);
         let media = matches!(ft, filetypes::FileType::Video | filetypes::FileType::Audio);
         let req_id = self.alloc_req_id();
-        self.preview_pending = Some((req_id, name.clone()));
         // 同目录下的同集字幕, 播放时一并挂载(仅视频需要)。
         let subtitles = if ft == filetypes::FileType::Video {
             self.episode_subtitles(&name)
         } else {
             Vec::new()
         };
-        let hint = if media {
-            "正在解析播放地址…"
-        } else {
-            "正在准备预览文件…"
-        };
-        self.toast(hint, self.theme().accent);
-        self.send(Cmd::Preview {
-            req_id,
-            file_id: id,
-            name,
-            media,
-            subtitles,
-        });
-    }
-
-    /// 取消正在准备的非媒体预览(丢弃未完成的缓存下载)。
-    pub(crate) fn cancel_preview(&mut self) {
-        let Some(p) = self.preview_progress.take() else {
-            return;
-        };
-        self.send(Cmd::CancelPreview { req_id: p.req_id });
-        if self
-            .preview_pending
-            .as_ref()
-            .is_some_and(|(id, _)| *id == p.req_id)
-        {
-            self.preview_pending = None;
-        }
-        self.toast("已取消预览", self.theme().text_weak);
+        self.preview
+            .start(&mut self.global, req_id, id, name, media, subtitles);
     }
 
     /// 确保某媒体文件的可用清晰度已解析(供「播放」子菜单展示)。
     pub(crate) fn fetch_qualities(&mut self, id: String, name: String) {
-        if self.quality_cache.contains_key(&id) || self.quality_inflight.contains(&id) {
-            return;
-        }
-        self.quality_inflight.insert(id.clone());
         let subtitles = self.episode_subtitles(&name);
-        self.send(Cmd::PreviewQualities {
-            file_id: id,
-            subtitles,
-        });
+        self.preview
+            .fetch_qualities(&mut self.global, id, subtitles);
     }
 
     /// 用某个已解析出的清晰度播放(挂载同集字幕)。
     pub(crate) fn play_option(&mut self, id: String, opt: crate::msg::QualityOption) {
-        let subs = self
-            .quality_cache
-            .get(&id)
-            .map(|r| r.subs.clone())
-            .unwrap_or_default();
         let name = self
             .files
             .iter()
             .find(|f| f.id == id)
             .map(|f| f.name.clone())
             .unwrap_or_else(|| opt.label.clone());
-        match helpers::play_with_mpv(&name, &opt.url, &opt.headers, &subs) {
-            Ok(()) => self.toast_ok(&format!("正在用 mpv 播放「{name}」({})", opt.label)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
-            }
-            Err(e) => self.toast_err(&format!("启动 mpv 失败: {e}")),
-        }
+        self.preview.play_option(&mut self.global, id, name, opt);
     }
 
     // ---------- 我的分享 ----------
@@ -2491,7 +2314,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain(ctx);
         self.poll_file_picker();
-        self.poll_pending_open(ctx);
+        self.preview.poll_open_probe(ctx, &mut self.global);
         self.global.poll_system_theme();
 
         // 移动/复制成功后延迟重列一次目录(服务端列表存在最终一致性)。
@@ -2511,7 +2334,7 @@ impl eframe::App for App {
 
         if self.auth_checking {
             ctx.request_repaint_after(Duration::from_millis(120));
-        } else if !self.quality_inflight.is_empty() {
+        } else if self.preview.has_inflight_qualities() {
             // 清晰度解析中, 加快轮询让「播放」子菜单尽快展开选项。
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.upload_pick.is_some() {
@@ -2519,7 +2342,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.has_active_downloads()
             || self.has_active_uploads()
-            || self.preview_progress.is_some()
+            || self.preview.is_progressing()
             || self.dir_loading
             || !self.dir_inflight.is_empty()
             || self.shares.loading
@@ -2540,7 +2363,7 @@ impl eframe::App for App {
         self.handle_dropped_files(ctx);
         self.app_shell(ctx, &th);
         self.dialogs(ctx, &th);
-        self.draw_preview_status(ctx);
+        self.preview.draw_status(ctx, &mut self.global, &th);
         self.draw_toast(ctx);
         self.drop_overlay(ctx);
     }
