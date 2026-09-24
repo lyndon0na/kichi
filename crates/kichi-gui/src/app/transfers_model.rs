@@ -124,6 +124,7 @@ pub(super) fn sample_speed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn dl_job(status: DlStatus, total: u64, done: u64) -> DlJob {
         let mut j = DlJob::queued("id".into(), "n".into(), std::path::PathBuf::from("/tmp"));
@@ -131,6 +132,25 @@ mod tests {
         j.total = total;
         j.done = done;
         j
+    }
+
+    #[test]
+    fn record_status_maps_terminal_states_and_falls_back() {
+        assert_eq!(
+            dl_record_status(&DlStatus::Done),
+            DownloadRecordStatus::Done
+        );
+        assert_eq!(
+            dl_record_status(&DlStatus::Failed("权限不足".into())),
+            DownloadRecordStatus::Failed("权限不足".into())
+        );
+        // 非终态不该出现在持久化路径上, 兜底记为未完成。
+        for s in [DlStatus::Queued, DlStatus::Running] {
+            assert_eq!(
+                dl_record_status(&s),
+                DownloadRecordStatus::Failed("未完成".into())
+            );
+        }
     }
 
     #[test]
@@ -208,5 +228,17 @@ mod tests {
         assert_eq!((nodes[0].files_done, nodes[0].files_total), (2, 3));
         assert_eq!((nodes[3].files_done, nodes[3].files_total), (1, 1));
         assert_eq!((nodes[5].files_done, nodes[5].files_total), (0, 0));
+    }
+
+    #[test]
+    fn sample_speed_short_interval_keeps_rate() {
+        // last_at 置于未来使 dt 饱和为 0, 必然走「间隔不足」分支: 短间隔只记基线、
+        // 不取样, 避免单帧积压多条进度时 dt≈0 把瞬时速率算爆。
+        let mut speed = 500u64;
+        let mut last_done = 0u64;
+        let mut last_at = Some(Instant::now() + Duration::from_secs(10));
+        sample_speed(&mut speed, &mut last_done, &mut last_at, 100_000_000);
+        assert_eq!(speed, 500);
+        assert_eq!(last_done, 0);
     }
 }
