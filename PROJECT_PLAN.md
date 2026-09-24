@@ -147,6 +147,7 @@
   - **CI 首跑踩坑（图标导出校验）**：flatpak 导出阶段用**宿主** gdk-pixbuf 校验图标（`flatpak-validate-icon` 在 ro-bind 宿主 `/usr` 的沙箱里跑），Ubuntu 24.04 的 gdk-pixbuf 2.42 要从 `librsvg2-common` 加载 SVG —— 首次发 `v1.0.0` 时编译安装都成功，导出 `io.github.lyndon0na.Kichi.svg` 才报 `is not a valid icon: Format not recognized`；工作流 apt 列表补装该包解决（Fedora 的 gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地构建不复现）
   - **CI 首跑踩坑（发布任务）**：`release` job 只下载 artifacts、不做 checkout，`gh` 没有 `.git` 可推断目标仓库、在第一条 `gh release view` 就失败（`fatal: not a git repository (or any of the parent directories): .git`）—— 给该步骤补 `GH_REPO: ${{ github.repository }}`（此时 AppImage / Flatpak 两个 job 均已成功，只差最后一步）
   - 本地实测：AppImage 解包后二进制正常启动；Flatpak 装进用户级安装后沙箱内无缺失库、宿主字体与 `kdeglobals` 可见、`flatpak-spawn --host mpv` 可用、GUI 正常起窗（不暴露 X11，日志里会有一条 arboard 的 X11 剪贴板告警 —— 剪贴板实际走 Wayland 通道）
+  - **桌面集成口径**：桌面文件与图标由发行包提供 —— AppImage 把 `kichi.desktop`（AppDir 根 + `usr/share/applications`）与图标打进包内，Flatpak 由清单导出 `<应用 ID>.desktop` 与同名图标，安装后菜单 / 任务栏图标即正常；源码直跑不在支持范围（Wayland 下任务栏无图标，需要时手工放置 `packaging/kichi.desktop` + `assets/kichi.svg`）。曾用于补这条路的 `packaging/install-icon.sh` 于 2026-09-24 移除
   - 新增单测 2 项（宿主命令前缀 / 中文字体候选查找）
 
 - [x] **M23 · 常规 CI（P3-2）**

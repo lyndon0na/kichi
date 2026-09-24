@@ -251,9 +251,8 @@ crates/
         ├── settings.rs          # 设置与下载 / 上传历史持久化
         └── format.rs            # 大小 / 时间 / 状态文案格式化
 
-packaging/                       # 桌面集成与发行包
-├── kichi.desktop                # 桌面入口（原生运行 / AppImage 共用）
-├── install-icon.sh              # 安装 desktop + hicolor 图标（用户级）
+packaging/                       # 发行包
+├── kichi.desktop                # 桌面入口（AppImage / Flatpak 共用）
 ├── build-appimage.sh            # AppImage 出包（组装 AppDir + appimagetool）
 ├── appimage/AppRun              # AppImage 入口脚本
 ├── build-flatpak.sh             # Flatpak 出包（flatpak-builder + build-bundle）
@@ -296,17 +295,7 @@ cargo test --workspace
 
 推送 `master` 与所有 PR 由 GitHub Actions 跑同一套闸门（`.github/workflows/ci.yml`）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` —— 本地命令与 CI 一致，只在 CI 上多出 `--locked` 与严格告警。
 
-### 3. 桌面图标（KDE / Wayland）
-
-Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗口 `app_id` 匹配已安装的 `.desktop` 与图标主题。运行一次安装脚本即可：
-
-```bash
-./packaging/install-icon.sh   # 安装到 ~/.local/share 并刷新图标 / 菜单缓存
-```
-
-脚本会写入 `kichi.desktop` 与 hicolor 图标（SVG 源文件位于 `assets/kichi.svg`）。应用启动时已声明 `app_id = "kichi"`，重启应用后任务栏 / 窗口即显示新图标。
-
-### 4. 打包（AppImage / Flatpak）
+### 3. 打包（AppImage / Flatpak）
 
 发行包由 GitHub Actions 在推 `v*` tag 时自动构建并附到 Release（`.github/workflows/release.yml`；手动触发只产出 workflow artifacts）。本地可用同一套脚本出包：
 
@@ -322,6 +311,9 @@ Wayland 下窗口管理器不读取程序内设置的窗口图标，而是按窗
 | :-- | :-- | :-- |
 | AppImage | `ubuntu-22.04` | 免安装，双击即可运行（系统无 FUSE 时用 `--appimage-extract-and-run`）。**glibc 门槛等于构建机**：官方产物 glibc ≥ 2.35，本地在 Fedora 44 构建的只能跑 Fedora 43+ / 滚动发行版 |
 | Flatpak | `ubuntu-24.04` | 单文件安装：`flatpak install --user ./Kichi-<版本>-x86_64.flatpak`。沙箱内用 freedesktop 25.08 SDK 源码构建，与构建机发行版无关 |
+
+> [!NOTE]
+> 桌面文件与图标随发行包提供（AppImage 打进 AppDir、Flatpak 由清单导出），安装后菜单 / 任务栏图标即正常，无需额外步骤。Wayland 下窗口图标由窗口管理器按 `app_id` 匹配**已安装**的 `.desktop` 与图标主题 —— 因此直接跑 `cargo run` / `target/release/kichi-gui` 时任务栏没有图标；确有需要可把 `packaging/kichi.desktop` 与 `assets/kichi.svg` 分别放到 `~/.local/share/applications` 与 `~/.local/share/icons/hicolor/scalable/apps`（应用声明的 `app_id` 为 `kichi`，Flatpak 内取 `FLATPAK_ID`）。
 
 > [!NOTE]
 > 本地构建 Flatpak 需要宿主能识别 SVG 图标：flatpak 导出阶段用宿主 gdk-pixbuf 校验图标，Debian / Ubuntu 需要 `librsvg2-common`（缺它会报 `<应用 ID>.svg is not a valid icon: Format not recognized`）；Fedora 的 gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，无需处理。CI 侧已在工作流里装好。

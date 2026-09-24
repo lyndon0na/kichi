@@ -19,6 +19,10 @@
 - **工程：后台线程按域拆分**：`worker.rs`（2460 行）拆成 `worker/` 下 12 个文件（`mod` / `gate` / `cache` / `download` / `upload` / `preview` / `thumbs` / `files` / `tasks` / `shares` / `trash` / `auth`），命令循环 `handle` 的 43 个 `Cmd` 分支收敛为一行转调，入口 `worker/mod.rs` 降至 367 行。纯结构调整：用户可见行为、协议与并发语义零变化
 - **工程：界面层纯逻辑下沉**：`app/mod.rs` 的四个无界面依赖函数（下载记录状态映射 / 目录卡片进度聚合 / 目录树文件计数上卷 / 速率取样）连同单测迁到新模块（现为 `app/transfers/model.rs`，另补两项覆盖：非终态兜底、短间隔不取样），`App::new` 的启动逻辑抽成 `restore_req_id` / `start_session`。纯结构调整，用户可见行为零变化
 
+### 移除
+
+- **移除 `packaging/install-icon.sh`**：桌面文件与图标现由发行包自带（AppImage 打进 AppDir、Flatpak 由清单导出），该脚本只服务「源码构建后直接跑二进制」一条路径，予以删除；README 的「桌面图标」一节并入打包说明，需要时可按说明手工放置 `packaging/kichi.desktop` 与 `assets/kichi.svg`
+
 ### 修复
 
 - **Flatpak 首次 CI 出包失败（缺 SVG 加载器）**：flatpak 导出阶段用宿主 gdk-pixbuf 校验图标，Ubuntu 24.04 的 gdk-pixbuf 把 SVG 支持放在 `librsvg2-common` 里 —— 发布工作流的 apt 列表补装该包（首次发 `v1.0.0` 时 AppImage 成功、Flatpak 编译安装都通过，仅导出报 `Format not recognized`）；Fedora / gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地构建不受影响
