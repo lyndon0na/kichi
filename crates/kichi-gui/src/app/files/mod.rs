@@ -7,14 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, pos2, vec2, Align, Color32, FontId, Frame, Key, Layout, Margin, Pos2, Rect, RichText,
-    Stroke, UiBuilder,
+    self, pos2, vec2, Color32, FontId, Frame, Key, Margin, Pos2, Rect, RichText, Stroke, UiBuilder,
 };
 
 use kichi_core::types::{File, FileList};
 
-use crate::filetypes::{self, file_visual, FileType, PreviewKind};
-use crate::icons::{self, Glyph};
+use crate::filetypes::{self, file_visual};
+use crate::icons;
 use crate::msg::{Cmd, QualityOption};
 use crate::theme::{mix, Theme};
 
@@ -775,18 +774,6 @@ impl FilesPage {
             });
         }
 
-        let mut up = false;
-        let mut jumped: Option<usize> = None;
-        let mut mkdir = false;
-        let mut upload = false;
-        let mut upload_dir = false;
-        let mut refresh = false;
-        let mut want_download = false;
-        let mut clear_clip = false;
-        let mut ask_rename = false;
-        let mut ask_preview = false;
-        let mut ask_trash = false;
-        let mut ask_share = false;
         // 各菜单/操作栏产生的行级操作, 统一在最后处理。
         let mut actions: Vec<RowAction> = Vec::new();
         // 本帧产生的跨域动作, 按产生顺序交给 `App` 执行。
@@ -803,442 +790,28 @@ impl FilesPage {
             .as_ref()
             .map(|c| (c.label.clone(), c.ids.len()));
 
-        // -------- 顶部: 面包屑 + 搜索 + 操作 --------
-        egui::TopBottomPanel::top("file_head")
-            .frame(Frame::new().fill(th.bg).inner_margin(Margin {
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: 10,
-            }))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(Self::HEAD_H);
+        let req = self.top_bar(
+            ctx,
+            toolbar::TopBar {
+                th,
+                g,
+                search,
+                preview,
+                visible_total,
+                sel_meta: &sel_meta,
+                dl_files: &dl_candidates,
+                dl_folders: &dl_folders,
+                clip_info,
+                actions: &mut actions,
+            },
+        );
 
-                    // 左侧区域限制在右侧控件之外, 面包屑/计数超长时截断, 避免溢出重叠。
-                    let right_reserve = 360.0;
-                    let left_w = (ui.available_width() - right_reserve).max(140.0);
-                    ui.allocate_ui_with_layout(
-                        vec2(left_w, Self::HEAD_H),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            let at_root = self.stack.len() <= 1;
-                            let (r, rresp) =
-                                ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
-                            ui.painter().rect_filled(
-                                r,
-                                th.cr(8),
-                                if rresp.hovered() && !at_root {
-                                    th.hover
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                },
-                            );
-                            icons::paint(
-                                ui.painter(),
-                                r.shrink(6.0),
-                                Glyph::Up,
-                                if at_root { th.text_faint } else { th.text_weak },
-                            );
-                            if rresp.clicked() && !at_root {
-                                up = true;
-                            }
-                            rresp.clone().on_hover_text("返回上级");
-                            ui.add_space(4.0);
-
-                            let count_reserve = 76.0;
-                            let clip_reserve = if clip_info.is_some() { 150.0 } else { 0.0 };
-                            let crumbs_budget =
-                                (ui.available_width() - count_reserve - clip_reserve).max(48.0);
-
-                            // 搜索模式指示器
-                            if search.is_active() {
-                                egui::Frame::new()
-                                    .fill(th.accent_soft())
-                                    .corner_radius(th.cr(7))
-                                    .inner_margin(Margin::symmetric(8, 3))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "搜索: {}",
-                                                    search.keyword()
-                                                ))
-                                                .color(th.accent)
-                                                .size(12.0),
-                                            );
-                                        });
-                                    });
-                                ui.add_space(6.0);
-                            } else if let Some(i) =
-                                toolbar::breadcrumbs(ui, th, &self.stack, crumbs_budget)
-                            {
-                                jumped = Some(i);
-                            }
-
-                            if sel_meta.is_empty() {
-                                ui.label(
-                                    RichText::new(format!("· {visible_total} 项"))
-                                        .color(th.text_faint)
-                                        .size(12.5),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "· 已选 {}/{} 项",
-                                        sel_meta.len(),
-                                        visible_total
-                                    ))
-                                    .color(th.accent)
-                                    .size(12.5),
-                                );
-                            }
-
-                            // 剪贴板 chip(只显示数量, 避免文件名过长溢出)
-                            if let Some((_label, n)) = &clip_info {
-                                ui.add_space(8.0);
-                                egui::Frame::new()
-                                    .fill(th.accent_soft())
-                                    .corner_radius(th.cr(7))
-                                    .inner_margin(Margin::symmetric(8, 3))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(format!("剪贴板 · {n} 项"))
-                                                    .color(th.accent)
-                                                    .size(11.5),
-                                            );
-                                            let (xr, xresp) = ui.allocate_exact_size(
-                                                vec2(14.0, 14.0),
-                                                egui::Sense::click(),
-                                            );
-                                            icons::paint(
-                                                ui.painter(),
-                                                xr.shrink(2.5),
-                                                Glyph::Close,
-                                                if xresp.hovered() {
-                                                    th.accent
-                                                } else {
-                                                    th.text_faint
-                                                },
-                                            );
-                                            if xresp.clicked() {
-                                                clear_clip = true;
-                                            }
-                                        });
-                                    });
-                            }
-                        },
-                    );
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if sel_meta.is_empty() {
-                            // ---- 普通模式: 搜索 + 刷新 + 新建 + 视图 ----
-                            let focused = ui.memory(|m| m.has_focus(egui::Id::new("file_search")));
-                            egui::Frame::new()
-                                .fill(th.card)
-                                .stroke(Stroke::new(
-                                    1.0,
-                                    if focused { th.accent } else { th.border },
-                                ))
-                                .corner_radius(th.cr(9))
-                                .inner_margin(Margin::symmetric(10, 5))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let (ir, _) = ui.allocate_exact_size(
-                                            vec2(15.0, 15.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        icons::paint(
-                                            ui.painter(),
-                                            ir,
-                                            Glyph::Search,
-                                            th.text_faint,
-                                        );
-                                        ui.add_space(1.0);
-                                        let _search_response = ui.add(
-                                            egui::TextEdit::singleline(&mut self.filter)
-                                                .id(egui::Id::new("file_search"))
-                                                .frame(false)
-                                                .desired_width(150.0)
-                                                .hint_text(if search.is_active() {
-                                                    "搜索中..."
-                                                } else {
-                                                    "按 Enter 全局搜索"
-                                                })
-                                                .font(FontId::proportional(13.5)),
-                                        );
-                                        if !self.filter.is_empty() {
-                                            let (xr, xresp) = ui.allocate_exact_size(
-                                                vec2(14.0, 14.0),
-                                                egui::Sense::click(),
-                                            );
-                                            icons::paint(
-                                                ui.painter(),
-                                                xr.shrink(2.5),
-                                                Glyph::Close,
-                                                if xresp.hovered() {
-                                                    th.accent
-                                                } else {
-                                                    th.text_faint
-                                                },
-                                            );
-                                            if xresp.clicked() {
-                                                self.exit_search(search);
-                                            }
-                                        }
-                                    });
-                                });
-                            ui.add_space(6.0);
-
-                            // 刷新
-                            let (rr, rresp) =
-                                ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
-                            ui.painter().rect_filled(
-                                rr,
-                                th.cr(8),
-                                if rresp.hovered() {
-                                    th.hover
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                },
-                            );
-                            icons::paint(
-                                ui.painter(),
-                                rr.shrink(7.0),
-                                Glyph::Refresh,
-                                th.text_weak,
-                            );
-                            if rresp.clicked() {
-                                refresh = true;
-                            }
-                            rresp.on_hover_text("刷新 (F5)");
-
-                            ui.add_space(4.0);
-                            // 上传菜单(上传文件 / 上传文件夹)
-                            ui.menu_button(
-                                RichText::new("上传").size(13.0).color(th.text_weak),
-                                |ui| {
-                                    if ui.button("上传文件").clicked() {
-                                        upload = true;
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("上传文件夹").clicked() {
-                                        upload_dir = true;
-                                        ui.close_menu();
-                                    }
-                                },
-                            );
-
-                            ui.add_space(4.0);
-                            // 新建文件夹(矢量图标 + 悬浮提示)
-                            let (pr, presp) =
-                                ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
-                            ui.painter().rect_filled(
-                                pr,
-                                th.cr(8),
-                                if presp.hovered() {
-                                    th.accent_soft()
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                },
-                            );
-                            icons::paint(ui.painter(), pr.shrink(7.0), Glyph::Plus, th.accent);
-                            if presp.clicked() {
-                                mkdir = true;
-                            }
-                            presp.on_hover_text("新建文件夹");
-
-                            ui.add_space(6.0);
-                            // 视图切换
-                            let icon_bg = |active: bool, hovered: bool| {
-                                if active {
-                                    th.accent_soft()
-                                } else if hovered {
-                                    th.hover
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                }
-                            };
-                            // 图标视图: 2x2 网格
-                            let (ri, ri_resp) =
-                                ui.allocate_exact_size(vec2(28.0, 28.0), egui::Sense::click());
-                            ui.painter().rect_filled(
-                                ri,
-                                th.cr(6),
-                                icon_bg(self.view_mode == ViewMode::Icon, ri_resp.hovered()),
-                            );
-                            let p = ui.painter();
-                            let s = 3.0;
-                            let gap = 2.0;
-                            let cx = ri.center().x;
-                            let cy = ri.center().y;
-                            let color = if self.view_mode == ViewMode::Icon {
-                                th.accent
-                            } else {
-                                th.text_weak
-                            };
-                            for dx in [-(s + gap / 2.0), s + gap / 2.0] {
-                                for dy in [-(s + gap / 2.0), s + gap / 2.0] {
-                                    p.rect_filled(
-                                        Rect::from_center_size(
-                                            Pos2::new(cx + dx, cy + dy),
-                                            vec2(s, s),
-                                        ),
-                                        th.cr(1),
-                                        color,
-                                    );
-                                }
-                            }
-                            if ri_resp.clicked() {
-                                self.view_mode = ViewMode::Icon;
-                            }
-                            ri_resp.on_hover_text("图标视图");
-
-                            // 列表视图: 三条横线
-                            let (li, li_resp) =
-                                ui.allocate_exact_size(vec2(28.0, 28.0), egui::Sense::click());
-                            ui.painter().rect_filled(
-                                li,
-                                th.cr(6),
-                                icon_bg(self.view_mode == ViewMode::List, li_resp.hovered()),
-                            );
-                            let p = ui.painter();
-                            let color = if self.view_mode == ViewMode::List {
-                                th.accent
-                            } else {
-                                th.text_weak
-                            };
-                            let lx = li.center().x - 5.0;
-                            let lw = 10.0;
-                            for dy in [-3.5, 0.0, 3.5] {
-                                p.line_segment(
-                                    [
-                                        Pos2::new(lx, li.center().y + dy),
-                                        Pos2::new(lx + lw, li.center().y + dy),
-                                    ],
-                                    Stroke::new(1.5, color),
-                                );
-                            }
-                            if li_resp.clicked() {
-                                self.view_mode = ViewMode::List;
-                            }
-                            li_resp.on_hover_text("列表视图");
-                        } else {
-                            // ---- 选中模式: 就地显示操作, 不新增行/不改变列表位置 ----
-                            let single = sel_meta.len() == 1;
-                            let open_sel = if single && !dl_candidates.is_empty() {
-                                let (id, name) = sel_meta[0].clone();
-                                let ft = self.file_type(&id, &name);
-                                // 只下载类不给入口(双击由 open_preview 兜底提示)。
-                                (filetypes::preview_kind(ft) != PreviewKind::DownloadOnly)
-                                    .then_some((ft, id, name))
-                            } else {
-                                None
-                            };
-
-                            // 取消(最右)
-                            if ui
-                                .add(egui::Button::new(RichText::new("取消").color(th.text_weak)))
-                                .clicked()
-                            {
-                                self.selected.clear();
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::new(RichText::new("移入回收站").color(th.danger))
-                                        .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .corner_radius(th.cr(8)),
-                                )
-                                .clicked()
-                            {
-                                ask_trash = true;
-                            }
-                            if self.clipboard.is_some()
-                                && ui
-                                    .add(egui::Button::new(
-                                        RichText::new("粘贴").color(th.text_weak),
-                                    ))
-                                    .clicked()
-                            {
-                                self.paste_clipboard(g);
-                            }
-                            if ui
-                                .add(egui::Button::new(RichText::new("剪切").color(th.text_weak)))
-                                .clicked()
-                            {
-                                self.clip_selection(g, ClipKind::Cut);
-                            }
-                            if ui
-                                .add(egui::Button::new(RichText::new("复制").color(th.text_weak)))
-                                .clicked()
-                            {
-                                self.clip_selection(g, ClipKind::Copy);
-                            }
-                            if ui
-                                .add(egui::Button::new(RichText::new("分享").color(th.text_weak)))
-                                .clicked()
-                            {
-                                ask_share = true;
-                            }
-                            if single
-                                && ui
-                                    .add(egui::Button::new(
-                                        RichText::new("重命名").color(th.text_weak),
-                                    ))
-                                    .clicked()
-                            {
-                                ask_rename = true;
-                            }
-                            if let Some((ft, id, name)) = open_sel {
-                                if ft == FileType::Video {
-                                    let quality = match preview.quality(&id) {
-                                        Some(r) => QualityMenuState::Ready(r),
-                                        None => QualityMenuState::Loading,
-                                    };
-                                    row::play_menu(ui, &id, &name, quality, &mut actions);
-                                } else {
-                                    let label = if ft == FileType::Audio {
-                                        "播放"
-                                    } else {
-                                        "打开"
-                                    };
-                                    if ui
-                                        .add(egui::Button::new(
-                                            RichText::new(label).color(th.text_weak),
-                                        ))
-                                        .clicked()
-                                    {
-                                        ask_preview = true;
-                                    }
-                                }
-                            }
-                            if (!dl_candidates.is_empty() || !dl_folders.is_empty())
-                                && ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("下载到本地").color(th.on_accent),
-                                        )
-                                        .fill(th.accent)
-                                        .stroke(Stroke::NONE)
-                                        .corner_radius(th.cr(8)),
-                                    )
-                                    .clicked()
-                            {
-                                want_download = true;
-                            }
-                        }
-                    });
-                });
-            });
-
-        if up {
+        if req.up {
             self.exit_search(search);
             self.stack.pop();
             self.show_dir(g);
         }
-        if let Some(i) = jumped {
+        if let Some(i) = req.jumped {
             self.exit_search(search);
             self.stack.truncate(i + 1);
             self.show_dir(g);
@@ -1247,46 +820,46 @@ impl FilesPage {
         if let Some(sel) = key_trash {
             effects.push(FilesAction::ConfirmTrash(sel));
         }
-        if mkdir {
+        if req.mkdir {
             effects.push(FilesAction::NewFolder);
         }
-        if refresh {
+        if req.refresh {
             self.refresh_dir(g);
         }
-        if upload {
+        if req.upload {
             effects.push(FilesAction::UploadFiles);
         }
-        if upload_dir {
+        if req.upload_dir {
             effects.push(FilesAction::UploadFolder);
         }
 
         // 处理顶部栏产生的操作
-        if clear_clip {
+        if req.clear_clip {
             self.clipboard = None;
         }
-        if ask_rename && sel_meta.len() == 1 {
+        if req.ask_rename && sel_meta.len() == 1 {
             effects.push(FilesAction::Rename {
                 id: sel_meta[0].0.clone(),
                 name: sel_meta[0].1.clone(),
             });
         }
-        if ask_preview && sel_meta.len() == 1 {
+        if req.ask_preview && sel_meta.len() == 1 {
             effects.push(FilesAction::Preview {
                 id: sel_meta[0].0.clone(),
                 name: sel_meta[0].1.clone(),
             });
         }
-        if ask_trash {
+        if req.ask_trash {
             effects.push(FilesAction::ConfirmTrash(sel_meta.clone()));
         }
-        if ask_share {
+        if req.ask_share {
             effects.push(FilesAction::ShareSelection);
         }
         if trigger_search {
             effects.push(FilesAction::Search);
         }
 
-        if want_download && (!dl_candidates.is_empty() || !dl_folders.is_empty()) {
+        if req.want_download && (!dl_candidates.is_empty() || !dl_folders.is_empty()) {
             effects.push(FilesAction::DownloadSelection {
                 files: dl_candidates.clone(),
                 folders: dl_folders.clone(),
