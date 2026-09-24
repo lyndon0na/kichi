@@ -4,7 +4,7 @@ mod global;
 mod helpers;
 mod login;
 mod settings_page;
-mod shares_page;
+mod shares;
 mod sidebar;
 mod tasks_page;
 mod thumbs;
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use kichi_core::session;
-use kichi_core::types::{task_id, File, FileList, Quota, Share, Task};
+use kichi_core::types::{task_id, File, FileList, Quota, Task};
 
 use crate::filetypes;
 use crate::msg::{Cmd, Msg};
@@ -32,14 +32,15 @@ use crate::worker;
 
 use self::global::Global;
 use self::helpers::install_fonts;
+use self::shares::SharesPage;
 use self::transfers_model::{
     aggregate_children, compute_dir_counts, dl_record_status, sample_speed,
 };
 use self::trash::TrashPage;
 use self::types::{
     ClipKind, Clipboard, ColDrag, Crumb, DirEntry, DlFilter, DlJob, DlNode, DlRow, DlStatus,
-    OfflineTab, Page, PendingOpen, PreviewConfirm, PreviewProgress, QualityReady, ShareResult,
-    SortBy, TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
+    OfflineTab, Page, PendingOpen, PreviewConfirm, PreviewProgress, QualityReady, SortBy,
+    TransferTab, UlFilter, UlJob, UlStatus, UploadPick, ViewMode,
 };
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
@@ -47,8 +48,6 @@ const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;
 
 /// 目录缓存新鲜期: 命中后超过该时长, 先展示旧数据再后台静默校正。
 const DIR_TTL: Duration = Duration::from_secs(60);
-/// 「我的分享」列表新鲜期: 进入页面时命中则不发请求。
-const SHARES_TTL: Duration = Duration::from_secs(60);
 /// 目录缓存上限, 超出按 LRU 淘汰(不淘汰当前目录)。
 const DIR_CACHE_CAP: usize = 64;
 
@@ -214,68 +213,8 @@ pub struct App {
     /// 网格视图卡片大小(80-160)。
     pub(crate) grid_card_size: f32,
 
-    // 我的分享
-    pub(crate) shares: Vec<Share>,
-    pub(crate) shares_next: Option<String>,
-    pub(crate) shares_loading: bool,
-    /// 最近一次分享列表请求的 id, 用于丢弃乱序的旧响应。
-    pub(crate) shares_req: u64,
-    /// 分享列表多选(share_id)。
-    pub(crate) shares_selected: HashSet<String>,
-    /// 最近一次成功加载分享列表的时间, 用于 SWR 新鲜度判定。
-    pub(crate) shares_fetched_at: Option<Instant>,
-    /// 待创建分享的选中项 (id, name); Some 表示「创建分享」设置框打开。
-    pub(crate) share_dialog: Option<Vec<(String, String)>>,
-    pub(crate) share_expiration_days: i64,
-    pub(crate) share_need_password: bool,
-    /// 分享创建成功后的结果框。
-    pub(crate) share_result: Option<ShareResult>,
-    /// 取消分享确认 (share_id, 标题)。
-    pub(crate) share_delete_confirm: Option<Vec<(String, String)>>,
-
-    // 转存分享
-    /// 转存弹窗是否打开。
-    pub(crate) save_share_open: bool,
-    /// 用户输入的分享链接或分享 ID。
-    pub(crate) save_share_input: String,
-    /// 用户输入的提取码。
-    pub(crate) save_share_pass_code: String,
-    /// 是否正在解析分享链接。
-    pub(crate) save_share_resolving: bool,
-    /// 解析成功后的分享 ID。
-    pub(crate) save_share_id: Option<String>,
-    /// 解析成功后的分享标题。
-    pub(crate) save_share_title: Option<String>,
-    /// 解析成功后的 pass_code_token(转存时需要)。
-    pub(crate) save_share_token: Option<String>,
-    /// 解析出的文件列表。
-    pub(crate) save_share_files: Vec<File>,
-    /// 用户选中的文件 id。
-    pub(crate) save_share_selected: HashSet<String>,
-    /// 文件名搜索过滤。
-    pub(crate) save_share_filter: String,
-    /// 分享文件列表分页 token。
-    pub(crate) save_share_next: Option<String>,
-    /// 是否正在加载更多文件。
-    pub(crate) save_share_loading_more: bool,
-    /// 是否正在转存。
-    pub(crate) save_share_saving: bool,
-    /// 解析或转存的错误信息。
-    pub(crate) save_share_error: Option<String>,
-    /// 转存目标目录选择器是否打开。
-    pub(crate) save_share_picker_open: bool,
-    /// 转存目标目录选择器的面包屑导航。
-    pub(crate) save_share_picker_stack: Vec<Crumb>,
-    /// 转存目标目录选择器当前目录的子文件夹。
-    pub(crate) save_share_picker_folders: Vec<File>,
-    /// 转存目标目录选择器加载状态。
-    pub(crate) save_share_picker_loading: bool,
-    /// 转存目标目录选择器请求 ID。
-    pub(crate) save_share_picker_req: u64,
-    /// 用户选择的转存目标目录 (id, name); None 表示默认位置。
-    pub(crate) save_share_dest: Option<(String, String)>,
-    /// 自动移动失败时的目标目录信息, 用于重试。
-    pub(crate) save_share_move_failed: Option<(String, String)>,
+    // 我的分享 + 转存分享
+    pub(crate) shares: SharesPage,
 
     // 回收站
     pub(crate) trash: TrashPage,
@@ -540,41 +479,7 @@ impl App {
             cache_usage_pending: false,
             cache_sweeping: false,
             grid_card_size: 104.0,
-            shares: Vec::new(),
-            shares_next: None,
-            shares_loading: false,
-            shares_req: 0,
-            shares_selected: HashSet::new(),
-            shares_fetched_at: None,
-            share_dialog: None,
-            share_expiration_days: -1,
-            share_need_password: false,
-            share_result: None,
-            share_delete_confirm: None,
-            save_share_open: false,
-            save_share_input: String::new(),
-            save_share_pass_code: String::new(),
-            save_share_resolving: false,
-            save_share_id: None,
-            save_share_title: None,
-            save_share_token: None,
-            save_share_files: Vec::new(),
-            save_share_selected: HashSet::new(),
-            save_share_filter: String::new(),
-            save_share_next: None,
-            save_share_loading_more: false,
-            save_share_saving: false,
-            save_share_error: None,
-            save_share_picker_open: false,
-            save_share_picker_stack: vec![Crumb {
-                id: None,
-                label: "我的云盘".to_string(),
-            }],
-            save_share_picker_folders: Vec::new(),
-            save_share_picker_loading: false,
-            save_share_picker_req: 0,
-            save_share_dest: None,
-            save_share_move_failed: None,
+            shares: SharesPage::default(),
             trash: TrashPage::default(),
             col_size_w: 100.0,
             col_time_w: 160.0,
@@ -703,7 +608,7 @@ impl App {
                     self.quality_inflight.clear();
                     self.dir_cache.clear();
                     self.dir_inflight.clear();
-                    self.clear_share_state();
+                    self.shares.clear();
                     self.trash.clear();
                     // 登录态失效: 若保存过密码则尝试自动重登。
                     self.auto_login_if_possible();
@@ -738,7 +643,7 @@ impl App {
                     self.quality_cache.clear();
                     self.quality_inflight.clear();
                     self.reset_stack();
-                    self.clear_share_state();
+                    self.shares.clear();
                     self.trash.clear();
                 }
                 Msg::Files {
@@ -846,12 +751,8 @@ impl App {
                     files,
                 } => {
                     // 路由到对应的目录选择器
-                    if self.save_share_picker_open && req_id == self.save_share_picker_req {
-                        if parent != self.save_share_picker_parent() {
-                            continue;
-                        }
-                        self.save_share_picker_loading = false;
-                        self.save_share_picker_folders = files;
+                    if self.shares.handles_picker(req_id) {
+                        self.shares.on_folders(parent, files);
                     } else if req_id == self.offline_picker_req {
                         if parent != self.offline_picker_parent() {
                             continue;
@@ -1280,116 +1181,48 @@ impl App {
                     share_text,
                     label,
                 } => {
-                    self.share_result = Some(ShareResult {
-                        url,
-                        pass_code,
-                        share_text,
-                        label,
-                    });
-                    // 新分享已产生: 作废缓存, 并在分享页时立即刷新以展示。
-                    self.shares_fetched_at = None;
+                    self.shares.on_created(url, pass_code, share_text, label);
+                    // 新分享已产生: 在分享页时立即刷新以展示。
                     if self.page == Page::Shares {
-                        self.refresh_shares();
+                        self.shares.refresh(&mut self.global);
                     }
                 }
                 Msg::Shares {
                     req_id,
                     append,
                     list,
-                } => {
-                    if req_id != self.shares_req {
-                        continue;
-                    }
-                    self.shares_loading = false;
-                    self.shares_fetched_at = Some(Instant::now());
-                    self.shares_next = list.next_page_token;
-                    if append {
-                        let known: HashSet<String> =
-                            self.shares.iter().map(|s| s.share_id.clone()).collect();
-                        for s in list.shares {
-                            if !known.contains(&s.share_id) {
-                                self.shares.push(s);
-                            }
-                        }
-                    } else {
-                        self.shares = list.shares;
-                    }
-                }
-                Msg::SharesFailed { what } => {
-                    self.shares_loading = false;
-                    self.toast_err(&what);
-                }
-                Msg::SharesDeleted { ids } => {
-                    self.shares.retain(|s| !ids.contains(&s.share_id));
-                    self.shares_selected.retain(|id| !ids.contains(id));
-                    self.share_delete_confirm = None;
-                    self.toast_ok(&format!("已取消 {} 个分享", ids.len()));
-                }
+                } => self.shares.on_list(req_id, append, list),
+                Msg::SharesFailed { what } => self.shares.on_list_failed(&mut self.global, what),
+                Msg::SharesDeleted { ids } => self.shares.on_deleted(&mut self.global, &ids),
                 Msg::ShareResolved {
                     share_id,
                     title,
                     pass_code_token,
                     files,
                     next_page_token,
-                } => {
-                    self.save_share_resolving = false;
-                    self.save_share_id = Some(share_id);
-                    self.save_share_title = Some(title);
-                    self.save_share_token = Some(pass_code_token);
-                    self.save_share_files = files;
-                    self.save_share_next = next_page_token;
-                    self.save_share_selected = HashSet::new();
-                }
+                } => self.shares.on_resolved(
+                    share_id,
+                    title,
+                    pass_code_token,
+                    files,
+                    next_page_token,
+                ),
                 Msg::ShareFilesLoaded {
                     files,
                     next_page_token,
-                } => {
-                    self.save_share_loading_more = false;
-                    self.save_share_files.extend(files);
-                    self.save_share_next = next_page_token;
-                }
-                Msg::ShareFilesLoadFailed { what } => {
-                    self.save_share_loading_more = false;
-                    self.save_share_error = Some(what);
-                }
-                Msg::ShareResolveFailed { what } => {
-                    self.save_share_resolving = false;
-                    self.save_share_error = Some(what);
-                }
+                } => self.shares.on_files_loaded(files, next_page_token),
+                Msg::ShareFilesLoadFailed { what } => self.shares.on_files_failed(what),
+                Msg::ShareResolveFailed { what } => self.shares.on_resolve_failed(what),
                 Msg::ShareSaved { auto_move_failed } => {
-                    self.save_share_saving = false;
-                    self.save_share_open = false;
-                    let dest = self.save_share_dest.clone();
-                    if auto_move_failed {
-                        // 保存失败信息以便重试
-                        self.save_share_move_failed = dest.clone();
-                    }
-                    self.clear_save_share_state();
-                    if auto_move_failed {
-                        if let Some((_, name)) = dest {
-                            self.toast_warn(&format!(
-                                "转存成功, 但自动移动到「{name}」失败。文件仍在「转存自分享」中"
-                            ));
-                        } else {
-                            self.toast_warn("转存成功, 但自动移动失败, 请在「转存自分享」中查看");
-                        }
-                    } else if dest.is_some() {
-                        self.toast_ok("转存成功, 文件已移动到目标目录");
-                    } else {
-                        self.toast_ok("转存成功, 文件已保存到「转存自分享」");
-                    }
+                    self.shares.on_saved(&mut self.global, auto_move_failed)
                 }
-                Msg::ShareSaveFailed { what } => {
-                    self.save_share_saving = false;
-                    self.save_share_error = Some(what);
-                }
+                Msg::ShareSaveFailed { what } => self.shares.on_save_failed(what),
                 Msg::ShareMoveRetried => {
-                    self.save_share_move_failed = None;
-                    self.toast_ok("移动成功");
+                    self.shares.on_move_retried(&mut self.global);
                     self.reload_dir();
                 }
                 Msg::ShareMoveRetryFailed { what } => {
-                    self.toast_err(&what);
+                    self.shares.on_move_retry_failed(&mut self.global, what)
                 }
                 Msg::ThumbnailReady {
                     file_id,
@@ -1580,35 +1413,6 @@ impl App {
         let req_id = self.offline_picker_req;
         self.send(Cmd::ListFolders {
             parent: self.offline_picker_parent(),
-            req_id,
-        });
-    }
-
-    /// 转存分享目录选择器当前所在目录。
-    pub(crate) fn save_share_picker_parent(&self) -> Option<String> {
-        self.save_share_picker_stack
-            .last()
-            .and_then(|c| c.id.clone())
-    }
-
-    /// 打开转存分享「保存到」网盘目录选择器, 从根目录开始。
-    pub(crate) fn open_save_share_picker(&mut self) {
-        self.save_share_picker_open = true;
-        self.save_share_picker_stack = vec![Crumb {
-            id: None,
-            label: "我的云盘".into(),
-        }];
-        self.save_share_picker_list();
-    }
-
-    /// 请求转存分享选择器当前目录的子文件夹列表。
-    pub(crate) fn save_share_picker_list(&mut self) {
-        self.save_share_picker_loading = true;
-        self.save_share_picker_folders.clear();
-        self.save_share_picker_req += 1;
-        let req_id = self.save_share_picker_req;
-        self.send(Cmd::ListFolders {
-            parent: self.save_share_picker_parent(),
             req_id,
         });
     }
@@ -2656,161 +2460,6 @@ impl App {
 
     // ---------- 我的分享 ----------
 
-    /// 清空分享相关状态(退出登录 / 会话失效时调用)。
-    pub(crate) fn clear_share_state(&mut self) {
-        self.shares.clear();
-        self.shares_next = None;
-        self.shares_loading = false;
-        self.shares_req = 0;
-        self.shares_selected.clear();
-        self.shares_fetched_at = None;
-        self.share_dialog = None;
-        self.share_result = None;
-        self.share_delete_confirm = None;
-    }
-
-    /// 清空转存分享弹窗状态。
-    pub(crate) fn clear_save_share_state(&mut self) {
-        self.save_share_input.clear();
-        self.save_share_pass_code.clear();
-        self.save_share_resolving = false;
-        self.save_share_id = None;
-        self.save_share_title = None;
-        self.save_share_token = None;
-        self.save_share_files.clear();
-        self.save_share_selected.clear();
-        self.save_share_filter.clear();
-        self.save_share_next = None;
-        self.save_share_loading_more = false;
-        self.save_share_saving = false;
-        self.save_share_error = None;
-        self.save_share_picker_open = false;
-        self.save_share_picker_stack = vec![Crumb {
-            id: None,
-            label: "我的云盘".to_string(),
-        }];
-        self.save_share_picker_folders.clear();
-        self.save_share_picker_loading = false;
-        self.save_share_dest = None;
-    }
-
-    /// 解析分享输入, 返回 `(share_id, 链接里携带的提取码)`。
-    ///
-    /// 支持的形态:
-    /// - 完整链接: `https://mypikpak.com/s/<id>`
-    /// - 带查询参数 / 片段: `.../s/<id>?password=abcd#frag`(顺带提取 `password`/`pass_code`)
-    /// - 复制链接时附带的前后缀文字: 只取 `/s/` 之后的一段
-    /// - 裸 ID: `<id>`
-    ///
-    /// 无法识别(如缺少 `/s/` 的其它域名链接、含非法字符)时返回 `None`, 由调用方给出提示。
-    pub(crate) fn parse_share_input(input: &str) -> Option<(String, Option<String>)> {
-        let input = input.trim();
-        if input.is_empty() {
-            return None;
-        }
-
-        // 截出 `/s/` 之后的一段: ID 到第一个非法字符为止, 之后按查询串解析提取码。
-        let (id_candidate, query) = if let Some(idx) = input.rfind("/s/") {
-            let rest = &input[idx + 3..];
-            let id: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            let query = rest.find('?').map(|q| {
-                let after = &rest[q + 1..];
-                let end = after
-                    .find(|c: char| c == '#' || c.is_whitespace())
-                    .unwrap_or(after.len());
-                &after[..end]
-            });
-            (id, query)
-        } else if input.contains("://") {
-            // 是一个链接但不含 `/s/` 段, 无法定位分享 ID。
-            return None;
-        } else {
-            // 视为裸 ID。
-            (input.to_string(), None)
-        };
-
-        if !Self::is_valid_share_id(&id_candidate) {
-            return None;
-        }
-        let pass_code = query.and_then(Self::pass_code_from_query);
-        Some((id_candidate, pass_code))
-    }
-
-    /// share_id 只由字母、数字、`-`、`_` 组成且非空。
-    fn is_valid_share_id(id: &str) -> bool {
-        !id.is_empty()
-            && id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    }
-
-    /// 从 URL 查询串里取出提取码 (`password` / `pass_code` / `passcode`)。
-    fn pass_code_from_query(query: &str) -> Option<String> {
-        for pair in query.split('&') {
-            let mut kv = pair.splitn(2, '=');
-            let key = kv.next().unwrap_or("");
-            if matches!(key, "password" | "pass_code" | "passcode") {
-                if let Some(v) = kv.next() {
-                    let v = v.trim();
-                    if !v.is_empty() {
-                        return Some(v.to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// 进入「我的分享」页面: 缓存新鲜则零请求, 否则刷新。
-    pub(crate) fn enter_shares(&mut self) {
-        let fresh = self
-            .shares_fetched_at
-            .is_some_and(|t| t.elapsed() < SHARES_TTL);
-        if !fresh {
-            self.refresh_shares();
-        }
-    }
-
-    /// 请求刷新「我的分享」首页列表(保留旧数据, 仅置加载态)。
-    pub(crate) fn refresh_shares(&mut self) {
-        self.shares_loading = true;
-        self.shares_next = None;
-        self.shares_selected.clear();
-        self.shares_req += 1;
-        let req_id = self.shares_req;
-        self.send(Cmd::ListShares {
-            token: None,
-            append: false,
-            req_id,
-        });
-    }
-
-    /// 加载分享列表下一页。
-    pub(crate) fn load_more_shares(&mut self) {
-        let Some(token) = self.shares_next.clone() else {
-            return;
-        };
-        self.shares_loading = true;
-        self.shares_req += 1;
-        let req_id = self.shares_req;
-        self.send(Cmd::ListShares {
-            token: Some(token),
-            append: true,
-            req_id,
-        });
-    }
-
-    /// 打开「创建分享」设置框, targets 为 (id, name)。
-    pub(crate) fn open_share_dialog(&mut self, targets: Vec<(String, String)>) {
-        if targets.is_empty() {
-            return;
-        }
-        self.share_dialog = Some(targets);
-    }
-
     /// 从当前选中项打开「创建分享」设置框。
     pub(crate) fn share_selection(&mut self) {
         let targets = self.selected_names();
@@ -2818,7 +2467,7 @@ impl App {
             self.toast_warn("请先选择要分享的文件");
             return;
         }
-        self.open_share_dialog(targets);
+        self.shares.open_dialog(targets);
     }
 
     /// 右键单项分享: 若该项在多选内则分享整个选中集, 否则仅分享该项。
@@ -2832,7 +2481,7 @@ impl App {
                 .map(|f| (f.id.clone(), f.name.clone()))
                 .collect()
         };
-        self.open_share_dialog(targets);
+        self.shares.open_dialog(targets);
     }
 }
 
@@ -2873,7 +2522,7 @@ impl eframe::App for App {
             || self.preview_progress.is_some()
             || self.dir_loading
             || !self.dir_inflight.is_empty()
-            || self.shares_loading
+            || self.shares.loading
             || self.trash.loading
             || !self.tasks_loading_more.is_empty()
         {
@@ -2894,41 +2543,5 @@ impl eframe::App for App {
         self.draw_preview_status(ctx);
         self.draw_toast(ctx);
         self.drop_overlay(ctx);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_share_id_from_url_forms() {
-        let cases = [
-            ("https://mypikpak.com/s/VO8B-abc", Some(("VO8B-abc", None))),
-            (
-                "  https://mypikpak.com/s/VO8B-abc?password=abcd  ",
-                Some(("VO8B-abc", Some("abcd"))),
-            ),
-            (
-                "https://mypikpak.com/s/VO8B-abc#frag",
-                Some(("VO8B-abc", None)),
-            ),
-            // 复制链接时附带的前后缀文字。
-            (
-                "打开链接 https://mypikpak.com/s/AbC_123 查看",
-                Some(("AbC_123", None)),
-            ),
-            ("xyz-1", Some(("xyz-1", None))),
-            // 无法识别的形态。
-            ("https://example.com/download/abc", None),
-            ("https://mypikpak.com/s/", None),
-            ("not a valid id!", None),
-            ("", None),
-        ];
-        for (input, want) in cases {
-            let got = App::parse_share_input(input);
-            let got = got.as_ref().map(|(id, p)| (id.as_str(), p.as_deref()));
-            assert_eq!(got, want, "input: {input:?}");
-        }
     }
 }

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, vec2, Color32, FontId, Painter, Pos2, Rect, Stroke};
 
-use crate::icons::Glyph;
+use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
 /// 统一的单行输入框样式: 更舒适的内边距 / 最小高度, 与卡片圆角一致。
@@ -392,6 +392,40 @@ pub(crate) fn truncate_text(
         chars[..lo].iter().collect::<String>() + ell
     };
     painter.layout_no_wrap(out, font, color)
+}
+
+/// 目录选择器里的一行文件夹(矢量文件夹图标 + 名称, 超长截断)。
+pub(crate) fn folder_row(ui: &mut egui::Ui, th: &Theme, name: &str) -> bool {
+    let h = 30.0;
+    let w = ui.available_width().max(120.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    let painter = ui.painter().clone();
+    if resp.hovered() {
+        painter.rect_filled(rect, th.cr(6), th.hover);
+    }
+    let icon_rect = Rect::from_center_size(
+        Pos2::new(rect.min.x + 16.0, rect.center().y),
+        vec2(18.0, 18.0),
+    );
+    icons::paint(
+        &painter,
+        icon_rect,
+        Glyph::Folder,
+        Color32::from_rgb(232, 178, 84),
+    );
+    let g = truncate_text(
+        &painter,
+        name,
+        rect.width() - 34.0,
+        FontId::proportional(13.5),
+        th.text,
+    );
+    painter.galley(
+        Pos2::new(rect.min.x + 32.0, rect.center().y - g.size().y / 2.0),
+        g,
+        th.text,
+    );
+    resp.clicked()
 }
 
 /// 复选框三态(供传输任务 / 离线任务等列表共用)。
