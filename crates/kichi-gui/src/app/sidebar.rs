@@ -30,7 +30,19 @@ impl App {
             });
 
         match self.page {
-            Page::Files => self.files_page(ctx, th),
+            Page::Files => {
+                let actions = self.files.show(
+                    ctx,
+                    th,
+                    &mut self.global,
+                    &mut self.search,
+                    &mut self.thumbs,
+                    &self.preview,
+                );
+                for a in actions {
+                    self.apply_files_action(a);
+                }
+            }
             Page::Shares => self.shares.draw(ctx, &mut self.global, th),
             Page::Trash => self.trash.draw(ctx, &mut self.global, th),
             Page::Tasks => self.tasks_page(ctx, th),

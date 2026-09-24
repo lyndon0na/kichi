@@ -1,6 +1,5 @@
 mod dialogs;
 mod files;
-mod files_page;
 mod global;
 mod helpers;
 mod login;
@@ -34,7 +33,7 @@ use crate::settings::{
 use crate::theme::{self, Theme};
 use crate::worker;
 
-use self::files::FilesPage;
+use self::files::{FilesAction, FilesPage};
 use self::global::Global;
 use self::helpers::install_fonts;
 use self::preview::PreviewPage;
@@ -1462,6 +1461,55 @@ impl App {
         self.toast_ok("已加入上传队列 (文件夹)");
     }
 
+    /// 执行文件页本帧产生的跨域动作(渲染与动作分离, 见 `files::FilesAction`)。
+    fn apply_files_action(&mut self, a: FilesAction) {
+        match a {
+            FilesAction::NewFolder => {
+                self.mkdir_open = true;
+                self.mkdir_name.clear();
+            }
+            FilesAction::Rename { id, name } => {
+                self.rename_id = Some(id);
+                self.rename_name = name;
+            }
+            FilesAction::ConfirmTrash(items) => self.trash_confirm = Some(items),
+            FilesAction::Preview { id, name } => self.open_preview(id, name),
+            FilesAction::FetchQualities { id, name } => self.fetch_qualities(id, name),
+            FilesAction::PlayOption { id, opt } => self.play_option(id, opt),
+            FilesAction::DownloadSelection { files, folders } => {
+                self.download_selection(files, folders)
+            }
+            FilesAction::DownloadFile { id, name } => self.download_single(id, name),
+            FilesAction::DownloadFolder { id, name } => self.download_single_folder(id, name),
+            FilesAction::ShareSelection => self.share_selection(),
+            FilesAction::ShareItem(id) => self.share_item(id),
+            FilesAction::UploadFiles => self.upload_here(),
+            FilesAction::UploadFolder => self.upload_dir_here(),
+            FilesAction::Search => self.trigger_search(),
+            FilesAction::LoadMoreSearch => self.load_more_search_results(),
+        }
+    }
+
+    /// 把选中的文件 / 文件夹加入下载队列; 默认下载目录不可用时先让用户选一个。
+    fn download_selection(&mut self, files: Vec<(String, String)>, folders: Vec<(String, String)>) {
+        let dir =
+            if !self.download_dir.is_empty() && std::path::Path::new(&self.download_dir).is_dir() {
+                std::path::PathBuf::from(&self.download_dir)
+            } else {
+                let Some(d) = self.choose_download_dir() else {
+                    return;
+                };
+                d
+            };
+        self.enqueue_downloads(files, dir.clone());
+        for (id, name) in &folders {
+            self.enqueue_download_folder(id.clone(), name.clone(), dir.clone());
+        }
+        if !folders.is_empty() {
+            self.toast_ok("正在扫描目录…");
+        }
+    }
+
     /// 当前目录下与 `name` 同集的外挂字幕 (id, 文件名)。
     fn episode_subtitles(&self, name: &str) -> Vec<(String, String)> {
         self.files
@@ -1476,20 +1524,12 @@ impl App {
             .collect()
     }
 
-    /// 当前列表里某文件的类型(查不到条目时按文件名回退)。
-    pub(crate) fn file_type(&self, id: &str, name: &str) -> filetypes::FileType {
-        match self.files.items.iter().find(|f| f.id == id) {
-            Some(f) => filetypes::classify_file(f),
-            None => filetypes::classify(name, None),
-        }
-    }
-
     /// 预览云端文件: 音/视频交给 mpv 流式播放, 其他下载后交给系统查看器。
     ///
     /// 所有入口(双击 / 右键菜单 / 工具栏)都汇到这里: 只下载类直接拒绝并提示;
     /// 非媒体预览要整份下载, 超过 [`PREVIEW_CONFIRM_BYTES`] 且未命中缓存时先确认。
     pub(crate) fn open_preview(&mut self, id: String, name: String) {
-        let ft = self.file_type(&id, &name);
+        let ft = self.files.file_type(&id, &name);
         tracing::debug!(
             "预览路由「{name}」: mime={:?} → {ft:?}",
             self.files
@@ -1527,7 +1567,7 @@ impl App {
 
     /// 真正发起预览(供大文件确认通过后复用)。
     pub(crate) fn start_preview(&mut self, id: String, name: String) {
-        let ft = self.file_type(&id, &name);
+        let ft = self.files.file_type(&id, &name);
         let media = matches!(ft, filetypes::FileType::Video | filetypes::FileType::Audio);
         let req_id = self.alloc_req_id();
         // 同目录下的同集字幕, 播放时一并挂载(仅视频需要)。
