@@ -5,8 +5,8 @@ use eframe::egui::{self, vec2, FontId, Pos2, Rect, Stroke};
 use crate::theme::{mix, Theme};
 
 use super::super::preview::PreviewPage;
+use super::super::preview::QualityMenuState;
 use super::super::search::SearchPage;
-use super::super::types::QualityMenuState;
 use super::{row, FilesPage};
 use super::{ColDrag, RowAction, SortBy};
 use kichi_core::types::File;

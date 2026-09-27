@@ -11,8 +11,8 @@ use crate::theme::{mix, Theme};
 
 use super::super::helpers::truncate_text;
 use super::super::preview::PreviewPage;
+use super::super::preview::QualityMenuState;
 use super::super::thumbs::ThumbsPage;
-use super::super::types::QualityMenuState;
 use super::super::Global;
 use super::row;
 use super::FilesPage;

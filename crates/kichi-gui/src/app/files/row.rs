@@ -12,7 +12,7 @@ use crate::icons;
 use crate::theme::{mix, Theme};
 
 use super::super::helpers::truncate_text;
-use super::super::types::QualityMenuState;
+use super::super::preview::QualityMenuState;
 use super::RowAction;
 
 /// 「播放」子菜单: 原画直达 + 已解析出的清晰度。

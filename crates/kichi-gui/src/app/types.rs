@@ -334,48 +334,6 @@ pub(crate) type UploadPick = (
     std::sync::mpsc::Receiver<Vec<PathBuf>>,
 );
 
-/// 已解析的可用清晰度与同集字幕。
-pub(crate) struct QualityReady {
-    pub options: Vec<crate::msg::QualityOption>,
-    pub subs: Vec<PathBuf>,
-}
-
-/// 「播放」子菜单展示所需的清晰度状态。
-#[derive(Clone, Copy)]
-pub(crate) enum QualityMenuState<'a> {
-    /// 尚未解析完成。
-    Loading,
-    /// 已解析(可能为空列表)。
-    Ready(&'a QualityReady),
-}
-
-/// 待回传的「用系统程序打开」动作(后台探针结果)。
-pub(crate) struct PendingOpen {
-    pub rx: std::sync::mpsc::Receiver<super::helpers::OpenOutcome>,
-    /// 提示里展示的目标名(文件名 / 目录路径)。
-    pub label: String,
-    /// 成功时不提示(打开目录保持安静, 只有失败才说话)。
-    pub quiet_ok: bool,
-}
-
-/// 大文件预览确认弹窗的状态: 非媒体预览需先整份下载, 超过阈值时先问一次。
-#[derive(Clone)]
-pub(crate) struct PreviewConfirm {
-    pub id: String,
-    pub name: String,
-    pub size: i64,
-}
-
-/// 非媒体预览的缓存下载进度, 驱动常驻进度条与取消按钮。
-#[derive(Clone)]
-pub(crate) struct PreviewProgress {
-    pub req_id: u64,
-    pub name: String,
-    /// 总大小未知时为 0(进度条走不确定动画)。
-    pub total: u64,
-    pub done: u64,
-}
-
 /// 分享创建成功后的结果展示。
 #[derive(Clone)]
 pub(crate) struct ShareResult {
