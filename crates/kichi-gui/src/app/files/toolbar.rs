@@ -122,6 +122,36 @@ pub(crate) fn breadcrumbs(
     clicked
 }
 
+/// KDE 风格弹出菜单项列表: 常态无边框(避免「框里套框」), 仅悬停时整行填充高亮;
+/// 宽度按最长项自适应并封顶 `cap`(超长文字截断)。返回被点击项的索引。
+fn popup_menu(ui: &mut egui::Ui, th: &Theme, labels: &[String], cap: f32) -> Option<usize> {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text_w = labels
+        .iter()
+        .map(|l| {
+            ui.painter()
+                .layout_no_wrap(l.clone(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
+        .fold(0.0f32, f32::max);
+    let pad = ui.spacing().button_padding.x;
+    ui.set_width((text_w + pad * 2.0 + 2.0).min(cap));
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    ui.style_mut().visuals.widgets.hovered.weak_bg_fill = th.hover;
+    ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+    ui.style_mut().visuals.widgets.active.weak_bg_fill = th.accent_soft();
+    ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+
+    let mut clicked = None;
+    for (i, label) in labels.iter().enumerate() {
+        if ui.selectable_label(false, label.as_str()).clicked() {
+            clicked = Some(i);
+        }
+    }
+    clicked
+}
+
 /// 顶部栏渲染上下文: 本帧已算好的选中统计 + 各域句柄(域方法只收 `&mut Global`)。
 pub(super) struct TopBar<'a> {
     pub th: &'a Theme,
@@ -141,7 +171,6 @@ pub(super) struct TopBar<'a> {
 pub(super) struct TopBarReq {
     pub up: bool,
     pub jumped: Option<usize>,
-    pub mkdir: bool,
     pub upload: bool,
     pub upload_dir: bool,
     pub refresh: bool,
@@ -174,7 +203,7 @@ impl FilesPage {
                     // 不会像固定预留宽度那样反向溢出盖住面包屑。
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if tb.sel_meta.is_empty() {
-                            // ---- 普通模式: 搜索 + 刷新 + 新建 + 视图 ----
+                            // ---- 普通模式: 搜索 + 刷新 + 上传 + 视图 ----
                             let focused = ui.memory(|m| m.has_focus(egui::Id::new("file_search")));
                             egui::Frame::new()
                                 .fill(tb.th.card)
@@ -256,39 +285,43 @@ impl FilesPage {
                             rresp.on_hover_text("刷新 (F5)");
 
                             ui.add_space(4.0);
-                            // 上传菜单(上传文件 / 上传文件夹)
-                            ui.menu_button(
-                                RichText::new("上传").size(13.0).color(tb.th.text_weak),
-                                |ui| {
-                                    if ui.button("上传文件").clicked() {
-                                        req.upload = true;
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("上传文件夹").clicked() {
-                                        req.upload_dir = true;
-                                        ui.close_menu();
-                                    }
-                                },
-                            );
-
-                            ui.add_space(4.0);
-                            // 新建文件夹(矢量图标 + 悬浮提示)
-                            let (pr, presp) =
+                            // 上传(图标按钮 + 下拉菜单: 上传文件 / 上传文件夹)
+                            let (ur, uresp) =
                                 ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
                             ui.painter().rect_filled(
-                                pr,
+                                ur,
                                 tb.th.cr(8),
-                                if presp.hovered() {
-                                    tb.th.accent_soft()
+                                if uresp.hovered() {
+                                    tb.th.hover
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 },
                             );
-                            icons::paint(ui.painter(), pr.shrink(7.0), Glyph::Plus, tb.th.accent);
-                            if presp.clicked() {
-                                req.mkdir = true;
+                            icons::paint(
+                                ui.painter(),
+                                ur.shrink(7.0),
+                                Glyph::Upload,
+                                tb.th.text_weak,
+                            );
+                            let upload_menu_id = ui.make_persistent_id("file_upload_menu");
+                            if uresp.clicked() {
+                                ui.memory_mut(|m| m.toggle_popup(upload_menu_id));
                             }
-                            presp.on_hover_text("新建文件夹");
+                            egui::popup_below_widget(
+                                ui,
+                                upload_menu_id,
+                                &uresp,
+                                egui::PopupCloseBehavior::CloseOnClick,
+                                |ui| {
+                                    let labels = ["上传文件".to_string(), "上传文件夹".to_string()];
+                                    match popup_menu(ui, tb.th, &labels, 360.0) {
+                                        Some(0) => req.upload = true,
+                                        Some(_) => req.upload_dir = true,
+                                        None => {}
+                                    }
+                                },
+                            );
+                            uresp.on_hover_text("上传");
 
                             ui.add_space(6.0);
                             // 视图切换

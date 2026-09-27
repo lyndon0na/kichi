@@ -903,9 +903,6 @@ impl FilesPage {
         if let Some(sel) = key_trash {
             effects.push(FilesAction::ConfirmTrash(sel));
         }
-        if req.mkdir {
-            effects.push(FilesAction::NewFolder);
-        }
         if req.refresh {
             self.refresh_dir(g);
         }

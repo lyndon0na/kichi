@@ -13,6 +13,7 @@
 
 ### 变更
 
+- **文件页顶部栏上传入口改为图标按钮**：「我的文件」右上角原先的文字「上传」下拉菜单与 `+`（新建文件夹）合并为一个上传图标按钮，点击弹出「上传文件 / 上传文件夹」（菜单项为 KDE 风格扁平行：常态无边框、仅悬停整行高亮，宽度按文字自适应，不会缩成一条也不至于过宽）；移除顶部栏的新建文件夹按钮（列表空白处右键菜单仍可新建）。同时删除不再使用的 `Glyph::Plus` 图标
 - **工程：分享域渲染按角色分文件**：`app/shares.rs`（1608 行，GUI 最大单文件）拆成 `app/shares/` 下三个文件 —— `mod.rs`（`SharesPage`：状态 / 生命周期 / 消息处理 + `ShareResult`）、`mine.rs`（我的分享列表 + 创建分享 / 分享结果 / 取消分享确认弹窗）、`restore.rs`（转存分享：链接解析 / 文件浏览 / 「保存到」目标目录选择器 / 保存后自动移动与重试）；不动结构与 `App` 字段，三个渲染方法可见性由 `pub(super)` 放宽为 `pub(crate)`。纯结构调整：用户可见行为零变化
 - **工程：界面层内部类型随域归位，删除 `app/types.rs`**：原 506 行的 `app/types.rs` 把跨域与各域类型混放一处，改一处传输任务类型要同时开 `app/transfers/*` 与该文件；现按域拆开 —— 跨域共享的 `Page` / `CacheUsage` 进 `app/global.rs`；文件域类型（`SortBy` / `Crumb` / `DirEntry` / `RowAction` / `ViewMode` / `ClipKind` / `Clipboard` / `ColDrag`）进 `app/files/mod.rs`；预览域类型进 `app/preview.rs`；`ShareResult` 进 `app/shares.rs`；任务域类型（`OfflineTab` / `TaskOp` / `TaskSel`）进 `app/tasks/mod.rs`；传输域类型按下载 / 上传分别进 `app/transfers/download.rs` / `upload.rs`（共享的 `TransferTab` / `DlSel` 留 `app/transfers/mod.rs`）。纯结构调整：用户可见行为零变化
 - **工程：离线任务页收进 `app/tasks/`**：`app/tasks.rs` + `app/tasks_page.rs`（后者是最后一个仍挂 `impl App` 的带状态页面）合并为 `app/tasks/` 下四个文件 —— `mod.rs`（`TasksPage`：任务分桶 / 分页 / 选中 / 新建表单 + 生命周期）、`list.rs`（页壳 / 阶段页签 / 批量操作条 / 列表 + 「加载更多」）、`card.rs`（单张任务卡片）、`picker.rs`（「保存到」目录选择器）；沿用「渲染与动作分离」：`TasksPage::show(...)` 只读写自身状态并返回 `Vec<TasksAction>`，唯一跨域动作「下载到本地」由 `App::apply_tasks_action` 在渲染后执行，页面不再需要 `&mut App`。纯结构调整：用户可见行为零变化
