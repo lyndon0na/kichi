@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::settings::DownloadRecordStatus;
 
-use super::super::types::{DlJob, DlNode, DlStatus};
+use super::download::{DlJob, DlNode, DlStatus};
 
 /// 下载任务状态 -> 持久化记录状态(非终态仅在异常情况下出现, 兜底标记未完成)。
 pub(crate) fn dl_record_status(s: &DlStatus) -> DownloadRecordStatus {

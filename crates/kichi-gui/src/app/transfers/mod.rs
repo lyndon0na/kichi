@@ -20,14 +20,30 @@ use crate::theme::Theme;
 
 use super::global::Global;
 use super::helpers;
-use super::types::{
-    DlFilter, DlJob, DlNode, DlOp, DlRow, DlStatus, TransferTab, UlFilter, UlJob, UlStatus,
-    UploadPick,
-};
 
 mod download;
 pub(crate) mod model;
 mod upload;
+
+pub(crate) use self::download::{DlFilter, DlJob, DlNode, DlOp, DlRow, DlStatus};
+pub(crate) use self::upload::{UlFilter, UlJob, UlStatus, UploadPick};
+
+/// 传输任务页的上传/下载分栏。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum TransferTab {
+    Upload,
+    Download,
+}
+
+/// 下载列表行点击产生的选择请求。
+pub(crate) enum DlSel {
+    /// 普通单击: 只选中该项(替换原选择)。
+    Replace(u64),
+    /// Ctrl+单击: 在选中/未选中之间切换。
+    Toggle(u64),
+    /// Shift+单击: 范围选择。
+    Range(u64),
+}
 
 /// 传输任务域状态: 上传 / 下载两条任务列表与它们的筛选、选中、展开, 以及
 /// 本地上传的异步选择框。

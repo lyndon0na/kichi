@@ -1,5 +1,8 @@
 //! 传输页「上传」分栏: 顶部操作行、筛选汇总、任务列表与底部批量操作条。
 
+use std::path::PathBuf;
+use std::time::Instant;
+
 use eframe::egui::{
     self, vec2, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke,
 };
@@ -11,8 +14,130 @@ use crate::theme::{mix, Theme};
 
 use super::super::global::Global;
 use super::super::helpers::{card_shell, icon_action, paint_checkbox, truncate_text, CheckState};
-use super::super::types::{DlSel, UlFilter, UlJob, UlOp, UlStatus};
-use super::{TransfersAction, TransfersPage, DL_CARD_H};
+use super::{DlSel, TransfersAction, TransfersPage, DL_CARD_H};
+
+/// 本地上传任务的状态。
+#[derive(Clone, PartialEq)]
+pub(crate) enum UlStatus {
+    Queued,
+    Running,
+    Done,
+    Failed(String),
+}
+
+/// 本地上传任务 (上传到网盘某目录)。
+#[derive(Clone)]
+pub(crate) struct UlJob {
+    pub local_path: PathBuf,
+    pub name: String,
+    /// 目标网盘目录 (None = 根目录)。
+    pub parent: Option<String>,
+    /// 目标目录的层级快照 (id, label), 用于展示与「在网盘中打开」。
+    pub dest_stack: Vec<(Option<String>, String)>,
+    pub total: u64,
+    pub done: u64,
+    pub status: UlStatus,
+    /// 估算速率(bytes/s)。
+    pub speed: u64,
+    pub last_done: u64,
+    pub last_at: Option<Instant>,
+    /// 上传历史记录的唯一标识(历史记录或完成后填充)。
+    pub record_id: String,
+    /// 是否为目录递归上传。
+    pub is_dir: bool,
+    /// 目录上传的已完成/总文件数。
+    pub files_done: u32,
+    pub files_total: u32,
+    /// 目录上传当前文件。
+    pub current: String,
+    /// 完成/失败时间(unix 秒); 进行中为 None。
+    pub at: Option<u64>,
+}
+
+impl UlJob {
+    /// 目标网盘路径展示, 如 "我的云盘 / 视频"。
+    pub fn dest_label(&self) -> String {
+        self.dest_stack
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+
+    pub fn queued(
+        path: PathBuf,
+        name: String,
+        parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
+    ) -> Self {
+        UlJob {
+            local_path: path,
+            name,
+            parent,
+            dest_stack,
+            total: 0,
+            done: 0,
+            status: UlStatus::Queued,
+            speed: 0,
+            last_done: 0,
+            last_at: None,
+            record_id: String::new(),
+            is_dir: false,
+            files_done: 0,
+            files_total: 0,
+            current: String::new(),
+            at: None,
+        }
+    }
+
+    pub fn queued_dir(
+        path: PathBuf,
+        name: String,
+        parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
+    ) -> Self {
+        let mut job = Self::queued(path, name, parent, dest_stack);
+        job.is_dir = true;
+        job
+    }
+}
+
+/// 上传任务行级操作。
+pub(crate) enum UlOp {
+    Cancel,
+    Retry,
+    Remove,
+    /// 在「我的文件」中打开该上传的目标目录。
+    OpenInDrive,
+}
+
+/// 上传列表的状态筛选。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum UlFilter {
+    All,
+    Active,
+    Done,
+    Failed,
+}
+
+impl UlFilter {
+    pub fn matches(&self, job: &UlJob) -> bool {
+        match self {
+            UlFilter::All => true,
+            UlFilter::Active => matches!(job.status, UlStatus::Queued | UlStatus::Running),
+            UlFilter::Done => job.status == UlStatus::Done,
+            UlFilter::Failed => matches!(job.status, UlStatus::Failed(_)),
+        }
+    }
+}
+
+/// 进行中的异步文件/目录选择: (是否目录, 目标目录 id, 目标路径快照, 结果通道)。
+pub(crate) type UploadPick = (
+    bool,
+    Option<String>,
+    Vec<(Option<String>, String)>,
+    std::sync::mpsc::Receiver<Vec<PathBuf>>,
+);
 
 /// 上传行状态文案。
 fn upload_status_line(job: &UlJob) -> (egui::Color32, String) {

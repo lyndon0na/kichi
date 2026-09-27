@@ -1,5 +1,8 @@
 //! 传输页「下载」分栏: 说明行、筛选汇总、任务列表(含目录树)与底部批量操作条。
 
+use std::path::PathBuf;
+use std::time::Instant;
+
 use eframe::egui::{
     self, vec2, Align, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Stroke,
 };
@@ -12,11 +15,157 @@ use crate::theme::{mix, Theme};
 
 use super::super::global::Global;
 use super::super::helpers::{card_shell, icon_action, paint_checkbox, truncate_text, CheckState};
-use super::super::types::{DlFilter, DlJob, DlNode, DlOp, DlRow, DlSel, DlStatus};
 use super::{
-    TransfersAction, TransfersPage, BTN_W, CB_W, DL_CARD_GAP, DL_CARD_H, NODE_BASE, NODE_DIR_H,
-    NODE_FILE_H, NODE_GAP, NODE_STEP, TREE_CHILD_CAP, TREE_HINT_H, TREE_PAD,
+    DlSel, TransfersAction, TransfersPage, BTN_W, CB_W, DL_CARD_GAP, DL_CARD_H, NODE_BASE,
+    NODE_DIR_H, NODE_FILE_H, NODE_GAP, NODE_STEP, TREE_CHILD_CAP, TREE_HINT_H, TREE_PAD,
 };
+
+/// 本地下载任务的 UI 状态。
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum DlStatus {
+    Queued,
+    Running,
+    Done,
+    Failed(String),
+}
+
+/// 目录任务下的一个树节点(子目录或文件), 按先序存放。
+#[derive(Clone)]
+pub(crate) struct DlNode {
+    pub is_dir: bool,
+    pub name: String,
+    /// 层级: 目录卡片(root)=0, 其直接子项=1。
+    pub depth: u32,
+    /// 文件节点对应的子任务 req_id; 目录节点为 None。
+    pub rid: Option<u64>,
+    /// 目录节点: 是否展开。
+    pub expanded: bool,
+    /// 目录节点: 子树内的文件完成数 / 总数。
+    pub files_done: u32,
+    pub files_total: u32,
+    /// 文件节点: 是否已完成(用于目录节点的子树计数)。
+    pub done: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct DlJob {
+    /// 云端文件 id, 用于失败/取消后重试(历史记录可能为空)。目录任务为目录 id。
+    pub file_id: String,
+    /// 对应的历史记录唯一标识, 用于精确移除(历史记录或首次写盘后填充)。
+    pub record_id: String,
+    pub name: String,
+    pub dir: PathBuf,
+    pub total: u64,
+    pub done: u64,
+    pub status: DlStatus,
+    /// 估算速率(bytes/s)。
+    pub speed: u64,
+    pub last_done: u64,
+    pub last_at: Option<Instant>,
+    /// 完成/失败时间(unix 秒); 进行中为 None。
+    pub at: Option<u64>,
+    /// 目录任务: 云端目录 id; 普通文件/子文件为 None。
+    pub folder_id: Option<String>,
+    /// 子文件任务: 所属目录任务的 req_id; 顶层任务为 None。
+    pub parent: Option<u64>,
+    /// 目录任务: 目录树节点(先序, 含子目录与文件)。
+    pub nodes: Vec<DlNode>,
+    /// 目录任务: 是否展开整个目录树。
+    pub expanded: bool,
+    /// 目录任务: 已完成 / 全部文件数。
+    pub files_done: u32,
+    pub files_total: u32,
+}
+
+impl DlJob {
+    pub fn queued(file_id: String, name: String, dir: PathBuf) -> Self {
+        DlJob {
+            file_id,
+            record_id: String::new(),
+            name,
+            dir,
+            total: 0,
+            done: 0,
+            status: DlStatus::Queued,
+            speed: 0,
+            last_done: 0,
+            last_at: None,
+            at: None,
+            folder_id: None,
+            parent: None,
+            nodes: Vec::new(),
+            expanded: false,
+            files_done: 0,
+            files_total: 0,
+        }
+    }
+
+    /// 目录任务: 先以「扫描中」状态入队, 扫描完成后填充目录树。
+    pub fn folder(folder_id: String, name: String, dir: PathBuf) -> Self {
+        let mut job = DlJob::queued(folder_id.clone(), name, dir);
+        job.folder_id = Some(folder_id);
+        job
+    }
+
+    /// 子文件任务: 归属某个目录任务。
+    pub fn child(file_id: String, name: String, dir: PathBuf, parent: u64) -> Self {
+        let mut job = DlJob::queued(file_id, name, dir);
+        job.parent = Some(parent);
+        job
+    }
+
+    pub fn is_folder(&self) -> bool {
+        self.folder_id.is_some()
+    }
+
+    /// 目录树内文件的子任务 req_id(按先序)。
+    pub fn file_rids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.nodes.iter().filter_map(|n| n.rid)
+    }
+}
+
+/// 下载窗口内的行级操作。
+pub(crate) enum DlOp {
+    Cancel,
+    OpenDir,
+    /// 用系统默认程序打开已下载的本地文件。
+    OpenFile,
+    /// 重新下载(仅本地会话内、已知云端 id 的任务可用)。
+    Retry,
+    Remove,
+    /// 展开/收起整个目录任务的目录树。
+    Expand,
+    /// 展开/收起目录任务下的某个子目录节点(节点下标)。
+    ToggleDir(usize),
+}
+
+/// 下载列表中的一个块: 单个任务卡片, 或一个展开目录(卡片内含目录树)。
+pub(crate) enum DlRow {
+    /// 普通任务卡片(或未展开的目录)。
+    Job(u64),
+    /// 展开的目录: 目录卡片 + 其可见的树节点下标(先序, 已跳过收起子目录的子孙)。
+    Tree(u64, Vec<usize>),
+}
+
+/// 下载列表的状态筛选。
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum DlFilter {
+    All,
+    Active,
+    Done,
+    Failed,
+}
+
+impl DlFilter {
+    pub fn matches(&self, job: &DlJob) -> bool {
+        match self {
+            DlFilter::All => true,
+            DlFilter::Active => matches!(job.status, DlStatus::Queued | DlStatus::Running),
+            DlFilter::Done => job.status == DlStatus::Done,
+            DlFilter::Failed => matches!(job.status, DlStatus::Failed(_)),
+        }
+    }
+}
 
 /// 某个层级节点的名称左边界(相对行矩形)。父级目录标题在 CB_W+18 处,
 /// 因此 depth=1 的子项会比父标题再右移一档, 层级才看得出区别。

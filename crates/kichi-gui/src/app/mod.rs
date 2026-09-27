@@ -12,7 +12,6 @@ mod tasks;
 mod thumbs;
 mod transfers;
 mod trash;
-pub(crate) mod types;
 
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
