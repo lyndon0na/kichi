@@ -296,7 +296,7 @@ cargo build --release -p kichi-gui
 cargo test --workspace
 ```
 
-推送 `master` 与所有 PR 由 GitHub Actions 跑同一套闸门（`.github/workflows/ci.yml`）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` —— 本地命令与 CI 一致，只在 CI 上多出 `--locked` 与严格告警。
+推送 `master` 与所有 PR 由 GitHub Actions 跑同一套闸门（`.github/workflows/ci.yml`）：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` —— 本地命令与 CI 一致，只在 CI 上多出 `--locked` 与严格告警。工具链版本由仓库根 `rust-toolchain.toml` 固定（当前 1.98.1），装了 rustup 后本地 `cargo` 会自动使用同一版本。
 
 ### 3. 打包（AppImage / Flatpak）
 

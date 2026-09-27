@@ -156,6 +156,7 @@
   - clippy 直接上严格模式（`cargo clippy --workspace --all-targets --locked -- -D warnings`）：本地实测早已 0 告警，不需要「先宽松后收紧」的过渡期；cargo 命令统一带 `--locked`，把依赖漂移挡在主干之外
   - 缓存 key 用 `Linux-ci-cargo-*`，与 `release.yml` **刻意区分**：同 key 时两个工作流互相覆盖缓存，且 AppImage 任务在 `ubuntu-22.04` 构建、target 不通用
   - 上 CI 前本地复跑三闸门确认基线：`cargo fmt --all --check` 通过、`cargo clippy --workspace --all-targets --locked -- -D warnings` 0 告警、`cargo test --workspace --locked` 58 项全过（GUI 侧；核心库 33 项合计 91）；README 顶部补 CI 状态徽章、目录树与「构建与运行」补 CI 说明
+  - **工具链固定（2026-09-27）**：原先用浮动 `dtolnay/rust-toolchain@stable`，CI 静默升到 rustc 1.98.1，其新增 `float_literal_f32_fallback`（future-incompat，默认告警）在 `-D warnings` 下命中 55 处 `Stroke::new` 字面量而编译失败，本地 1.94 不复现。新增根 `rust-toolchain.toml` 固定 `1.98.1`（含 `clippy` / `rustfmt` 组件），`ci.yml` / `release.yml` 的 Action `@版本` 同步固定；代码侧给 55 处宽度字面量补 `_f32`（纯类型标注，行为不变）。升级工具链时改 `rust-toolchain.toml` 与两处 Action 版本（该 Action 不读该文件）
 
 ## 四、功能现状
 
@@ -482,7 +483,7 @@ classify(name, mime)              预览入口                       预览执�
 | 项 | 值 |
 | :-- | :-- |
 | 开发机 | Fedora 44，KDE Plasma，Wayland |
-| 工具链 | cargo / rustc 1.94 |
+| 工具链 | cargo / rustc 1.98.1（由根 `rust-toolchain.toml` 固定，CI / 发布同步） |
 
 ## 九、附录：实现方案
 
