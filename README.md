@@ -203,32 +203,29 @@ crates/
         ├── filetypes.rs         # 文件类型分类与预览路由（mime + 扩展名单点维护）
         ├── app/                 # UI 模块（按职责拆分）
         │   ├── mod.rs             # App 结构体、初始化、消息收敛与跨域编排（各域状态在域文件里）
-        │   ├── global.rs          # 各域共用的全局句柄（命令通道 / 提示条 / 系统配色）
-        │   ├── types.rs           # Page / ViewMode / TransferTab / DlJob 等内部类型
+        │   ├── global.rs          # 全局句柄（命令通道 / 提示条 / 系统配色）+ 共享类型 Page / CacheUsage
         │   ├── login.rs           # 登录页
         │   ├── sidebar.rs         # 侧边栏 + 导航 + 账户 / 配额卡片
         │   ├── files/             # 文件浏览页（渲染与跨域动作分离）
-        │   │   ├── mod.rs         # FilesPage：导航栈 / 目录缓存 / 选中集 / 排序过滤 + 渲染入口 show
+        │   │   ├── mod.rs         # FilesPage：导航栈 / 目录缓存 / 选中集 / 排序过滤 + 渲染入口 show + 文件域类型
         │   │   ├── list.rs        # 列表视图（列宽布局 / 表头 / 行集合）
         │   │   ├── grid.rs        # 网格视图（卡片绘制 + 缩略图预取行区间）
         │   │   ├── row.rs         # 列表行与右键菜单项
         │   │   └── toolbar.rs     # 顶部栏（面包屑 / 搜索框 / 视图切换 / 操作区）
         │   ├── tasks/             # 离线任务页（渲染与跨域动作分离）
-        │   │   ├── mod.rs         # TasksPage：任务分桶 / 分页 / 选择 / 新建表单 + 生命周期
+        │   │   ├── mod.rs         # TasksPage：任务分桶 / 分页 / 选择 / 新建表单 + 生命周期 + 任务域类型
         │   │   ├── list.rs        # 页壳 / 阶段页签 / 批量操作条 / 任务列表 + 加载更多
         │   │   ├── card.rs        # 单张任务卡片
         │   │   └── picker.rs      # 「保存到」网盘目录选择器
         │   ├── transfers/         # 传输任务页（渲染与跨域动作分离）
-        │   │   ├── mod.rs         # TransfersPage：任务表 / 选中集 / 筛选 + 生命周期 + 渲染入口 show
-        │   │   ├── download.rs    # 下载分栏（任务卡片 / 目录树 / 底部批量操作条）
-        │   │   ├── upload.rs      # 上传分栏（任务卡片 / 底部批量操作条）
+        │   │   ├── mod.rs         # TransfersPage：任务表 / 选中集 / 筛选 + 生命周期 + 渲染入口 show + 共享类型
+        │   │   ├── download.rs    # 下载分栏（任务卡片 / 目录树 / 底部批量操作条）+ 下载域类型
+        │   │   ├── upload.rs      # 上传分栏（任务卡片 / 底部批量操作条）+ 上传域类型
         │   │   └── model.rs       # 传输纯逻辑（状态映射 / 进度聚合 / 目录树计数 / 速率取样）
         │   ├── settings_page.rs   # 设置页
-        │   ├── shares_page.rs     # 我的分享页渲染
-        │   ├── shares.rs          # 分享域（我的分享 + 转存分享 / 目标目录选择器）
-        │   ├── trash_page.rs      # 回收站页渲染
+        │   ├── shares.rs          # 分享域（我的分享 + 转存分享 / 目标目录选择器）+ ShareResult
         │   ├── trash.rs           # 回收站域（列表 / 还原 / 彻底删除）
-        │   ├── preview.rs         # 预览域（下载进度 / 取消 / 清晰度切换 / 外部打开探针）
+        │   ├── preview.rs         # 预览域（下载进度 / 取消 / 清晰度切换 / 外部打开探针）+ 预览域类型
         │   ├── search.rs          # 全局搜索域（关键字 / 结果分页）
         │   ├── thumbs.rs          # 缩略图域（GPU 纹理 LRU + 在途 / 失败登记）
         │   ├── dialogs.rs         # 通用弹窗：新建 / 重命名 / 移入回收站 / 退出登录 + 提示条
