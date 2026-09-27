@@ -17,8 +17,8 @@ use super::row;
 use super::FilesPage;
 use super::{ClipKind, Crumb, RowAction, ViewMode};
 
-/// 面包屑导航: 宽度不足时从左侧省略中间层级, 始终保留当前目录(必要时截断)。
-/// 返回被点击的层级索引。
+/// 面包屑导航: 宽度不足时从左侧省略中间层级, 始终保留当前目录(必要时截断);
+/// 点击「…」可弹出被省略的上级目录并直接跳转。返回被点击的层级索引。
 pub(crate) fn breadcrumbs(
     ui: &mut egui::Ui,
     th: &Theme,
@@ -76,11 +76,34 @@ pub(crate) fn breadcrumbs(
 
     let mut clicked = None;
     if start > 0 {
-        let (er, _) = ui.allocate_exact_size(vec2(ell_w, row_h), egui::Sense::hover());
+        let (er, eresp) = ui.allocate_exact_size(vec2(ell_w, row_h), egui::Sense::click());
+        if eresp.hovered() {
+            painter.rect_filled(er, th.cr(6), th.hover);
+        }
         let ec = er.center();
         for dx in [-4.0f32, 0.0, 4.0] {
             painter.circle_filled(Pos2::new(ec.x + dx, ec.y), 1.4, th.text_faint);
         }
+        // 点击「…」弹出被省略的上级目录, 选中即跳转到该层。
+        let overflow_id = ui.make_persistent_id("file_crumb_overflow");
+        if eresp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(overflow_id));
+        }
+        egui::popup_below_widget(
+            ui,
+            overflow_id,
+            &eresp,
+            egui::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                let labels: Vec<String> =
+                    crumbs.iter().take(start).map(|c| c.label.clone()).collect();
+                if let Some(i) = popup_menu(ui, th, &labels, 360.0) {
+                    clicked = Some(i);
+                }
+            },
+        );
+        eresp.on_hover_text("被省略的上级目录");
+
         let (sr, _) = ui.allocate_exact_size(vec2(sep, row_h), egui::Sense::hover());
         icons::paint(
             &painter,
