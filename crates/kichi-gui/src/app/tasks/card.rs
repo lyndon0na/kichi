@@ -9,7 +9,7 @@ use crate::icons::Glyph;
 use crate::theme::Theme;
 
 use super::super::helpers::{card_shell, icon_action, paint_checkbox, truncate_text, CheckState};
-use super::super::types::{OfflineTab, TaskOp, TaskSel};
+use super::{OfflineTab, TaskOp, TaskSel};
 
 /// 离线任务卡片固定高度(虚拟滚动要求逐行等高)。
 pub(super) const TASK_CARD_H: f32 = 64.0;

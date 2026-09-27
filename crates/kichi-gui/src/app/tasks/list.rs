@@ -13,8 +13,8 @@ use crate::theme::{mix, Theme};
 
 use super::super::global::Global;
 use super::super::helpers::{input, paint_checkbox, CheckState};
-use super::super::types::{OfflineTab, TaskOp, TaskSel};
 use super::card::{task_card, TASK_CARD_H};
+use super::{OfflineTab, TaskOp, TaskSel};
 use super::{TasksAction, TasksPage};
 
 impl TasksPage {
