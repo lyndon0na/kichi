@@ -7,9 +7,9 @@ use kichi_core::types::File;
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
+use super::super::files::Crumb;
 use super::super::global::Global;
 use super::super::helpers::folder_row;
-use super::super::types::Crumb;
 use super::TasksPage;
 
 impl TasksPage {

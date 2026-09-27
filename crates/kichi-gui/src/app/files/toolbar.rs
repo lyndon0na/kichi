@@ -11,10 +11,11 @@ use crate::theme::{mix, Theme};
 use super::super::helpers::truncate_text;
 use super::super::preview::PreviewPage;
 use super::super::search::SearchPage;
-use super::super::types::{ClipKind, Crumb, QualityMenuState, RowAction, ViewMode};
+use super::super::types::QualityMenuState;
 use super::super::Global;
 use super::row;
 use super::FilesPage;
+use super::{ClipKind, Crumb, RowAction, ViewMode};
 
 /// 面包屑导航: 宽度不足时从左侧省略中间层级, 始终保留当前目录(必要时截断)。
 /// 返回被点击的层级索引。

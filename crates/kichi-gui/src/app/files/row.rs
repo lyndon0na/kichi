@@ -12,7 +12,8 @@ use crate::icons;
 use crate::theme::{mix, Theme};
 
 use super::super::helpers::truncate_text;
-use super::super::types::{QualityMenuState, RowAction};
+use super::super::types::QualityMenuState;
+use super::RowAction;
 
 /// 「播放」子菜单: 原画直达 + 已解析出的清晰度。
 /// 子菜单打开时会请求(若尚未缓存)该文件的清晰度列表。

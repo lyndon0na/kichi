@@ -9,8 +9,9 @@ use kichi_core::types::{task_id, File, Task};
 
 use crate::msg::Cmd;
 
+use super::files::Crumb;
 use super::global::Global;
-use super::types::{Crumb, OfflineTab};
+use super::types::OfflineTab;
 
 mod card;
 mod list;

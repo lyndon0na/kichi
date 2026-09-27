@@ -1,73 +1,11 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use kichi_core::types::File;
-
 /// 传输任务页的上传/下载分栏。
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum TransferTab {
     Upload,
     Download,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
-pub(crate) enum SortBy {
-    Name,
-    Size,
-    Modified,
-}
-
-#[derive(Clone)]
-pub(crate) struct Crumb {
-    pub id: Option<String>,
-    pub label: String,
-}
-
-/// 目录缓存条目: 某目录已加载的文件列表与分页游标。
-pub(crate) struct DirEntry {
-    pub files: Vec<File>,
-    pub next_token: Option<String>,
-    /// 最近一次写入对应的请求 id, 用于丢弃乱序到达的旧响应。
-    pub req: u64,
-    /// 最近一次成功加载的时间, 用于 TTL 新鲜度判定。
-    pub fetched_at: Instant,
-    /// 最近一次访问时间, 用于 LRU 淘汰。
-    pub last_used: Instant,
-}
-
-impl Default for DirEntry {
-    fn default() -> Self {
-        let now = Instant::now();
-        Self {
-            files: Vec::new(),
-            next_token: None,
-            req: 0,
-            fetched_at: now,
-            last_used: now,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) enum RowAction {
-    OpenFolder(String, String),
-    /// 打开/播放(音视频为原画流式, 其他为下载后用系统查看器)。
-    OpenFile(String, String),
-    /// 确保某媒体文件的可用清晰度已解析(供「播放」子菜单展示)。
-    FetchQualities(String, String),
-    /// 用已解析出的某个清晰度播放。
-    PlayOption(String, crate::msg::QualityOption),
-    DownloadFile(String, String),
-    /// 递归下载整个云端目录 (folder_id, 目录名)。
-    DownloadFolder(String, String),
-    CopyName(String),
-    Rename(String, String),
-    CopyItem(String),
-    CutItem(String),
-    /// 为该项(若在多选内则为整个选中集)创建分享。
-    Share(String),
-    PasteInto(String),
-    Trash(String),
 }
 
 /// 下载列表行点击产生的选择请求。
@@ -124,35 +62,6 @@ pub(crate) enum TaskSel {
     Replace(String),
     Toggle(String),
     Range(String),
-}
-
-/// 文件列表视图模式。
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub(crate) enum ViewMode {
-    /// 列表视图(表格样式)。
-    List,
-    /// 图标视图(网格缩略图)。
-    Icon,
-}
-
-/// 剪贴板操作类型。
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub(crate) enum ClipKind {
-    /// 复制: 粘贴后保留剪贴板内容, 可继续粘贴到别处。
-    Copy,
-    /// 剪切: 粘贴成功后清空剪贴板。
-    Cut,
-}
-
-/// 内部文件剪贴板: 复制/剪切选中项, 切换到目标目录后粘贴。
-#[derive(Clone)]
-pub(crate) struct Clipboard {
-    pub kind: ClipKind,
-    pub ids: Vec<String>,
-    /// 源目录, 用于剪切时判断目标是否与原目录相同。
-    pub src_parent: Option<String>,
-    /// 展示用描述(单文件为文件名, 多项为 "N 项")。
-    pub label: String,
 }
 
 /// 本地下载任务的 UI 状态。
@@ -424,18 +333,6 @@ pub(crate) type UploadPick = (
     Vec<(Option<String>, String)>,
     std::sync::mpsc::Receiver<Vec<PathBuf>>,
 );
-
-/// 列拖拽状态。
-pub(crate) struct ColDrag {
-    /// 拖拽的是哪条分割线 (1 = 名称|大小, 2 = 大小|修改时间)
-    pub handle: u8,
-    /// 拖拽开始时鼠标 x
-    pub start_x: f32,
-    /// 拖拽开始时 col_size_w
-    pub orig_size_w: f32,
-    /// 拖拽开始时 col_time_w
-    pub orig_time_w: f32,
-}
 
 /// 已解析的可用清晰度与同集字幕。
 pub(crate) struct QualityReady {

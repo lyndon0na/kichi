@@ -27,7 +27,7 @@ use crate::settings;
 use crate::theme::{self, Theme};
 use crate::worker;
 
-use self::files::{FilesAction, FilesPage};
+use self::files::{Crumb, FilesAction, FilesPage};
 use self::global::{CacheUsage, Global, Page};
 use self::helpers::install_fonts;
 use self::preview::PreviewPage;
@@ -37,7 +37,6 @@ use self::tasks::{TasksAction, TasksPage};
 use self::thumbs::ThumbsPage;
 use self::transfers::{TransfersAction, TransfersPage};
 use self::trash::TrashPage;
-use self::types::Crumb;
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
 const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;

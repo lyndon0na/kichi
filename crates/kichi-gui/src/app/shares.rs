@@ -17,9 +17,10 @@ use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
+use super::files::Crumb;
 use super::global::Global;
 use super::helpers::{self, folder_row, input};
-use super::types::{Crumb, ShareResult};
+use super::types::ShareResult;
 
 /// 「我的分享」列表新鲜期: 进入页面时命中则不发请求。
 const SHARES_TTL: Duration = Duration::from_secs(60);

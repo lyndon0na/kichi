@@ -12,10 +12,11 @@ use crate::theme::{mix, Theme};
 use super::super::helpers::truncate_text;
 use super::super::preview::PreviewPage;
 use super::super::thumbs::ThumbsPage;
-use super::super::types::{QualityMenuState, RowAction};
+use super::super::types::QualityMenuState;
 use super::super::Global;
 use super::row;
 use super::FilesPage;
+use super::RowAction;
 use kichi_core::types::File;
 
 /// 图标视图卡片大小的可调范围(Ctrl + 滚轮)。
