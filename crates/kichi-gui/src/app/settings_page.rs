@@ -9,7 +9,7 @@ use super::App;
 fn settings_card(ui: &mut egui::Ui, th: &Theme, title: &str, rows: &mut dyn FnMut(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(th.card)
-        .stroke(Stroke::new(1.0, th.border))
+        .stroke(Stroke::new(1.0_f32, th.border))
         .corner_radius(th.cr(14))
         .inner_margin(Margin::same(18))
         .show(ui, |ui| {
@@ -202,7 +202,7 @@ impl App {
                                     egui::Button::new(
                                         RichText::new("清空缓存").color(th.text_weak),
                                     )
-                                    .stroke(Stroke::new(1.0, th.border))
+                                    .stroke(Stroke::new(1.0_f32, th.border))
                                     .fill(egui::Color32::TRANSPARENT)
                                     .corner_radius(th.cr(8)),
                                 )
@@ -241,7 +241,7 @@ impl App {
                             if ui
                                 .add(
                                     egui::Button::new(RichText::new("退出登录").color(th.danger))
-                                        .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.3)))
+                                        .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.3)))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .corner_radius(th.cr(8)),
                                 )

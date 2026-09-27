@@ -1109,7 +1109,7 @@ impl TransfersPage {
                 egui::Color32::TRANSPARENT
             })
             .stroke(Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected { th.accent } else { th.border },
             ))
             .corner_radius(th.cr(8));
@@ -1133,7 +1133,7 @@ impl TransfersPage {
                 egui::Color32::TRANSPARENT
             })
             .stroke(Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected { th.accent } else { th.border },
             ))
             .corner_radius(th.cr(8));
@@ -1160,7 +1160,7 @@ impl TransfersPage {
                 egui::Color32::TRANSPARENT
             })
             .stroke(Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected { th.accent } else { th.border },
             ))
             .corner_radius(th.cr(8));

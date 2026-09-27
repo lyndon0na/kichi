@@ -400,7 +400,7 @@ impl App {
         painter.rect_stroke(
             card,
             CornerRadius::same(12),
-            Stroke::new(1.0, th.border),
+            Stroke::new(1.0_f32, th.border),
             egui::StrokeKind::Inside,
         );
         let inner = card.shrink(14.0);

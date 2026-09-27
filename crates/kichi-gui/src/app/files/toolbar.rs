@@ -231,7 +231,7 @@ impl FilesPage {
                             egui::Frame::new()
                                 .fill(tb.th.card)
                                 .stroke(Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     if focused { tb.th.accent } else { tb.th.border },
                                 ))
                                 .corner_radius(tb.th.cr(9))
@@ -414,7 +414,7 @@ impl FilesPage {
                                         Pos2::new(lx, li.center().y + dy),
                                         Pos2::new(lx + lw, li.center().y + dy),
                                     ],
-                                    Stroke::new(1.5, color),
+                                    Stroke::new(1.5_f32, color),
                                 );
                             }
                             if li_resp.clicked() {
@@ -448,7 +448,7 @@ impl FilesPage {
                                     egui::Button::new(
                                         RichText::new("移入回收站").color(tb.th.danger),
                                     )
-                                    .stroke(Stroke::new(1.0, mix(tb.th.danger, tb.th.bg, 0.35)))
+                                    .stroke(Stroke::new(1.0_f32, mix(tb.th.danger, tb.th.bg, 0.35)))
                                     .fill(egui::Color32::TRANSPARENT)
                                     .corner_radius(tb.th.cr(8)),
                                 )

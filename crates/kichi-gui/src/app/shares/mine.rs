@@ -181,7 +181,7 @@ impl SharesPage {
                         for s in &shares {
                             Frame::new()
                                 .fill(th.card)
-                                .stroke(Stroke::new(1.0, th.border))
+                                .stroke(Stroke::new(1.0_f32, th.border))
                                 .corner_radius(th.cr(14))
                                 .inner_margin(Margin::symmetric(16, 12))
                                 .show(ui, |ui| {
@@ -277,7 +277,7 @@ impl SharesPage {
                                                         )
                                                         .fill(egui::Color32::TRANSPARENT)
                                                         .stroke(Stroke::new(
-                                                            1.0,
+                                                            1.0_f32,
                                                             mix(th.danger, th.bg, 0.35),
                                                         ))
                                                         .corner_radius(th.cr(8)),

@@ -982,7 +982,7 @@ impl FilesPage {
                             Pos2::new(inner.min.x + 6.0, sep_y + 3.0),
                             Pos2::new(inner.max.x - 6.0, sep_y + 3.0),
                         ],
-                        Stroke::new(1.0, th.border),
+                        Stroke::new(1.0_f32, th.border),
                     );
                 }
 

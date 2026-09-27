@@ -388,7 +388,7 @@ impl TransfersPage {
                 if ui
                     .add(
                         egui::Button::new(RichText::new("上传文件夹").color(th.text_weak))
-                            .stroke(Stroke::new(1.0, th.border))
+                            .stroke(Stroke::new(1.0_f32, th.border))
                             .fill(egui::Color32::TRANSPARENT)
                             .corner_radius(th.cr(8)),
                     )
@@ -647,8 +647,11 @@ impl TransfersPage {
             }))
             .show(ctx, |ui| {
                 let top = ui.max_rect().min.y;
-                ui.painter()
-                    .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    top,
+                    Stroke::new(1.0_f32, th.border),
+                );
                 ui.add_space(8.0);
                 let retryable: Vec<u64> = self
                     .selected_ul
@@ -672,7 +675,7 @@ impl TransfersPage {
                         if ui
                             .add(
                                 egui::Button::new(RichText::new("移除选中").color(th.danger))
-                                    .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                    .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.35)))
                                     .fill(egui::Color32::TRANSPARENT)
                                     .corner_radius(th.cr(8)),
                             )

@@ -38,7 +38,7 @@ impl TasksPage {
                 egui::Color32::TRANSPARENT
             })
             .stroke(Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected { th.accent } else { th.border },
             ))
             .corner_radius(th.cr(8));
@@ -74,8 +74,11 @@ impl TasksPage {
                 }))
                 .show(ctx, |ui| {
                     let top = ui.max_rect().min.y;
-                    ui.painter()
-                        .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
+                    ui.painter().hline(
+                        ui.max_rect().x_range(),
+                        top,
+                        Stroke::new(1.0_f32, th.border),
+                    );
                     ui.add_space(8.0);
                     let selected: Vec<String> = self.selected.iter().cloned().collect();
                     ui.horizontal(|ui| {
@@ -88,7 +91,7 @@ impl TasksPage {
                             if ui
                                 .add(
                                     egui::Button::new(RichText::new("删除选中").color(th.danger))
-                                        .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                        .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.35)))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .corner_radius(th.cr(8)),
                                 )
@@ -164,7 +167,7 @@ impl TasksPage {
                 // 新建离线下载(常显, 使用频率较高)
                 egui::Frame::new()
                     .fill(th.card)
-                    .stroke(Stroke::new(1.0, th.border))
+                    .stroke(Stroke::new(1.0_f32, th.border))
                     .corner_radius(th.cr(14))
                     .inner_margin(Margin::same(16))
                     .show(ui, |ui| {

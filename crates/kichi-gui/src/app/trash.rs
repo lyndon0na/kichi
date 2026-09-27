@@ -215,7 +215,7 @@ impl TrashPage {
                                 .add(
                                     egui::Button::new(RichText::new("清空回收站").color(th.danger))
                                         .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                        .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.35)))
                                         .corner_radius(th.cr(8)),
                                 )
                                 .clicked()
@@ -559,7 +559,7 @@ fn trash_row(
         if is_sel {
             Stroke::NONE
         } else {
-            Stroke::new(1.5, th.text_faint)
+            Stroke::new(1.5_f32, th.text_faint)
         },
         egui::StrokeKind::Inside,
     );
@@ -571,7 +571,7 @@ fn trash_row(
         ];
         painter.add(egui::Shape::line(
             check_pts.to_vec(),
-            Stroke::new(2.0, th.on_accent),
+            Stroke::new(2.0_f32, th.on_accent),
         ));
     }
     if cb_resp.clicked() {
@@ -618,7 +618,7 @@ fn trash_row(
     painter.rect_stroke(
         del_rect,
         th.cr(8),
-        Stroke::new(1.0, mix(th.danger, th.bg, 0.35)),
+        Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.35)),
         egui::StrokeKind::Inside,
     );
     painter.galley(

@@ -190,7 +190,7 @@ fn paint_rails(
                 Pos2::new(x, rect.min.y + 2.0),
                 Pos2::new(x, rect.max.y + extend),
             ],
-            Stroke::new(1.0, col),
+            Stroke::new(1.0_f32, col),
         );
     }
 }
@@ -683,8 +683,11 @@ impl TransfersPage {
             }))
             .show(ctx, |ui| {
                 let top = ui.max_rect().min.y;
-                ui.painter()
-                    .hline(ui.max_rect().x_range(), top, Stroke::new(1.0, th.border));
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    top,
+                    Stroke::new(1.0_f32, th.border),
+                );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label(
@@ -710,7 +713,7 @@ impl TransfersPage {
                         if ui
                             .add(
                                 egui::Button::new(RichText::new("移除选中").color(th.danger))
-                                    .stroke(Stroke::new(1.0, mix(th.danger, th.bg, 0.35)))
+                                    .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.35)))
                                     .fill(egui::Color32::TRANSPARENT)
                                     .corner_radius(th.cr(8)),
                             )
@@ -783,7 +786,7 @@ impl TransfersPage {
                 if ui
                     .add(
                         egui::Button::new(RichText::new("打开下载目录").color(th.text_weak))
-                            .stroke(Stroke::new(1.0, th.border))
+                            .stroke(Stroke::new(1.0_f32, th.border))
                             .fill(egui::Color32::TRANSPARENT)
                             .corner_radius(th.cr(8)),
                     )

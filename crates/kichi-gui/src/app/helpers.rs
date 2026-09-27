@@ -459,7 +459,7 @@ pub(crate) fn paint_checkbox(
     painter.rect_stroke(
         rect,
         th.cr(4),
-        Stroke::new(1.0, border),
+        Stroke::new(1.0_f32, border),
         egui::StrokeKind::Inside,
     );
 
@@ -470,7 +470,7 @@ pub(crate) fn paint_checkbox(
             let p3 = Pos2::new(rect.max.x - size * 0.24, rect.min.y + size * 0.30);
             painter.add(egui::Shape::line(
                 vec![p1, p2, p3],
-                Stroke::new(1.8, th.on_accent),
+                Stroke::new(1.8_f32, th.on_accent),
             ));
         }
         CheckState::Partial => {
@@ -480,7 +480,7 @@ pub(crate) fn paint_checkbox(
                     Pos2::new(rect.min.x + size * 0.28, y),
                     Pos2::new(rect.max.x - size * 0.28, y),
                 ],
-                Stroke::new(1.8, th.on_accent),
+                Stroke::new(1.8_f32, th.on_accent),
             );
         }
         CheckState::Unchecked => {}
@@ -500,7 +500,7 @@ pub(crate) fn card_shell(painter: &Painter, th: &Theme, rect: Rect, hovered: boo
     painter.rect_stroke(
         rect,
         th.cr(12),
-        Stroke::new(1.0, th.border),
+        Stroke::new(1.0_f32, th.border),
         egui::StrokeKind::Inside,
     );
     if selected {

@@ -152,7 +152,7 @@ pub(crate) fn file_row(
     let cb_stroke = if is_sel {
         Stroke::NONE
     } else {
-        Stroke::new(1.5, th.text_faint)
+        Stroke::new(1.5_f32, th.text_faint)
     };
     painter.rect_filled(cb_rect, th.cr(3), cb_bg);
     painter.rect_stroke(cb_rect, th.cr(3), cb_stroke, egui::StrokeKind::Inside);
@@ -171,7 +171,7 @@ pub(crate) fn file_row(
         };
         painter.add(egui::Shape::line(
             check_pts.to_vec(),
-            Stroke::new(2.0, tick),
+            Stroke::new(2.0_f32, tick),
         ));
     }
 

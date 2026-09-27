@@ -56,7 +56,7 @@ impl App {
                     // 表单卡片
                     egui::Frame::new()
                         .fill(th.card)
-                        .stroke(Stroke::new(1.0, th.border))
+                        .stroke(Stroke::new(1.0_f32, th.border))
                         .corner_radius(th.cr(14))
                         .inner_margin(Margin::same(20))
                         .show(ui, |ui| {

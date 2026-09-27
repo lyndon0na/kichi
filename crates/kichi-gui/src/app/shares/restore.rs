@@ -230,7 +230,7 @@ impl SharesPage {
                                         RichText::new(dest_label).color(Color32::WHITE),
                                     )
                                     .fill(Color32::from_gray(45))
-                                    .stroke(Stroke::new(1.0, Color32::from_gray(70)))
+                                    .stroke(Stroke::new(1.0_f32, Color32::from_gray(70)))
                                     .min_size(vec2(120.0, 0.0)),
                                 )
                                 .on_hover_text("点击选择保存目录")

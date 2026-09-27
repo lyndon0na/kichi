@@ -126,7 +126,7 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.window_fill = theme.card;
     v.window_corner_radius = theme.cr(14);
     v.menu_corner_radius = theme.cr(8);
-    v.window_stroke = Stroke::new(1.0, theme.border);
+    v.window_stroke = Stroke::new(1.0_f32, theme.border);
     v.faint_bg_color = mix(theme.bg, theme.text, if theme.dark { 0.035 } else { 0.03 });
     v.code_bg_color = mix(theme.bg, theme.text, if theme.dark { 0.08 } else { 0.05 });
     v.hyperlink_color = theme.accent;
@@ -134,7 +134,7 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.error_fg_color = theme.danger;
     v.selection.bg_fill = theme.accent;
     // 聚焦中的 TextEdit 边框使用该描边; 不能设为透明, 否则浅色下输入框会与背景融为一体
-    v.selection.stroke = Stroke::new(1.5, theme.accent);
+    v.selection.stroke = Stroke::new(1.5_f32, theme.accent);
     v.clip_rect_margin = 8.0;
 
     let radius = theme.cr(9);
@@ -144,15 +144,15 @@ pub fn configure(ctx: &Context, theme: &Theme) {
     v.widgets.active.corner_radius = radius;
     v.widgets.open.corner_radius = radius;
 
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, theme.text_weak);
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, theme.text);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, theme.text);
-    v.widgets.active.fg_stroke = Stroke::new(1.0, theme.text);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, theme.text_weak);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, theme.text);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, theme.text);
+    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, theme.text);
 
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme.border);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme.border);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, theme.accent);
-    v.widgets.active.bg_stroke = Stroke::new(1.0, theme.accent);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, theme.border);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, theme.border);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, theme.accent);
+    v.widgets.active.bg_stroke = Stroke::new(1.0_f32, theme.accent);
 
     v.widgets.noninteractive.weak_bg_fill =
         mix(theme.card, theme.text, if theme.dark { 0.06 } else { 0.04 });
@@ -178,9 +178,9 @@ pub fn configure(ctx: &Context, theme: &Theme) {
         v.widgets.active.weak_bg_fill =
             mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
         v.widgets.active.bg_fill = mix(base, theme.accent, if theme.dark { 0.36 } else { 0.24 });
-        v.widgets.inactive.bg_stroke = Stroke::new(1.0, theme.border);
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0, mix(theme.border, theme.accent, 0.5));
-        v.widgets.active.bg_stroke = Stroke::new(1.0, theme.accent);
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, theme.border);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, mix(theme.border, theme.accent, 0.5));
+        v.widgets.active.bg_stroke = Stroke::new(1.0_f32, theme.accent);
         v.faint_bg_color = mix(base, theme.text, if theme.dark { 0.05 } else { 0.035 });
     }
 

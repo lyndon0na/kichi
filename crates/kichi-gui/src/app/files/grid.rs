@@ -155,7 +155,7 @@ impl FilesPage {
                         painter.rect_stroke(
                             rect,
                             cx.th.cr(10),
-                            Stroke::new(2.0, cx.th.accent),
+                            Stroke::new(2.0_f32, cx.th.accent),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -184,7 +184,7 @@ impl FilesPage {
                     let cb_stroke = if is_sel {
                         Stroke::NONE
                     } else {
-                        Stroke::new(1.0, cx.th.text_faint)
+                        Stroke::new(1.0_f32, cx.th.text_faint)
                     };
                     painter.rect_filled(cb_rect, cx.th.cr(3), cb_bg);
                     painter.rect_stroke(cb_rect, cx.th.cr(3), cb_stroke, egui::StrokeKind::Inside);
@@ -201,7 +201,7 @@ impl FilesPage {
                         };
                         painter.add(egui::Shape::line(
                             check_pts.to_vec(),
-                            Stroke::new(1.8, tick),
+                            Stroke::new(1.8_f32, tick),
                         ));
                     }
 

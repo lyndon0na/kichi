@@ -102,7 +102,7 @@ impl FilesPage {
         let cb_stroke = if all_selected || some_selected {
             Stroke::NONE
         } else {
-            Stroke::new(1.0, th.text_faint)
+            Stroke::new(1.0_f32, th.text_faint)
         };
         painter.rect_filled(cb_rect, th.cr(3), cb_bg);
         painter.rect_stroke(cb_rect, th.cr(3), cb_stroke, egui::StrokeKind::Inside);
@@ -116,7 +116,7 @@ impl FilesPage {
             ];
             painter.add(egui::Shape::line(
                 check_pts.to_vec(),
-                Stroke::new(1.8, th.on_accent),
+                Stroke::new(1.8_f32, th.on_accent),
             ));
         }
         // 部分选中时绘制横线
@@ -126,7 +126,7 @@ impl FilesPage {
                     Pos2::new(cb_x + 3.0, cb_y + cb_size / 2.0),
                     Pos2::new(cb_x + cb_size - 3.0, cb_y + cb_size / 2.0),
                 ],
-                Stroke::new(2.0, th.on_accent),
+                Stroke::new(2.0_f32, th.on_accent),
             );
         }
 
