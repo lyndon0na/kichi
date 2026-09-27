@@ -45,7 +45,12 @@ impl App {
             }
             Page::Shares => self.shares.draw(ctx, &mut self.global, th),
             Page::Trash => self.trash.draw(ctx, &mut self.global, th),
-            Page::Tasks => self.tasks_page(ctx, th),
+            Page::Tasks => {
+                let actions = self.tasks.show(ctx, th, &mut self.global);
+                for a in actions {
+                    self.apply_tasks_action(a);
+                }
+            }
             Page::Transfers => {
                 let actions = self.transfers.show(ctx, th, &mut self.global);
                 for a in actions {

@@ -1,7 +1,7 @@
 //! 「离线下载任务」域: 分桶列表 / 选择 / 新建表单与「保存到」目录选择器。
 //!
-//! 页面渲染留在 `tasks_page.rs`(与文件页同理, 渲染层拆分见后续计划);
-//! 本模块负责状态收敛、`Msg` 处理与选择器交互。
+//! 本模块持有 `TasksPage` 的状态与生命周期、`Msg` 处理, 以及渲染入口
+//! `show`(渲染与动作分离, 跨域动作见 [`TasksAction`]); 页面渲染落在 `list`。
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -15,6 +15,14 @@ use crate::theme::Theme;
 use super::global::Global;
 use super::helpers::folder_row;
 use super::types::{Crumb, OfflineTab};
+
+mod list;
+
+/// 离线任务页本帧产生的跨域动作(渲染与动作分离, 由 `App::apply_tasks_action` 执行)。
+pub(crate) enum TasksAction {
+    /// 把已完成的任务文件下载到本地(需要 `App` 的下载目录设置)。
+    Download { id: String, name: String },
+}
 
 /// 离线任务状态(分桶列表 + 选择 + 新建表单 + 保存到选择器)。
 #[derive(Default)]

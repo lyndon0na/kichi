@@ -9,7 +9,6 @@ mod settings_page;
 mod shares;
 mod sidebar;
 mod tasks;
-mod tasks_page;
 mod thumbs;
 mod transfers;
 mod trash;
@@ -34,7 +33,7 @@ use self::helpers::install_fonts;
 use self::preview::PreviewPage;
 use self::search::SearchPage;
 use self::shares::SharesPage;
-use self::tasks::TasksPage;
+use self::tasks::{TasksAction, TasksPage};
 use self::thumbs::ThumbsPage;
 use self::transfers::{TransfersAction, TransfersPage};
 use self::trash::TrashPage;
@@ -770,6 +769,13 @@ impl App {
                     None => self.toast_warn("无法定位下载目录, 请在「设置」中手动选择保存位置"),
                 }
             }
+        }
+    }
+
+    /// 执行离线任务页本帧产生的跨域动作(渲染与动作分离, 见 `tasks::TasksAction`)。
+    fn apply_tasks_action(&mut self, a: TasksAction) {
+        match a {
+            TasksAction::Download { id, name } => self.download_single(id, name),
         }
     }
 
