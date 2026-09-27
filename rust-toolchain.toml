@@ -1,0 +1,7 @@
+# 全项目统一的 Rust 工具链（本地开发 / CI / 发布构建共用同一版本）。
+# 目的：避免 CI 上的浮动 stable 静默升级、先于本地引入新的 lint，造成“本机绿、CI 红”。
+# 升级步骤：改这里的 channel，并同步 .github/workflows/{ci,release}.yml 里
+# dtolnay/rust-toolchain 的 @版本（该 Action 不读取本文件，两处必须一致）。
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]

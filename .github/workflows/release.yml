@@ -20,7 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      # 版本与 rust-toolchain.toml 保持一致(该 Action 不读该文件); 详见 ci.yml 顶部说明
+      - uses: dtolnay/rust-toolchain@1.98.1
 
       - name: 缓存 cargo 依赖
         uses: actions/cache@v6

@@ -2,6 +2,10 @@ name: CI
 
 # 日常闸门: fmt / clippy / test。推送 master 与所有 PR 触发;
 # 发布打包是另一条流水线(release.yml, 推 v* tag 触发)。
+#
+# 工具链版本由仓库根 rust-toolchain.toml 固定, 下面的 dtolnay/rust-toolchain@<版本>
+# 必须与它一致 —— 该 Action 不读 rust-toolchain.toml。用浮动 stable 会让 CI 先于本地
+# 引入新 lint(如 1.98 的 float_literal_f32_fallback 撞上 `-D warnings`), 本机绿而 CI 红。
 on:
   push:
     branches: [master]
@@ -23,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt
 
@@ -36,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy
 
