@@ -12,6 +12,24 @@ use crate::kde;
 use crate::msg::Cmd;
 use crate::theme::Theme;
 
+/// 应用当前页面。
+#[derive(PartialEq, Clone, Copy)]
+pub(crate) enum Page {
+    Files,
+    Shares,
+    Trash,
+    Tasks,
+    Transfers,
+    Settings,
+}
+
+/// 磁盘缓存(预览 + 缩略图)的占用情况, 用于设置页展示。
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CacheUsage {
+    pub bytes: u64,
+    pub entries: usize,
+}
+
 pub(crate) struct Global {
     /// 后台命令通道(worker 线程)。
     pub(crate) tx: Sender<Cmd>,

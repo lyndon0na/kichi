@@ -28,7 +28,7 @@ use crate::theme::{self, Theme};
 use crate::worker;
 
 use self::files::{FilesAction, FilesPage};
-use self::global::Global;
+use self::global::{CacheUsage, Global, Page};
 use self::helpers::install_fonts;
 use self::preview::PreviewPage;
 use self::search::SearchPage;
@@ -37,7 +37,7 @@ use self::tasks::{TasksAction, TasksPage};
 use self::thumbs::ThumbsPage;
 use self::transfers::{TransfersAction, TransfersPage};
 use self::trash::TrashPage;
-use self::types::{Crumb, Page};
+use self::types::Crumb;
 
 /// 非媒体预览的确认阈值: 预览需先整份下载到本地缓存, 超过则先弹确认。
 const PREVIEW_CONFIRM_BYTES: i64 = 64 * 1024 * 1024;
@@ -103,7 +103,7 @@ pub struct App {
     pub(crate) thumbs: ThumbsPage,
 
     /// 磁盘缓存(预览 + 缩略图)占用; None = 未查询或查询中。
-    pub(crate) cache_usage: Option<types::CacheUsage>,
+    pub(crate) cache_usage: Option<CacheUsage>,
     /// 是否已发出占用查询(避免每帧重复发)。
     pub(crate) cache_usage_pending: bool,
     /// 是否正在执行手动清理。
@@ -508,7 +508,7 @@ impl App {
                     entries,
                     freed,
                 } => {
-                    self.cache_usage = Some(types::CacheUsage { bytes, entries });
+                    self.cache_usage = Some(CacheUsage { bytes, entries });
                     self.cache_usage_pending = false;
                     self.cache_sweeping = false;
                     if freed > 0 {

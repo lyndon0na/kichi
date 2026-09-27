@@ -3,16 +3,6 @@ use std::time::Instant;
 
 use kichi_core::types::File;
 
-#[derive(PartialEq, Clone, Copy)]
-pub(crate) enum Page {
-    Files,
-    Shares,
-    Trash,
-    Tasks,
-    Transfers,
-    Settings,
-}
-
 /// 传输任务页的上传/下载分栏。
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum TransferTab {
@@ -56,13 +46,6 @@ impl Default for DirEntry {
             last_used: now,
         }
     }
-}
-
-/// 磁盘缓存(预览 + 缩略图)的占用情况, 用于设置页展示。
-#[derive(Clone, Copy, Default)]
-pub(crate) struct CacheUsage {
-    pub bytes: u64,
-    pub entries: usize,
 }
 
 #[derive(Clone)]

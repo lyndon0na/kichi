@@ -8,8 +8,9 @@ use crate::format;
 use crate::icons::{self, Glyph};
 use crate::theme::{mix, Theme};
 
+use super::global::Page;
 use super::helpers::truncate_text;
-use super::types::{DlStatus, Page};
+use super::types::DlStatus;
 use super::App;
 
 impl App {
