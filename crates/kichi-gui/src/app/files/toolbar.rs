@@ -28,6 +28,11 @@ pub(crate) fn breadcrumbs(
     if crumbs.is_empty() {
         return None;
     }
+    // 面包屑用 sep 手动控制层级间距, 这里关掉 egui 的 item_spacing(x):
+    // `allocate_exact_size` 会在每个矩形后追加一次 item_spacing, 否则实际占用宽度
+    // 会比上面的估算每项多出一个 item_spacing, 长目录名时就会顶到右侧控件。
+    let prev_spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 0.0;
     let painter = ui.painter().clone();
     let font = FontId::proportional(15.0);
     let pad = 8.0f32;
@@ -60,9 +65,11 @@ pub(crate) fn breadcrumbs(
         }
     }
 
-    // 当前目录仍放不下时单独截断。
+    // 当前目录仍放不下时单独截断; 若前面还有被省略的层级, 需为「…」和分隔符留出宽度,
+    // 否则面包屑会超出 budget, 把后面的计数挤进右侧控件。
     if start == n - 1 && widths[n - 1] > budget {
-        let w = (budget - pad * 2.0).max(24.0);
+        let ell_reserve = if start > 0 { ell_w + sep } else { 0.0 };
+        let w = (budget - pad * 2.0 - ell_reserve).max(24.0);
         galleys[n - 1] = truncate_text(&painter, &crumbs[n - 1].label, w, font.clone(), th.text);
         widths[n - 1] = galleys[n - 1].size().x + pad * 2.0;
     }
@@ -111,6 +118,7 @@ pub(crate) fn breadcrumbs(
             clicked = Some(i);
         }
     }
+    ui.spacing_mut().item_spacing.x = prev_spacing;
     clicked
 }
 
@@ -161,126 +169,9 @@ impl FilesPage {
                 ui.horizontal(|ui| {
                     ui.set_min_height(Self::HEAD_H);
 
-                    // 左侧区域限制在右侧控件之外, 面包屑/计数超长时截断, 避免溢出重叠。
-                    let right_reserve = 360.0;
-                    let left_w = (ui.available_width() - right_reserve).max(140.0);
-                    ui.allocate_ui_with_layout(
-                        vec2(left_w, Self::HEAD_H),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            let at_root = self.stack.len() <= 1;
-                            let (r, rresp) =
-                                ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
-                            ui.painter().rect_filled(
-                                r,
-                                tb.th.cr(8),
-                                if rresp.hovered() && !at_root {
-                                    tb.th.hover
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                },
-                            );
-                            icons::paint(
-                                ui.painter(),
-                                r.shrink(6.0),
-                                Glyph::Up,
-                                if at_root {
-                                    tb.th.text_faint
-                                } else {
-                                    tb.th.text_weak
-                                },
-                            );
-                            if rresp.clicked() && !at_root {
-                                req.up = true;
-                            }
-                            rresp.clone().on_hover_text("返回上级");
-                            ui.add_space(4.0);
-
-                            let count_reserve = 76.0;
-                            let clip_reserve = if tb.clip_info.is_some() { 150.0 } else { 0.0 };
-                            let crumbs_budget =
-                                (ui.available_width() - count_reserve - clip_reserve).max(48.0);
-
-                            // 搜索模式指示器
-                            if tb.search.is_active() {
-                                egui::Frame::new()
-                                    .fill(tb.th.accent_soft())
-                                    .corner_radius(tb.th.cr(7))
-                                    .inner_margin(Margin::symmetric(8, 3))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "搜索: {}",
-                                                    tb.search.keyword()
-                                                ))
-                                                .color(tb.th.accent)
-                                                .size(12.0),
-                                            );
-                                        });
-                                    });
-                                ui.add_space(6.0);
-                            } else if let Some(i) =
-                                breadcrumbs(ui, tb.th, &self.stack, crumbs_budget)
-                            {
-                                req.jumped = Some(i);
-                            }
-
-                            if tb.sel_meta.is_empty() {
-                                ui.label(
-                                    RichText::new(format!("· {} 项", tb.visible_total))
-                                        .color(tb.th.text_faint)
-                                        .size(12.5),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "· 已选 {}/{} 项",
-                                        tb.sel_meta.len(),
-                                        tb.visible_total
-                                    ))
-                                    .color(tb.th.accent)
-                                    .size(12.5),
-                                );
-                            }
-
-                            // 剪贴板 chip(只显示数量, 避免文件名过长溢出)
-                            if let Some((_label, n)) = &tb.clip_info {
-                                ui.add_space(8.0);
-                                egui::Frame::new()
-                                    .fill(tb.th.accent_soft())
-                                    .corner_radius(tb.th.cr(7))
-                                    .inner_margin(Margin::symmetric(8, 3))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(format!("剪贴板 · {n} 项"))
-                                                    .color(tb.th.accent)
-                                                    .size(11.5),
-                                            );
-                                            let (xr, xresp) = ui.allocate_exact_size(
-                                                vec2(14.0, 14.0),
-                                                egui::Sense::click(),
-                                            );
-                                            icons::paint(
-                                                ui.painter(),
-                                                xr.shrink(2.5),
-                                                Glyph::Close,
-                                                if xresp.hovered() {
-                                                    tb.th.accent
-                                                } else {
-                                                    tb.th.text_faint
-                                                },
-                                            );
-                                            if xresp.clicked() {
-                                                req.clear_clip = true;
-                                            }
-                                        });
-                                    });
-                            }
-                        },
-                    );
-
+                    // 布局顺序: 先在整行内从右往左排右侧控件, 再把左侧(返回 / 面包屑 /
+                    // 计数 / 剪贴板)嵌在其后占用剩余宽度。右侧按实际宽度占位, 窄窗口下
+                    // 不会像固定预留宽度那样反向溢出盖住面包屑。
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if tb.sel_meta.is_empty() {
                             // ---- 普通模式: 搜索 + 刷新 + 新建 + 视图 ----
@@ -589,6 +480,126 @@ impl FilesPage {
                                 req.want_download = true;
                             }
                         }
+
+                        // ---- 左侧: 返回上级 + 面包屑 + 计数 + 剪贴板 ----
+                        // 嵌在右侧控件之后, 占用右侧之外的真实剩余宽度。
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let at_root = self.stack.len() <= 1;
+                            let (r, rresp) =
+                                ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
+                            ui.painter().rect_filled(
+                                r,
+                                tb.th.cr(8),
+                                if rresp.hovered() && !at_root {
+                                    tb.th.hover
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                },
+                            );
+                            icons::paint(
+                                ui.painter(),
+                                r.shrink(6.0),
+                                Glyph::Up,
+                                if at_root {
+                                    tb.th.text_faint
+                                } else {
+                                    tb.th.text_weak
+                                },
+                            );
+                            if rresp.clicked() && !at_root {
+                                req.up = true;
+                            }
+                            rresp.clone().on_hover_text("返回上级");
+                            ui.add_space(4.0);
+
+                            // 计数文案宽度按实际测量预留(选中态文案更长), 避免长目录名
+                            // 把计数挤到右侧控件上。
+                            let count_text = if tb.sel_meta.is_empty() {
+                                format!("· {} 项", tb.visible_total)
+                            } else {
+                                format!("· 已选 {}/{} 项", tb.sel_meta.len(), tb.visible_total)
+                            };
+                            let count_w = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    count_text.clone(),
+                                    FontId::proportional(12.5),
+                                    tb.th.text_faint,
+                                )
+                                .size()
+                                .x;
+                            let clip_reserve = if tb.clip_info.is_some() { 150.0 } else { 0.0 };
+                            let crumbs_budget =
+                                (ui.available_width() - count_w - 8.0 - clip_reserve).max(48.0);
+
+                            // 搜索模式指示器
+                            if tb.search.is_active() {
+                                egui::Frame::new()
+                                    .fill(tb.th.accent_soft())
+                                    .corner_radius(tb.th.cr(7))
+                                    .inner_margin(Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "搜索: {}",
+                                                    tb.search.keyword()
+                                                ))
+                                                .color(tb.th.accent)
+                                                .size(12.0),
+                                            );
+                                        });
+                                    });
+                                ui.add_space(6.0);
+                            } else if let Some(i) =
+                                breadcrumbs(ui, tb.th, &self.stack, crumbs_budget)
+                            {
+                                req.jumped = Some(i);
+                            }
+
+                            if tb.sel_meta.is_empty() {
+                                ui.label(
+                                    RichText::new(count_text).color(tb.th.text_faint).size(12.5),
+                                );
+                            } else {
+                                ui.label(RichText::new(count_text).color(tb.th.accent).size(12.5));
+                            }
+
+                            // 剪贴板 chip(只显示数量, 避免文件名过长溢出)
+                            if let Some((_label, n)) = &tb.clip_info {
+                                ui.add_space(8.0);
+                                egui::Frame::new()
+                                    .fill(tb.th.accent_soft())
+                                    .corner_radius(tb.th.cr(7))
+                                    .inner_margin(Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("剪贴板 · {n} 项"))
+                                                    .color(tb.th.accent)
+                                                    .size(11.5),
+                                            );
+                                            let (xr, xresp) = ui.allocate_exact_size(
+                                                vec2(14.0, 14.0),
+                                                egui::Sense::click(),
+                                            );
+                                            icons::paint(
+                                                ui.painter(),
+                                                xr.shrink(2.5),
+                                                Glyph::Close,
+                                                if xresp.hovered() {
+                                                    tb.th.accent
+                                                } else {
+                                                    tb.th.text_faint
+                                                },
+                                            );
+                                            if xresp.clicked() {
+                                                req.clear_clip = true;
+                                            }
+                                        });
+                                    });
+                            }
+                        });
                     });
                 });
             });

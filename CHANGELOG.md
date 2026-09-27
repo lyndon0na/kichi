@@ -28,6 +28,7 @@
 
 ### 修复
 
+- **文件页顶部面包屑不再溢出到右侧操作区**：顶部栏改为先在整行内从右往左按实际宽度排布右侧控件，再把返回 / 面包屑 / 计数 / 剪贴板嵌在其后占用剩余宽度，去掉原先写死的 360px 右侧预留（右侧控件变宽时面包屑不再被反向覆盖）；并修正面包屑宽度估算的两处漏算 —— ① `allocate_exact_size` 会在每个矩形后追加一次 `item_spacing`（本主题 10px），② 末级目录名截断时未为「…」与分隔符预留宽度 —— 二者叠加会让长目录名把「· N 项」计数挤进右侧视图按钮；计数预留宽度也改为按实际文案测量（选中态「已选 x/y 项」更长也能覆盖）
 - **Flatpak 首次 CI 出包失败（缺 SVG 加载器）**：flatpak 导出阶段用宿主 gdk-pixbuf 校验图标，Ubuntu 24.04 的 gdk-pixbuf 把 SVG 支持放在 `librsvg2-common` 里 —— 发布工作流的 apt 列表补装该包（首次发 `v1.0.0` 时 AppImage 成功、Flatpak 编译安装都通过，仅导出报 `Format not recognized`）；Fedora / gdk-pixbuf ≥ 2.44 已内置 SVG 加载器，本地构建不受影响
 - **发布任务定位不到仓库**：`release` job 只取 artifacts、不 checkout，`gh` 无从推断目标仓库（报 `fatal: not a git repository (or any of the parent directories): .git`）—— 给该步骤补 `GH_REPO` 环境变量（同一次发版中 AppImage / Flatpak 构建与上传均已通过，仅此一步失败）
 
