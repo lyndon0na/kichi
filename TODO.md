@@ -13,7 +13,7 @@
 | **P2** | 可维护性与工程   | 5   |
 | **P3** | 分发与发布     | 1   |
 
-> 上表只统计主线队列（P0–P3）；另有一节独立的「P2 · 结构优化」队列（第一批 P2-9 ~ P2-14 **全部完成** —— P2-9 / P2-10 / P2-11 / P2-12 / P2-13 已落地，P2-14 已由 P2-10 / P2-11 / P2-12 覆盖；第二批 P2-15 / P2-16 **已完成**，P2-17 待做），见下方专节。
+> 上表只统计主线队列（P0–P3）；另有一节独立的「P2 · 结构优化」队列（第一批 P2-9 ~ P2-14 **全部完成** —— P2-9 / P2-10 / P2-11 / P2-12 / P2-13 已落地，P2-14 已由 P2-10 / P2-11 / P2-12 覆盖；第二批 P2-15 / P2-16 / P2-17 **已全部完成**），见下方专节。
 
 ---
 
@@ -39,7 +39,7 @@
 
 ---
 
-## P2 · 结构优化：巨型文件与 god object（第一批 P2-9 ~ P2-14 ✅ 已完成 · 第二批 P2-15 ~ P2-16 ✅ 已完成 · P2-17 待做）
+## P2 · 结构优化：巨型文件与 god object（第一批 P2-9 ~ P2-14 ✅ 已完成 · 第二批 P2-15 ~ P2-17 ✅ 已完成）
 
 > 目标不是「把文件切小」，而是**结构优化**：按域建子目录 + 让页面各自持有状态。
 > 判据（怎么切才算对）：
@@ -73,7 +73,7 @@
 | P2-13  | `worker.rs` → `worker/`            | `worker/{mod,gate,cache,auth,files,tasks,shares,download,upload,preview,thumbs}.rs`         | **✅ 已完成**（`9da37dd` 起 19 个提交：W1–W9 = `3d5e23c` `8a8861e` `2b5901c` `815e4a7` `6b26981` `1d888aa` `08eb956` `fcd8259` `f4532b7`；W10 收尾 = `2e3e122` `4721eb6` `2437def` + `320aa98`（补漏掉的 `.await`）`5ee58d9` `f2b96c4` `f618e6a` `174d34f` `5997c77`）。`worker.rs` 2460 行 → 12 个文件、入口 `worker/mod.rs` 367 行，`handle` 的 43 个 `Cmd` 分支全部一行转调；纯搬移零行为变更，每步 fmt 零差异 / clippy 0 告警 / 91 单测全绿。实机冒烟（登录 / 上传 / 下载 / 预览 / 转存）已确认 |
 | P2-14  | `App` 字段按页面分组为子结构                 | `app/mod.rs` + 各页面                                                                            | **已并入 P2-10 / P2-11 / P2-12**（目标形态各有归属：`FilesPage` = P2-11、`TransfersPage` = P2-12、`TasksPage` / `SharesPage` / `TrashPage` / `PreviewState` / `ThumbsState` = P2-10），本条不再单独做，行内不再计为待办 |
 
-### 第二批（2026-09-24 立项；P2-15 / P2-16 已完成，P2-17 待做）
+### 第二批（2026-09-24 立项；P2-15 / P2-16 / P2-17 已完成）
 
 > 第一批（P2-9 ~ P2-14）收尾后的复核结论：主线队列已清空，但按判据 ② / ③ 还剩三处同类尾巴。三条互不依赖、可各自独立回滚，建议顺序 P2-15 → P2-16 → P2-17（P2-17 收益最低，可后置）。外部结构建议（`worker/handlers/` 与 `app/state/` 桶目录）经复核**不采纳**：其目标与本轮一致，但目录形态是夹缝层（会把下载 / 上传两条管线捆回一个文件、把文件页与预览的状态从各自域里再切出去），违背判据 ② / ③ —— 完整理由见 `PROJECT_PLAN.md` 第五节 11)。
 
@@ -81,7 +81,7 @@
 |:------ |:---------------------------------------------- |:----------------------------------------------- |:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P2-15  | tasks 域收口（唯一还挂 `impl App` 的带状态页面）              | `app/tasks.rs` + `app/tasks_page.rs` → `app/tasks/` | **✅ 已完成**（T1 `88651aa` · T2 `e0ac2c0` · T3 `90f7089`）。`app/tasks.rs`（317 行）与 `app/tasks_page.rs`（643 行，唯一还挂 `impl App` 的带状态页面）收进 `app/tasks/`：`mod.rs::TasksPage` 持状态 / 生命周期 + `TasksAction`，`list.rs` 收页壳（标题 / 新建表单）/ 阶段页签 / 批量操作条 / 任务列表 + 「加载更多」，`card.rs` 收 `task_card`，`picker.rs` 收「保存到」目录选择器（状态操作 + 弹窗渲染）。渲染与动作分离：`TasksPage::show(...) -> Vec<TasksAction>` 只读写自身状态并返回动作，唯一跨域调用「下载到本地」改为 `TasksAction::Download`，由 `App::apply_tasks_action` 在本帧渲染后执行，页面不再持 `&mut App`；其余 `Cmd`（提交 / 刷新 / 重试 / 删除 / 加载更多）仍在域内经 `Global` 发出。自动轮询本就由 worker 按 `tasks_active` 自适应推进，UI 侧无落点需搬。每步纯搬移零行为变更：`fmt` 零差异 / clippy 0 告警 / **93 项单测**全绿（core 33 + GUI 60，各步不减）；T2 逐词归一化比对旧新 `show` 主体，差异全为签名 / `self.tasks.` / `&mut self.global` 前缀去除与动作外提；T3 的 17 个函数体逐一比对 `ALL_MATCH`（仅可见性关键字差异）。实机冒烟待确认（维护者） |
 | P2-16  | `app/types.rs` 类型随域归位                          | `app/types.rs` → 各域文件 + `app/global.rs`         | **✅ 已完成**（C1 `dfe5c1c` · C2 `0b50da6` · C3 `5015bfb` · C4 `a7586e1` · C5 `d6e583e` · C6 `6f2a40f`）。`app/types.rs`（506 行）清空删除，类型随域归位：`Page` / `CacheUsage` → `app/global.rs`（跨域共享）；`SortBy` / `Crumb` / `DirEntry` / `RowAction` / `ViewMode` / `ClipKind` / `Clipboard` / `ColDrag` → `app/files/mod.rs`；`QualityReady` / `QualityMenuState` / `PendingOpen` / `PreviewConfirm` / `PreviewProgress` → `app/preview.rs`；`ShareResult` → `app/shares.rs`；`OfflineTab` / `TaskOp` / `TaskSel` → `app/tasks/mod.rs`；`TransferTab` / `DlSel` → `app/transfers/mod.rs`，`DlStatus` / `DlNode` / `DlJob` / `DlOp` / `DlRow` / `DlFilter` → `app/transfers/download.rs`，`UlStatus` / `UlJob` / `UlOp` / `UlFilter` / `UploadPick` → `app/transfers/upload.rs`（`transfers/mod.rs` 以 `pub(crate) use` 重导出 `DlStatus` 供 sidebar 角标使用）。**按实况修正**：`TransferTab` 实测仅 `app/transfers/mod.rs` 引用（并非跨域），未按原计划留 `global.rs`，归入传输域。纯机械搬移零行为变更：`fmt` 零差异 / clippy 0 告警 / **93 项单测**全绿（core 33 + GUI 60，各步不减）；用脚本取出改动前的 `app/types.rs` 全部 457 行非导入内容，逐行在当前 `app/` 树中 `grep -F` 命中（`missing=0`），确认无丢行 / 改行。可见性保持原 `pub(crate)` 未顺手收紧（纯搬移优先）。实机冒烟待确认（维护者）                  |
-| P2-17  | `app/shares.rs` 渲染按角色分文件（可后置）                  | `app/shares.rs` → `app/shares/{mod,mine,restore}.rs` | 现状 1599 行（GUI 最大）：状态与生命周期约 400 行 + `draw`（我的分享列表 + 转存入口）+ `draw_dialogs`（创建分享设置框 / 分享结果 / 取消分享确认）+ `draw_save_dialogs`（转存分享弹窗 / 目标目录选择器 / 自动移动失败重试）+ 单测。已是 `&mut Global` 形态（非 `impl App`），**不动结构与 `App` 字段**，只做分文件：`mod.rs`（`SharesPage` + 生命周期 + 页壳）/ `mine.rs`（我的分享 + 创建分享）/ `restore.rs`（转存：解析 / 浏览 / 保存）。验收：沿用固定验收 + 实机冒烟（转存链接解析 / 分享目录浏览 / 目标目录选择 / 保存后移动与重试 / 我的分享列表与取消分享）                                                                                                                              |
+| P2-17  | `app/shares.rs` 渲染按角色分文件（可后置）                  | `app/shares.rs` → `app/shares/{mod,mine,restore}.rs` | **✅ 已完成**（`66614b8`）。`app/shares.rs`（1608 行，GUI 最大）拆为 `app/shares/`：`mod.rs`（409 行）持 `SharesPage` 状态 / 生命周期 / 消息处理 + `ShareResult`；`mine.rs`（634 行）收我的分享列表 + 创建分享 / 分享结果 / 取消分享确认弹窗；`restore.rs`（597 行）收转存分享（链接解析 / 文件浏览 / 「保存到」目标目录选择器 / 保存后自动移动与重试）。**原计划「`mod.rs` 含页壳」按实况修正**：该域没有独立页壳（`draw` 即我的分享页本身），故 `draw` / `draw_dialogs` 一并归入 `mine.rs`，`mod.rs` 只留状态与生命周期。不动结构与 `App` 字段；三个渲染方法可见性由 `pub(super)` 放宽为 `pub(crate)`（调用点 `app::sidebar` / `app::dialogs`）。纯搬移零行为变更：`fmt` 零差异 / clippy 0 告警 / **93 项单测**全绿（core 33 + GUI 60，不减）；归一化脚本比对旧新全部 1348 行非导入内容，唯一差异是 `// ---------- 渲染 ----------` 分隔注释（分文件后不再适用）。实机冒烟待确认（维护者） |
 
 ### 每步的固定验收
 
@@ -155,4 +155,4 @@
 - [x] 移除 `packaging/install-icon.sh`：桌面文件与图标改由发行包自带（AppImage 打进 AppDir、Flatpak 由清单导出），脚本只服务「源码构建后直接跑二进制」一条路径；README「桌面图标」一节并入打包说明，需要时按说明手工放置 `packaging/kichi.desktop` 与 `assets/kichi.svg`
 
 > [!TIP]
-> P0–P2 与 P3-1 / P3-2 / P3-3 已完成；结构优化第二批的 P2-15（tasks 域收口）与 P2-16（类型随域归位）已完成，P2-17 待做；P3-4（打包目录归位）待做 —— 安排在下次出包时顺手做。
+> P0–P2 与 P3-1 / P3-2 / P3-3 已完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）待做 —— 安排在下次出包时顺手做。
