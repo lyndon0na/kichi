@@ -472,8 +472,9 @@ classify(name, mime)              预览入口                       预览执�
   - 生成自己的分享链接 + 「我的分享」管理（创建 / 列出 / 复制 / 取消）
   - 分享转存：解析 mypikpak 分享链接并保存到我的网盘（`share` / `share/detail` / `share/restore`），含分页 / 过滤 / 目标目录 / 移动重试；转存暂存目录（「转存自分享」）按持久化 ID 定位，ID 失效时回退名称匹配并刷新缓存
   - 回收站浏览 / 还原 / 彻底删除（含清空）
-- [ ] **体验继续** —— 全局搜索、任务详情进度
-- [x] **可维护性** —— 结构优化：巨型文件与 god object，P2-9 ~ P2-14 全部落地。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；`app/` 侧第 1 步（P2-9）已完成（纯逻辑外移到纯逻辑模块 + `App::new` 启动逻辑外抽），第 2 步（P2-10，按域 struct 化）已完成（七个域结构体 + `drain` 60 臂一行转调，`app/mod.rs` 3085 → 2127 行），第 3 步（P2-11，文件页）已完成（`FilesPage` + `app/files/` 五个角色文件，渲染与动作分离），第 4 步（P2-12，传输页）也已完成（`TransfersPage` + `app/transfers/` 四文件，`transfers_page.rs` 1951 行收进 `app/transfers/mod.rs` 1216 行 + 上传 / 下载分栏与纯逻辑分文件，渲染与动作分离；`app/mod.rs` 最终 2127 → 968 行）；P2-14（`App` 字段按页面分组）由 P2-10 / P2-11 / P2-12 覆盖。第二批 P2-15（tasks 域收口）与 P2-16（`app/types.rs` 类型随域归位，该文件已删除）随后完成，仅剩 P2-17（分享页按角色分文件）。判据、参照数据、目标形态与已定的 A 路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
+- [x] **全局搜索** —— 客户端递归遍历所有目录 + 文件名模糊匹配（PikPak 无服务端全局搜索 API；盘大时偏慢为已知取舍）
+- [ ] **离线任务进度详情** —— 离线任务字段无官方契约，现仅展示名称 / 大小等有限信息，暂无进度百分比
+- [x] **可维护性** —— 结构优化：巨型文件与 god object，P2-9 ~ P2-14 全部落地。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；`app/` 侧第 1 步（P2-9）已完成（纯逻辑外移到纯逻辑模块 + `App::new` 启动逻辑外抽），第 2 步（P2-10，按域 struct 化）已完成（七个域结构体 + `drain` 60 臂一行转调，`app/mod.rs` 3085 → 2127 行），第 3 步（P2-11，文件页）已完成（`FilesPage` + `app/files/` 五个角色文件，渲染与动作分离），第 4 步（P2-12，传输页）也已完成（`TransfersPage` + `app/transfers/` 四文件，`transfers_page.rs` 1951 行收进 `app/transfers/mod.rs` 1216 行 + 上传 / 下载分栏与纯逻辑分文件，渲染与动作分离；`app/mod.rs` 最终 2127 → 968 行）；P2-14（`App` 字段按页面分组）由 P2-10 / P2-11 / P2-12 覆盖。第二批 P2-15（tasks 域收口）与 P2-16（`app/types.rs` 类型随域归位，该文件已删除）随后完成，P2-17（分享页按角色分文件，`66614b8`）也已落地 —— 两批结构优化全部收尾。判据、参照数据、目标形态与已定的 A 路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
 - [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）
 
 ## 八、环境
