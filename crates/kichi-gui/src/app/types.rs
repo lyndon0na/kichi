@@ -333,12 +333,3 @@ pub(crate) type UploadPick = (
     Vec<(Option<String>, String)>,
     std::sync::mpsc::Receiver<Vec<PathBuf>>,
 );
-
-/// 分享创建成功后的结果展示。
-#[derive(Clone)]
-pub(crate) struct ShareResult {
-    pub url: String,
-    pub pass_code: String,
-    pub share_text: String,
-    pub label: String,
-}

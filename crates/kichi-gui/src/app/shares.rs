@@ -20,7 +20,15 @@ use crate::theme::{mix, Theme};
 use super::files::Crumb;
 use super::global::Global;
 use super::helpers::{self, folder_row, input};
-use super::types::ShareResult;
+
+/// 分享创建成功后的结果展示。
+#[derive(Clone)]
+pub(crate) struct ShareResult {
+    pub url: String,
+    pub pass_code: String,
+    pub share_text: String,
+    pub label: String,
+}
 
 /// 「我的分享」列表新鲜期: 进入页面时命中则不发请求。
 const SHARES_TTL: Duration = Duration::from_secs(60);
