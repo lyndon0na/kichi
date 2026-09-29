@@ -104,6 +104,8 @@
 
 ## 已完成（本轮）
 
+- [x] 文档补漏：README「已知限制」补「上传跨重启续传不可行」条目（此前只写在 `AGENTS.md` / `PROJECT_PLAN.md` / `TODO.md`），功能表与上传详情的「断点续传」限定为「运行期内」
+
 - [x] 工作区清理与文档归位：删除 `.delta/` 旧快照残留与 `dist/` 的 0.1.0 旧产物（均为忽略文件），根 `.gitignore` 补 `.flatpak-builder/`；`PROJECT_PLAN` / `TODO` / `UI_STYLE` / `UPLOAD_RESUME_NOTES` 移入 `docs/`（本地 `VIBE_CODING_NOTES` 一并归位），`AGENTS.md` 纳入版本管理，README 目录树与各处引用同步
 
 - [x] 文档失真修正：离线任务翻页说明、README 目录树补 `lib.rs` / `logging.rs`（`9c66bfa`）

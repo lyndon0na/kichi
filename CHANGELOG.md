@@ -17,6 +17,7 @@
 - **文档：README 补主界面截图**：`## 界面` 一节顶部放入主界面截图（`screenshot/main.png`，3930×2754 HiDPI），移除「项目尚未内置截图」的旧说明
 - **文档：工作文档归位 `docs/`**：`PROJECT_PLAN.md` / `TODO.md` / `UI_STYLE.md` / `UPLOAD_RESUME_NOTES.md` 以 `git mv` 移入 `docs/`（保留历史），仓库根只留 `README.md` / `CHANGELOG.md` / `LICENSE` 等门面文件；`AGENTS.md`（AI 协作者须知）随之纳入版本管理；README 路线图链接与目录树、文档间引用同步。纯文档调整：代码 / CI / 打包链路零影响
 - **工程：根 `.gitignore` 补 `.flatpak-builder/`**：该构建缓存此前仅靠目录内部自带的 `.gitignore` 兜底，根规则缺失；一并清理了历史工具的 `.delta/` 残留与 `dist/` 的 0.1.0 旧产物（均为忽略文件，不影响仓库内容）
+- **文档：README「已知限制」补上传跨重启续传条目**：该结论（协议限制，不可行，`UPLOAD_RESUME_NOTES.md` 有完整复盘）此前只落在 `AGENTS.md` / `PROJECT_PLAN.md` / `TODO.md`，README 用户视角漏写；本次补上限制行，并把功能表与上传详情里两处「断点续传」限定为「运行期内」
 
 ### 修复
 
