@@ -11,6 +11,7 @@
 
 - **文件页面包屑「…」可点击跳转**：目录层级过深、面包屑折叠出「…」时，点击「…」会弹出被省略的上级目录列表，可直接跳转到任意一层（此前「…」只是省略提示、不可交互）；列表沿用 KDE 风格扁平菜单项，超长目录名截断
 - **日常 CI**：新增 `.github/workflows/ci.yml`，推送 `master` 与所有 PR 自动跑 `cargo fmt --all --check` 与 `cargo clippy --workspace --all-targets --locked -- -D warnings` + `cargo test --workspace --locked`（`fmt` 拆成独立 job：无系统依赖、秒级反馈；`--locked` 让依赖漂移不进主干；同分支新推送取消上一轮未跑完的检查）；缓存 key 用 `Linux-ci-cargo-*` 与 `release.yml` 区分，避免两个工作流互相覆盖缓存。README 顶部补 CI 状态徽章，本地开发命令不变
+- **工程：新增界面风格规范 `UI_STYLE.md`**：把 KDE / Breeze（Dolphin）观感的落地要求收敛成单一规范 —— 总原则、颜色 / 圆角 / 间距 / 字号台账、图标与布局骨架、各类控件（按钮 / 菜单 / 列表 / 网格卡片 / 面包屑 / 弹窗 / Toast）与三态反馈、新建 / 改动界面的检查清单；与代码实况冲突时以代码为准并顺手修正文件。纯文档新增，无行为变化
 
 ### 变更
 
