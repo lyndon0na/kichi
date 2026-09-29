@@ -1,6 +1,7 @@
 //! PikPak 非官方 API 的 Rust 客户端核心库。
 //! 端点与加签算法参考社区逆向成果(Quan666/PikPakAPI 等)。
 
+pub mod aria2;
 pub mod captcha;
 pub mod client;
 pub mod consts;
