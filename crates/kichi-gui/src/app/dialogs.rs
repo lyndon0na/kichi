@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use eframe::egui::{self, vec2, Align2, Color32, Key, RichText, Stroke};
 
 use crate::msg::Cmd;
@@ -193,10 +191,10 @@ impl App {
         self.shares.draw_save_dialogs(ctx, &mut self.global, th);
     }
     pub(super) fn draw_toast(&mut self, ctx: &egui::Context) {
-        let Some((color, msg, since)) = self.global.toast.clone() else {
+        let Some(t) = self.global.toast.clone() else {
             return;
         };
-        if since.elapsed() > Duration::from_secs(6) {
+        if t.expired(t.since.elapsed()) {
             self.global.toast = None;
             return;
         }
@@ -211,9 +209,9 @@ impl App {
                         ui.horizontal(|ui| {
                             let (dr, _) =
                                 ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
-                            ui.painter().circle_filled(dr.center(), 3.5, color);
+                            ui.painter().circle_filled(dr.center(), 3.5, t.color);
                             ui.add_space(2.0);
-                            ui.label(RichText::new(msg).color(color));
+                            ui.label(RichText::new(t.msg.as_str()).color(t.color));
                         });
                         ui.add_space(2.0);
                     });

@@ -14,7 +14,7 @@ mod transfers;
 mod trash;
 
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::{self, Color32};
 use kichi_core::session;
@@ -162,12 +162,9 @@ impl App {
         app.start_session();
 
         if !font_loaded && app.global.toast.is_none() {
-            app.global.toast = Some((
-                Color32::from_rgb(200, 160, 60),
-                "未找到中文字体，中文可能显示为方块。请安装 wqy-zenhei 或 google-droid-sans-fonts"
-                    .into(),
-                Instant::now(),
-            ));
+            app.global.toast_warn(
+                "未找到中文字体，中文可能显示为方块。请安装 wqy-zenhei 或 google-droid-sans-fonts",
+            );
         }
         app
     }
@@ -194,11 +191,7 @@ impl App {
             Err(e) => {
                 // 会话文件损坏/无法读取: 清掉以免每次启动都报错, 再尝试密钥环自动登录。
                 let _ = session::clear_session();
-                self.global.toast = Some((
-                    Color32::from_rgb(200, 90, 60),
-                    e.to_string(),
-                    Instant::now(),
-                ));
+                self.global.toast_err(&e.to_string());
                 self.auto_login_if_possible();
             }
         }
@@ -258,7 +251,7 @@ impl App {
                     self.auth_captcha_url = None;
                     self.transfers.clear();
                     self.files.invalidate_session();
-                    self.preview.clear();
+                    self.preview.clear(&mut self.global);
                     self.shares.clear();
                     self.trash.clear();
                     // 登录态失效: 若保存过密码则尝试自动重登。
@@ -276,7 +269,7 @@ impl App {
                     self.tasks.clear();
                     self.files.clear();
                     self.transfers.clear();
-                    self.preview.clear();
+                    self.preview.clear(&mut self.global);
                     self.shares.clear();
                     self.trash.clear();
                 }

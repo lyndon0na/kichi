@@ -76,7 +76,9 @@ pub(crate) struct PreviewPage {
 
 impl PreviewPage {
     /// 清空状态(退出登录 / 会话失效时调用)。
-    pub(crate) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self, g: &mut Global) {
+        // 预览等待的常驻提示一并收回: 登录页不渲染提示条, 残留会在重登后冒出来。
+        g.clear_sticky_toast();
         self.pending = None;
         self.confirm = None;
         self.progress = None;
@@ -134,7 +136,7 @@ impl PreviewPage {
         } else {
             "正在准备预览文件…"
         };
-        g.toast(hint, g.theme().accent);
+        g.toast_sticky(hint, g.theme().accent);
         g.send(Cmd::Preview {
             req_id,
             file_id: id,
