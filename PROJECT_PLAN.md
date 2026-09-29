@@ -39,7 +39,7 @@
 ## 三、里程碑
 
 > [!NOTE]
-> M0–M23 已全部完成；细节分别见[第四节](#四功能现状)与[第五节](#五关键实现笔记)。
+> M0–M24 已全部完成；细节分别见[第四节](#四功能现状)与[第五节](#五关键实现笔记)。
 
 - [x] **M0 · 调研 API**
   - 梳理端点、加签算法、登录 / 文件 / 离线任务的数据结构
@@ -138,9 +138,9 @@
   - 新增单测 3 项（记忆目录命中（含末尾分隔符）/ 失效与空值回退 / 记自身与父目录的推导）
 
 - [x] **M22 · 发行包与发布 CI（P3-1）**
-  - **AppImage**（`packaging/build-appimage.sh` + `packaging/appimage/AppRun`）：cargo 构建 release → 组装 AppDir（`usr/bin` + desktop + hicolor 图标 + 根目录同名 PNG 与 `.DirIcon`）→ appimagetool 出包；工具版本与 SHA256 写死在脚本里，缺失时自动下载到 `~/.cache/kichi-packaging`
+  - **AppImage**（`packaging/appimage/build-appimage.sh` + `packaging/appimage/AppRun`）：cargo 构建 release → 组装 AppDir（`usr/bin` + desktop + hicolor 图标 + 根目录同名 PNG 与 `.DirIcon`）→ appimagetool 出包；工具版本与 SHA256 写死在脚本里，缺失时自动下载到 `~/.cache/kichi-packaging`
   - **appimagetool 1.9 的坑**：它只在 **AppDir 根目录**找 `*.desktop`，且 `G_FILE_TEST_IS_REGULAR` 要求是普通文件 —— `usr/share/applications/` 下的那份不算数，必须额外在根部放一份；光栅化器改为逐个试（rsvg-convert → ksvgtopng → magick → inkscape）并校验产物非空，因为 `ksvgtopng` 缺输出目录、`magick` 参数顺序不对时会「退出码 0 但没产物」
-  - **Flatpak**（`packaging/flatpak/io.github.lyndon0na.Kichi.yml` + `packaging/build-flatpak.sh`）：freedesktop 25.08 Platform / Sdk + `rust-stable` 扩展，沙箱内 `cargo build --release --locked` 后装进 `/app`（`skip` 掉 `target` / `dist` / `.git` / `.github`）
+  - **Flatpak**（`packaging/flatpak/io.github.lyndon0na.Kichi.yml` + `packaging/flatpak/build-flatpak.sh`）：freedesktop 25.08 Platform / Sdk + `rust-stable` 扩展，沙箱内 `cargo build --release --locked` 后装进 `/app`（`skip` 掉 `target` / `dist` / `.git` / `.github`）
   - **沙箱适配**（三处，UI 无差别）：沙箱里没有 mpv（freedesktop 运行时不带），播放改经 `flatpak-spawn --host mpv` 借宿主程序（`helpers::host_command` 统一两种形态，参数完全一致）；运行时字体不含中文，`install_fonts` 的候选表改为「挂载根 × 相对路径」两维展开，同时扫 `/usr/share/fonts` 与 flatpak 挂进来的 `/run/host/fonts`；`app_id` 取 `FLATPAK_ID`，让窗口能关联 `<应用 ID>.desktop`
   - **构建期网络**：flatpak-builder 默认掐断构建沙箱网络（实测沙箱内 DNS 直接失败），清单里用 `build-options.build-args: [--share=network]` 放行（`--share-net` 是 bwrap 语法、flatpak 不认）；若日后要上 Flathub，需改为离线构建并提交 cargo 源清单
   - **CI**（`.github/workflows/release.yml`）：AppImage 在 `ubuntu-22.04` 构建（glibc 门槛等于构建机 → 官方包可跑 Ubuntu 22.04+ / Debian 12+；本地在 Fedora 44 构建只能跑 Fedora 43+/滚动发行版），Flatpak 在 `ubuntu-24.04`（沙箱内自带运行时，与构建机发行版无关）；推 `v*` tag 构建完自动发 Release（已存在则 `--clobber` 覆盖上传），`workflow_dispatch` 只上传 artifacts
@@ -157,6 +157,12 @@
   - 缓存 key 用 `Linux-ci-cargo-*`，与 `release.yml` **刻意区分**：同 key 时两个工作流互相覆盖缓存，且 AppImage 任务在 `ubuntu-22.04` 构建、target 不通用
   - 上 CI 前本地复跑三闸门确认基线：`cargo fmt --all --check` 通过、`cargo clippy --workspace --all-targets --locked -- -D warnings` 0 告警、`cargo test --workspace --locked` 58 项全过（GUI 侧；核心库 33 项合计 91）；README 顶部补 CI 状态徽章、目录树与「构建与运行」补 CI 说明
   - **工具链固定（2026-09-27）**：原先用浮动 `dtolnay/rust-toolchain@stable`，CI 静默升到 rustc 1.98.1，其新增 `float_literal_f32_fallback`（future-incompat，默认告警）在 `-D warnings` 下命中 55 处 `Stroke::new` 字面量而编译失败，本地 1.94 不复现。新增根 `rust-toolchain.toml` 固定 `1.98.1`（含 `clippy` / `rustfmt` 组件），`ci.yml` / `release.yml` 的 Action `@版本` 同步固定；代码侧给 55 处宽度字面量补 `_f32`（纯类型标注，行为不变）。升级工具链时改 `rust-toolchain.toml` 与两处 Action 版本（该 Action 不读该文件）
+
+- [x] **M24 · 打包目录归位（P3-4）**
+  - `build-appimage.sh` 收进 `packaging/appimage/`、`build-flatpak.sh` 收进 `packaging/flatpak/`（`kichi.desktop` 留根，AppImage / Flatpak 共用）；脚本内只改 `ROOT` 计算（多退一级到仓库根），其余 `$ROOT/...` 引用零改动
+  - `release.yml` 两处调用路径、README 目录树与命令、Flatpak 清单头注释同步；本地出包命令变为 `./packaging/appimage/build-appimage.sh` 与 `./packaging/flatpak/build-flatpak.sh`
+  - 为什么等出包时做：脚本平时 CI 不跑（`ci.yml` 只有 fmt / clippy / test），路径敲错只有出包才暴露；本次随 v1.0.1 出包一并验证，错误当场可见
+  - 本地验收（2026-09-29）：AppImage 完整出包 + 解包 `AppRun` 启动正常（GUI 恢复登录态、运行至 timeout）；Flatpak 完整出包成功（flatpak-builder 沙箱内 release 构建 45.91s）
 
 ## 四、功能现状
 
@@ -476,7 +482,7 @@ classify(name, mime)              预览入口                       预览执�
 - [x] **全局搜索** —— 客户端递归遍历所有目录 + 文件名模糊匹配（PikPak 无服务端全局搜索 API；盘大时偏慢为已知取舍）
 - [ ] **离线任务进度详情** —— 离线任务字段无官方契约，现仅展示名称 / 大小等有限信息，暂无进度百分比
 - [x] **可维护性** —— 结构优化：巨型文件与 god object，P2-9 ~ P2-14 全部落地。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；`app/` 侧第 1 步（P2-9）已完成（纯逻辑外移到纯逻辑模块 + `App::new` 启动逻辑外抽），第 2 步（P2-10，按域 struct 化）已完成（七个域结构体 + `drain` 60 臂一行转调，`app/mod.rs` 3085 → 2127 行），第 3 步（P2-11，文件页）已完成（`FilesPage` + `app/files/` 五个角色文件，渲染与动作分离），第 4 步（P2-12，传输页）也已完成（`TransfersPage` + `app/transfers/` 四文件，`transfers_page.rs` 1951 行收进 `app/transfers/mod.rs` 1216 行 + 上传 / 下载分栏与纯逻辑分文件，渲染与动作分离；`app/mod.rs` 最终 2127 → 968 行）；P2-14（`App` 字段按页面分组）由 P2-10 / P2-11 / P2-12 覆盖。第二批 P2-15（tasks 域收口）与 P2-16（`app/types.rs` 类型随域归位，该文件已删除）随后完成，P2-17（分享页按角色分文件，`66614b8`）也已落地 —— 两批结构优化全部收尾。判据、参照数据、目标形态与已定的 A 路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
-- [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）
+- [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）；打包脚本随 M24（P3-4，`8bbb355`）归位 `packaging/appimage/` 与 `packaging/flatpak/`，本地出包命令随之更新
 
 ## 八、环境
 

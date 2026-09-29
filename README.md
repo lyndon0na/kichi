@@ -256,10 +256,12 @@ crates/
 
 packaging/                       # 发行包
 ├── kichi.desktop                # 桌面入口（AppImage / Flatpak 共用）
-├── build-appimage.sh            # AppImage 出包（组装 AppDir + appimagetool）
-├── appimage/AppRun              # AppImage 入口脚本
-├── build-flatpak.sh             # Flatpak 出包（flatpak-builder + build-bundle）
-└── flatpak/io.github.lyndon0na.Kichi.yml   # Flatpak 清单（沙箱内源码构建）
+├── appimage/                    # AppImage 出包
+│   ├── build-appimage.sh        # 组装 AppDir + appimagetool
+│   └── AppRun                   # AppImage 入口脚本
+└── flatpak/                     # Flatpak 出包
+    ├── build-flatpak.sh         # flatpak-builder + build-bundle
+    └── io.github.lyndon0na.Kichi.yml   # Flatpak 清单（沙箱内源码构建）
 
 .github/workflows/
 ├── ci.yml                       # push master / PR 触发: fmt + clippy + test
@@ -304,10 +306,10 @@ cargo test --workspace
 
 ```bash
 # AppImage -> dist/Kichi-<版本>-x86_64.AppImage
-./packaging/build-appimage.sh
+./packaging/appimage/build-appimage.sh
 
 # Flatpak bundle -> dist/Kichi-<版本>-x86_64.flatpak（加 --install 同时装入用户级 flatpak）
-./packaging/build-flatpak.sh [--install]
+./packaging/flatpak/build-flatpak.sh [--install]
 ```
 
 | 产物 | CI 构建环境 | 说明 |

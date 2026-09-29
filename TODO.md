@@ -11,7 +11,7 @@
 | **P0** | 用户可见的功能缺口 | 0   |
 | **P1** | 正确性与健壮性   | 0   |
 | **P2** | 可维护性与工程   | 0   |
-| **P3** | 分发与发布     | 1   |
+| **P3** | 分发与发布     | 0   |
 
 > 上表只统计主线队列（P0–P3）；另有一节独立的「P2 · 结构优化」队列（第一批 P2-9 ~ P2-14 **全部完成** —— P2-9 / P2-10 / P2-11 / P2-12 / P2-13 已落地，P2-14 已由 P2-10 / P2-11 / P2-12 覆盖；第二批 P2-15 / P2-16 / P2-17 **已全部完成**），见下方专节。
 
@@ -31,11 +31,11 @@
 
 ## P3 · 分发与发布
 
-> ⏳ 1 项待做（P3-4）
+> ✅ 全部完成
 
 | 编号   | 任务                                | 主要路径        | 说明 / 验收                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 |:---- |:--------------------------------- |:----------- |:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| P3-4 | `packaging/` 目录归位（**随下次出包一起做**） | `packaging/` | 现状「分了一半」：`appimage/`、`flatpak/` 目录已存在（里面只有 `AppRun` / Flatpak 清单），但两个构建脚本与共用的 `kichi.desktop` 留在外面一层。目标：`build-appimage.sh` 收进 `appimage/`、`build-flatpak.sh` 收进 `flatpak/`，`kichi.desktop` 视情况留根或进 `desktop/`（AppImage 与 Flatpak 都用它）。改动面：脚本内路径（`build-appimage.sh` 引 `AppRun` 与 `kichi.desktop`、`build-flatpak.sh` 引清单、Flatpak 清单引 `packaging/kichi.desktop`）、`release.yml` 两处、README 目录树与命令。**为什么等出包时做**：这些脚本平时 CI 不跑（`ci.yml` 只有 fmt / clippy / test），只有推 `v*` tag 的 `release.yml` 才执行，路径敲错要等下次发版才暴露；出包那次脚本本来就会真跑一遍，错误当场可见。验收：本地完整跑一次 `build-appimage.sh` 出包成功、解包启动正常（宿主装了 flatpak-builder 就再跑一次 `build-flatpak.sh`） |
+| P3-4 | `packaging/` 目录归位 | `packaging/` | **✅ 已完成**（`8bbb355`，随 v1.0.1 出包）。`build-appimage.sh` 收进 `packaging/appimage/`、`build-flatpak.sh` 收进 `packaging/flatpak/`，`kichi.desktop` 留根（AppImage / Flatpak 共用）；脚本内只改 `ROOT` 计算（多退一级到仓库根），其余 `$ROOT/...` 引用零改动；`release.yml` 两处调用路径、README 目录树与命令、Flatpak 清单头注释同步。本地验收：AppImage 完整出包 + 解包 `AppRun` 启动正常（恢复登录态、运行至 timeout）；Flatpak 完整出包成功（沙箱内 release 构建 45.91s） |
 
 ---
 
@@ -154,5 +154,7 @@
 
 - [x] 移除 `packaging/install-icon.sh`：桌面文件与图标改由发行包自带（AppImage 打进 AppDir、Flatpak 由清单导出），脚本只服务「源码构建后直接跑二进制」一条路径；README「桌面图标」一节并入打包说明，需要时按说明手工放置 `packaging/kichi.desktop` 与 `assets/kichi.svg`
 
+- [x] P3-4 打包目录归位（`8bbb355`，随 v1.0.1 出包）：`build-appimage.sh` 收进 `packaging/appimage/`、`build-flatpak.sh` 收进 `packaging/flatpak/`（`kichi.desktop` 留根），`release.yml` / README / 清单注释同步；本地完整跑通 AppImage 出包 + 解包启动、Flatpak 出包
+
 > [!TIP]
-> P0–P2 与 P3-1 / P3-2 / P3-3 已完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）待做 —— 安排在下次出包时顺手做。
+> P0–P3 全部完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）已随 v1.0.1 出包完成 —— 队列已清空。
