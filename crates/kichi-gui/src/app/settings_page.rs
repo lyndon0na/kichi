@@ -83,264 +83,17 @@ impl App {
                 });
                 ui.add_space(14.0);
 
-                // 下载目录
-                let dl = self.download_dir.clone();
-                settings_card(ui, th, "下载", &mut |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(2.0);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("本地下载目录").color(th.text_weak));
-                            ui.label(
-                                RichText::new(if dl.is_empty() {
-                                    "未设置, 将使用系统下载目录".into()
-                                } else {
-                                    dl.clone()
-                                })
-                                .color(th.text_faint)
-                                .size(12.0),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("选择目录…").clicked() {
-                                self.choose_download_dir();
-                            }
-                        });
+                // 卡片区滚动(标题与底部版本行固定): 预留 30px 给底部版本行。
+                let scroll_h = (ui.available_height() - 30.0).max(80.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_scroll")
+                    .auto_shrink([false, false])
+                    .max_height(scroll_h)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.settings_body(ui, th);
                     });
-                });
-                ui.add_space(14.0);
 
-                // 传输并发 / 重试
-                let mut dl_conc = self.dl_concurrency as i64;
-                let mut ul_conc = self.ul_concurrency as i64;
-                let mut part_conc = self.part_concurrency as i64;
-                let mut attempts = self.max_attempts as i64;
-                let mut limits_changed = false;
-                settings_card(ui, th, "传输", &mut |ui| {
-                    limits_changed |= transfer_row(
-                        ui,
-                        th,
-                        "下载并发",
-                        "同时下载的文件数上限",
-                        &mut dl_conc,
-                        crate::settings::DL_CONCURRENCY_RANGE,
-                    );
-                    ui.add_space(8.0);
-                    limits_changed |= transfer_row(
-                        ui,
-                        th,
-                        "上传并发",
-                        "同时上传的文件数上限",
-                        &mut ul_conc,
-                        crate::settings::UL_CONCURRENCY_RANGE,
-                    );
-                    ui.add_space(8.0);
-                    limits_changed |= transfer_row(
-                        ui,
-                        th,
-                        "上传分片并发",
-                        "单个上传任务内同时传输的分片数",
-                        &mut part_conc,
-                        crate::settings::PART_CONCURRENCY_RANGE,
-                    );
-                    ui.add_space(8.0);
-                    limits_changed |= transfer_row(
-                        ui,
-                        th,
-                        "单任务重试次数",
-                        "网络抖动等瞬时错误下的最大尝试次数",
-                        &mut attempts,
-                        crate::settings::MAX_ATTEMPTS_RANGE,
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new("并发调整即时生效; 重试与分片并发对新启动的任务生效。")
-                            .color(th.text_faint)
-                            .size(11.5),
-                    );
-                });
-                if limits_changed {
-                    self.dl_concurrency = dl_conc as usize;
-                    self.ul_concurrency = ul_conc as usize;
-                    self.part_concurrency = part_conc as usize;
-                    self.max_attempts = attempts as usize;
-                    self.persist_settings();
-                    self.send(Cmd::SetTransferLimits {
-                        dl_concurrency: self.dl_concurrency,
-                        ul_concurrency: self.ul_concurrency,
-                        part_concurrency: self.part_concurrency,
-                        max_attempts: self.max_attempts,
-                    });
-                }
-                ui.add_space(14.0);
-
-                // 磁盘缓存(预览 / 缩略图)
-                let usage = self.cache_usage;
-                let sweeping = self.cache_sweeping;
-                let mut purge = false;
-                settings_card(ui, th, "缓存", &mut |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(2.0);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("预览与缩略图缓存").color(th.text_weak));
-                            let text = if sweeping {
-                                "正在清理…".to_string()
-                            } else {
-                                match usage {
-                                    Some(u) => format!(
-                                        "{} · {} 项",
-                                        crate::format::fmt_bytes(u.bytes as i64),
-                                        u.entries
-                                    ),
-                                    None => "正在统计…".to_string(),
-                                }
-                            };
-                            ui.label(RichText::new(text).color(th.text_faint).size(12.0));
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    !sweeping,
-                                    egui::Button::new(
-                                        RichText::new("清空缓存").color(th.text_weak),
-                                    )
-                                    .stroke(Stroke::new(1.0_f32, th.border))
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .corner_radius(th.cr(8)),
-                                )
-                                .clicked()
-                            {
-                                purge = true;
-                            }
-                        });
-                    });
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(
-                            "超过上限时按「最久未使用」自动淘汰; 正在预览或正在传输的项不会被删。",
-                        )
-                        .color(th.text_faint)
-                        .size(11.5),
-                    );
-                });
-                if purge {
-                    self.cache_sweeping = true;
-                    self.cache_usage_pending = true;
-                    self.send(Cmd::MaintainCache { purge: true });
-                }
-                ui.add_space(14.0);
-
-                // aria2 外部下载器(文件页「发送到 aria2」)
-                let mut a2_enabled = self.aria2.enabled;
-                let mut a2_url = self.aria2.rpc_url.clone();
-                let mut a2_secret = self.aria2.secret.clone();
-                let mut a2_dir = self.aria2.dir.clone();
-                let mut a2_test = false;
-                let testing = self.aria2_testing;
-                settings_card(ui, th, "aria2", &mut |ui| {
-                    ui.checkbox(
-                        &mut a2_enabled,
-                        RichText::new("启用「发送到 aria2」").color(th.text),
-                    );
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("RPC 地址").color(th.text_weak));
-                    ui.add(
-                        helpers::input(&mut a2_url)
-                            .desired_width(f32::INFINITY)
-                            .hint_text(crate::settings::DEFAULT_ARIA2_RPC_URL),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("密钥").color(th.text_weak));
-                    ui.add(
-                        helpers::input(&mut a2_secret)
-                            .password(true)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("留空表示未设置 rpc-secret"),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("下载目录").color(th.text_weak));
-                    ui.add(
-                        helpers::input(&mut a2_dir)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("留空表示用 aria2 自己的 dir 设置"),
-                    );
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(
-                                "推送后由 aria2 自行下载; 直链限时, 排队过久会失败需重新推送。",
-                            )
-                            .color(th.text_faint)
-                            .size(11.5),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    !testing,
-                                    egui::Button::new(
-                                        RichText::new(if testing {
-                                            "测试中…"
-                                        } else {
-                                            "测试连接"
-                                        })
-                                        .color(th.text_weak),
-                                    )
-                                    .stroke(Stroke::new(1.0_f32, th.border))
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .corner_radius(th.cr(8)),
-                                )
-                                .clicked()
-                            {
-                                a2_test = true;
-                            }
-                        });
-                    });
-                });
-                let a2_changed = a2_enabled != self.aria2.enabled
-                    || a2_url != self.aria2.rpc_url
-                    || a2_secret != self.aria2.secret
-                    || a2_dir != self.aria2.dir;
-                if a2_changed {
-                    self.aria2 = crate::settings::Aria2Settings {
-                        enabled: a2_enabled,
-                        rpc_url: a2_url,
-                        secret: a2_secret,
-                        dir: a2_dir,
-                    };
-                    self.persist_settings();
-                }
-                if a2_test {
-                    self.aria2_testing = true;
-                    self.send(Cmd::Aria2Test {
-                        config: self.aria2_config(),
-                    });
-                }
-                ui.add_space(14.0);
-
-                // 账户
-                let name = self.username.clone();
-                settings_card(ui, th, "账户", &mut |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(2.0);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("当前登录").color(th.text_weak));
-                            ui.label(RichText::new(&name).color(th.text).size(13.0));
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(RichText::new("退出登录").color(th.danger))
-                                        .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.3)))
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .corner_radius(th.cr(8)),
-                                )
-                                .clicked()
-                            {
-                                self.logout_confirm = true;
-                            }
-                        });
-                    });
-                });
-                ui.add_space(24.0);
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         RichText::new(concat!(
@@ -352,5 +105,263 @@ impl App {
                     );
                 });
             });
+    }
+
+    /// 设置卡片区(滚动内容): 下载 / 传输 / 缓存 / aria2 / 账户。
+    fn settings_body(&mut self, ui: &mut egui::Ui, th: &Theme) {
+        // 下载目录
+        let dl = self.download_dir.clone();
+        settings_card(ui, th, "下载", &mut |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("本地下载目录").color(th.text_weak));
+                    ui.label(
+                        RichText::new(if dl.is_empty() {
+                            "未设置, 将使用系统下载目录".into()
+                        } else {
+                            dl.clone()
+                        })
+                        .color(th.text_faint)
+                        .size(12.0),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("选择目录…").clicked() {
+                        self.choose_download_dir();
+                    }
+                });
+            });
+        });
+        ui.add_space(14.0);
+
+        // 传输并发 / 重试
+        let mut dl_conc = self.dl_concurrency as i64;
+        let mut ul_conc = self.ul_concurrency as i64;
+        let mut part_conc = self.part_concurrency as i64;
+        let mut attempts = self.max_attempts as i64;
+        let mut limits_changed = false;
+        settings_card(ui, th, "传输", &mut |ui| {
+            limits_changed |= transfer_row(
+                ui,
+                th,
+                "下载并发",
+                "同时下载的文件数上限",
+                &mut dl_conc,
+                crate::settings::DL_CONCURRENCY_RANGE,
+            );
+            ui.add_space(8.0);
+            limits_changed |= transfer_row(
+                ui,
+                th,
+                "上传并发",
+                "同时上传的文件数上限",
+                &mut ul_conc,
+                crate::settings::UL_CONCURRENCY_RANGE,
+            );
+            ui.add_space(8.0);
+            limits_changed |= transfer_row(
+                ui,
+                th,
+                "上传分片并发",
+                "单个上传任务内同时传输的分片数",
+                &mut part_conc,
+                crate::settings::PART_CONCURRENCY_RANGE,
+            );
+            ui.add_space(8.0);
+            limits_changed |= transfer_row(
+                ui,
+                th,
+                "单任务重试次数",
+                "网络抖动等瞬时错误下的最大尝试次数",
+                &mut attempts,
+                crate::settings::MAX_ATTEMPTS_RANGE,
+            );
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new("并发调整即时生效; 重试与分片并发对新启动的任务生效。")
+                    .color(th.text_faint)
+                    .size(11.5),
+            );
+        });
+        if limits_changed {
+            self.dl_concurrency = dl_conc as usize;
+            self.ul_concurrency = ul_conc as usize;
+            self.part_concurrency = part_conc as usize;
+            self.max_attempts = attempts as usize;
+            self.persist_settings();
+            self.send(Cmd::SetTransferLimits {
+                dl_concurrency: self.dl_concurrency,
+                ul_concurrency: self.ul_concurrency,
+                part_concurrency: self.part_concurrency,
+                max_attempts: self.max_attempts,
+            });
+        }
+        ui.add_space(14.0);
+
+        // 磁盘缓存(预览 / 缩略图)
+        let usage = self.cache_usage;
+        let sweeping = self.cache_sweeping;
+        let mut purge = false;
+        settings_card(ui, th, "缓存", &mut |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("预览与缩略图缓存").color(th.text_weak));
+                    let text = if sweeping {
+                        "正在清理…".to_string()
+                    } else {
+                        match usage {
+                            Some(u) => format!(
+                                "{} · {} 项",
+                                crate::format::fmt_bytes(u.bytes as i64),
+                                u.entries
+                            ),
+                            None => "正在统计…".to_string(),
+                        }
+                    };
+                    ui.label(RichText::new(text).color(th.text_faint).size(12.0));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            !sweeping,
+                            egui::Button::new(RichText::new("清空缓存").color(th.text_weak))
+                                .stroke(Stroke::new(1.0_f32, th.border))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .corner_radius(th.cr(8)),
+                        )
+                        .clicked()
+                    {
+                        purge = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(
+                    "超过上限时按「最久未使用」自动淘汰; 正在预览或正在传输的项不会被删。",
+                )
+                .color(th.text_faint)
+                .size(11.5),
+            );
+        });
+        if purge {
+            self.cache_sweeping = true;
+            self.cache_usage_pending = true;
+            self.send(Cmd::MaintainCache { purge: true });
+        }
+        ui.add_space(14.0);
+
+        // aria2 外部下载器(文件页「发送到 aria2」)
+        let mut a2_enabled = self.aria2.enabled;
+        let mut a2_url = self.aria2.rpc_url.clone();
+        let mut a2_secret = self.aria2.secret.clone();
+        let mut a2_dir = self.aria2.dir.clone();
+        let mut a2_test = false;
+        let testing = self.aria2_testing;
+        settings_card(ui, th, "aria2", &mut |ui| {
+            ui.checkbox(
+                &mut a2_enabled,
+                RichText::new("启用「发送到 aria2」").color(th.text),
+            );
+            ui.add_space(10.0);
+            ui.label(RichText::new("RPC 地址").color(th.text_weak));
+            ui.add(
+                helpers::input(&mut a2_url)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(crate::settings::DEFAULT_ARIA2_RPC_URL),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("密钥").color(th.text_weak));
+            ui.add(
+                helpers::input(&mut a2_secret)
+                    .password(true)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("留空表示未设置 rpc-secret"),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("下载目录").color(th.text_weak));
+            ui.add(
+                helpers::input(&mut a2_dir)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("留空表示用 aria2 自己的 dir 设置"),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("推送后由 aria2 自行下载; 直链限时, 排队过久会失败需重新推送。")
+                        .color(th.text_faint)
+                        .size(11.5),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            !testing,
+                            egui::Button::new(
+                                RichText::new(if testing {
+                                    "测试中…"
+                                } else {
+                                    "测试连接"
+                                })
+                                .color(th.text_weak),
+                            )
+                            .stroke(Stroke::new(1.0_f32, th.border))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .corner_radius(th.cr(8)),
+                        )
+                        .clicked()
+                    {
+                        a2_test = true;
+                    }
+                });
+            });
+        });
+        let a2_changed = a2_enabled != self.aria2.enabled
+            || a2_url != self.aria2.rpc_url
+            || a2_secret != self.aria2.secret
+            || a2_dir != self.aria2.dir;
+        if a2_changed {
+            self.aria2 = crate::settings::Aria2Settings {
+                enabled: a2_enabled,
+                rpc_url: a2_url,
+                secret: a2_secret,
+                dir: a2_dir,
+            };
+            self.persist_settings();
+        }
+        if a2_test {
+            self.aria2_testing = true;
+            self.send(Cmd::Aria2Test {
+                config: self.aria2_config(),
+            });
+        }
+        ui.add_space(14.0);
+
+        // 账户
+        let name = self.username.clone();
+        settings_card(ui, th, "账户", &mut |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("当前登录").color(th.text_weak));
+                    ui.label(RichText::new(&name).color(th.text).size(13.0));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("退出登录").color(th.danger))
+                                .stroke(Stroke::new(1.0_f32, mix(th.danger, th.bg, 0.3)))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .corner_radius(th.cr(8)),
+                        )
+                        .clicked()
+                    {
+                        self.logout_confirm = true;
+                    }
+                });
+            });
+        });
+        ui.add_space(24.0);
     }
 }
