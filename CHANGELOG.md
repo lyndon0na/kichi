@@ -14,6 +14,10 @@
 - **文档：工作文档归位 `docs/`**：`PROJECT_PLAN.md` / `TODO.md` / `UI_STYLE.md` / `UPLOAD_RESUME_NOTES.md` 以 `git mv` 移入 `docs/`（保留历史），仓库根只留 `README.md` / `CHANGELOG.md` / `LICENSE` 等门面文件；`AGENTS.md`（AI 协作者须知）随之纳入版本管理；README 路线图链接与目录树、文档间引用同步。纯文档调整：代码 / CI / 打包链路零影响
 - **工程：根 `.gitignore` 补 `.flatpak-builder/`**：该构建缓存此前仅靠目录内部自带的 `.gitignore` 兜底，根规则缺失；一并清理了历史工具的 `.delta/` 残留与 `dist/` 的 0.1.0 旧产物（均为忽略文件，不影响仓库内容）
 
+### 修复
+
+- **预览提示等 mpv 窗口真正就绪再切换**：`--force-window` 的窗口只在流初始化完成后创建，上一版提示仍会在窗口出现前换成「正在用 mpv 播放」—— 现在通过 mpv IPC 观察 `vo-configured`（窗口 / 视频输出配置完成的时刻）才切换，解析完成后提示先转「正在唤起 mpv…」并保持常驻；mpv 在窗口出现前退出（坏直链 / 断网）时告警「mpv 已退出，未能播放「x」」，不再假成功；IPC 不可用（连接失败 / 老版本 mpv 无该属性）时按旧行为兜底
+
 ## [1.0.1] - 2026-09-29
 
 ### 新增

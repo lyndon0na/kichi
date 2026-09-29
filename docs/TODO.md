@@ -109,6 +109,8 @@
 
 - [x] P0-5 预览等待提示常驻：点击预览后的「正在解析播放地址…」/「正在准备预览文件…」不再 6 秒自动消失，改为常驻直到结果消息到达被成功 / 失败提示替换（媒体与非媒体两条路径，非媒体下载期间与进度条并存）；提示条新增 `Toast::sticky` 常驻形态（`Global::toast_sticky` / `clear_sticky_toast`，会话失效 / 登出时随预览状态一并收回），普通提示维持 6 秒超时；附 Toast 超时判定单测（`global.rs` / `dialogs.rs` / `preview.rs` / `mod.rs`，`4c5a450`）
 
+- [x] P0-6 mpv 就绪检测：预览提示的切换判据由「spawn 成功」改为 mpv IPC 观察 `vo-configured`（spawn 时带 `--input-ipc-server` + 后台观察线程 `helpers.rs::watch_mpv`），窗口 / VO 配置完成才换成功提示；解析完成后提示先转「正在唤起 mpv…」并保持常驻；mpv 在窗口出现前退出（坏直链 / 断网）如实告警「mpv 已退出，未能播放「x」」，IPC 不可用（连接失败 / 老版本无该属性）按旧行为兜底。实测依据（mpv 0.41 / Wayland）：本地图片 0.31s 翻 true、坏链接全程 false、`--force-window=immediate` 反证 0.14s 即 true；新增单测 2 项（IPC 行解析 + Unix socket 扮演 mpv 走通三态），96 项全绿（`helpers.rs` / `preview.rs` / `mod.rs`，`abdfa2a`）
+
 - [x] P1-1 分享转存目标目录改为持久化 ID：新增 `settings::load_pack_folder_id` / `save_pack_folder_id`（独立文件 `~/.config/kichi/pack_folder_id`，避免与 GUI 线程覆写 settings.json 竞争）；`worker.rs` 新增 `find_pack_folder` 统一按持久化 ID 定位「转存自分享」暂存目录，ID 失效时回退名称匹配并刷新缓存，`snapshot_pack_folder` / `move_new_files` / `Cmd::RetryMoveShare` 全部改用该入口（`worker.rs` / `settings.rs`）
 
 - [x] P1-2 分享链接解析增强：`extract_share_id` 改为 `parse_share_input`，支持带查询参数 / 片段 / 复制链接附带前后文字的形态，ID 截到首个非法字符为止，并顺带从 `password`/`pass_code` 回填提取码；无法识别（缺 `/s/` 的其它链接、非法字符、空）时返回 `None`，解析对话框给出错误提示而非当成裸 ID；补 `parse_share_id_from_url_forms` 单测（`mod.rs` / `dialogs.rs`）
