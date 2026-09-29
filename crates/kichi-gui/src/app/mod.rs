@@ -94,6 +94,11 @@ pub struct App {
     pub(crate) part_concurrency: usize,
     pub(crate) max_attempts: usize,
 
+    /// aria2 外部下载器设置(设置页维护; 推送 / 测试连接时随命令下发)。
+    pub(crate) aria2: settings::Aria2Settings,
+    /// 是否正在执行「测试连接」(防重复点击)。
+    pub(crate) aria2_testing: bool,
+
     /// 预览域: 大文件确认 / 下载进度 / 清晰度 / 「系统打开」探针。
     pub(crate) preview: PreviewPage,
 
@@ -149,6 +154,8 @@ impl App {
             ul_concurrency: saved.ul_concurrency,
             part_concurrency: saved.part_concurrency,
             max_attempts: saved.max_attempts,
+            aria2: saved.aria2.clone(),
+            aria2_testing: false,
             preview: PreviewPage::default(),
             thumbs: ThumbsPage::default(),
             cache_usage: None,
@@ -376,6 +383,42 @@ impl App {
                     self.transfers
                         .on_folder_scan_failed(&mut self.global, req_id, what)
                 }
+                Msg::Aria2Progress { label, done, total } => {
+                    // 常驻提示: 推送期间持续更新, 结束消息到达时替换为结果。
+                    self.global.toast_sticky(
+                        &format!("正在推送到 aria2:「{label}」 {done}/{total}"),
+                        self.global.theme().accent,
+                    );
+                }
+                Msg::Aria2Pushed {
+                    label,
+                    ok,
+                    failed,
+                    first_error,
+                } => {
+                    if ok + failed == 0 {
+                        self.toast_warn(&format!("「{label}」内没有可推送的文件"));
+                    } else if failed == 0 {
+                        self.toast_ok(&format!("已推送到 aria2:「{label}」({ok} 个文件)"));
+                    } else if ok == 0 {
+                        self.toast_err(&format!(
+                            "推送到 aria2 失败: {first_error} ({failed} 个文件)"
+                        ));
+                    } else {
+                        self.toast_warn(&format!(
+                            "推送到 aria2: 成功 {ok}, 失败 {failed} ({first_error})"
+                        ));
+                    }
+                }
+                Msg::Aria2Failed { what } => self.toast_err(&what),
+                Msg::Aria2TestOk { version } => {
+                    self.aria2_testing = false;
+                    self.toast_ok(&format!("aria2 连接正常 (v{version})"));
+                }
+                Msg::Aria2TestFailed { what } => {
+                    self.aria2_testing = false;
+                    self.toast_err(&format!("aria2 连接失败: {what}"));
+                }
                 Msg::UlProgress {
                     req_id,
                     total,
@@ -538,6 +581,7 @@ impl App {
             ul_concurrency: self.ul_concurrency,
             part_concurrency: self.part_concurrency,
             max_attempts: self.max_attempts,
+            aria2: self.aria2.clone(),
         });
     }
 
@@ -719,6 +763,9 @@ impl App {
             }
             FilesAction::DownloadFile { id, name } => self.download_single(id, name),
             FilesAction::DownloadFolder { id, name } => self.download_single_folder(id, name),
+            FilesAction::Aria2File { id, name } => self.push_aria2(vec![(id, name)], Vec::new()),
+            FilesAction::Aria2Folder { id, name } => self.push_aria2(Vec::new(), vec![(id, name)]),
+            FilesAction::Aria2Selection { files, folders } => self.push_aria2(files, folders),
             FilesAction::ShareSelection => self.share_selection(),
             FilesAction::ShareItem(id) => self.share_item(id),
             FilesAction::UploadFiles => self.upload_here(),
@@ -793,6 +840,46 @@ impl App {
         }
         if !folders.is_empty() {
             self.toast_ok("正在扫描目录…");
+        }
+    }
+
+    /// 把文件 / 目录推送到 aria2(解析限时直链后交给 aria2 下载)。
+    ///
+    /// 直链限时: 推送成功即入队, 之后的下载 / 重试由 aria2 负责 —— 排队过久或
+    /// 下载太慢会在 aria2 侧过期失败, 需重新推送。常驻提示到结果消息到达为止。
+    fn push_aria2(&mut self, files: Vec<(String, String)>, folders: Vec<(String, String)>) {
+        let total = files.len() + folders.len();
+        if total == 0 {
+            return;
+        }
+        let label = if total == 1 {
+            files
+                .iter()
+                .chain(folders.iter())
+                .map(|(_, n)| n.clone())
+                .next()
+                .unwrap_or_else(|| "文件".to_string())
+        } else {
+            format!("{total} 项")
+        };
+        self.global.toast_sticky(
+            &format!("正在推送到 aria2:「{label}」…"),
+            self.global.theme().accent,
+        );
+        self.send(Cmd::PushToAria2 {
+            config: self.aria2_config(),
+            label,
+            files,
+            folders,
+        });
+    }
+
+    /// 当前 aria2 连接配置(推送给 worker; 地址 / 目录去首尾空白)。
+    fn aria2_config(&self) -> crate::msg::Aria2Config {
+        crate::msg::Aria2Config {
+            rpc_url: self.aria2.rpc_url.trim().to_string(),
+            secret: self.aria2.secret.clone(),
+            dir: self.aria2.dir.trim().to_string(),
         }
     }
 

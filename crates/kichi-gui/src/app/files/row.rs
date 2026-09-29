@@ -88,6 +88,7 @@ pub(crate) fn file_row(
     is_sel: bool,
     even: bool,
     has_clip: bool,
+    aria2: bool,
     quality: QualityMenuState<'_>,
     actions: &mut Vec<RowAction>,
     name_x: f32,
@@ -256,12 +257,20 @@ pub(crate) fn file_row(
                 ));
                 ui.close_menu();
             }
+            if aria2 && ui.button("发送到 aria2").clicked() {
+                actions.push(RowAction::Aria2Folder(f_ctx.id.clone(), f_ctx.name.clone()));
+                ui.close_menu();
+            }
         } else {
             if ui.button("下载到本地…").clicked() {
                 actions.push(RowAction::DownloadFile(
                     f_ctx.id.clone(),
                     f_ctx.name.clone(),
                 ));
+                ui.close_menu();
+            }
+            if aria2 && ui.button("发送到 aria2").clicked() {
+                actions.push(RowAction::Aria2File(f_ctx.id.clone(), f_ctx.name.clone()));
                 ui.close_menu();
             }
             preview_menu_items(ui, &f_ctx, quality, actions);

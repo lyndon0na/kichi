@@ -24,6 +24,15 @@ pub struct QualityOption {
     pub headers: Vec<(String, String)>,
 }
 
+/// aria2 JSON-RPC 连接配置(推送 / 测试连接时随命令下发, worker 不读设置文件)。
+#[derive(Clone)]
+pub struct Aria2Config {
+    pub rpc_url: String,
+    pub secret: String,
+    /// 下载目录; 留空 = 读 aria2 的 `getGlobalOption.dir`。
+    pub dir: String,
+}
+
 /// UI -> 后台线程 指令。
 pub enum Cmd {
     /// 账号密码登录。
@@ -148,6 +157,21 @@ pub enum Cmd {
     /// 取消某个下载任务(保留已下载的 .part, 便于下次续传)。
     CancelDownload {
         req_id: u64,
+    },
+    /// 把文件 / 目录推送到 aria2 下载(解析限时直链后 `aria2.addUri`)。
+    /// 文件夹在 worker 侧先递归扫描, 云端层级映射到 aria2 的 `dir`。
+    PushToAria2 {
+        config: Aria2Config,
+        /// 展示用名称(单个文件为文件名, 多项为 "N 项")。
+        label: String,
+        /// 直接推送的文件 (file_id, 文件名)。
+        files: Vec<(String, String)>,
+        /// 整目录推送 (folder_id, 目录名)。
+        folders: Vec<(String, String)>,
+    },
+    /// 测试 aria2 连接(`aria2.getVersion`)。
+    Aria2Test {
+        config: Aria2Config,
     },
     /// 把本地文件上传到网盘目录 parent(None = 根目录)。
     StartUpload {
@@ -369,6 +393,32 @@ pub enum Msg {
     /// 目录扫描失败。
     FolderScanFailed {
         req_id: u64,
+        what: String,
+    },
+    /// aria2 推送进度(整批已完成的文件计数)。
+    Aria2Progress {
+        label: String,
+        done: u32,
+        total: u32,
+    },
+    /// aria2 推送结束: ok 成功数, failed 失败数, first_error 首个失败原因。
+    /// 总数 0 且无错误表示没有可推送的文件。
+    Aria2Pushed {
+        label: String,
+        ok: u32,
+        failed: u32,
+        first_error: String,
+    },
+    /// 整批未能推送(扫描目录 / 连接 aria2 失败)。
+    Aria2Failed {
+        what: String,
+    },
+    /// aria2 连接测试成功。
+    Aria2TestOk {
+        version: String,
+    },
+    /// aria2 连接测试失败。
+    Aria2TestFailed {
         what: String,
     },
     /// 上传进度。total 未知时为 0。

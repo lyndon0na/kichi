@@ -1,3 +1,4 @@
+mod aria2;
 mod auth;
 mod cache;
 mod download;
@@ -239,6 +240,13 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             download::spawn_folder_download(st, tx, req_id, folder_id, name, dest_dir).await;
         }
         Cmd::CancelDownload { req_id } => cancel_task(st, req_id).await,
+        Cmd::PushToAria2 {
+            config,
+            label,
+            files,
+            folders,
+        } => aria2::push(st, tx, config, label, files, folders).await,
+        Cmd::Aria2Test { config } => aria2::test_connection(tx, config),
         Cmd::StartUpload {
             req_id,
             path,

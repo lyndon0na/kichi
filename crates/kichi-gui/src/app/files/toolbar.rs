@@ -185,6 +185,8 @@ pub(super) struct TopBar<'a> {
     pub sel_meta: &'a [(String, String)],
     pub dl_files: &'a [(String, String)],
     pub dl_folders: &'a [(String, String)],
+    /// 是否启用 aria2 推送(决定选中模式下是否出现「发送到 aria2」)。
+    pub aria2: bool,
     pub clip_info: Option<(String, usize)>,
     pub actions: &'a mut Vec<RowAction>,
 }
@@ -203,6 +205,7 @@ pub(super) struct TopBarReq {
     pub ask_trash: bool,
     pub ask_share: bool,
     pub want_download: bool,
+    pub want_aria2: bool,
 }
 
 impl FilesPage {
@@ -534,6 +537,16 @@ impl FilesPage {
                                     .clicked()
                             {
                                 req.want_download = true;
+                            }
+                            if tb.aria2
+                                && (!tb.dl_files.is_empty() || !tb.dl_folders.is_empty())
+                                && ui
+                                    .add(egui::Button::new(
+                                        RichText::new("发送到 aria2").color(tb.th.text_weak),
+                                    ))
+                                    .clicked()
+                            {
+                                req.want_aria2 = true;
                             }
                         }
 

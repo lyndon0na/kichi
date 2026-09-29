@@ -39,6 +39,7 @@ impl App {
                     &mut self.search,
                     &mut self.thumbs,
                     &self.preview,
+                    self.aria2.enabled,
                 );
                 for a in actions {
                     self.apply_files_action(a);

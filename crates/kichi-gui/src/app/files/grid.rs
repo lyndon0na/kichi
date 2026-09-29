@@ -60,6 +60,8 @@ pub(super) struct GridCtx<'a> {
     pub files: &'a [&'a File],
     pub avail_w: f32,
     pub has_clip: bool,
+    /// 是否启用 aria2 推送(决定右键菜单是否出现「发送到 aria2」)。
+    pub aria2: bool,
     pub actions: &'a mut Vec<RowAction>,
     pub sel_reqs: &'a mut Vec<String>,
 }
@@ -290,9 +292,23 @@ impl FilesPage {
                                 ));
                                 ui.close_menu();
                             }
+                            if cx.aria2 && ui.button("发送到 aria2").clicked() {
+                                cx.actions.push(RowAction::Aria2Folder(
+                                    f_ctx.id.clone(),
+                                    f_ctx.name.clone(),
+                                ));
+                                ui.close_menu();
+                            }
                         } else {
                             if ui.button("下载到本地…").clicked() {
                                 cx.actions.push(RowAction::DownloadFile(
+                                    f_ctx.id.clone(),
+                                    f_ctx.name.clone(),
+                                ));
+                                ui.close_menu();
+                            }
+                            if cx.aria2 && ui.button("发送到 aria2").clicked() {
+                                cx.actions.push(RowAction::Aria2File(
                                     f_ctx.id.clone(),
                                     f_ctx.name.clone(),
                                 ));

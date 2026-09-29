@@ -24,6 +24,41 @@ fn default_max_attempts() -> usize {
     DEFAULT_MAX_ATTEMPTS
 }
 
+/// aria2 JSON-RPC 默认地址(aria2 与 Motrix 常见监听地址)。
+pub const DEFAULT_ARIA2_RPC_URL: &str = "http://127.0.0.1:6800/jsonrpc";
+
+fn default_aria2_rpc_url() -> String {
+    DEFAULT_ARIA2_RPC_URL.to_string()
+}
+
+/// aria2 外部下载器设置(设置页维护, 推送时随命令下发)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Aria2Settings {
+    /// 是否启用「发送到 aria2」入口。
+    #[serde(default)]
+    pub enabled: bool,
+    /// JSON-RPC 地址。
+    #[serde(default = "default_aria2_rpc_url")]
+    pub rpc_url: String,
+    /// RPC 密钥(可空); 只留本机配置, 不进日志。
+    #[serde(default)]
+    pub secret: String,
+    /// 下载目录; 留空 = 读 aria2 自己的全局 `dir`。
+    #[serde(default)]
+    pub dir: String,
+}
+
+impl Default for Aria2Settings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rpc_url: DEFAULT_ARIA2_RPC_URL.to_string(),
+            secret: String::new(),
+            dir: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -49,6 +84,9 @@ pub struct Settings {
     /// 单个传输任务的最大尝试次数。
     #[serde(default = "default_max_attempts")]
     pub max_attempts: usize,
+    /// aria2 外部下载器(「发送到 aria2」)。
+    #[serde(default)]
+    pub aria2: Aria2Settings,
 }
 
 impl Default for Settings {
@@ -62,6 +100,7 @@ impl Default for Settings {
             ul_concurrency: DEFAULT_UL_CONCURRENCY,
             part_concurrency: DEFAULT_PART_CONCURRENCY,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
+            aria2: Aria2Settings::default(),
         }
     }
 }

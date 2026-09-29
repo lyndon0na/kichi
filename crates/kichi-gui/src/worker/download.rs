@@ -185,7 +185,7 @@ pub(super) async fn spawn_folder_download(
 }
 
 /// 把云端相对目录组件逐级净化后拼到本地基目录上。
-fn join_local_path(base: &Path, rel: &[String]) -> PathBuf {
+pub(super) fn join_local_path(base: &Path, rel: &[String]) -> PathBuf {
     let mut p = base.to_path_buf();
     for c in rel {
         p.push(crate::format::safe_file_name(c).unwrap_or_else(|| "download".to_string()));

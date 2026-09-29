@@ -4,6 +4,7 @@ use crate::icons::{self, Glyph};
 use crate::msg::Cmd;
 use crate::theme::{mix, Theme};
 
+use super::helpers;
 use super::App;
 
 fn settings_card(ui: &mut egui::Ui, th: &Theme, title: &str, rows: &mut dyn FnMut(&mut egui::Ui)) {
@@ -225,6 +226,93 @@ impl App {
                     self.cache_sweeping = true;
                     self.cache_usage_pending = true;
                     self.send(Cmd::MaintainCache { purge: true });
+                }
+                ui.add_space(14.0);
+
+                // aria2 外部下载器(文件页「发送到 aria2」)
+                let mut a2_enabled = self.aria2.enabled;
+                let mut a2_url = self.aria2.rpc_url.clone();
+                let mut a2_secret = self.aria2.secret.clone();
+                let mut a2_dir = self.aria2.dir.clone();
+                let mut a2_test = false;
+                let testing = self.aria2_testing;
+                settings_card(ui, th, "aria2", &mut |ui| {
+                    ui.checkbox(
+                        &mut a2_enabled,
+                        RichText::new("启用「发送到 aria2」").color(th.text),
+                    );
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("RPC 地址").color(th.text_weak));
+                    ui.add(
+                        helpers::input(&mut a2_url)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(crate::settings::DEFAULT_ARIA2_RPC_URL),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("密钥").color(th.text_weak));
+                    ui.add(
+                        helpers::input(&mut a2_secret)
+                            .password(true)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("留空表示未设置 rpc-secret"),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("下载目录").color(th.text_weak));
+                    ui.add(
+                        helpers::input(&mut a2_dir)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("留空表示用 aria2 自己的 dir 设置"),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(
+                                "推送后由 aria2 自行下载; 直链限时, 排队过久会失败需重新推送。",
+                            )
+                            .color(th.text_faint)
+                            .size(11.5),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !testing,
+                                    egui::Button::new(
+                                        RichText::new(if testing {
+                                            "测试中…"
+                                        } else {
+                                            "测试连接"
+                                        })
+                                        .color(th.text_weak),
+                                    )
+                                    .stroke(Stroke::new(1.0_f32, th.border))
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .corner_radius(th.cr(8)),
+                                )
+                                .clicked()
+                            {
+                                a2_test = true;
+                            }
+                        });
+                    });
+                });
+                let a2_changed = a2_enabled != self.aria2.enabled
+                    || a2_url != self.aria2.rpc_url
+                    || a2_secret != self.aria2.secret
+                    || a2_dir != self.aria2.dir;
+                if a2_changed {
+                    self.aria2 = crate::settings::Aria2Settings {
+                        enabled: a2_enabled,
+                        rpc_url: a2_url,
+                        secret: a2_secret,
+                        dir: a2_dir,
+                    };
+                    self.persist_settings();
+                }
+                if a2_test {
+                    self.aria2_testing = true;
+                    self.send(Cmd::Aria2Test {
+                        config: self.aria2_config(),
+                    });
                 }
                 ui.add_space(14.0);
 

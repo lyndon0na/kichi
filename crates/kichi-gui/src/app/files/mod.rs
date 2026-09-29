@@ -79,6 +79,10 @@ pub(crate) enum RowAction {
     DownloadFile(String, String),
     /// 递归下载整个云端目录 (folder_id, 目录名)。
     DownloadFolder(String, String),
+    /// 推送到 aria2 (file_id, 文件名)。
+    Aria2File(String, String),
+    /// 整目录推送到 aria2 (folder_id, 目录名)。
+    Aria2Folder(String, String),
     CopyName(String),
     Rename(String, String),
     CopyItem(String),
@@ -736,6 +740,15 @@ pub(crate) enum FilesAction {
     DownloadFile { id: String, name: String },
     /// 下载单个文件夹。
     DownloadFolder { id: String, name: String },
+    /// 把单个文件推送到 aria2。
+    Aria2File { id: String, name: String },
+    /// 把单个云端目录(含子树)推送到 aria2。
+    Aria2Folder { id: String, name: String },
+    /// 把选中的文件与文件夹推送到 aria2。
+    Aria2Selection {
+        files: Vec<(String, String)>,
+        folders: Vec<(String, String)>,
+    },
     /// 分享选中的多项。
     ShareSelection,
     /// 分享单项。
@@ -761,6 +774,7 @@ impl FilesPage {
 
     /// 文件页入口: 顶部栏 + 列表 / 网格 + 空态与加载更多。
     /// 返回本帧产生的跨域动作, 由 `App` 按序执行。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn show(
         &mut self,
         ctx: &egui::Context,
@@ -769,6 +783,7 @@ impl FilesPage {
         search: &mut SearchPage,
         thumbs: &mut ThumbsPage,
         preview: &PreviewPage,
+        aria2: bool,
     ) -> Vec<FilesAction> {
         // 处理列拖拽 (在渲染之前, 确保 header 和 rows 看到一致的列宽)
         if let Some(drag) = &self.col_dragging {
@@ -884,6 +899,7 @@ impl FilesPage {
                 sel_meta: &sel_meta,
                 dl_files: &dl_candidates,
                 dl_folders: &dl_folders,
+                aria2,
                 clip_info,
                 actions: &mut actions,
             },
@@ -941,6 +957,12 @@ impl FilesPage {
 
         if req.want_download && (!dl_candidates.is_empty() || !dl_folders.is_empty()) {
             effects.push(FilesAction::DownloadSelection {
+                files: dl_candidates.clone(),
+                folders: dl_folders.clone(),
+            });
+        }
+        if req.want_aria2 && (!dl_candidates.is_empty() || !dl_folders.is_empty()) {
+            effects.push(FilesAction::Aria2Selection {
                 files: dl_candidates.clone(),
                 folders: dl_folders.clone(),
             });
@@ -1037,6 +1059,7 @@ impl FilesPage {
                                     preview,
                                     files: &all_files,
                                     has_clip,
+                                    aria2,
                                     col_w: inner.width(),
                                     actions: &mut actions,
                                     sel_reqs: &mut sel_reqs,
@@ -1053,6 +1076,7 @@ impl FilesPage {
                                     files: &all_files,
                                     avail_w: inner.width(),
                                     has_clip,
+                                    aria2,
                                     actions: &mut actions,
                                     sel_reqs: &mut sel_reqs,
                                 },
@@ -1147,6 +1171,12 @@ impl FilesPage {
                         }
                         RowAction::DownloadFolder(id, name) => {
                             effects.push(FilesAction::DownloadFolder { id, name });
+                        }
+                        RowAction::Aria2File(id, name) => {
+                            effects.push(FilesAction::Aria2File { id, name });
+                        }
+                        RowAction::Aria2Folder(id, name) => {
+                            effects.push(FilesAction::Aria2Folder { id, name });
                         }
                         RowAction::CopyName(name) => {
                             let ctx2 = ctx.clone();

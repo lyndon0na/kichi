@@ -17,6 +17,8 @@ pub(super) struct ListCtx<'a> {
     pub preview: &'a PreviewPage,
     pub files: &'a [&'a File],
     pub has_clip: bool,
+    /// 是否启用 aria2 推送(决定右键菜单是否出现「发送到 aria2」)。
+    pub aria2: bool,
     pub col_w: f32,
     pub actions: &'a mut Vec<RowAction>,
     pub sel_reqs: &'a mut Vec<String>,
@@ -50,6 +52,7 @@ impl FilesPage {
                 is_sel,
                 even,
                 cx.has_clip,
+                cx.aria2,
                 quality,
                 cx.actions,
                 cn_x,
