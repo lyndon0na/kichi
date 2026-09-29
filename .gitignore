@@ -6,6 +6,7 @@ target/
 .commandcode/
 .workbuddy/
 dist/
+.flatpak-builder/
 
 # 编辑器 / 系统
 *.swp
