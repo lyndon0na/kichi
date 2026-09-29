@@ -266,6 +266,13 @@ packaging/                       # 发行包
 .github/workflows/
 ├── ci.yml                       # push master / PR 触发: fmt + clippy + test
 └── release.yml                  # 推 v* tag 自动打包 AppImage / Flatpak 并发 Release
+
+docs/                            # 项目文档
+├── PROJECT_PLAN.md              # 里程碑（M0–M24）与实现笔记
+├── TODO.md                      # 待办与改进队列（唯一队列）
+├── UI_STYLE.md                  # 界面风格规范（KDE / Breeze）
+├── UPLOAD_RESUME_NOTES.md       # 上传跨重启续传复盘（协议限制，不可行）
+└── VIBE_CODING_NOTES.md         # 工程结构评审与协作笔记（本地文件）
 ```
 
 </details>
@@ -365,6 +372,6 @@ cargo test --workspace
 [Bengerthelorf/pikpaktui](https://github.com/Bengerthelorf/pikpaktui)、
 [rclone](https://github.com/rclone/rclone) 等，仅用于个人学习研究。
 
-详细路线见 [PROJECT_PLAN.md](./PROJECT_PLAN.md)。
+详细路线见 [PROJECT_PLAN.md](./docs/PROJECT_PLAN.md)。
 
 问题反馈 / 功能建议走 [GitHub Issues](https://github.com/lyndon0na/kichi/issues)；本仓库以 MIT 许可发布，见 [LICENSE](./LICENSE)。
