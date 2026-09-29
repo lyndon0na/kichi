@@ -1,4 +1,7 @@
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -131,14 +134,104 @@ fn host_command(program: &str, flatpak: bool) -> std::process::Command {
     }
 }
 
+/// mpv 就绪探针的结果(后台观察线程回传)。
+pub(crate) enum PlayerOutcome {
+    /// 窗口 / 视频输出(VO)已配置完成, mpv 窗口即将(或已经)显示。
+    Ready,
+    /// 在窗口就绪前 mpv 已退出(多为流打不开 / 加载失败)。
+    Exited,
+    /// IPC 不可用(连接失败 / 无该属性), 无法确认就绪 —— 按旧行为兜底。
+    Unknown,
+}
+
+/// mpv 就绪探针句柄: 结果经后台线程回传(见 [`play_with_mpv`])。
+pub(crate) struct PlayerWatch {
+    pub(crate) rx: std::sync::mpsc::Receiver<PlayerOutcome>,
+}
+
+/// mpv IPC socket 的唯一序号(同一进程内多次播放不重名)。
+static MPV_SOCKET_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// mpv IPC socket 路径: `~/.cache/kichi/mpv-<pid>-<n>.sock`。
+///
+/// 放 home 下而非 `XDG_RUNTIME_DIR`: Flatpak 沙箱里运行时, socket 要能被
+/// `flatpak-spawn --host` 起的宿主 mpv 与沙箱内的应用同时看见(home 共享)。
+fn mpv_socket_path() -> PathBuf {
+    let seq = MPV_SOCKET_SEQ.fetch_add(1, Ordering::Relaxed);
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("kichi")
+        .join(format!("mpv-{}-{seq}.sock", std::process::id()))
+}
+
+/// 去掉一行 IPC 输出里的空白, 兼容 JSON 书写差异。
+fn squash(line: &str) -> String {
+    line.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 是否「`vo-configured` 变为 true」的属性变更 —— mpv 窗口 / VO 就绪的信号。
+///
+/// `--force-window` 的窗口只在初始化完成后创建(网络流加载慢 / 失败时窗口迟迟
+/// 不出现甚至不出现), 该属性从 false 翻到 true 的时机与窗口创建同步(本机
+/// mpv 0.41 实测: 本地图片 0.31s 翻 true; 坏链接全程 false、一直不开窗)。
+fn vo_configured_true(line: &str) -> bool {
+    let l = squash(line);
+    l.contains("\"name\":\"vo-configured\"") && l.contains("\"data\":true")
+}
+
+/// 是否「观察注册失败」的应答(老版本 mpv 没有 `vo-configured` 属性)。
+fn observe_rejected(line: &str) -> bool {
+    let l = squash(line);
+    l.contains("\"request_id\":1")
+        && l.contains("\"error\":")
+        && !l.contains("\"error\":\"success\"")
+}
+
+/// 观察 mpv 的 `vo-configured`, 判断播放窗口是否真的就绪。
+fn watch_mpv(sock: &std::path::Path) -> PlayerOutcome {
+    // socket 由 mpv 启动时建立(实测 <0.1s); 连不上(给足 5s 重试)视为不可用。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut conn = None;
+    while Instant::now() < deadline {
+        match UnixStream::connect(sock) {
+            Ok(s) => {
+                conn = Some(s);
+                break;
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    let Some(mut conn) = conn else {
+        return PlayerOutcome::Unknown;
+    };
+    let req = "{\"command\":[\"observe_property\",1,\"vo-configured\"],\"request_id\":1}\n";
+    if conn.write_all(req.as_bytes()).is_err() {
+        return PlayerOutcome::Unknown;
+    }
+    for line in BufReader::new(conn).lines() {
+        let Ok(line) = line else { break };
+        if vo_configured_true(&line) {
+            return PlayerOutcome::Ready;
+        }
+        if observe_rejected(&line) {
+            return PlayerOutcome::Unknown;
+        }
+    }
+    // 读到 EOF: mpv 在窗口就绪前退出了。
+    PlayerOutcome::Exited
+}
+
 /// 用 mpv 流式播放直链, 并携带签名直链所需的请求头。
 /// `subs` 为同集外挂字幕的本地路径, 会作为 `--sub-file` 挂载。
+///
+/// 返回就绪探针: mpv 窗口 / VO 配置完成(或提前退出 / IPC 不可用)时经通道回传,
+/// 供 UI 把「正在唤起」的常驻提示收尾到真实结果。
 pub(crate) fn play_with_mpv(
     name: &str,
     url: &str,
     headers: &[(String, String)],
     subs: &[PathBuf],
-) -> std::io::Result<()> {
+) -> std::io::Result<PlayerWatch> {
     let mut cmd = host_command("mpv", in_flatpak());
     cmd.arg("--force-window=yes");
     // 直链直接交给 ffmpeg 播放即可, 关闭 ytdl 钩子(否则会对直链跑 youtube-dl)。
@@ -161,8 +254,22 @@ pub(crate) fn play_with_mpv(
     for sub in subs {
         cmd.arg(format!("--sub-file={}", sub.display()));
     }
+    // 就绪探针的 IPC socket(唯一命名; 清掉同名残留后交给 mpv 建立)。
+    let sock = mpv_socket_path();
+    if let Some(dir) = sock.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::remove_file(&sock);
+    cmd.arg(format!("--input-ipc-server={}", sock.display()));
     cmd.arg("--").arg(url);
-    cmd.spawn().map(|_| ())
+    cmd.spawn()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = watch_mpv(&sock);
+        let _ = std::fs::remove_file(&sock);
+        let _ = tx.send(outcome);
+    });
+    Ok(PlayerWatch { rx })
 }
 
 /// 判断字幕是否与某视频同集: 去掉扩展名后与视频名相同(忽略大小写), 或以视频名为前缀
@@ -584,8 +691,8 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        host_command, looks_like_no_handler, picked_dir, picker_start_dir, read_cjk_font_from,
-        subtitle_of,
+        host_command, looks_like_no_handler, observe_rejected, picked_dir, picker_start_dir,
+        read_cjk_font_from, subtitle_of, vo_configured_true, watch_mpv, PlayerOutcome,
     };
 
     #[test]
@@ -710,5 +817,98 @@ mod tests {
         );
         assert_eq!(read_cjk_font_from(&["/nonexistent"], &files), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detects_mpv_vo_configured_and_observe_failure() {
+        // 样例取自 mpv 0.41 实测 IPC 输出。
+        assert!(vo_configured_true(
+            "{\"event\":\"property-change\",\"name\":\"vo-configured\",\"data\":true}"
+        ));
+        // 带空格的 JSON 同样识别。
+        assert!(vo_configured_true(
+            "{ \"event\": \"property-change\", \"id\": 1, \"name\": \"vo-configured\", \"data\": true }"
+        ));
+        assert!(!vo_configured_true(
+            "{\"event\":\"property-change\",\"name\":\"vo-configured\",\"data\":false}"
+        ));
+        assert!(!vo_configured_true(
+            "{\"event\":\"property-change\",\"id\":2,\"name\":\"osd-width\",\"data\":2304}"
+        ));
+        // observe 应答: success 不算失败, 属性缺失(老 mpv)才算。
+        assert!(!observe_rejected(
+            "{\"request_id\":1,\"error\":\"success\"}"
+        ));
+        assert!(observe_rejected(
+            "{\"request_id\":1,\"error\":\"property not found\"}"
+        ));
+        assert!(!observe_rejected(
+            "{\"event\":\"start-file\",\"playlist_entry_id\":1}"
+        ));
+    }
+
+    #[test]
+    fn mpv_probe_reports_ready_exited_and_unknown() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = std::env::temp_dir().join(format!("kichi-mpv-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 扮演 mpv: 收到观察命令后回「初始 false → 就绪 true」。
+        let ready = dir.join("ready.sock");
+        let _ = std::fs::remove_file(&ready);
+        let listener = UnixListener::bind(&ready).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut cmd = String::new();
+            BufReader::new(conn.try_clone().unwrap())
+                .read_line(&mut cmd)
+                .unwrap();
+            conn.write_all(b"{\"request_id\":1,\"error\":\"success\"}\n")
+                .unwrap();
+            conn.write_all(
+                b"{\"event\":\"property-change\",\"name\":\"vo-configured\",\"data\":false}\n",
+            )
+            .unwrap();
+            conn.write_all(
+                b"{\"event\":\"property-change\",\"name\":\"vo-configured\",\"data\":true}\n",
+            )
+            .unwrap();
+            cmd
+        });
+        assert!(matches!(watch_mpv(&ready), PlayerOutcome::Ready));
+        let cmd = server.join().unwrap();
+        assert!(cmd.contains("observe_property") && cmd.contains("vo-configured"));
+
+        // 收到命令后直接断开(模拟 mpv 加载失败提前退出)。
+        let exited = dir.join("exited.sock");
+        let _ = std::fs::remove_file(&exited);
+        let listener = UnixListener::bind(&exited).unwrap();
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut cmd = String::new();
+            let _ = BufReader::new(conn).read_line(&mut cmd);
+        });
+        assert!(matches!(watch_mpv(&exited), PlayerOutcome::Exited));
+        server.join().unwrap();
+
+        // 老版本 mpv 没有该属性: observe 应答失败 → 无法确认。
+        let rejected = dir.join("rejected.sock");
+        let _ = std::fs::remove_file(&rejected);
+        let listener = UnixListener::bind(&rejected).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut cmd = String::new();
+            BufReader::new(conn.try_clone().unwrap())
+                .read_line(&mut cmd)
+                .unwrap();
+            conn.write_all(b"{\"request_id\":1,\"error\":\"property not found\"}\n")
+                .unwrap();
+        });
+        assert!(matches!(watch_mpv(&rejected), PlayerOutcome::Unknown));
+        server.join().unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

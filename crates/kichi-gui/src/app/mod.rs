@@ -920,6 +920,7 @@ impl eframe::App for App {
         self.drain(ctx);
         self.poll_file_picker();
         self.preview.poll_open_probe(ctx, &mut self.global);
+        self.preview.poll_player(&mut self.global);
         self.global.poll_system_theme();
 
         self.files.poll_relist(ctx, &mut self.global);

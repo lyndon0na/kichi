@@ -39,6 +39,15 @@ pub(crate) struct PendingOpen {
     pub quiet_ok: bool,
 }
 
+/// 待回传的 mpv 就绪探针(窗口配置完成 / 提前退出 / IPC 不可用)。
+pub(crate) struct PendingPlayer {
+    pub rx: std::sync::mpsc::Receiver<super::helpers::PlayerOutcome>,
+    /// 失败提示里展示的文件名。
+    pub name: String,
+    /// 就绪后的成功提示文案(「播放 ▸ 清晰度」带清晰度后缀)。
+    pub ok_msg: String,
+}
+
 /// 大文件预览确认弹窗的状态: 非媒体预览需先整份下载, 超过阈值时先问一次。
 #[derive(Clone)]
 pub(crate) struct PreviewConfirm {
@@ -68,6 +77,8 @@ pub(crate) struct PreviewPage {
     progress: Option<PreviewProgress>,
     /// 待回传的「用系统程序打开」探针(避免 xdg-open 假成功)。
     open_probe: Option<PendingOpen>,
+    /// 待回传的 mpv 就绪探针(提示持续到播放窗口真正出现)。
+    player: Option<PendingPlayer>,
     /// 已解析的媒体文件清晰度缓存(file_id -> 清晰度 + 字幕)。
     quality_cache: HashMap<String, QualityReady>,
     /// 正在解析清晰度的文件 id。
@@ -83,6 +94,7 @@ impl PreviewPage {
         self.confirm = None;
         self.progress = None;
         self.open_probe = None;
+        self.player = None;
         self.quality_cache.clear();
         self.quality_inflight.clear();
     }
@@ -188,18 +200,14 @@ impl PreviewPage {
             .get(&id)
             .map(|r| r.subs.clone())
             .unwrap_or_default();
-        match helpers::play_with_mpv(&name, &opt.url, &opt.headers, &subs) {
-            Ok(()) => g.toast_ok(&format!("正在用 mpv 播放「{name}」({})", opt.label)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                g.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
-            }
-            Err(e) => g.toast_err(&format!("启动 mpv 失败: {e}")),
-        }
+        let ok_msg = format!("正在用 mpv 播放「{name}」({})", opt.label);
+        let spawned = helpers::play_with_mpv(&name, &opt.url, &opt.headers, &subs);
+        self.watch_player(g, spawned, &name, ok_msg);
     }
 
     // ---------- 消息 ----------
 
-    /// 音视频播放地址已就绪: 交给 mpv 流式播放。
+    /// 音视频播放地址已就绪: 交给 mpv 流式播放, 提示保持到窗口真正拉起。
     pub(crate) fn on_stream(
         &mut self,
         g: &mut Global,
@@ -215,14 +223,11 @@ impl PreviewPage {
         if self.progress.as_ref().is_some_and(|p| p.req_id == req_id) {
             self.progress = None;
         }
-        match helpers::play_with_mpv(&name, &url, &headers, &subs) {
-            Ok(()) => g.toast_ok(&format!("正在用 mpv 播放「{name}」")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // 音视频流式播放依赖 mpv, 缺失时只提示, 不下载回退。
-                g.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
-            }
-            Err(e) => g.toast_err(&format!("启动 mpv 失败: {e}")),
-        }
+        // 地址解析完成, 剩下等 mpv 把窗口拉起来(结果见 poll_player)。
+        g.toast_sticky("正在唤起 mpv…", g.theme().accent);
+        let ok_msg = format!("正在用 mpv 播放「{name}」");
+        let spawned = helpers::play_with_mpv(&name, &url, &headers, &subs);
+        self.watch_player(g, spawned, &name, ok_msg);
     }
 
     /// 非媒体预览的缓存下载进度。
@@ -312,6 +317,48 @@ impl PreviewPage {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+
+    /// 记录 mpv 就绪探针(两个播放入口共用): 结果到达前保持等待提示。
+    fn watch_player(
+        &mut self,
+        g: &mut Global,
+        spawned: std::io::Result<helpers::PlayerWatch>,
+        name: &str,
+        ok_msg: String,
+    ) {
+        match spawned {
+            Ok(watch) => {
+                self.player = Some(PendingPlayer {
+                    rx: watch.rx,
+                    name: name.to_string(),
+                    ok_msg,
+                });
+            }
+            // 音视频流式播放依赖 mpv, 缺失时只提示, 不下载回退。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                g.toast_warn("播放音视频需要 mpv, 请先安装 mpv");
+            }
+            Err(e) => g.toast_err(&format!("启动 mpv 失败: {e}")),
+        }
+    }
+
+    /// 回收 mpv 就绪探针结果: 窗口出现 → 成功提示; 提前退出 → 如实告警。
+    ///
+    /// 空闲轮询节拍(600ms)下切换滞后不可感知, 而等待可能长达分钟级,
+    /// 不额外提高重绘频率。
+    pub(crate) fn poll_player(&mut self, g: &mut Global) {
+        let Some(p) = self.player.take() else {
+            return;
+        };
+        match p.rx.try_recv() {
+            Ok(helpers::PlayerOutcome::Exited) => {
+                g.toast_warn(&format!("mpv 已退出，未能播放「{}」", p.name));
+            }
+            // 就绪; 或 IPC 不可用 / 探针线程异常结束 —— 兜底给成功提示。
+            Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => g.toast_ok(&p.ok_msg),
+            Err(std::sync::mpsc::TryRecvError::Empty) => self.player = Some(p),
         }
     }
 
