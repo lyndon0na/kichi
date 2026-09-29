@@ -5,7 +5,7 @@
 # 版本号取 KICHI_VERSION(CI 用 tag), 未设置时读 Cargo.toml 的 [workspace.package]。
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST="$ROOT/dist"
 MANIFEST="$ROOT/packaging/flatpak/io.github.lyndon0na.Kichi.yml"
 APP_ID="io.github.lyndon0na.Kichi"

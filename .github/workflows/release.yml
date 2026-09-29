@@ -42,7 +42,7 @@ jobs:
       - name: 构建 AppImage
         env:
           KICHI_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: ./packaging/build-appimage.sh
+        run: ./packaging/appimage/build-appimage.sh
 
       - uses: actions/upload-artifact@v7
         with:
@@ -75,7 +75,7 @@ jobs:
       - name: 构建 Flatpak
         env:
           KICHI_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: ./packaging/build-flatpak.sh
+        run: ./packaging/flatpak/build-flatpak.sh
 
       - uses: actions/upload-artifact@v7
         with:

@@ -13,7 +13,7 @@ if [[ $# -gt 0 ]]; then
     exit 2
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST="$ROOT/dist"
 APPDIR="$DIST/Kichi.AppDir"
 TOOLS_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kichi-packaging"

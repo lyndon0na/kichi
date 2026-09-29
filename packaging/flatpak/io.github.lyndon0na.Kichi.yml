@@ -1,6 +1,6 @@
 # Kichi 的 Flatpak 清单: 在 freedesktop SDK 沙箱里用源码构建。
 #
-# 本地 / CI 构建: packaging/build-flatpak.sh
+# 本地 / CI 构建: packaging/flatpak/build-flatpak.sh
 # 产物: dist/Kichi-<版本>-x86_64.flatpak
 app-id: io.github.lyndon0na.Kichi
 runtime: org.freedesktop.Platform
