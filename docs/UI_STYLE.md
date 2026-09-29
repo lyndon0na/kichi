@@ -120,6 +120,7 @@ SidePanel(left, 侧栏)  +  CentralPanel(当前页)
 
 ### 提示条 / Toast
 - 成功 `ok`、失败 `danger`、警告 `warn`，短句 (不超过一行)；走 `Global::toast_*`，不自己弹窗。
+- 长等待（预览解析 / 唤起外部软件）用**常驻提示**（`Global::toast_sticky`）：显示到结果到达、被结果提示替换，不设自动超时；在途状态被整体作废时用 `Global::clear_sticky_toast` 收回。
 
 ### 进度与加载
 - 进度条 / Spinner 用 `text_weak` / `accent`；卡片内展示「已完成 / 全部」「速率 / 剩余时间」等次级信息（`app/transfers/model.rs` 提供聚合）。
