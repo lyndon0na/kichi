@@ -57,6 +57,7 @@
 | 文件管理 | 目录浏览（面包屑）、排序、过滤、列表 / 网格双视图（网格支持真实缩略图与 Ctrl+滚轮缩放）、复制 / 剪切 / 粘贴、新建 / 重命名 |
 | 本地上传 | gcid 秒传 + 阿里云 OSS 分片（并发、断点续传）、目录递归、历史持久化 |
 | 本地下载 | `.part` + Range 断点续传、原子改名、完整性校验、退避重试、历史持久化；整目录递归下载 |
+| 推送到 aria2 | 文件 / 目录一键交给外部下载器（aria2 / Motrix）：解析限时直链推给 RPC 下载；设置页配置地址 / 密钥 / 下载目录，可「测试连接」 |
 | 离线下载 | 磁力 / 直链转存、状态页签 + 自适应轮询、分页「加载更多」、多选批量（重试 / 删除）、保存位置可选 |
 | 分享 | 创建与管理分享链接；转存他人分享到自己网盘 |
 | 回收站 | 列出 / 还原 / 彻底删除 / 一键清空，SWR 缓存 |
@@ -99,6 +100,7 @@
 - 完成后按云端声明大小做完整性校验，不完整不会落盘为正式文件
 - 解析直链 / 传输的瞬时错误（断网、5xx、429 等）均退避重试（重试前自动刷新限时直链）
 - 同名文件自动加 ` (n)`，目标目录记忆、下载历史持久化（最多 200 条，重启后恢复）
+- 也可交给外部下载器：文件 / 目录右键或选中后「发送到 aria2」，解析限时直链推给 aria2（或 Motrix）自行下载；整目录推送保留云端层级（在设置页启用并配置 RPC 地址，可「测试连接」）
 
 </details>
 
@@ -194,6 +196,7 @@ crates/
 │       ├── captcha.rs           # captcha_sign / device_sign 加签算法
 │       ├── consts.rs            # client_id / host / 盐值表 / 常量
 │       ├── download.rs          # 直链解析、.part 断点续传、完整性校验
+│       ├── aria2.rs             # aria2 JSON-RPC 客户端（推送到外部下载器：version / addUri / getGlobalOption）
 │       ├── upload.rs            # gcid 秒传哈希、阿里云 OSS 分片签名与上传
 │       ├── types.rs             # File / Quota / Task / Share 等模型（防御式解析）
 │       ├── error.rs             # 统一错误类型
@@ -240,9 +243,10 @@ crates/
         ├── theme.rs             # 配色 / 圆角 / 间距参数与全局样式
         ├── kde.rs               # 读取 KDE 系统配色（kdeglobals），非 KDE 返回 None
         ├── worker/              # 后台 tokio 线程，按域拆分
-        │   ├── mod.rs           # 命令循环 handle（43 个 Cmd 分支各一行转调）+ 跨域辅助
+        │   ├── mod.rs           # 命令循环 handle（45 个 Cmd 分支各一行转调）+ 跨域辅助
         │   ├── download.rs      # 下载管线（断点续传 / 退避重试 / 取消登记）
         │   ├── upload.rs        # 上传管线（gcid 秒传 + 阿里云 OSS 分片）
+        │   ├── aria2.rs         # aria2 推送（扫描目录 / 解析直链 → addUri，独立小闸）
         │   ├── preview.rs       # 预览：媒体走 mpv 流播，其余下载到缓存
         │   ├── thumbs.rs        # 缩略图下载 / 解码 / 磁盘缓存
         │   ├── files.rs         # 文件列表 / 搜索 / 新建 / 重命名 / 移动 / 复制
@@ -254,7 +258,7 @@ crates/
         │   └── cache.rs         # 磁盘缓存淘汰（预览 / 缩略图共用）
         ├── credentials.rs       # 系统密钥环读写账号密码（Secret Service）
         ├── msg.rs               # 前后台消息协议
-        ├── settings.rs          # 设置与下载 / 上传历史持久化
+        ├── settings.rs          # 设置（下载目录 / 传输并发 / aria2）与下载 / 上传历史持久化
         └── format.rs            # 大小 / 时间 / 状态文案格式化
 
 packaging/                       # 发行包
@@ -294,6 +298,9 @@ sudo dnf install gcc pkgconf openssl-devel libxkbcommon-devel wayland-devel \
 
 > [!IMPORTANT]
 > 需要一款含中文字体的 TTF（程序会自动探测，常见路径见 `app/helpers.rs::install_fonts`）。
+
+> [!NOTE]
+> 「发送到 aria2」需要本机已运行 aria2 或 Motrix（并开启 RPC，默认端口 6800 / 16800）；不使用该功能时无需安装。
 
 ### 2. 构建 / 运行 / 测试
 
@@ -341,7 +348,7 @@ cargo test --workspace
 | 文件 | 作用 |
 | :-- | :-- |
 | `~/.config/kichi/session.json` | access / refresh token、device id 等登录态 |
-| `~/.config/kichi/settings.json` | 记住的账号、本地下载目录、是否记住密码 |
+| `~/.config/kichi/settings.json` | 记住的账号、本地下载目录、是否记住密码、aria2 推送配置（地址 / 密钥 / 下载目录） |
 | `~/.config/kichi/downloads.json` | 本地下载历史（最多 200 条，启动时恢复为任务列表） |
 | `~/.config/kichi/uploads.json` | 本地上传历史（最多 200 条，启动时恢复为任务列表） |
 | `~/.cache/kichi/kichi.log` | 运行日志（同时输出到 stderr）。按大小轮转：单文件上限 1 MiB、保留 3 个 `.1`/`.2`/`.3` 备份（`KICHI_LOG_MAX_MB` / `KICHI_LOG_FILES` 可覆盖）；级别由 `KICHI_LOG` / `RUST_LOG` 控制 |
@@ -364,6 +371,8 @@ cargo test --workspace
 | 分页 | 文件 / 分享 / 回收站 / 离线任务超过 100 条时分批显示，支持「加载更多」 |
 | 离线任务展示 | 任务字段防御式解析，仅展示名称 / 大小等有限信息（无进度百分比） |
 | 预览成本 | 非媒体文件预览需先整份下载到本地缓存（超过 64 MiB 且未命中缓存时会先弹确认）；压缩包 / 镜像 / 可执行 / 种子不提供「打开」，只能用「下载到本地」 |
+| aria2 直链限时 | 推送成功即入队，之后由 aria2 用同一条限时直链下载 / 重试：排队过久或下载太慢会在 aria2 侧过期失败，需重新推送（Kichi 不做代理中转） |
+| aria2 同名冲突 | 目标目录已有同名文件时交给 aria2 自身策略（随其 `auto-file-renaming` / `allow-overwrite` 配置，可能自动改名或直接报错），Kichi 不代做 ` (n)` 去重 |
 | 打开失败的判定 | 依赖 `xdg-open` 的退出码与 stderr 措辞（不同桌面环境文案不一）：能识别「无关联程序」时给出对应提示，其余非零退出回显 stderr 首行 |
 
 ## 免责声明

@@ -21,6 +21,17 @@
 
 > ✅ 全部完成
 
+| 编号   | 任务                       | 主要路径                                                                                                                        | 说明 / 验收                                                                                                                                                                                                                                                                                                                                 |
+|:---- |:------------------------ |:--------------------------------------------------------------------------------------------------------------------------- |:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0-7 | 下载推送到 aria2（JSON-RPC 外部下载器） | 新增 `kichi-core/src/aria2.rs`、`worker/aria2.rs`；改 `msg.rs`、`settings.rs`、`worker/{mod,download}.rs`、`app/files/{mod,list,grid,row,toolbar}.rs`、`app/mod.rs`、`app/sidebar.rs`、`app/settings_page.rs` | **✅ 已完成**（`7d835da` core + `72b9fa5` GUI，2026-09-29）。范围：**手动推送 MVP + 含整目录**；不做「默认下载方式」切换、不在 Transfers 页跟踪进度。  
+
+- **入口**：文件 / 目录右键菜单「发送到 aria2」（与「下载到本地…」并列）+ 选中工具栏次级按钮；支持单文件 / 多选 / 整个目录（`walk_folder` 后逐文件推，`dir` 承载云端目录层级、`out` 用文件名）；仅设置页启用后出现。
+- **设置页**「aria2」卡片：启用开关、RPC 地址（默认 `http://127.0.0.1:6800/jsonrpc`）、密钥、下载目录（留空 = 读 aria2 的 `getGlobalOption.dir`）、「测试连接」（`aria2.getVersion`）；改动即持久化。
+- **推送管线**（`worker/aria2.rs`，`tokio::spawn`，**不占**下载 Gate）：`file_download_link` → `stream_headers` → `aria2.addUri(url, {out, dir, header})`；点击即常驻提示条、结束替换为结果（照 P0-5 的 `toast_sticky`），进度消息 150ms 节流（照 `preview_download`），推送并发走独立小闸（固定 4）。`kichi-core/src/aria2.rs` 只做 JSON-RPC（`version` / `add_uri` / `get_global_option`），请求体构造与响应解析为纯函数。密钥只随命令下发、只存 `settings.json`，不进日志。
+- **实验结论**（实现期已各做一次最小实验，2026-09-29）：① per-download `user-agent` 选项与 `header` 数组都能覆盖 aria2 全局 UA —— 取 `header` 数组，一次承载 UA / `X-Device-Id` / 必要时 Bearer；② `dir` 指向不存在的多级目录时 aria2 会自行创建，推送前无需本地 `create_dir_all`。另实测发现 aria2 对 JSON-RPC 错误也返回 HTTP 400 + 标准错误体，客户端改为「先按 JSON-RPC 解析、再回退状态码错误」，使「aria2 错误(1): Unauthorized」直达用户。
+- **已知代价**（已同步 README / PROJECT_PLAN 的已知边界）：① 直链限时 —— 推送后由 aria2 自行重试同一链接，排队久 / 下载慢会过期失败、需重新推送，不做 Kichi 代理中转；② 同名冲突交给 aria2 自身策略（随其 `auto-file-renaming` / `allow-overwrite` 配置，可能自动改名或直接报错），如实回传错误，不复制内置「(n)」占位逻辑。
+- **实测留痕**（2026-09-29）：① 独立靶子 `aria2c --no-conf --enable-rpc --rpc-listen-port=6800 --rpc-secret=test`：用真实 `Aria2Client` 实推 —— `getVersion` 返 1.37.0、`getGlobalOption.dir` 读取正确、`addUri` 带 `dir`（多级不存在的目录 + 非 ASCII 文件名）+ `out` + `header` 落盘正确，靶子收到的 User-Agent 为自定义值（证明覆盖全局 UA）、`X-Device-Id` 透传；错误密钥 → 「aria2 错误(1): Unauthorized」，端口不可达 → 「无法连接 aria2: …」。② 闸门：`cargo fmt --all -- --check` 零差异、`cargo clippy --workspace --all-targets -- -D warnings` 0 告警、`cargo test --workspace` **106 项全绿**（core 41 + GUI 65，较此前基线 96 增 10）。③ 推真实 PikPak 直链 + Motrix（16800）的端到端待维护者实机确认。
+
 ## P1 · 正确性与健壮性
 
 > ✅ 全部完成
@@ -85,7 +96,7 @@
 
 ### 每步的固定验收
 
-- `cargo fmt --all` → `cargo clippy --workspace --all-targets -- -D warnings`（0 告警）→ `cargo test --workspace` 全绿，`#[test]` 数不减（当前基线 **93 项**：core 33 + GUI 60）。
+- `cargo fmt --all` → `cargo clippy --workspace --all-targets -- -D warnings`（0 告警）→ `cargo test --workspace` 全绿，`#[test]` 数不减（当前基线 **106 项**：core 41 + GUI 65）。
 - 一次一个域、独立提交（`refactor(gui): …`），**纯搬移、零行为变更**；`worker/` 与上传 / 下载管线额外实机验证。
 - 路径变了就必须同步 `README.md` 目录树与 `AGENTS.md` 代码地图，并在 `PROJECT_PLAN.md` 第五节 11) 追加进度。
 
@@ -163,4 +174,4 @@
 - [x] P3-4 打包目录归位（`8bbb355`，随 v1.0.1 出包）：`build-appimage.sh` 收进 `packaging/appimage/`、`build-flatpak.sh` 收进 `packaging/flatpak/`（`kichi.desktop` 留根），`release.yml` / README / 清单注释同步；本地完整跑通 AppImage 出包 + 解包启动、Flatpak 出包
 
 > [!TIP]
-> P0–P3 全部完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）已随 v1.0.1 出包完成 —— 队列已清空。
+> P0–P3 此前已全部完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）已随 v1.0.1 出包完成；P0-7（下载推送到 aria2）已完成（`7d835da` + `72b9fa5`，端到端待维护者实机确认）—— 队列已清空。

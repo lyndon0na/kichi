@@ -66,6 +66,7 @@ UI 主线程 (egui) ←── mpsc：Cmd / Msg ──→ worker 线程 (tokio) �
 | `session.rs`  | 会话（token / device id）持久化                                                                                                                                  |
 | `types.rs`    | `File` / `Quota` / `Task` / `Share` 等模型，防御式 serde（`de_number` / `de_string`）                                                                              |
 | `download.rs` | 直链解析、`.part` + Range 断点续传、完整性校验                                                                                                                           |
+| `aria2.rs`    | aria2 JSON-RPC 客户端（推送到外部下载器）：`getVersion` / `addUri` / `getGlobalOption`；请求体构造与响应解析为纯函数                                                              |
 | `upload.rs`   | gcid 秒传哈希、阿里云 OSS HMAC-SHA1 分片签名与上传                                                                                                                       |
 | `error.rs`    | 统一错误类型（`CaptchaReview` 携带人机验证页链接）                                                                                                                         |
 
@@ -74,8 +75,9 @@ UI 主线程 (egui) ←── mpsc：Cmd / Msg ──→ worker 线程 (tokio) �
 | 文件                                                         | 职责                                                                                             |
 |:---------------------------------------------------------- |:---------------------------------------------------------------------------------------------- |
 | `main.rs`                                                  | 入口；窗口 `app_id`（Flatpak 内取 `FLATPAK_ID`）与视图尺寸                                                   |
-| `worker/mod.rs`                                            | 后台 tokio 线程：`handle` 命令循环（43 个 `Cmd` 分支各一行转调）+ 跨域辅助（`cancel_task` / `set_transfer_limits` / `refresh_quota` / `download_backoff` / `discard_part`）；⚠️ 勿再堆新逻辑 |
+| `worker/mod.rs`                                            | 后台 tokio 线程：`handle` 命令循环（45 个 `Cmd` 分支各一行转调）+ 跨域辅助（`cancel_task` / `set_transfer_limits` / `refresh_quota` / `download_backoff` / `discard_part`）；⚠️ 勿再堆新逻辑 |
 | `worker/{download,upload,preview,thumbs}.rs`               | 四条长任务管线：并发闸 + 退避重试 + 取消登记（**敏感区**：下载 / 上传续传核心路径）                                                                 |
+| `worker/aria2.rs`                                          | aria2 推送管线（P0-7）：整目录 `walk_folder` → 逐文件解析直链 → `aria2.addUri`；独立小闸 4、进度 150ms 节流；不占下载 Gate、不传字节 |
 | `worker/{files,tasks,shares,trash,auth}.rs`                | 各域请求处理：文件列表 / 搜索 / 新建重命名移动复制 · 离线任务 · 分享转存 · 回收站 · 登录会话 —— `Cmd` 分支逐条转到这些函数                                        |
 | `worker/{gate,cache}.rs`                                   | 动态并发闸 `Gate` / 磁盘缓存淘汰 `CacheCtl`（预览与缩略图共用）                                                                     |
 | `msg.rs`                                                   | `Cmd` / `Msg` 协议单点                                                                             |
