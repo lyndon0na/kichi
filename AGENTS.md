@@ -111,6 +111,7 @@ UI 主线程 (egui) ←── mpsc：Cmd / Msg ──→ worker 线程 (tokio) �
 ## 已知边界与已证伪方向（不要再踩）
 
 - **上传跨重启续传（已实现，2026-10-03）**：落盘 STS 凭证（`settings.rs` 的 `UploadResumeRecord` → `upload_resume.json`，0600），在凭证有效期（取票时刻 + 12 小时）内**免取票**复用旧 key / 旧 `upload_id` 续传（跨进程 ×4 + 跨重启 ×1 实测全过），过期 / 文件变化自动降级全量重传。实现见 `worker/upload.rs`（续传主路径）与 `settings.rs`；结论 `docs/UPLOAD_RESUME_PROBE_REPORT.md`。⚠️ **不要回到「重启后重取票续旧 `upload_id`」的旧路线** —— STS 凭证按对象 key 授权，重取票后访问旧 `upload_id` 仍会被 `403 AccessDenied` 挡死（`docs/UPLOAD_RESUME_NOTES.md` §4 的历史裁决）。会话内（同票同凭证）的退避重试照旧保留。
+- **HTTP 超时口径（P1-5 已实现，2026-10-03，`0e68f83`）**：连接阶段（含 TLS 握手）10s、控制类小请求（API JSON / captcha / 续期 / 直链探测）30s 总超时；**传输体（本地下载 / OSS 分片 / 缩略图）刻意不设总超时** —— ⚠️ 不要给共享 client 加 `.timeout()`（reqwest 的它=「连接到响应体读完」的整体时限）或给传输体另加时限，慢速大传输会被误杀（探针实测过 12 MiB 下 128s 的慢链）；传输中途的静默挂起维持「手动取消」兜底。常量在 `client.rs`（`CONNECT_TIMEOUT` / `REQUEST_TIMEOUT`），回归测试在同文件 tests（静默服务器限时 / 慢速下载不误杀），手动冒烟 `cargo test -p kichi-core blackhole -- --ignored --nocapture`。
 - **服务端无全局搜索 API**：`client.rs::search_files` 是客户端递归遍历全盘 + 文件名匹配，慢是已知问题（优化方向待定）。另有**未经复核**的线索称 `/drive/v1/files` 支持 `name` 查询参数做全局搜索（filters 里的 `name.contains` / `name.like` 会被服务端拒绝）—— 做搜索优化前先花几分钟实测这条线索，不要直接信。
 - **`thumbnail_link` 有值 ≠ 可用**：服务端会对无缩略图的文件下发空串 / 相对路径，必须先判可用性（`worker/thumbs.rs::is_usable_thumb_url`）再请求，否则会刷失败日志。
 - **分享转存落点固定**：`share/restore` 只能落进「转存自分享」暂存目录（无 `parent_id` 支持），需转存后定位暂存目录再移动（`worker/shares.rs::find_pack_folder` / `move_new_files`）；不要试图直接把文件转存到目标目录。

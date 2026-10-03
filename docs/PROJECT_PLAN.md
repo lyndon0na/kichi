@@ -268,6 +268,7 @@
 | aria2 直链限时 | 推送成功即入队，之后由 aria2 用同一条限时直链下载 / 重试：排队过久或下载太慢会在 aria2 侧过期失败，需重新推送（不做 Kichi 代理中转）；同名冲突同样交给 aria2 自身策略（`auto-file-renaming` / `allow-overwrite`），不代做 ` (n)` 去重 |
 | 文件类型兜底 | 服务端 `mime_type` 缺失或为通用类型（`octet-stream` 等）时按扩展名判定，扩展名也未知则**保留「打开」**（排除名单口径）：宁可多给入口，也不因白名单漏项而让正常文件失去打开方式 |
 | 打开失败的判定 | 依赖 `xdg-open` 退出码 + stderr 措辞（KDE 分支实际调用 `kde-open`，文案无法从源码确认）：命中「no method available / no application / no handler」等措辞时提示「系统未关联打开…」，其余非零退出统一回退为「打开失败: <stderr 首行>」；阻塞型 handler 超过 1s 未退出即视为已启动，不再等待 |
+| HTTP 超时 | 连接阶段（含 TLS 握手）限时 10s、控制类小请求（API / captcha / 续期 / 直链探测）30s per-request 总超时（P1-5，`0e68f83`）；**传输体（下载 / OSS 分片 / 缩略图）刻意不设总超时** —— client 级总超时是「到响应体读完」的整体时限，会把慢速大传输误杀（探针实测过 12 MiB 下 128s 的慢链）；传输中途的静默挂起仍靠「手动取消」兜底 |
 | 发行包 | 只提供 AppImage 与 Flatpak（rpm 不做）。AppImage 的 glibc 门槛等于构建机：官方产物在 `ubuntu-22.04` 构建（glibc 2.35），本地在 Fedora 44 构建只能跑 Fedora 43+ / 滚动发行版 |
 | Flatpak 沙箱 | 配置 / 缓存落在 `~/.var/app/io.github.lyndon0na.Kichi/`（首次需重新登录并重选下载目录）；音视频播放依赖**宿主**已安装的 `mpv`（经 `flatpak-spawn --host`）；不暴露 X11（剪贴板走 Wayland 通道，启动日志可能有一条 arboard 告警） |
 
@@ -486,7 +487,7 @@ classify(name, mime)              预览入口                       预览执�
 
 | 检查 | 结果 |
 | :-- | :-- |
-| `cargo test --workspace` | **106 项**（核心库 41 + GUI 65；本轮新增 aria2 JSON-RPC 请求体 / 响应解析 / 服务不可达 8 项，推送目标目录拼接与净化 2 项） |
+| `cargo test --workspace` | **111 项**（核心库 44 + GUI 67；最近增量：上传续传判据 3 项 + HTTP 请求超时 2 项） |
 | `cargo check --workspace` | 零 warning |
 | `cargo clippy --workspace --all-targets` | 零 warning |
 | `cargo fmt --all -- --check` | 零差异（配置见 `rustfmt.toml`） |
@@ -496,7 +497,7 @@ classify(name, mime)              预览入口                       预览执�
 <details>
 <summary>测试覆盖范围</summary>
 
-加签 golden 向量、JSON 解析、token 边界、直链解析回退、清晰度解析、文件名净化、batchMove / batchCopy 请求体、媒体类型识别、分享列表 / 创建响应解析、回收站 trashed 过滤条件；目录下载的本地路径拼接 / 净化、目录子文件聚合进度与状态推导、目录树子目录计数上卷、下载记录状态映射（终态直传 / 非终态兜底记为未完成）与速率取样的短间隔节流（后四项纯逻辑迁至 `app/transfers/model.rs`，可直接单测）；日志的备份位移与最旧丢弃、只在行尾轮转、启动时兜底轮转超限文件；磁盘缓存的字节 / 条目上限淘汰顺序、目录条目按子树最新 mtime 计龄、豁免窗口与「正在使用」路径豁免、清空缓存、缺失根目录视为空；缩略图请求行区间的「可见区 ± 一屏」、滚动跟随、越界收敛与短列表截断；文件类型分类的强 mime 覆盖扩展名（`.ts` 三态）/ 通用 mime 回退扩展名 / 只下载类与保留打开类 / 图标与预览判定一致 / 字幕识别 / 文件夹判定；`xdg-open` 无关联程序措辞匹配（且不误判「文件不存在」）；`de_number` / `de_string` 的数字 / 字符串 / 浮点 / 布尔 / `null` / 缺字段兼容形式；宿主程序调用前缀（Flatpak 内 `flatpak-spawn --host` / 沙箱外直连）与中文字体候选的「挂载根 × 相对路径」查找顺序；aria2 JSON-RPC 的 token 前置与参数顺序、`addUri` options 的空字段省略与 `header` 编码、错误 / result 解析与响应片段截断、服务不可达报错，以及推送目标目录的云端层级拼接与逐级净化。
+加签 golden 向量、JSON 解析、token 边界、直链解析回退、清晰度解析、文件名净化、batchMove / batchCopy 请求体、媒体类型识别、分享列表 / 创建响应解析、回收站 trashed 过滤条件；目录下载的本地路径拼接 / 净化、目录子文件聚合进度与状态推导、目录树子目录计数上卷、下载记录状态映射（终态直传 / 非终态兜底记为未完成）与速率取样的短间隔节流（后四项纯逻辑迁至 `app/transfers/model.rs`，可直接单测）；日志的备份位移与最旧丢弃、只在行尾轮转、启动时兜底轮转超限文件；磁盘缓存的字节 / 条目上限淘汰顺序、目录条目按子树最新 mtime 计龄、豁免窗口与「正在使用」路径豁免、清空缓存、缺失根目录视为空；缩略图请求行区间的「可见区 ± 一屏」、滚动跟随、越界收敛与短列表截断；文件类型分类的强 mime 覆盖扩展名（`.ts` 三态）/ 通用 mime 回退扩展名 / 只下载类与保留打开类 / 图标与预览判定一致 / 字幕识别 / 文件夹判定；`xdg-open` 无关联程序措辞匹配（且不误判「文件不存在」）；`de_number` / `de_string` 的数字 / 字符串 / 浮点 / 布尔 / `null` / 缺字段兼容形式；宿主程序调用前缀（Flatpak 内 `flatpak-spawn --host` / 沙箱外直连）与中文字体候选的「挂载根 × 相对路径」查找顺序；aria2 JSON-RPC 的 token 前置与参数顺序、`addUri` options 的空字段省略与 `header` 编码、错误 / result 解析与响应片段截断、服务不可达报错，以及推送目标目录的云端层级拼接与逐级净化；HTTP 超时的「静默服务器下限时返回超时错误」与「慢速分片流式下载跨过控制超时仍完整成功」（本地 TCP 服务器扮演，防「改成 client 级总超时」回归）。
 
 </details>
 
@@ -512,6 +513,7 @@ classify(name, mime)              预览入口                       预览执�
   - 回收站浏览 / 还原 / 彻底删除（含清空）
 - [x] **全局搜索** —— 客户端递归遍历所有目录 + 文件名模糊匹配（PikPak 无服务端全局搜索 API；盘大时偏慢为已知取舍）
 - [x] **推送到 aria2** —— 手动推送 MVP：文件 / 目录经 JSON-RPC 交给 aria2 / Motrix 下载（`kichi-core/src/aria2.rs` + `worker/aria2.rs`，设置页配置与「测试连接」，整目录保留云端层级）；不做默认下载方式切换与传输页进度跟踪；直链限时与同名冲突策略为已知代价（P0-7，`7d835da` + `72b9fa5`）
+- [x] **HTTP 请求超时（P1-5）** —— `KichiClient` 共享 client 加 `connect_timeout(10s)`（连接阶段含 TLS 握手）、控制类小请求（`request_inner` / 续期 / captcha / 直链探测）30s per-request 总超时，传输体不设总超时（防误杀慢速大传输）；黑洞地址 / 服务端静默下请求不再永久等待（`0e68f83`；2 项本地服务器单测 + 1 项 `#[ignore]` 黑洞冒烟 `cargo test -p kichi-core blackhole -- --ignored --nocapture`）
 - [ ] **离线任务进度详情** —— 离线任务字段无官方契约，现仅展示名称 / 大小等有限信息，暂无进度百分比
 - [x] **可维护性** —— 结构优化：巨型文件与 god object，P2-9 ~ P2-14 全部落地。`worker/` 拆分（P2-13）已完成（`worker.rs` 2460 行 → 入口 `worker/mod.rs` 367 行 + 11 个域文件）；`app/` 侧第 1 步（P2-9）已完成（纯逻辑外移到纯逻辑模块 + `App::new` 启动逻辑外抽），第 2 步（P2-10，按域 struct 化）已完成（七个域结构体 + `drain` 60 臂一行转调，`app/mod.rs` 3085 → 2127 行），第 3 步（P2-11，文件页）已完成（`FilesPage` + `app/files/` 五个角色文件，渲染与动作分离），第 4 步（P2-12，传输页）也已完成（`TransfersPage` + `app/transfers/` 四文件，`transfers_page.rs` 1951 行收进 `app/transfers/mod.rs` 1216 行 + 上传 / 下载分栏与纯逻辑分文件，渲染与动作分离；`app/mod.rs` 最终 2127 → 968 行）；P2-14（`App` 字段按页面分组）由 P2-10 / P2-11 / P2-12 覆盖。第二批 P2-15（tasks 域收口）与 P2-16（`app/types.rs` 类型随域归位，该文件已删除）随后完成，P2-17（分享页按角色分文件，`66614b8`）也已落地 —— 两批结构优化全部收尾。判据、参照数据、目标形态与已定的 A 路线见第五节 11) 与 `TODO.md` 的「P2 · 结构优化」一节
 - [x] **分发** —— AppImage / Flatpak 打包脚本 + GitHub Actions 发布工作流（M22，推 `v*` tag 自动发 Release）；rpm 不做；仓库元数据与链接随后补齐（P3-3：`Cargo.toml` 的 `repository` 字段 + README 动态 release / 打包状态徽章 + Issues / LICENSE 链接）；日常闸门随后补齐（P3-2 / M23：`.github/workflows/ci.yml`，push `master` / PR 跑 fmt + clippy + test，`release.yml` 仍只管打包发版）；打包脚本随 M24（P3-4，`8bbb355`）归位 `packaging/appimage/` 与 `packaging/flatpak/`，本地出包命令随之更新

@@ -169,7 +169,12 @@
   的逻辑；保留既有退避重试即可。
 - **客户端无 timeout**：`KichiClient` 的 reqwest 客户端没配 `.timeout()`，连接被挂起就会
   一直等（应用既有属性，GUI 同理）。探针自己给每步套了硬超时。此问题未随续传实现一并
-  改动，另立 TODO **P1-5（HTTP 请求超时）** 跟踪。
+  改动，另立 TODO **P1-5（HTTP 请求超时）** 跟踪。**2026-10-03 已修复（`0e68f83`）**：
+  连接阶段（含 TLS 握手）10s、控制类小请求（API JSON / captcha / 续期 / 直链探测）30s
+  总超时；传输体（下载 / OSS 分片 / 缩略图）仍不设总时长 —— 避免误杀本文 §3.5 记录的
+  慢速传输（12 MiB 下 128.55s）。手动复核：
+  `cargo test -p kichi-core blackhole -- --ignored --nocapture`（本机 `10.255.255.1` 经
+  透明代理被立刻接成静默连接，由请求总超时兜底；无代理环境下的 SYN 黑洞由连接超时兜底）。
 - **PENDING 占位条目（2026-10-03 已确证）**：每次 `upload_create` 都会在网盘留一个
   `phase=PENDING` 的条目，默认过滤 `{"trashed":{"eq":false},"phase":{"eq":"PHASE_TYPE_COMPLETE"}}`
   看不到它；`stage1` 跑过多次就攒了多个。`orphans` 探针实测：
