@@ -48,6 +48,15 @@ pub fn trashed_file_filters() -> serde_json::Value {
     })
 }
 
+/// 待上传占位条目的过滤条件: 上传创建后未完成前条目不可见, 但可列出并删除
+/// (续传凭证失效 / 取消后清理用)。注意 `phase.in` 数组形式会被服务端拒绝。
+pub fn pending_file_filters() -> serde_json::Value {
+    serde_json::json!({
+        "trashed": { "eq": false },
+        "phase": { "eq": "PHASE_TYPE_PENDING" },
+    })
+}
+
 /// 离线任务全部可能的状态。
 pub const OFFLINE_PHASES: [&str; 4] = [
     "PHASE_TYPE_PENDING",

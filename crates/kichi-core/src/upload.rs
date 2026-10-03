@@ -89,6 +89,10 @@ pub struct UploadTicket {
     pub completed: bool,
     /// 需要实际上传时的 OSS 上下文。
     pub oss: Option<OssContext>,
+    /// 服务端为本次上传创建的占位文件 id(秒传时缺失); 取消 / 失效后清理用。
+    pub file_id: Option<String>,
+    /// OSS 临时凭证的到期时间(unix 秒); 解析失败为 None(按有效期未知处理)。
+    pub expiration_unix: Option<i64>,
 }
 
 impl UploadTicket {
@@ -100,11 +104,92 @@ impl UploadTicket {
             .and_then(|p| p.as_str())
             .unwrap_or_default();
         let completed = phase == "PHASE_TYPE_COMPLETE";
+        let file_id = v
+            .get("file")
+            .and_then(|f| f.get("id"))
+            .and_then(|id| id.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         UploadTicket {
             completed,
             oss: if completed { None } else { parse_oss(v) },
+            file_id,
+            expiration_unix: parse_expiration(v),
         }
     }
+}
+
+/// 从 `resumable.params.expiration` 解析临时凭证到期时间(unix 秒)。
+fn parse_expiration(v: &Value) -> Option<i64> {
+    v.get("resumable")?
+        .get("params")?
+        .get("expiration")?
+        .as_str()
+        .and_then(parse_rfc3339_unix)
+}
+
+/// 解析 RFC3339 时间戳(如 `2026-10-04T03:38:34.000+08:00`)为 unix 秒。
+/// 只接受带时区偏移的完整日期时间; 无法解析时返回 `None`。
+pub fn parse_rfc3339_unix(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !matches!(b[10], b'T' | b't')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let num = |a: usize, n: usize| -> Option<i64> { s.get(a..a + n)?.parse::<i64>().ok() };
+    let (year, month, day) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (hour, minute, second) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let mut rest = s.get(19..)?;
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits = frac
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(frac.len());
+        if digits == 0 {
+            return None;
+        }
+        rest = &frac[digits..];
+    }
+    let offset = match rest.as_bytes() {
+        [b'Z' | b'z'] => 0,
+        [b'+', h1, h2, b':', m1, m2] => parse_offset(*h1, *h2, *m1, *m2)?,
+        [b'-', h1, h2, b':', m1, m2] => -parse_offset(*h1, *h2, *m1, *m2)?,
+        _ => return None,
+    };
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second - offset)
+}
+
+/// 解析 `±HH:MM` 的偏移量(小时与分钟, 秒)。
+fn parse_offset(h1: u8, h2: u8, m1: u8, m2: u8) -> Option<i64> {
+    let dig = |c: u8| (c as char).to_digit(10).map(i64::from);
+    let h = dig(h1)? * 10 + dig(h2)?;
+    let m = dig(m1)? * 10 + dig(m2)?;
+    if h > 23 || m > 59 {
+        return None;
+    }
+    Some(h * 3_600 + m * 60)
+}
+
+/// 民用日期(年-月-日)距 1970-01-01 的天数。
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// 阿里云 OSS 临时凭证与目标对象。
@@ -280,19 +365,57 @@ mod tests {
         }));
         assert!(done.completed);
         assert!(done.oss.is_none());
+        assert!(done.file_id.is_none());
+        assert!(done.expiration_unix.is_none());
 
         let pending = UploadTicket::from_response(&serde_json::json!({
-            "file": { "phase": "PHASE_TYPE_PENDING" },
+            "file": { "id": "F1", "phase": "PHASE_TYPE_PENDING" },
             "resumable": { "params": {
                 "endpoint": "oss.example.com", "access_key_id": "a",
                 "access_key_secret": "s", "security_token": "t",
-                "bucket": "b", "key": "k"
+                "bucket": "b", "key": "k",
+                "expiration": "2026-10-04T03:38:34.000+08:00"
             }}
         }));
         assert!(!pending.completed);
+        assert_eq!(pending.file_id.as_deref(), Some("F1"));
+        assert_eq!(pending.expiration_unix, Some(1_791_056_314));
         let oss = pending.oss.unwrap();
         assert_eq!(oss.endpoint, "oss.example.com");
         assert_eq!(oss.key, "k");
+    }
+
+    #[test]
+    fn rfc3339_parsing() {
+        // 同一时刻的三种写法: +08:00 / Z / +00:00。
+        assert_eq!(
+            parse_rfc3339_unix("2026-10-04T03:38:34.000+08:00"),
+            Some(1_791_056_314)
+        );
+        assert_eq!(
+            parse_rfc3339_unix("2026-10-03T19:38:34Z"),
+            Some(1_791_056_314)
+        );
+        assert_eq!(
+            parse_rfc3339_unix("2026-10-03T19:38:34+00:00"),
+            Some(1_791_056_314)
+        );
+        // 负偏移。
+        assert_eq!(
+            parse_rfc3339_unix("2026-01-01T00:00:00-05:00"),
+            Some(1_767_243_600)
+        );
+        // 无小数部分的 Z 结尾。
+        assert_eq!(
+            parse_rfc3339_unix("2026-10-03T12:00:00Z"),
+            Some(1_791_028_800)
+        );
+        // 非法输入。
+        assert_eq!(parse_rfc3339_unix("2026-10-03T12:00:00"), None);
+        assert_eq!(parse_rfc3339_unix("2026-13-01T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339_unix("2026-10-03T12:00:00."), None);
+        assert_eq!(parse_rfc3339_unix("not-a-date"), None);
+        assert_eq!(parse_rfc3339_unix(""), None);
     }
 
     #[test]

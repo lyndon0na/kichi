@@ -19,6 +19,12 @@ use crate::session::Session;
 use crate::types::*;
 use crate::upload::{self, OssContext, OssUploadState, UploadTicket};
 
+/// 上传跨重启续传探针(手动回归工具, `#[ignore]` + `KICHI_UPLOAD_PROBE=1` 双开关;
+/// 会真实读写云端探针目录, 平时不跑)。
+#[cfg(test)]
+#[path = "upload_resume_probe.rs"]
+mod upload_resume_probe;
+
 /// 写入缓冲的落盘阈值: 每攒够这么多字节 flush 一次磁盘。
 const FLUSH_INTERVAL: u64 = 8 * 1024 * 1024;
 
@@ -464,6 +470,18 @@ impl KichiClient {
     ) -> Result<FileList, Error> {
         let filters = default_file_filters();
         self.file_list_filtered(filters, parent_id, size, next_page_token)
+            .await
+    }
+
+    /// 列出 `parent_id` 下的待上传占位条目(phase=PENDING, 正常浏览不可见)。
+    /// 用于续传凭证失效 / 取消后清理废弃的占位条目。
+    pub async fn pending_placeholders(
+        &self,
+        parent_id: Option<&str>,
+        size: usize,
+        next_page_token: Option<&str>,
+    ) -> Result<FileList, Error> {
+        self.file_list_filtered(pending_file_filters(), parent_id, size, next_page_token)
             .await
     }
 
@@ -1160,6 +1178,18 @@ impl KichiClient {
         size: u64,
         hash: &str,
     ) -> Result<UploadTicket, Error> {
+        let value = self.upload_create_raw(name, parent_id, size, hash).await?;
+        Ok(UploadTicket::from_response(&value))
+    }
+
+    /// 创建上传票据, 返回原始响应体(探针需要读取 `resumable.params` 与 `expiration`)。
+    async fn upload_create_raw(
+        &self,
+        name: &str,
+        parent_id: Option<&str>,
+        size: u64,
+        hash: &str,
+    ) -> Result<Value, Error> {
         let url = format!("{API_HOST}/drive/v1/files");
         let mut body = serde_json::Map::new();
         body.insert("kind".into(), "drive#file".into());
@@ -1178,16 +1208,17 @@ impl KichiClient {
                 body.insert("parent_id".into(), pid.into());
             }
         }
-        let value = self.post(&url, &Value::Object(body)).await?;
-        Ok(UploadTicket::from_response(&value))
+        self.post(&url, &Value::Object(body)).await
     }
 
     /// 把本地文件按 OSS 分片上传(并发 + 续传)。
     ///
     /// 需要已由 `upload_create` 得到 `oss` 上下文, 并由 `oss_initiate` 得到 `upload_id`。
     /// `state` 保存已成功分片的 ETag; 重试时传入同一 `state` 即可跳过已上传分片。
-    /// `cancel` 置位时分片边界中止; `on_progress(已传字节, 总大小)` 随分片完成回调。
-    pub async fn upload_oss<F>(
+    /// `cancel` 置位时分片边界中止; `on_progress(已传字节, 总大小)` 随分片完成回调;
+    /// `on_part_persist` 在每片 ETag 记入 `state` 后回调(供调用方持久化断点)。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upload_oss<F, G>(
         &self,
         oss: &OssContext,
         upload_id: &str,
@@ -1195,9 +1226,11 @@ impl KichiClient {
         cancel: Option<Arc<AtomicBool>>,
         state: &mut OssUploadState,
         on_progress: &mut F,
+        on_part_persist: &mut G,
     ) -> Result<u64, Error>
     where
         F: FnMut(u64, u64) + Send,
+        G: FnMut(&OssUploadState) + Send,
     {
         let size = tokio::fs::metadata(path).await?.len();
         let chunk = upload::upload_chunk_size(size);
@@ -1242,6 +1275,7 @@ impl KichiClient {
         while let Some(res) = stream.next().await {
             let (part, etag) = res?;
             state.etags.insert(part, etag);
+            on_part_persist(state);
         }
 
         if let Ok(mut g) = cb.lock() {

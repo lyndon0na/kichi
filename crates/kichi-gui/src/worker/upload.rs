@@ -262,6 +262,7 @@ where
                 Some(cancel.clone()),
                 &mut state,
                 &mut *on_progress,
+                &mut |_| {},
             )
             .await
         {
