@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::Path as StdPath;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
@@ -37,6 +38,14 @@ const OSS_UA: &str = "aliyun-sdk-android/2.9.5";
 /// OSS 分片并发的默认分片数(可经 `set_part_concurrency` 覆盖)。
 const OSS_UPLOAD_CONCURRENCY: usize = 4;
 
+/// 连接阶段(含 TLS 握手)超时: 黑洞地址 / 挂起连接下快速失败, 不再永久等待。
+/// 只约束建连, 不影响已建立连接上的传输。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 控制类小请求(API JSON / captcha / 续期 / 直链探测)的总超时。
+/// 传输体(本地下载 / OSS 分片上传 / 缩略图)不设总超时, 避免误杀慢速大传输。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 整目录下载递归遍历时的页大小与文件总数上限(超限返回错误, 避免异常数据失控)。
 const WALK_PAGE_SIZE: usize = 100;
 const WALK_MAX_FILES: usize = 20_000;
@@ -64,12 +73,20 @@ pub struct KichiClient {
     on_tokens: Option<TokenSaver>,
     /// OSS 分片上传并发数, 由 GUI 设置页驱动, 新任务生效。
     part_concurrency: std::sync::atomic::AtomicUsize,
+    /// 控制类请求的总超时(传输体不受它约束)。
+    request_timeout: Duration,
 }
 
 impl KichiClient {
     pub fn new(device_id: String) -> Self {
+        Self::new_with_timeouts(device_id, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// 以自定义超时构造(单测注入短超时用; 生产走 [`KichiClient::new`] 的默认值)。
+    fn new_with_timeouts(device_id: String, connect: Duration, request: Duration) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(BROWSER_UA)
+            .connect_timeout(connect)
             .build()
             .expect("failed to build http client");
         Self {
@@ -79,6 +96,7 @@ impl KichiClient {
             refresh_lock: Mutex::new(()),
             on_tokens: None,
             part_concurrency: std::sync::atomic::AtomicUsize::new(OSS_UPLOAD_CONCURRENCY),
+            request_timeout: request,
         }
     }
 
@@ -171,6 +189,7 @@ impl KichiClient {
             let mut req = self
                 .http
                 .request(method.clone(), url)
+                .timeout(self.request_timeout)
                 .header("Content-Type", "application/json; charset=utf-8")
                 .header("X-Device-Id", &self.device_id);
 
@@ -360,6 +379,7 @@ impl KichiClient {
         let resp = self
             .http
             .post(&url)
+            .timeout(self.request_timeout)
             .header("Content-Type", "application/json; charset=utf-8")
             .header("User-Agent", BROWSER_UA)
             .json(&body)
@@ -421,6 +441,7 @@ impl KichiClient {
         let mut req = self
             .http
             .post(&url)
+            .timeout(self.request_timeout)
             .header("Content-Type", "application/json; charset=utf-8")
             .header("X-Device-Id", &self.device_id)
             .header("User-Agent", BROWSER_UA)
@@ -953,6 +974,7 @@ impl KichiClient {
         let first = self
             .http
             .get(url)
+            .timeout(self.request_timeout)
             .header("User-Agent", &ua)
             .header("X-Device-Id", &self.device_id)
             .header("Range", "bytes=0-0")
@@ -971,6 +993,7 @@ impl KichiClient {
                 let retry = self
                     .http
                     .get(url)
+                    .timeout(self.request_timeout)
                     .header("User-Agent", &ua)
                     .header("X-Device-Id", &self.device_id)
                     .header("Range", "bytes=0-0")
@@ -1690,5 +1713,140 @@ mod tests {
         assert_eq!(c.share_id, "S2");
         assert_eq!(c.pass_code, "");
         assert_eq!(c.share_text, "分享给你");
+    }
+
+    // ---------- 超时: 连接阶段 + 控制类请求 ----------
+
+    fn test_client(connect: Duration, request: Duration) -> KichiClient {
+        KichiClient::new_with_timeouts("0123456789abcdef0123456789abcdef".into(), connect, request)
+    }
+
+    /// 静默 TCP 服务器: 接受连接但永不回包(持有 socket 保持打开)。
+    async fn spawn_silent_server() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        addr
+    }
+
+    /// 慢速 TCP 服务器: 读掉请求后回 200, 按块缓慢写响应体(每块隔 60ms)。
+    async fn spawn_slow_server(chunks: Vec<Vec<u8>>) -> std::net::SocketAddr {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            // 读掉请求头(到空行), 请求内容不关心。
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match sock.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        seen.extend_from_slice(&buf[..n]);
+                        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let total: usize = chunks.iter().map(|c| c.len()).sum();
+            let head =
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+            if sock.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for c in chunks {
+                if sock.write_all(&c).await.is_err() || sock.flush().await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+        });
+        addr
+    }
+
+    /// 服务端接受连接后静默: 控制类请求应限时返回超时错误, 而非永久等待。
+    #[tokio::test]
+    async fn control_request_times_out_on_silent_server() {
+        let addr = spawn_silent_server().await;
+        let client = test_client(Duration::from_millis(500), Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let err = client
+            .request(
+                reqwest::Method::GET,
+                &format!("http://{addr}/drive/v1/files"),
+                None,
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Http(e) if e.is_timeout()),
+            "预期超时错误, 实际: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "限时失败耗时过长: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 慢速分片流式下载的总时长跨过控制请求超时, 仍应完整成功
+    /// (超时只约束控制类请求, 不误杀传输体; 防回归: 若改成客户端级总超时此测试会挂)。
+    #[tokio::test]
+    async fn slow_download_survives_control_request_timeout() {
+        let chunks: Vec<Vec<u8>> = (0..12u8).map(|i| vec![b'a' + i; 64 * 1024]).collect();
+        let total: usize = chunks.iter().map(|c| c.len()).sum();
+        let addr = spawn_slow_server(chunks).await;
+        let client = test_client(Duration::from_millis(500), Duration::from_millis(300));
+        let dest =
+            std::env::temp_dir().join(format!("kichi-timeout-test-{}.bin", std::process::id()));
+        let link = DownloadLink {
+            file_id: "f1".into(),
+            url: format!("http://{addr}/slow.bin"),
+            name: "slow.bin".into(),
+            size: total as i64,
+        };
+        let started = std::time::Instant::now();
+        let n = client
+            .download_to(&link, &dest, None, |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(n as usize, total, "下载字节数不符");
+        assert!(
+            started.elapsed() > Duration::from_millis(300),
+            "测试前提不成立: 传输未跨过控制超时"
+        );
+        assert_eq!(std::fs::metadata(&dest).unwrap().len() as usize, total);
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(part_path(&dest));
+    }
+
+    /// 黑洞地址冒烟(手动验收, 默认不跑):
+    /// `cargo test -p kichi-core blackhole -- --ignored --nocapture`
+    /// 预期: 数秒内返回连接类错误(超时 / 不可达), 而非永久等待。
+    #[tokio::test]
+    #[ignore = "手动验收: 依赖本机网络路由, 常规 cargo test 不跑"]
+    async fn blackhole_address_fails_within_timeout() {
+        let client = test_client(Duration::from_secs(2), Duration::from_secs(5));
+        let started = std::time::Instant::now();
+        let err = client
+            .request(reqwest::Method::GET, "http://10.255.255.1/drive", None, &[])
+            .await
+            .unwrap_err();
+        println!("黑洞地址返回: {err}(耗时 {:?})", started.elapsed());
+        assert!(
+            matches!(&err, Error::Http(e) if e.is_timeout() || e.is_connect()),
+            "预期连接类错误, 实际: {err}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(8));
     }
 }
