@@ -174,10 +174,12 @@ pub enum Cmd {
         config: Aria2Config,
     },
     /// 把本地文件上传到网盘目录 parent(None = 根目录)。
+    /// `dest_stack` 为目标目录层级快照, 随续传记录落盘供重启后还原卡片。
     StartUpload {
         req_id: u64,
         path: PathBuf,
         parent: Option<String>,
+        dest_stack: Vec<(Option<String>, String)>,
     },
     /// 把本地目录递归上传到网盘目录 parent(None = 根目录)。
     StartUploadDir {
@@ -188,6 +190,12 @@ pub enum Cmd {
     /// 取消某个上传任务。
     CancelUpload {
         req_id: u64,
+    },
+    /// 丢弃某文件的上传续传记录(含云端 PENDING 占位条目); 用于移除未分发的
+    /// 续传卡片或失败后不再重试的任务, 不需要有对应的进行中任务。
+    DiscardUploadResume {
+        local_path: PathBuf,
+        parent: Option<String>,
     },
     /// 预览云端文件。media=true 时仅解析直链交给外部播放器(mpv)流式播放;
     /// media=false 时先下载到本地缓存再交给系统查看器打开。
@@ -426,6 +434,16 @@ pub enum Msg {
         req_id: u64,
         total: u64,
         done: u64,
+    },
+    /// 续传判定结果(找到续传记录时发出一次): `resumed=true` 表示复用落盘
+    /// 凭证续传, `skipped` 为跳过(已传)的字节数; 记录失效时 `resumed=false`
+    /// 且 `note` 为给用户的说明(如凭证过期已重新上传)。
+    UlResumed {
+        req_id: u64,
+        resumed: bool,
+        skipped: u64,
+        total: u64,
+        note: Option<String>,
     },
     /// 上传完成。
     UlFinished {

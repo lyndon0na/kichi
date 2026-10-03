@@ -62,6 +62,9 @@ pub(crate) struct TransfersPage {
     pub(crate) selected_ul: HashSet<u64>,
     pub(crate) ul_filter: UlFilter,
     pub(crate) ul_last_clicked: Option<u64>,
+    /// 从续传记录还原、尚未分发的卡片(req_id): 登录成功后自动发 `StartUpload`
+    /// (worker 端 seed 感知续传); 移除这类卡片走 `Cmd::DiscardUploadResume`。
+    pub(crate) ul_resume_pending: HashSet<u64>,
     /// 进行中的异步选择 (是否目录, 目标目录, 目标路径展示, 结果通道), 避免阻塞 UI 线程。
     pub(crate) upload_pick: Option<UploadPick>,
 }
@@ -212,7 +215,24 @@ impl TransfersPage {
         let mut ul_jobs = BTreeMap::new();
         let mut next_id = 0u64;
         // 历史按最新在前存储, 倒序分配 id 使 id 随时间递增。
-        for record in settings::load_upload_history().into_iter().rev() {
+        let history = settings::load_upload_history();
+        let resumes = settings::load_upload_resume();
+        // 每条续传记录会还原成一张排队卡片; 对应的最新「失败」历史行不再单独显示,
+        // 避免同一任务出现「失败卡 + 续传卡」两张。
+        let mut suppressed: HashSet<usize> = HashSet::new();
+        for rec in &resumes {
+            if let Some(idx) = history.iter().position(|h| {
+                matches!(h.status, UploadRecordStatus::Failed(_))
+                    && h.local_path == rec.local_path
+                    && h.parent == rec.parent
+            }) {
+                suppressed.insert(idx);
+            }
+        }
+        for (idx, record) in history.into_iter().enumerate().rev() {
+            if suppressed.contains(&idx) {
+                continue;
+            }
             let status = match record.status {
                 UploadRecordStatus::Done => UlStatus::Done,
                 UploadRecordStatus::Failed(what) => UlStatus::Failed(what),
@@ -231,12 +251,44 @@ impl TransfersPage {
                     speed: 0,
                     last_done: 0,
                     last_at: None,
+                    resumed: false,
+                    resumed_skip: 0,
                     record_id: record.timestamp,
                     is_dir: record.is_dir,
                     files_done: 0,
                     files_total: 0,
                     current: String::new(),
                     at: (record.at != 0).then_some(record.at),
+                },
+            );
+        }
+
+        // 续传记录还原为排队卡片, 登录成功后由 `dispatch_pending_uploads` 自动分发。
+        let mut ul_resume_pending = HashSet::new();
+        for rec in resumes {
+            next_id += 1;
+            ul_resume_pending.insert(next_id);
+            ul_jobs.insert(
+                next_id,
+                UlJob {
+                    local_path: rec.local_path,
+                    name: rec.name,
+                    parent: rec.parent,
+                    dest_stack: rec.dest_stack,
+                    total: rec.size,
+                    done: 0,
+                    status: UlStatus::Queued,
+                    speed: 0,
+                    last_done: 0,
+                    last_at: None,
+                    resumed: false,
+                    resumed_skip: 0,
+                    record_id: String::new(),
+                    is_dir: false,
+                    files_done: 0,
+                    files_total: 0,
+                    current: String::new(),
+                    at: None,
                 },
             );
         }
@@ -251,6 +303,7 @@ impl TransfersPage {
             selected_ul: HashSet::new(),
             ul_filter: UlFilter::All,
             ul_last_clicked: None,
+            ul_resume_pending,
             upload_pick: None,
         }
     }
@@ -771,6 +824,7 @@ impl TransfersPage {
                 req_id,
                 path,
                 parent: parent.clone(),
+                dest_stack: dest_stack.clone(),
             });
             n += 1;
         }
@@ -852,6 +906,49 @@ impl TransfersPage {
                 self.upload_pick = None;
                 None
             }
+        }
+    }
+
+    /// 登录成功后分发「从续传记录还原」的排队卡片(worker 端 seed 会跳过已传分片)。
+    pub(crate) fn dispatch_pending_uploads(&mut self, g: &mut Global) {
+        if self.ul_resume_pending.is_empty() {
+            return;
+        }
+        let ids: Vec<u64> = self.ul_resume_pending.drain().collect();
+        for req_id in ids {
+            if let Some(j) = self.ul_jobs.get(&req_id) {
+                g.send(Cmd::StartUpload {
+                    req_id,
+                    path: j.local_path.clone(),
+                    parent: j.parent.clone(),
+                    dest_stack: j.dest_stack.clone(),
+                });
+            }
+        }
+    }
+
+    /// worker 上报的续传判定结果: 命中即进入「续传中」, 失效则提示并已按全量重传。
+    pub(crate) fn on_ul_resumed(
+        &mut self,
+        g: &mut Global,
+        req_id: u64,
+        resumed: bool,
+        skipped: u64,
+        total: u64,
+        note: Option<String>,
+    ) {
+        if let Some(j) = self.ul_jobs.get_mut(&req_id) {
+            j.resumed = resumed;
+            j.resumed_skip = if resumed { skipped } else { 0 };
+            if total > 0 {
+                j.total = total;
+            }
+            if resumed {
+                j.done = j.done.max(skipped);
+            }
+        }
+        if let Some(note) = note {
+            g.toast_warn(&note);
         }
     }
 
@@ -970,18 +1067,36 @@ impl TransfersPage {
     }
 
     /// 从列表移除一个上传任务(运行中的取消; 其余删除行与历史记录)。
+    /// 「待分发」的续传卡片直接删本地记录; 已失败的卡片连同续传记录一起清掉,
+    /// 否则重启后会再次还原成待分发卡片。
     pub(crate) fn remove_upload_job(&mut self, g: &mut Global, rid: u64) {
-        let running = self
-            .ul_jobs
-            .get(&rid)
-            .map(|j| matches!(j.status, UlStatus::Queued | UlStatus::Running))
-            .unwrap_or(false);
+        let pending = self.ul_resume_pending.remove(&rid);
+        let running = !pending
+            && self
+                .ul_jobs
+                .get(&rid)
+                .map(|j| matches!(j.status, UlStatus::Queued | UlStatus::Running))
+                .unwrap_or(false);
         if running {
+            // worker 在取消路径会清掉对应的续传记录, 这里只需发取消。
             g.send(Cmd::CancelUpload { req_id: rid });
             return;
         }
         if let Some(job) = self.ul_jobs.get(&rid) {
             settings::remove_upload_record(&job.record_id, &job.local_path, &job.name);
+            // 同一文件若已有别的任务在跑(失败后重新上传过), 续传记录归它所有, 不能删。
+            let busy = self.ul_jobs.iter().any(|(id, j)| {
+                *id != rid
+                    && j.local_path == job.local_path
+                    && j.parent == job.parent
+                    && matches!(j.status, UlStatus::Queued | UlStatus::Running)
+            });
+            if !busy {
+                g.send(Cmd::DiscardUploadResume {
+                    local_path: job.local_path.clone(),
+                    parent: job.parent.clone(),
+                });
+            }
         }
         self.ul_jobs.remove(&rid);
         self.selected_ul.remove(&rid);

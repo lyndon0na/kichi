@@ -41,6 +41,10 @@ pub(crate) struct UlJob {
     pub speed: u64,
     pub last_done: u64,
     pub last_at: Option<Instant>,
+    /// 跨重启续传命中(复用已上传分片, 免重传)。
+    pub resumed: bool,
+    /// 续传跳过的字节数(展示跳过比例用)。
+    pub resumed_skip: u64,
     /// 上传历史记录的唯一标识(历史记录或完成后填充)。
     pub record_id: String,
     /// 是否为目录递归上传。
@@ -81,6 +85,8 @@ impl UlJob {
             speed: 0,
             last_done: 0,
             last_at: None,
+            resumed: false,
+            resumed_skip: 0,
             record_id: String::new(),
             is_dir: false,
             files_done: 0,
@@ -143,6 +149,9 @@ pub(crate) type UploadPick = (
 fn upload_status_line(job: &UlJob) -> (egui::Color32, String) {
     match &job.status {
         UlStatus::Queued => (egui::Color32::from_gray(150), "排队中".into()),
+        UlStatus::Running if job.resumed => {
+            (egui::Color32::from_rgb(60, 130, 200), "续传中".into())
+        }
         UlStatus::Running => (egui::Color32::from_rgb(60, 130, 200), "上传中".into()),
         UlStatus::Done => (egui::Color32::from_rgb(70, 150, 90), "已完成".into()),
         UlStatus::Failed(what) => (egui::Color32::from_rgb(217, 70, 60), what.clone()),
@@ -341,6 +350,14 @@ fn ul_card(
         if !what.is_empty() {
             resp.clone().on_hover_text(what);
         }
+    }
+
+    // 续传跳过比例说明(悬停任务卡片可见)。
+    if job.resumed && job.resumed_skip > 0 && job.total > 0 {
+        let pct = (job.resumed_skip as f64 / job.total as f64 * 100.0).round() as u32;
+        resp.clone().on_hover_text(format!(
+            "跨重启续传: 已跳过约 {pct}% (复用已上传分片, 未重传)"
+        ));
     }
 
     if cb_clicked {

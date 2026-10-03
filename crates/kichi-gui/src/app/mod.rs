@@ -237,6 +237,8 @@ impl App {
                     self.tasks.clear();
                     self.quota = None;
                     self.files.reset_browse(&mut self.global);
+                    // 续传记录还原的排队卡片: 登录成功后自动分发(worker 端跳过已传分片)。
+                    self.transfers.dispatch_pending_uploads(&mut self.global);
                     self.send(Cmd::RefreshQuota);
                     self.send(Cmd::RefreshTasks);
                     self.persist_settings();
@@ -419,6 +421,20 @@ impl App {
                     self.aria2_testing = false;
                     self.toast_err(&format!("aria2 连接失败: {what}"));
                 }
+                Msg::UlResumed {
+                    req_id,
+                    resumed,
+                    skipped,
+                    total,
+                    note,
+                } => self.transfers.on_ul_resumed(
+                    &mut self.global,
+                    req_id,
+                    resumed,
+                    skipped,
+                    total,
+                    note,
+                ),
                 Msg::UlProgress {
                     req_id,
                     total,

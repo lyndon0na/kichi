@@ -251,8 +251,9 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             req_id,
             path,
             parent,
+            dest_stack,
         } => {
-            upload::spawn_upload(st, tx, req_id, path, parent).await;
+            upload::spawn_upload(st, tx, req_id, path, parent, dest_stack).await;
         }
         Cmd::StartUploadDir {
             req_id,
@@ -262,6 +263,9 @@ async fn handle(st: &mut WorkerState, tx: &Sender<Msg>, cmd: Cmd) {
             upload::spawn_upload_dir(st, tx, req_id, path, parent).await;
         }
         Cmd::CancelUpload { req_id } => cancel_task(st, req_id).await,
+        Cmd::DiscardUploadResume { local_path, parent } => {
+            upload::discard_resume(st.client.as_ref(), &local_path, parent.as_deref());
+        }
         Cmd::Preview {
             req_id,
             file_id,
