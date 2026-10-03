@@ -10,6 +10,7 @@
 ### 新增
 
 - **推送到 aria2（外部下载器）**：文件 / 目录右键菜单与选中工具栏新增「发送到 aria2」，解析限时直链后经 JSON-RPC 推给 aria2（或 Motrix）自行下载；整目录先递归扫描、按云端层级落到 aria2 的逐任务 `dir`（`out` 用文件名），请求头（UA / `X-Device-Id` / 必要时 Bearer）按 aria2 的 `header` 数组下发；推送期间右下角常驻提示实时更新进度，结束替换为结果（成功 / 部分失败 / 空目录 / 整批失败），并在完成后如实回传首个失败原因。设置页新增「aria2」卡片：启用开关、RPC 地址（默认 `http://127.0.0.1:6800/jsonrpc`）、密钥、下载目录（留空 = 用 aria2 自己的 `dir`）与「测试连接」（`aria2.getVersion`）；密钥只存本机 `settings.json` 并随命令下发，不进日志。已知代价：直链限时（排队过久 / 下载太慢会在 aria2 侧过期失败，需重新推送，Kichi 不做代理中转）与同名冲突交给 aria2 自身策略（不代做 ` (n)` 去重）
+- **上传跨重启续传（12 小时凭证窗口）**：关掉软件 / 重启机器后再打开，未完成的上传会从已传分片处**自动续传**，不再从头重传 —— 前提是 OSS 临时凭证仍在有效期内（实测 = 取票时刻 + 12 小时）；超过窗口或本地文件已变化时**安全降级为全量重传**，并在传输页给出说明。断点与凭证落盘 `~/.config/kichi/upload_resume.json`（权限 0600、原子写、不落日志）；任务卡片启动时还原为「排队中」、登录成功后自动继续；取消 / 移除任务时清理云端不可见的 `PENDING` 占位条目。探针实测依据：跨进程 ×4 + 跨重启 ×1 全过、回下载 gcid 与本地逐字节一致（报告 `docs/UPLOAD_RESUME_PROBE_REPORT.md`）
 
 ### 变更
 
@@ -17,7 +18,7 @@
 - **文档：README 补主界面截图**：`## 界面` 一节顶部放入主界面截图（`screenshot/main.png`，3930×2754 HiDPI），移除「项目尚未内置截图」的旧说明
 - **文档：工作文档归位 `docs/`**：`PROJECT_PLAN.md` / `TODO.md` / `UI_STYLE.md` / `UPLOAD_RESUME_NOTES.md` 以 `git mv` 移入 `docs/`（保留历史），仓库根只留 `README.md` / `CHANGELOG.md` / `LICENSE` 等门面文件；`AGENTS.md`（AI 协作者须知）随之纳入版本管理；README 路线图链接与目录树、文档间引用同步。纯文档调整：代码 / CI / 打包链路零影响
 - **工程：根 `.gitignore` 补 `.flatpak-builder/`**：该构建缓存此前仅靠目录内部自带的 `.gitignore` 兜底，根规则缺失；一并清理了历史工具的 `.delta/` 残留与 `dist/` 的 0.1.0 旧产物（均为忽略文件，不影响仓库内容）
-- **文档：README「已知限制」补上传跨重启续传条目**：该结论（协议限制，不可行，`UPLOAD_RESUME_NOTES.md` 有完整复盘）此前只落在 `AGENTS.md` / `PROJECT_PLAN.md` / `TODO.md`，README 用户视角漏写；本次补上限制行，并把功能表与上传详情里两处「断点续传」限定为「运行期内」
+- **工程：上传续传探针随仓库保留**：`crates/kichi-core/src/upload_resume_probe.rs`（`#[ignore]` + `KICHI_UPLOAD_PROBE=1` 双开关，`#[cfg(test)]` 引入、不进发布产物）作为手动回归工具保留 —— 怀疑服务端凭证 / 协议行为变化时，按文件头注释跑 `stage1 → 重启 → stage2` 复核；实测结论见 `docs/UPLOAD_RESUME_PROBE_REPORT.md`（旧「跨重启续传不可行」的结论即被该探针推翻）
 
 ### 修复
 

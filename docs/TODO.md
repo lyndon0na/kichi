@@ -9,7 +9,7 @@
 | 优先级    | 主题        | 项数  |
 |:------ |:--------- |:--- |
 | **P0** | 用户可见的功能缺口 | 0   |
-| **P1** | 正确性与健壮性   | 0   |
+| **P1** | 正确性与健壮性   | 1   |
 | **P2** | 可维护性与工程   | 0   |
 | **P3** | 分发与发布     | 0   |
 
@@ -34,7 +34,11 @@
 
 ## P1 · 正确性与健壮性
 
-> ✅ 全部完成
+| 编号   | 任务           | 主要路径                                   | 说明 / 验收                                                                                                                                                                                                                                                                                                                           |
+|:---- |:------------ |:-------------------------------------- |:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1-5 | HTTP 请求超时 | `kichi-core/src/client.rs`（`KichiClient`） | **待做**（2026-10-03 立项）：现状 `KichiClient` 未配任何超时（reqwest 默认无超时），连接挂起 / 黑洞地址下请求会**永久等待**（上传续传探针做边界观察时实测到，见 `UPLOAD_RESUME_PROBE_REPORT.md` §3.5；探针当时自己给每步套了硬超时）。验收：黑洞地址（如 `10.255.255.1`）下 API 请求限时返回明确错误；慢速大传输不被误杀（超时只限连接 / 首包阶段，或按整体预算另行设计，传输体不限时）。 |
+
+> 此前 P1-1 ~ P1-4 均已完成；P1-5 为本次新立项（来源：上传跨重启续传探针的边界观察，实现续传时按「另立条目」处理，未顺手改客户端）。
 
 ## P2 · 可维护性与工程
 
@@ -96,7 +100,7 @@
 
 ### 每步的固定验收
 
-- `cargo fmt --all` → `cargo clippy --workspace --all-targets -- -D warnings`（0 告警）→ `cargo test --workspace` 全绿，`#[test]` 数不减（当前基线 **106 项**：core 41 + GUI 65）。
+- `cargo fmt --all` → `cargo clippy --workspace --all-targets -- -D warnings`（0 告警）→ `cargo test --workspace` 全绿，`#[test]` 数不减（当前基线 **109 项**：core 42 + GUI 67）。
 - 一次一个域、独立提交（`refactor(gui): …`），**纯搬移、零行为变更**；`worker/` 与上传 / 下载管线额外实机验证。
 - 路径变了就必须同步 `README.md` 目录树与 `AGENTS.md` 代码地图，并在 `PROJECT_PLAN.md` 第五节 11) 追加进度。
 
@@ -104,7 +108,7 @@
 
 ## 已完成（本轮）
 
-- [x] 文档补漏：README「已知限制」补「上传跨重启续传不可行」条目（此前只写在 `AGENTS.md` / `PROJECT_PLAN.md` / `TODO.md`），功能表与上传详情的「断点续传」限定为「运行期内」
+- [x] 文档补漏：README「已知限制」补「上传跨重启续传不可行」条目（此前只写在 `AGENTS.md` / `PROJECT_PLAN.md` / `TODO.md`），功能表与上传详情的「断点续传」限定为「运行期内」（该两处表述已在 P2-1 落地后改回「跨重启续传」，见下方 P2-1）
 
 - [x] 工作区清理与文档归位：删除 `.delta/` 旧快照残留与 `dist/` 的 0.1.0 旧产物（均为忽略文件），根 `.gitignore` 补 `.flatpak-builder/`；`PROJECT_PLAN` / `TODO` / `UI_STYLE` / `UPLOAD_RESUME_NOTES` 移入 `docs/`（本地 `VIBE_CODING_NOTES` 一并归位），`AGENTS.md` 纳入版本管理，README 目录树与各处引用同步
 
@@ -132,7 +136,7 @@
 
 - [x] P1-4 人机验证流程：`captcha_init` 取不到 `captcha_token` 时改为返回新错误变体 `Error::CaptchaReview`（携带从响应里递归提取的验证页链接 `data.url`/`*url`）；`Msg::LoginFailed` 增加 `verify_url` 字段并透传到 `App::auth_captcha_url`；登录页在需要验证时显示「打开验证页面」按钮（`helpers::open_url`）+ 完成验证后重试的引导，无链接时给出「稍后重试 / 换网络 / 用官方客户端验证」提示；补 `extract_verify_url` 单测（`error.rs` / `client.rs` / `msg.rs` / `worker.rs` / `app/mod.rs` / `login.rs`）
 
-- [~] P2-1 上传跨重启续传 —— **调查后判定不可行，代码已回退**（详见 `UPLOAD_RESUME_NOTES.md`）。曾实现一版（`upload_resume.json` 持久化 upload_id / OSS 位置 / 已传分片 ETag，重启后重刷 STS 凭证 + `oss_list_parts` 对账续传），实机验证发现 PikPak 的 STS 凭证**按对象 key 授权**、而每次 `upload_create` 都换 key（key = `upload_tmp/<GCID>_<时间戳>`），用新票凭证访问旧 upload_id 直接 `403 AccessDenied: Access denied by authorizer's policy`，续传被服务端 policy 挡死。已将整套续传代码回退到「重启即全量重传」的干净状态（保留同票同凭证的**会话内**退避重试不受影响）。若日后要真做，唯一方向是持久化并在有效期内**免取票复用凭证本身**对旧 key 续传，但有安全与 STS 寿命窗口限制、且完成落库环节仍有未验证风险。
+- [x] P2-1 上传跨重启续传（`8637660` core + `dadd907` GUI）—— **旧「不可行」结论已被探针实机复核推翻，并已实现**。不再走「重启后重取票续旧 upload_id」（该路线仍被 STS policy 挡死：凭证按对象 key 授权，403 AccessDenied），改为**落盘 STS 凭证本身**：在凭证有效期（实测 = 取票时刻 + 12 小时，样本 ×3 秒级吻合）内**免取票**，直接用旧 key / 旧 upload_id / 旧凭证续传；过期或本地文件指纹（size + mtime）不符时安全降级为全量重传。探针实测：跨进程 ×4 + 跨重启 ×1 全过、回下载 gcid 与本地逐字节一致；不可见的 `PENDING` 占位条目也可列出 / 删除（`phase.eq` 过滤 + `batch_trash` / `batch_delete`，`phase.in` 数组形式会被服务端拒）。实现：`settings.rs` 落盘 `upload_resume.json`（0600 原子写、worker 单写、不落日志）+ `worker/upload.rs` 续传管线（命中免 gcid / 免取票；每片 ETag 节流 1s 落盘；取消 / 移除时清记录并后台清理占位条目）+ 传输页把记录还原成排队卡片、登录后自动分发。新增单测 3 项（RFC3339 解析 1 + 续传记录判据 2）。结论与回归方法：`docs/UPLOAD_RESUME_PROBE_REPORT.md`（探针随仓库保留为手动回归工具）；历史复盘：`docs/UPLOAD_RESUME_NOTES.md`。
 
 - [x] P2-1b 上传/下载速率显示异常修复（随本次一并保留）：`drain()` 单帧内一次性消费积压的多条进度消息时，逐条按 `Instant::now()` 取样会因 `dt≈0` 让瞬时速率爆炸；新增 `sample_speed` 按 0.25s 节流取样，并补 `has_active_uploads` 使纯上传时也走快轮询，消除消息堆积（`app/mod.rs`）
 
@@ -176,4 +180,4 @@
 - [x] P3-4 打包目录归位（`8bbb355`，随 v1.0.1 出包）：`build-appimage.sh` 收进 `packaging/appimage/`、`build-flatpak.sh` 收进 `packaging/flatpak/`（`kichi.desktop` 留根），`release.yml` / README / 清单注释同步；本地完整跑通 AppImage 出包 + 解包启动、Flatpak 出包
 
 > [!TIP]
-> P0–P3 此前已全部完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）已随 v1.0.1 出包完成；P0-7（下载推送到 aria2）已完成（`7d835da` + `72b9fa5`，端到端待维护者实机确认）—— 队列已清空。
+> P0–P3 此前已全部完成；结构优化第二批的 P2-15（tasks 域收口）/ P2-16（类型随域归位）/ P2-17（分享域渲染分文件）已全部完成；P3-4（打包目录归位）已随 v1.0.1 出包完成；P0-7（下载推送到 aria2）已完成（`7d835da` + `72b9fa5`，端到端待维护者实机确认）；P2-1（上传跨重启续传）经探针复核后已实现（`8637660` + `dadd907`）—— 当前队列仅剩 **P1-5（HTTP 请求超时）**。

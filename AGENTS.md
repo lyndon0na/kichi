@@ -13,7 +13,8 @@ Kichi 是 [PikPak](https://mypikpak.com) 网盘的非官方 Linux 桌面客户�
 | **当前待办**（唯一队列，P0–P3）             | `docs/TODO.md`                |
 | 版本变更记录（Keep a Changelog + 语义化版本） | `CHANGELOG.md`                |
 | UI 风格规范（KDE / Breeze：颜色 / 间距 / 控件 / 清单） | `docs/UI_STYLE.md`            |
-| 一次失败实验的完整复盘（上传跨重启续传）             | `docs/UPLOAD_RESUME_NOTES.md` |
+| 上传跨重启续传：历史复盘（结论已更新）              | `docs/UPLOAD_RESUME_NOTES.md` |
+| 上传跨重启续传：探针实测结论（手动回归工具）           | `docs/UPLOAD_RESUME_PROBE_REPORT.md` |
 | 工程结构评审与改进方向（拆分、CI、协作习惯）          | `docs/VIBE_CODING_NOTES.md`   |
 
 ## 常用命令
@@ -76,7 +77,7 @@ UI 主线程 (egui) ←── mpsc：Cmd / Msg ──→ worker 线程 (tokio) �
 |:---------------------------------------------------------- |:---------------------------------------------------------------------------------------------- |
 | `main.rs`                                                  | 入口；窗口 `app_id`（Flatpak 内取 `FLATPAK_ID`）与视图尺寸                                                   |
 | `worker/mod.rs`                                            | 后台 tokio 线程：`handle` 命令循环（45 个 `Cmd` 分支各一行转调）+ 跨域辅助（`cancel_task` / `set_transfer_limits` / `refresh_quota` / `download_backoff` / `discard_part`）；⚠️ 勿再堆新逻辑 |
-| `worker/{download,upload,preview,thumbs}.rs`               | 四条长任务管线：并发闸 + 退避重试 + 取消登记（**敏感区**：下载 / 上传续传核心路径）                                                                 |
+| `worker/{download,upload,preview,thumbs}.rs`               | 四条长任务管线：并发闸 + 退避重试 + 取消登记；`upload.rs` 另持上传跨重启续传（落盘凭证 seed / 断点节流落盘 / 云端 PENDING 占位条目清理）（**敏感区**：下载 / 上传续传核心路径）                                                                 |
 | `worker/aria2.rs`                                          | aria2 推送管线（P0-7）：整目录 `walk_folder` → 逐文件解析直链 → `aria2.addUri`；独立小闸 4、进度 150ms 节流；不占下载 Gate、不传字节 |
 | `worker/{files,tasks,shares,trash,auth}.rs`                | 各域请求处理：文件列表 / 搜索 / 新建重命名移动复制 · 离线任务 · 分享转存 · 回收站 · 登录会话 —— `Cmd` 分支逐条转到这些函数                                        |
 | `worker/{gate,cache}.rs`                                   | 动态并发闸 `Gate` / 磁盘缓存淘汰 `CacheCtl`（预览与缩略图共用）                                                                     |
@@ -95,7 +96,7 @@ UI 主线程 (egui) ←── mpsc：Cmd / Msg ──→ worker 线程 (tokio) �
 | `app/transfers/model.rs`                                   | 传输纯逻辑：状态映射 / 进度聚合 / 目录树计数 / 速率取样 / 历史记录 id（无 UI 依赖，直接单测）                                             |
 | `filetypes.rs`                                             | 文件类型分类**单点**：图标 / mpv / 系统打开 / 只下载共用一份表（强 mime 优先，扩展名兜底）                                       |
 | `cache.rs`                                                 | 磁盘缓存淘汰：预览 / 缩略图共用的 mtime-LRU（软上限）                                                              |
-| `settings.rs`                                              | 设置与上传 / 下载历史持久化（`~/.config/kichi/`）                                                            |
+| `settings.rs`                                              | 设置与上传 / 下载历史持久化（`~/.config/kichi/`）；上传续传记录 `upload_resume.json`（0600、含短期凭证、原子写）                                                            |
 | `credentials.rs`                                           | 系统密钥环读写密码（Secret Service，阻塞式调用）                                                                |
 | `logging.rs`                                               | 日志初始化与按大小轮转（`~/.cache/kichi/kichi.log`）                                                        |
 | `format.rs` / `theme.rs` / `icons.rs` / `kde.rs`           | 文案格式化 / 主题参数 / 矢量图标 / KDE 配色读取                                                                 |
@@ -109,7 +110,7 @@ UI 主线程 (egui) ←── mpsc：Cmd / Msg ──→ worker 线程 (tokio) �
 
 ## 已知边界与已证伪方向（不要再踩）
 
-- **上传跨重启续传：协议限制，不可行**。PikPak 的 OSS STS 凭证按对象 key 授权，而 key 每次 `upload_create` 都变（`upload_tmp/<GCID>_<时间戳>`），重启后重取票访问旧 `upload_id` 会被 `403 AccessDenied` 拒绝；曾实现的版本已整体回退 —— **不要重新实现**，除非有全新方案。会话内（同票同凭证）的退避重试是保留的。详见 `docs/UPLOAD_RESUME_NOTES.md`。
+- **上传跨重启续传（已实现，2026-10-03）**：落盘 STS 凭证（`settings.rs` 的 `UploadResumeRecord` → `upload_resume.json`，0600），在凭证有效期（取票时刻 + 12 小时）内**免取票**复用旧 key / 旧 `upload_id` 续传（跨进程 ×4 + 跨重启 ×1 实测全过），过期 / 文件变化自动降级全量重传。实现见 `worker/upload.rs`（续传主路径）与 `settings.rs`；结论 `docs/UPLOAD_RESUME_PROBE_REPORT.md`。⚠️ **不要回到「重启后重取票续旧 `upload_id`」的旧路线** —— STS 凭证按对象 key 授权，重取票后访问旧 `upload_id` 仍会被 `403 AccessDenied` 挡死（`docs/UPLOAD_RESUME_NOTES.md` §4 的历史裁决）。会话内（同票同凭证）的退避重试照旧保留。
 - **服务端无全局搜索 API**：`client.rs::search_files` 是客户端递归遍历全盘 + 文件名匹配，慢是已知问题（优化方向待定）。另有**未经复核**的线索称 `/drive/v1/files` 支持 `name` 查询参数做全局搜索（filters 里的 `name.contains` / `name.like` 会被服务端拒绝）—— 做搜索优化前先花几分钟实测这条线索，不要直接信。
 - **`thumbnail_link` 有值 ≠ 可用**：服务端会对无缩略图的文件下发空串 / 相对路径，必须先判可用性（`worker/thumbs.rs::is_usable_thumb_url`）再请求，否则会刷失败日志。
 - **分享转存落点固定**：`share/restore` 只能落进「转存自分享」暂存目录（无 `parent_id` 支持），需转存后定位暂存目录再移动（`worker/shares.rs::find_pack_folder` / `move_new_files`）；不要试图直接把文件转存到目标目录。
