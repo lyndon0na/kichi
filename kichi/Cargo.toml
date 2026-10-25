@@ -1,0 +1,13 @@
+[package]
+name = "kichi"
+description = "PikPak 第三方 Linux 客户端（KDE Plasma）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+
+[build-dependencies]
+cxx-qt-build = "0.10"
