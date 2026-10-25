@@ -7,6 +7,14 @@ pub enum Error {
     #[error("认证失败：{reason}")]
     Auth { reason: String },
 
+    /// 需要用户完成人机验证。`url` 为官方验证页面；令牌可能已随响应下发。
+    #[error("需要完成人机验证，请打开：{url:?}")]
+    Captcha {
+        url: Option<String>,
+        /// 验证流程中上一次拿到的 captcha token（可能为空），重试时沿用
+        token: Option<String>,
+    },
+
     /// 触发官方限制：限流、每日离线任务配额、流量/空间配额。
     /// 非客户端故障，UI 应解释原因而不是盲目重试。
     #[error("触发官方限制：{reason}")]
@@ -34,6 +42,11 @@ pub enum Error {
 }
 
 impl Error {
+    /// 是否属于“需要人机验证”的失败（登录流程据此回到验证分支）。
+    pub fn is_captcha(&self) -> bool {
+        matches!(self, Error::Captcha { .. })
+    }
+
     /// 把 PikPak API 的错误负载（`error` + `error_code` + `error_description`）
     /// 映射为错误类别；已知码表来自 rclone 的实践经验（backend/pikpak）。
     pub fn from_api(code: i64, reason: &str, message: &str) -> Self {
@@ -44,7 +57,10 @@ impl Error {
             // access_token 无效（16）
             "unauthenticated" => Error::Auth { reason: desc },
             // 验证码令牌被拒（登录时 4002，其他端点 9）
-            "captcha_invalid" => Error::Auth { reason: desc },
+            "captcha_invalid" => Error::Captcha {
+                url: None,
+                token: None,
+            },
             // 每日离线任务数已达上限（11）
             "task_daily_create_limit_vip" => Error::RateLimited { reason: desc },
             // 存储空间不足（8）
@@ -79,7 +95,7 @@ mod tests {
         ));
         assert!(matches!(
             Error::from_api(9, "captcha_invalid", ""),
-            Error::Auth { .. }
+            Error::Captcha { .. }
         ));
         assert!(matches!(
             Error::from_api(11, "task_daily_create_limit_vip", "too many"),

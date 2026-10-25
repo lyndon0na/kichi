@@ -5,5 +5,18 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+base64 = "0.22"
 chrono = "0.4"
+md-5 = "0.11"
+rand = "0.9"
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "charset",
+    "http2",
+    "json",
+    "rustls",
+    "system-proxy",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"

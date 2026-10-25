@@ -17,6 +17,11 @@ impl TokenPair {
     pub fn is_expired(&self) -> bool {
         Utc::now() + chrono::Duration::seconds(10) >= self.expires_at
     }
+
+    /// 是否应在 `margin` 之内刷新（主动刷新用）。
+    pub fn needs_refresh(&self, margin: chrono::Duration) -> bool {
+        Utc::now() + margin >= self.expires_at
+    }
 }
 
 /// 条目类别：文件夹或文件。

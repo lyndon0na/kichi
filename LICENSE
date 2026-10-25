@@ -1,0 +1,5 @@
+kichi 源码许可尚未确定（作者决定前保留全部权利）。
+
+本仓库 `kichi-core` 的 PikPak 端点、常量与人机验证（captcha）签名算法
+移植自 rclone（backend/pikpak，MIT 许可，Copyright (c) Nick Craig-Wood 等贡献者），
+相关文件在注释中标注来源。

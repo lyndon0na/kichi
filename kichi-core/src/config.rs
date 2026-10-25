@@ -23,7 +23,7 @@ pub const DEFAULT_DRIVE_BASE: &str = "https://api-drive.mypikpak.com";
 // —— API 路径（拼在基地址后）——
 /// 登录（用户名密码）
 pub const PATH_SIGNIN: &str = "/v1/auth/signin";
-/// 刷新令牌（oauth2 refresh_token 流程）
+/// 令牌刷新（oauth2 refresh_token 流程）
 pub const PATH_TOKEN: &str = "/v1/auth/token";
 /// 申请 captcha 令牌
 pub const PATH_CAPTCHA_INIT: &str = "/v1/shield/captcha/init";
@@ -63,7 +63,7 @@ pub struct Config {
     /// 包名（参与 captcha 签名）
     pub package_name: String,
     pub user_agent: String,
-    /// 设备 id：32 位十六进制；空串表示尚未生成（S2 起生成并持久化）
+    /// 设备 id：32 位十六进制；空串表示尚未生成（由应用层生成并持久化）
     pub device_id: String,
 }
 
@@ -197,5 +197,15 @@ mod tests {
 
         assert_eq!(cfg.signin_url(), "http://127.0.0.1:1/v1/auth/signin");
         assert_eq!(cfg.tasks_url(), "http://127.0.0.1:2/drive/v1/tasks");
+    }
+
+    #[test]
+    fn token_url_is_rclone_verified_path() {
+        let cfg = Config::default();
+        assert_eq!(cfg.token_url(), "https://user.mypikpak.com/v1/auth/token");
+        assert_eq!(
+            cfg.captcha_init_url(),
+            "https://user.mypikpak.com/v1/shield/captcha/init"
+        );
     }
 }
