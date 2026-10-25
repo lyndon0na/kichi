@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 
 // 由 build.rs 的 QmlModule("io.kichi") 生成
 import io.kichi 1.0
@@ -13,26 +14,89 @@ ApplicationWindow {
     visible: true
     color: palette.window
 
+    // 会话对象：构造时自动恢复 KWallet 里的登录态
     Kichi {
-        id: kichi
+        id: backend
     }
 
-    Column {
+    property bool signedIn: backend.authState === "signedIn"
+
+    Component.onCompleted: backend.warmUp()
+
+    // 后台线程的结果由主线程抽水投递（cxx-qt 0.10 下不能用 qsignal）
+    Timer {
+        interval: 100
+        running: true
+        repeat: true
+        onTriggered: backend.pump()
+    }
+
+    header: ToolBar {
+        RowLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            Label {
+                text: "kichi"
+                font.bold: true
+            }
+
+            Item { Layout.fillWidth: true }
+
+            BusyIndicator {
+                running: backend.busy
+                visible: running
+                Layout.preferredWidth: 24
+                Layout.preferredHeight: 24
+            }
+
+            Button {
+                text: qsTr("退出登录")
+                visible: root.signedIn
+                onClicked: signOutDialog.open()
+            }
+        }
+    }
+
+    StackLayout {
+        anchors.fill: parent
+        anchors.margins: 24
+        currentIndex: root.signedIn ? 1 : 0
+
+        LoginPage {
+            backend: backend
+        }
+
+        HomePage {
+            backend: backend
+        }
+    }
+
+    // 状态消息（错误 / 进度 / 提示）
+    footer: Frame {
+        visible: backend.statusMessage.length > 0
+        padding: 10
+
+        Label {
+            text: backend.statusMessage
+            wrapMode: Text.Wrap
+            width: parent.width
+        }
+    }
+
+    Dialog {
+        id: signOutDialog
+        title: qsTr("退出登录")
+        modal: true
         anchors.centerIn: parent
-        spacing: 12
+        standardButtons: Dialog.Ok | Dialog.Cancel
 
         Label {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: "kichi"
-            font.pixelSize: 40
-            font.bold: true
-            color: palette.text
+            text: qsTr("将清除本机保存的登录令牌，下次需要重新输入账号密码。确定退出？")
+            wrapMode: Text.Wrap
+            width: 360
         }
 
-        Label {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: qsTr("PikPak 客户端 · 骨架就绪（v%1）").arg(kichi.version)
-            color: palette.placeholderText
-        }
+        onAccepted: backend.signOut()
     }
 }

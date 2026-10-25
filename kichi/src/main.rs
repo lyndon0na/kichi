@@ -1,6 +1,11 @@
 //! kichi GUI 入口：装载 QML 主界面。
+//!
+//! MOC 预处理会把 `QML_IMPORT_NAME` / `QML_IMPORT_MAJOR_VERSION` 编译进
+//! 生成的 QML 类型注册表，因此 QML 里可以直接 `import io.kichi 1.0`
+//! 实例化 `Kichi {}`（无需从 C++ 侧注入根对象）。
 
 mod cxxqt_object;
+mod session;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 

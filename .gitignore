@@ -1,5 +1,7 @@
 # Rust 构建产物
 /target
+/kichi/target
+/off
 
 # 编辑器 / 系统
 .idea/
