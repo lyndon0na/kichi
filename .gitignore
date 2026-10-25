@@ -1,0 +1,17 @@
+# Rust 构建产物
+/target
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 本地日志
+*.log
+
+# 凭据与本地配置（永不入库）
+config.local.*
+*.token
+*.secret
+secrets.*
