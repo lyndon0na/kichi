@@ -1,0 +1,9 @@
+[package]
+name = "kichi-core"
+description = "PikPak 非官方 API 的纯 Rust 封装（无 Qt 依赖）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = "0.4"
+thiserror = "2"
