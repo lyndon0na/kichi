@@ -13,14 +13,17 @@ Item {
     property var backend: null
     // 列宽 / 水平内边距与 FileRow 一致：实际数值由 FilesPage 同时下发，
     // 这里的默认值只是兜底（和 FileRow 的默认值保持相同）。
-    property int iconColumnWidth: 24
-    property int sizeColumnWidth: 100
-    property int modifiedColumnWidth: 130
+    property int iconColumnWidth: 30
+    property int sizeColumnWidth: 126
+    property int modifiedColumnWidth: 165
     property int contentPadding: 8
     property int columnSpacing: 10
+    // 表头行高与字号：和列表行同一套密度，由 FilesPage 下发
+    property int headerRowHeight: 36
+    property int headerPixelSize: 13
 
-    // 26 的行高 + 底部 1px 分隔线
-    implicitHeight: 27
+    // 表头行 + 底部 1px 分隔线
+    implicitHeight: header.headerRowHeight + 1
 
     // 换列时的常用方向：名称从 A 到 Z，大小和时间都把大的 / 新的放前面
     function defaultAscending(field) {
@@ -52,7 +55,7 @@ Item {
             Layout.fillWidth: true
             Layout.leftMargin: header.contentPadding
             Layout.rightMargin: header.contentPadding
-            Layout.preferredHeight: 26
+            Layout.preferredHeight: header.headerRowHeight
             spacing: header.columnSpacing
 
             // 图标列占位：让「名称」和行的文件名左边缘对齐
@@ -78,7 +81,7 @@ Item {
                     anchors.fill: parent
                     text: header.label(qsTr("名称"), nameCell.field)
                     color: palette.placeholderText
-                    font.pixelSize: 12
+                    font.pixelSize: header.headerPixelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignLeft
                     elide: Text.ElideRight
@@ -107,7 +110,7 @@ Item {
                     anchors.fill: parent
                     text: header.label(qsTr("大小"), sizeCell.field)
                     color: palette.placeholderText
-                    font.pixelSize: 12
+                    font.pixelSize: header.headerPixelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
@@ -136,7 +139,7 @@ Item {
                     anchors.fill: parent
                     text: header.label(qsTr("修改时间"), modifiedCell.field)
                     color: palette.placeholderText
-                    font.pixelSize: 12
+                    font.pixelSize: header.headerPixelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight

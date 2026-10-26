@@ -13,14 +13,23 @@ ItemDelegate {
     property var entry: null
     property var backend: null
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
-    property int iconColumnWidth: 24
-    property int sizeColumnWidth: 100
-    property int modifiedColumnWidth: 130
+    property int iconColumnWidth: 30
+    property int sizeColumnWidth: 126
+    property int modifiedColumnWidth: 165
     property int columnSpacing: 10
+    // 行高 / 字号 / 图标大小同样由页面给出（列表密度集中在 FilesPage.qml）
+    property int rowHeight: 52
+    property int textPixelSize: 16
+    property int iconPixelSize: 24
     // 水平内边距固定：表头按同一个数值摆位。不依赖控件风格的默认 padding，
     // 否则换风格（这里实测是 8 而不是 Qt 默认的 12）表头就和行错开。
     leftPadding: 8
     rightPadding: 8
+
+    // 行高显式写死：ItemDelegate 自己算的是「文字高度 + 上下 padding」，
+    // 跟着字号漂，和表头对不齐。这里由页面给一个确定值。
+    // 内容仍是 RowLayout 填满整行，Label 默认 Text.AlignVCenter，文字自动居中。
+    implicitHeight: row.rowHeight
 
     // 右键：相对本行的位置（交给页面换算到菜单坐标系）
     signal contextMenu(point position)
@@ -100,14 +109,17 @@ ItemDelegate {
         // 固定宽度：图标宽度随 emoji 字形变，表头的「名称」就对不上文件名了
         Label {
             text: row.iconFor(row.entry)
-            font.pixelSize: 18
+            font.pixelSize: row.iconPixelSize
             Layout.preferredWidth: row.iconColumnWidth
             horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
             color: row.highlighted ? palette.highlightedText : palette.text
         }
 
         Label {
             text: row.entry ? row.entry.name : ""
+            font.pixelSize: row.textPixelSize
+            verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
             Layout.fillWidth: true
             color: row.highlighted ? palette.highlightedText : palette.text
@@ -116,11 +128,15 @@ ItemDelegate {
         Label {
             text: qsTr("违规")
             visible: row.entry ? row.entry.auditFlag : false
+            font.pixelSize: row.textPixelSize
+            verticalAlignment: Text.AlignVCenter
             color: row.highlighted ? palette.highlightedText : "#c0392b"
         }
 
         Label {
             text: row.entry ? row.entry.sizeText : ""
+            font.pixelSize: row.textPixelSize
+            verticalAlignment: Text.AlignVCenter
             color: row.highlighted ? palette.highlightedText : palette.placeholderText
             opacity: row.highlighted ? 0.8 : 1
             horizontalAlignment: Text.AlignRight
@@ -131,6 +147,8 @@ ItemDelegate {
         // 大小列跟着右移，表头就对不齐了
         Label {
             text: row.entry ? row.entry.modifiedText : ""
+            font.pixelSize: row.textPixelSize
+            verticalAlignment: Text.AlignVCenter
             color: row.highlighted ? palette.highlightedText : palette.placeholderText
             opacity: row.highlighted ? 0.8 : 1
             horizontalAlignment: Text.AlignRight

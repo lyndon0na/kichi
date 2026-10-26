@@ -14,6 +14,13 @@ Item {
     property var backend: null
     // 当前选中的结果 id（本视图内生效；与目录列表的选中互不干扰）
     property string selectedId: ""
+    // 行高 / 字号 / 列宽由 FilesPage 下发，与目录列表同一套密度
+    property int rowHeight: 60
+    property int textPixelSize: 16
+    property int metaPixelSize: 13
+    property int iconPixelSize: 24
+    property int sizeColumnWidth: 110
+    property int modifiedColumnWidth: 150
 
     // 右键：条目本身 + 结果行内的位置（页面换算到菜单坐标系）
     signal contextMenu(var entry, point position)
@@ -92,7 +99,7 @@ Item {
                 width: results.width
                 // 两行：名字一行、所在文件夹一行。ItemDelegate 的内容区
                 // 默认有上下留白，固定高度会把第二行挤到外面重叠
-                height: Math.max(48, contentItem.implicitHeight + 16)
+                height: Math.max(root.rowHeight, contentItem.implicitHeight + 18)
                 // 与目录列表一样关掉委托自带的图标渲染
                 icon.name: ""
                 icon.source: ""
@@ -133,7 +140,7 @@ Item {
 
                         Label {
                             text: root.iconFor(modelData)
-                            font.pixelSize: 18
+                            font.pixelSize: root.iconPixelSize
                             color: row.highlighted ? palette.highlightedText : palette.text
                         }
 
@@ -143,11 +150,12 @@ Item {
                             color: row.highlighted ? palette.highlightedText
                                  : modelData.kind === "folder" ? "#3c7dd9"
                                  : palette.placeholderText
-                            font.pixelSize: 12
+                            font.pixelSize: root.metaPixelSize
                         }
 
                         Label {
                             text: modelData.name
+                            font.pixelSize: root.textPixelSize
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             color: row.highlighted ? palette.highlightedText : palette.text
@@ -156,24 +164,27 @@ Item {
                         Label {
                             text: qsTr("违规")
                             visible: modelData.auditFlag
+                            font.pixelSize: root.textPixelSize
                             color: row.highlighted ? palette.highlightedText : "#c0392b"
                         }
 
                         Label {
                             text: modelData.sizeText
+                            font.pixelSize: root.textPixelSize
                             color: row.highlighted ? palette.highlightedText : palette.placeholderText
                             opacity: row.highlighted ? 0.8 : 1
                             horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 90
+                            Layout.preferredWidth: root.sizeColumnWidth
                         }
 
                         Label {
                             text: modelData.modifiedText
                             visible: modelData.modifiedText.length > 0
+                            font.pixelSize: root.textPixelSize
                             color: row.highlighted ? palette.highlightedText : palette.placeholderText
                             opacity: row.highlighted ? 0.8 : 1
                             horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 120
+                            Layout.preferredWidth: root.modifiedColumnWidth
                         }
 
                         // 文件夹：直接「进入」（面包屑变成真实层级）
@@ -195,7 +206,7 @@ Item {
                         color: row.highlighted ? palette.highlightedText
                              : modelData.folderId && modelData.folderId.length > 0
                                ? palette.link : palette.placeholderText
-                        font.pixelSize: 12
+                        font.pixelSize: root.metaPixelSize
                         elide: Text.ElideMiddle
 
                         MouseArea {

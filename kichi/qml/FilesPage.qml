@@ -19,14 +19,11 @@ Item {
     // 搜索视图开着：列表区换成结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
 
-    // 列表列宽：表头（FileListHeader）与每一行（FileRow）共用同一组数值。
-    // 只在这里改，两边一起跟着变，不会出现「表头 100px、行里 90px」的错位。
-    readonly property int iconColumnWidth: 24
-    readonly property int sizeColumnWidth: 100
-    readonly property int modifiedColumnWidth: 130
-    // 行的水平内边距：FileRow 显式用它，表头也用它，不跟控件风格的默认值走
-    readonly property int rowPadding: 8
-    readonly property int columnSpacing: 10
+    // 列表密度（行高 / 字号 / 图标 / 列宽）都在 FileListDensity 里，
+    // 表头、行、搜索结果共用同一份数值
+    FileListDensity {
+        id: density
+    }
 
     function crumbCount() {
         return page.backend ? page.backend.breadcrumb.length : 0
@@ -152,11 +149,13 @@ Item {
                     visible: !page.searching
                     Layout.fillWidth: true
                     backend: page.backend
-                    iconColumnWidth: page.iconColumnWidth
-                    sizeColumnWidth: page.sizeColumnWidth
-                    modifiedColumnWidth: page.modifiedColumnWidth
-                    contentPadding: page.rowPadding
-                    columnSpacing: page.columnSpacing
+                    iconColumnWidth: density.iconColumnWidth
+                    sizeColumnWidth: density.sizeColumnWidth
+                    modifiedColumnWidth: density.modifiedColumnWidth
+                    contentPadding: density.rowPadding
+                    columnSpacing: density.columnSpacing
+                    headerRowHeight: density.headerRowHeight
+                    headerPixelSize: density.metaPixelSize
                 }
 
                 ListView {
@@ -178,10 +177,13 @@ Item {
                         width: ListView.view.width
                         entry: modelData
                         backend: page.backend
-                        iconColumnWidth: page.iconColumnWidth
-                        sizeColumnWidth: page.sizeColumnWidth
-                        modifiedColumnWidth: page.modifiedColumnWidth
-                        columnSpacing: page.columnSpacing
+                        iconColumnWidth: density.iconColumnWidth
+                        sizeColumnWidth: density.sizeColumnWidth
+                        modifiedColumnWidth: density.modifiedColumnWidth
+                        columnSpacing: density.columnSpacing
+                        rowHeight: density.rowHeight
+                        textPixelSize: density.namePixelSize
+                        iconPixelSize: density.iconPixelSize
                         // 单击选中；id 绑定而不是 index，刷新 / 排序后仍指向同一条目
                         highlighted: page.selectedId.length > 0
                                      && !!entry && page.selectedId === entry.id
@@ -221,6 +223,13 @@ Item {
                 // 状态行以下的区域全被它截走——表现就是「只有第一行能点」
                 visible: page.searching
                 backend: page.searching ? page.backend : null
+                // 行高 / 字号与目录列表同一套（结果行是两行，行高略高）
+                rowHeight: density.resultRowHeight
+                textPixelSize: density.namePixelSize
+                metaPixelSize: density.metaPixelSize
+                iconPixelSize: density.iconPixelSize
+                sizeColumnWidth: density.resultSizeColumnWidth
+                modifiedColumnWidth: density.resultModifiedColumnWidth
 
                 onContextMenu: function (entry, point) {
                     page.openResultContext(entry, point)
