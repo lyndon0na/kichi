@@ -97,7 +97,7 @@ impl DriveClient {
     }
 
     /// 带鉴权与 captcha 的 GET 请求（captcha 被拒时自动重试一次）。
-    fn get<R: serde::de::DeserializeOwned>(&self, url: &str) -> Result<R, Error> {
+    pub(crate) fn get<R: serde::de::DeserializeOwned>(&self, url: &str) -> Result<R, Error> {
         self.get_with_query(url, &[])
     }
 
@@ -282,6 +282,8 @@ struct FileDto {
     md5_checksum: String,
     #[serde(default)]
     audit: Option<AuditDto>,
+    #[serde(default)]
+    file_category: String,
 }
 
 #[derive(Deserialize)]
@@ -306,6 +308,10 @@ impl FileDto {
             audit_flagged: self.audit.is_some_and(|audit| {
                 !audit.status.is_empty() && !audit.status.eq_ignore_ascii_case("STATUS_OK")
             }),
+            media: matches!(
+                self.file_category.to_ascii_uppercase().as_str(),
+                "VIDEO" | "AUDIO"
+            ),
         }
     }
 }

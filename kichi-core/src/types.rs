@@ -43,6 +43,8 @@ pub struct FileEntry {
     pub md5: Option<String>,
     /// 审核状态异常（官方标记违规等），UI 需提示
     pub audit_flagged: bool,
+    /// 官方归类为媒体（视频/音频），界面上可显示播放入口
+    pub media: bool,
 }
 
 /// 离线任务阶段。
@@ -109,6 +111,55 @@ pub struct StreamTarget {
     pub kind: StreamKind,
     /// 链接过期时刻
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// 一个可播放的画质档位（PikPak 对会转码的视频给出多个流）。
+///
+/// `available` 为 false 的档位照样保留：界面要显示它的存在并说明原因
+/// （`reason`），而不是凭空消失。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayOption {
+    /// 显示名，如 `原画`、`1080P`
+    pub label: String,
+    /// 带签名的临时直链（只在 Rust 侧流转，不进日志）
+    pub url: String,
+    pub kind: StreamKind,
+    /// 分辨率高度；未知为 None
+    pub height: Option<u32>,
+    /// 是否为原文件（未转码）
+    pub original: bool,
+    pub available: bool,
+    /// 不可用原因（英文短标记，界面层翻译成中文）
+    pub reason: Option<&'static str>,
+}
+
+impl PlayOption {
+    /// 档位能否播放。
+    pub fn playable(&self) -> bool {
+        self.available && !self.url.is_empty()
+    }
+
+    /// 直链是否已过期（留 10 秒余量，与 rclone 一致）。
+    ///
+    /// 优先读 URL 里的 `expire` 查询参数（unix 秒）；解析不出时退回给出的
+    /// `fallback` 时间。两者都没有时按「未知、未过期」处理。
+    pub fn is_expired(&self, fallback: Option<DateTime<Utc>>) -> bool {
+        let margin = chrono::Duration::seconds(10);
+        let now = Utc::now();
+        if let Some(seconds) = expire_query(&self.url) {
+            return now + margin >= DateTime::from_timestamp(seconds, 0).unwrap_or(now);
+        }
+        fallback.is_some_and(|at| now + margin >= at)
+    }
+}
+
+/// 从直链查询串里取 `expire`（unix 秒）。
+fn expire_query(url: &str) -> Option<i64> {
+    let query = url.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "expire").then(|| value.parse::<i64>().ok())?
+    })
 }
 
 #[cfg(test)]
