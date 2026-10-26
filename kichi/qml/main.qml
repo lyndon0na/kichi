@@ -142,7 +142,17 @@ ApplicationWindow {
                 text: backend.quotaSummary
                 visible: backend.quotaSummary.length > 0
                 elide: Text.ElideRight
-                Layout.maximumWidth: 260
+                Layout.maximumWidth: 400
+                // 完整内容在悬停提示里看，顶栏只负责概览
+                ToolTip.visible: quotaHover.containsMouse
+                ToolTip.text: backend.quotaSummary
+
+                MouseArea {
+                    id: quotaHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                }
             }
 
             Button {

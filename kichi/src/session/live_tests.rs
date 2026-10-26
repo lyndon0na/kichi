@@ -88,8 +88,7 @@ fn live_offline_task_roundtrip() {
     }
 
     // Blender 官方的 4.4MB 预告片：稳定、体积小，适合验证链路
-    const TEST_URL: &str =
-        "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4";
+    const TEST_URL: &str = "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4";
     println!("提交测试任务：{TEST_URL}");
     let created = session
         .add_offline_task(TEST_URL)
@@ -295,4 +294,60 @@ fn live_play_options_for_a_media_file() {
         crate::player::mask_url(&target.url)
     );
     assert!(code == "200" || code == "206", "直链不可用：HTTP {code}");
+}
+
+/// 真实会话的容量接口原始响应探测（默认忽略）。
+///
+/// 目的：核实官方 `about` 到底下发哪些字段——尤其 rclone 里存在的
+/// `play_times_limit` / `play_times_usage`（播放时长配额）。确认后才决定
+/// 界面上要不要显示；拿不到就只留宽容解析，不臆造数值。
+#[test]
+#[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+fn live_about_raw_fields() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, _)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+    let quota = session.quota().expect("查询容量失败");
+    println!(
+        "解析结果：usage={} limit={:?} vip={}",
+        quota.usage, quota.limit, quota.vip
+    );
+
+    // 原始 body：走 kichi-core 的客户端拿一遍，只打印键名与标量值（无凭据）
+    let client = session.drive().expect("构造客户端失败");
+    match client.about_raw_for_probe() {
+        Ok(value) => println!("原始字段：{}", describe_keys(&value)),
+        Err(err) => println!("原始请求失败：{err}"),
+    }
+}
+
+/// 递归列出 JSON 的键路径（只给键名，不给可能是凭据的值）。
+fn describe_keys(value: &serde_json::Value) -> String {
+    fn walk(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(child, &path, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, child) in items.iter().take(3).enumerate() {
+                    walk(child, &format!("{prefix}[{index}]"), out);
+                }
+            }
+            other => out.push(format!("{prefix}={other}")),
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, "", &mut out);
+    out.join(", ")
 }

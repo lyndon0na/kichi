@@ -12,6 +12,9 @@ mod tasks;
 pub use paths::store_path;
 pub use tasks::has_active;
 
+#[cfg(test)]
+mod live_tests;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 

@@ -42,16 +42,38 @@ pub struct UserInfo {
 struct AboutResponse {
     #[serde(default)]
     quota: Option<AboutQuota>,
+    #[serde(default)]
+    quotas: Option<AboutQuotas>,
+}
+
+#[derive(Deserialize, Default)]
+struct AboutQuotas {
+    #[serde(default)]
+    cloud_download: Option<AboutQuota>,
 }
 
 #[derive(Deserialize)]
 struct AboutQuota {
     #[serde(default, deserialize_with = "lenient_u64")]
     usage: u64,
-    #[serde(default, deserialize_with = "lenient_u64")]
-    limit: u64,
+    #[serde(default, deserialize_with = "lenient_signed")]
+    limit: i64,
     #[serde(default)]
     is_unlimited: bool,
+}
+
+/// 官方把额度编码成字符串，且「不限量」用 `"-1"` 表示。
+fn lenient_signed<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(number) => Ok(number.as_i64().unwrap_or(0)),
+        serde_json::Value::String(text) => text.parse::<i64>().map_err(D::Error::custom),
+        _ => Ok(0),
+    }
 }
 
 /// 官方把大数字编码为字符串（`"123"`），也兼容直接给数字。
@@ -192,11 +214,33 @@ impl DriveClient {
             .ok_or_else(|| Error::ApiChanged("about 响应缺少 quota".into()))?;
         // 会员状态只在成功时覆盖，失败按非会员处理（不让容量查询一起失败）
         let vip = self.is_vip().unwrap_or(false);
+        // 离线下载额度实测存在（quotas.cloud_download）；`limit` 为 "-1" 表示不限量，
+        // 因此这里用 lenient 的字符串解析，不能按无符号数直接读
+        let download = response.quotas.and_then(|quotas| quotas.cloud_download);
+        let (download_usage, download_limit) = match download {
+            Some(entry) => (
+                Some(entry.usage),
+                if entry.is_unlimited || entry.limit < 0 {
+                    Some(None)
+                } else {
+                    Some(Some(entry.limit as u64))
+                },
+            ),
+            None => (None, None),
+        };
         Ok(Quota {
             usage: quota.usage,
-            limit: (!quota.is_unlimited && quota.limit > 0).then_some(quota.limit),
+            limit: (!quota.is_unlimited && quota.limit > 0).then_some(quota.limit as u64),
             vip,
+            cloud_download_usage: download_usage,
+            cloud_download_limit: download_limit,
         })
+    }
+
+    /// 排障用：`about` 的原始响应（只给集成测试打印字段名，不对外暴露）。
+    #[doc(hidden)]
+    pub fn about_raw_for_probe(&self) -> Result<serde_json::Value, Error> {
+        self.get(&self.config.about_url())
     }
 
     /// 会员状态（失败不致命，`about` 里按 false 处理）。
@@ -502,5 +546,34 @@ mod tests {
 
         assert_eq!(entries[2].modified_at, None, "空时间应为 None");
         assert!(entries[2].audit_flagged, "非 STATUS_OK 的审核状态应标记");
+    }
+
+    /// 用 2026-10-26 真实账号抓到的 `about` 响应结构做样本。
+    #[test]
+    fn about_parses_cloud_download_quota() {
+        let raw = r#"{
+            "kind": "drive#about",
+            "quota": {"kind": "drive#quota", "limit": "10995116277760", "usage": "5230119883333",
+                      "usage_in_trash": "0", "is_unlimited": false},
+            "quotas": {"cloud_download": {"kind": "", "limit": "-1", "usage": "0",
+                       "usage_in_trash": "0", "is_unlimited": true}},
+            "user_type": 1
+        }"#;
+        let response: AboutResponse = serde_json::from_str(raw).expect("样本应能解析");
+        let download = response
+            .quotas
+            .and_then(|quotas| quotas.cloud_download)
+            .expect("cloud_download 应存在");
+        assert_eq!(download.usage, 0);
+        assert!(download.is_unlimited, "limit=-1 表示不限量");
+        assert_eq!(download.limit, -1, "-1 必须被宽容解析成负数而不是报错");
+    }
+
+    #[test]
+    fn about_without_quotas_still_parses() {
+        let raw = r#"{"quota": {"limit": "100", "usage": "50"}}"#;
+        let response: AboutResponse = serde_json::from_str(raw).expect("缺 quotas 也应能解析");
+        assert!(response.quotas.is_none());
+        assert_eq!(response.quota.map(|q| q.usage), Some(50));
     }
 }

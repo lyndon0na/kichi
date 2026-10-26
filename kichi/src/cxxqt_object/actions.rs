@@ -195,7 +195,16 @@ impl qobject::Kichi {
             .map(format_size)
             .unwrap_or_else(|| "无限制".to_owned());
         let vip = if quota.vip { "会员" } else { "免费账号" };
-        let summary = format!("{vip} · 已用 {} / {limit}", format_size(quota.usage));
+        let mut summary = format!("{vip} · 已用 {} / {limit}", format_size(quota.usage));
+        // 离线下载额度（实测官方有下发；不限量时也明说，免得用户以为没查到）
+        if let Some(used) = quota.cloud_download_usage {
+            let cap = match quota.cloud_download_limit {
+                Some(Some(limit)) => format_size(limit),
+                Some(None) => "不限".to_owned(),
+                None => "未知".to_owned(),
+            };
+            summary.push_str(&format!(" · 离线下载 {} / {cap}", format_size(used)));
+        }
         {
             let mut rust = self.as_mut().rust_mut();
             rust.quota_summary = QString::from(summary.as_str());

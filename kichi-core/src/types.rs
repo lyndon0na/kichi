@@ -93,6 +93,10 @@ pub struct Quota {
     /// 总量；`None` 表示不限量
     pub limit: Option<u64>,
     pub vip: bool,
+    /// 离线下载额度：已用字节；`None` 表示官方没下发
+    pub cloud_download_usage: Option<u64>,
+    /// 离线下载额度：上限；`Some(None)` 表示不限量
+    pub cloud_download_limit: Option<Option<u64>>,
 }
 
 /// 串流链接类别。
