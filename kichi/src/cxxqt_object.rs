@@ -240,6 +240,7 @@ impl QVariantList {
 mod actions;
 mod backend;
 mod downloads;
+mod file_actions;
 mod files;
 mod notifications;
 mod play;

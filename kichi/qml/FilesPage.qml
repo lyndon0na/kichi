@@ -278,56 +278,10 @@ Item {
         backend: page.backend
     }
 
-    // —— 清晰度菜单（后端取到档位后 playMenu 非空即弹出）——
-    Menu {
+    // —— 清晰度菜单（内容在 FilesPagePlayMenu.qml）——
+    FilesPagePlayMenu {
         id: playMenu
-
-        // 弹出时按锚点定位并夹在页面内
-        function openAt(point) {
-            x = Math.max(0, Math.min(point.x - width / 2, page.width - width))
-            y = Math.max(0, Math.min(point.y + 4, page.height - height))
-            open()
-        }
-
-        // 用户点菜单外面关掉时，把后端的档位一起清掉（避免残留的直链）
-        onClosed: page.backend ? page.backend.cancelPlay() : undefined
-
-        // 标题 + 档位条目（不用 contentItem：老 Qt 版本没有这个属性）
-        MenuItem {
-            text: page.backend ? page.backend.playTitle : ""
-            enabled: false
-            width: 260
-        }
-
-        MenuSeparator {}
-
-        Repeater {
-            model: page.backend ? page.backend.playMenu : []
-
-            delegate: MenuItem {
-                text: modelData.label
-                      + (modelData.reason.length > 0 ? qsTr("（%1）").arg(modelData.reason) : "")
-                      + (modelData.original ? qsTr(" · 原文件") : "")
-                enabled: modelData.available === true
-                width: 260
-                onClicked: page.backend.playSelected(index)
-            }
-        }
-    }
-
-    // playMenu 一有内容就弹（后端已经过滤了「全部不可用」的情况）
-    Connections {
-        target: page.backend
-
-        function onChanged() {
-            // 后端清空了菜单（选中开播 / 出错 / 登出），界面上的菜单也要收起
-            if (!page.backend || page.backend.playMenu.length === 0) {
-                if (playMenu.visible)
-                    playMenu.close()
-                return
-            }
-            if (!playMenu.visible)
-                playMenu.openAt(page.playAnchor)
-        }
+        backend: page.backend
+        anchorPoint: page.playAnchor
     }
 }
