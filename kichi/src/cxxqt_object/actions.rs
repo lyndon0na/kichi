@@ -76,6 +76,8 @@ impl qobject::Kichi {
                 .as_mut()
                 .set_message(&format!("退出登录失败：{err}"), false),
         }
+        // 退出后要立刻切回登录页
+        self.as_mut().notify();
     }
 
     /// 主线程抽水：执行后台线程投递过来的结果（QML 定时器驱动）。
