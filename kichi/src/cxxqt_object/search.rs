@@ -20,7 +20,7 @@ use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 use kichi_core::{EntryKind, FileEntry};
 
 use super::actions::enqueue_ui;
-use super::files::{entry_map, sort_entries, ROOT_NAME};
+use super::files::{entry_map, ROOT_NAME};
 use super::qobject;
 use super::QVariantList;
 use crate::session::download::Cancel;
@@ -277,13 +277,14 @@ impl qobject::Kichi {
     }
 
     /// 本地筛选的结果直接当列表显示（状态栏文案由调用方给）。
-    fn apply_local_filter(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>, status: &str) {
+    fn apply_local_filter(mut self: Pin<&mut Self>, entries: Vec<FileEntry>, status: &str) {
         let folder = self
             .crumbs
             .last()
             .map(|crumb| crumb.name.clone())
             .unwrap_or_else(|| ROOT_NAME.to_owned());
-        sort_entries(&mut entries, self.sort_field, self.sort_ascending);
+        // 本地筛选保持当前目录的原有顺序（用户：搜索先出现的在前）。
+        // 目录列表自己的排序按钮是对「目录」的，不跟着搜索结果走。
         // 本地筛出来的就是当前目录里的条目：所在文件夹直接写当前目录名
         let mut filtered = QVariantList::default();
         for entry in &entries {
@@ -369,39 +370,28 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 改了排序：按同一规则重排已显示的结果（搜索期间不走 `files` 那一栏）。
+    /// 改了排序：搜索视图里**不重排结果**（结果按扫到的先后），只给一句提示。
+    /// 目录列表的排序照旧由 `files.rs` 处理。
     pub(crate) fn re_sort_search_results(mut self: Pin<&mut Self>) {
-        let field = self.sort_field;
-        let ascending = self.sort_ascending;
-        let hits: Vec<SearchHit> = self.search_index.values().cloned().collect();
-        let mut entries: Vec<FileEntry> = hits.iter().map(|hit| hit.entry.clone()).collect();
-        sort_entries(&mut entries, field, ascending);
-        // 排完按 id 回查所在文件夹：条目本身不带路径
-        let by_id: std::collections::HashMap<&str, &SearchHit> =
-            hits.iter().map(|hit| (hit.id(), hit)).collect();
-        let mut list = QVariantList::default();
-        for entry in entries.iter().take(SEARCH_LIST_LIMIT) {
-            let Some(hit) = by_id.get(entry.id.as_str()) else {
-                continue;
-            };
-            list.append(QVariant::from(&hit_map(hit)));
+        // 本地筛选与全盘扫描的结果都按「先出现的在前」，
+        // 搜索视图里没有可重排的东西：只解释一句，别让用户以为按钮坏了
+        if !self.search_active {
+            return;
         }
-        self.as_mut().rust_mut().search_results = list;
-        self.as_mut().notify();
+        self.as_mut().set_message(
+            "搜索结果按扫描到的先后排列，不受目录排序影响；排序按钮只作用于当前目录",
+            false,
+        );
     }
 }
 
-/// 结果清单的显示顺序：**文件夹永远在前**，同类按扫到的先后。
+/// 全盘结果的显示顺序：**先扫到的在前**（用户 2026-10-26 定的规则）。
 ///
-/// 为什么必须显式排：全盘扫描是边扫边插入的，文件夹可能在第 50 页才出现，
-/// 顺着扫到的顺序排就会沉到几百条文件后面——用户以为「搜不到文件夹」。
+/// 不按文件夹优先分组：扫描是从第 1 页往后走的，用户要的是「结果自然长出来」
+/// 的感觉；文件夹用行首的类型标签区分，不靠位置。
 fn ordered_hits(index: &std::collections::HashMap<String, SearchHit>) -> Vec<SearchHit> {
     let mut hits: Vec<SearchHit> = index.values().cloned().collect();
-    hits.sort_by(|a, b| {
-        b.is_folder()
-            .cmp(&a.is_folder())
-            .then(a.order.cmp(&b.order))
-    });
+    hits.sort_by_key(|hit| hit.order);
     hits
 }
 
@@ -551,15 +541,16 @@ mod tests {
     }
 
     #[test]
-    fn folders_are_listed_before_files_even_when_found_late() {
-        // 全盘扫描边扫边插：第 50 页才出现的文件夹也必须排在最前，
-        // 否则用户会以为「全盘搜索没有文件夹」（2026-10-26 实测踩到）
+    fn results_are_ordered_by_arrival() {
+        // 用户 2026-10-26 定的规则：先扫到的在前，不按文件夹分组。
+        // 文件夹靠行首的类型标签区分，不靠位置。
         let mut index = std::collections::HashMap::new();
         for (i, name) in ["a.mkv", "b.mkv", "c.mkv"].iter().enumerate() {
             let mut h = hit(name, "", None);
             h.order = i;
             index.insert(h.id().to_owned(), h);
         }
+        // 第 9999 位才扫到的文件夹：就该排在最后
         let mut late = SearchHit {
             entry: entry("汉化日记", EntryKind::Folder),
             folder_id: String::new(),
@@ -570,12 +561,14 @@ mod tests {
         index.insert("dir-1".to_owned(), late);
 
         let ordered = ordered_hits(&index);
-        assert_eq!(ordered[0].name(), "汉化日记", "文件夹要在最前面");
-        assert!(ordered[0].is_folder());
         assert_eq!(
-            ordered[1..].iter().map(|h| h.order).collect::<Vec<_>>(),
-            vec![0, 1, 2],
-            "文件之间保持扫到的先后"
+            ordered.iter().map(|h| h.name()).collect::<Vec<_>>(),
+            vec!["a.mkv", "b.mkv", "c.mkv", "汉化日记"],
+            "按扫到的先后排，文件夹不插队"
+        );
+        assert!(
+            index.values().any(|h| h.is_folder()),
+            "文件夹仍在结果里，只是按到达顺序出现"
         );
     }
 
