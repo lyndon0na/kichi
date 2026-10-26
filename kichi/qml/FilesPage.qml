@@ -210,6 +210,18 @@ Item {
                                 page.backend.requestPlay(modelData.id)
                             }
                         }
+
+                        // 下载到本地（文件直接下；文件夹递归下，保留层级）
+                        ToolButton {
+                            text: qsTr("⬇")
+                            enabled: page.backend !== null && !page.backend.downloadRunning
+                            ToolTip.visible: hovered
+                            ToolTip.text: modelData.kind === "folder"
+                                          ? qsTr("下载整个文件夹到本地")
+                                          : qsTr("下载到本地")
+
+                            onClicked: page.backend.downloadEntry(modelData.id)
+                        }
                     }
 
                     HoverHandler {
@@ -227,8 +239,14 @@ Item {
             }
         }
 
+        // —— 下载进度（有下载在跑时出现；点 × 取消）——
+        DownloadBar {
+            Layout.fillWidth: true
+            backend: page.backend
+        }
+
         Label {
-            text: qsTr("点视频/音频右侧的「▶」用 mpv 播放；下载、重命名等操作在后续版本加入。")
+            text: qsTr("点视频/音频右侧的「▶」用 mpv 播放；点「⬇」下载到本地（文件夹会连同子目录一起下）。下载目录在设置页里改。")
             color: palette.placeholderText
             font.pixelSize: 12
             wrapMode: Text.Wrap

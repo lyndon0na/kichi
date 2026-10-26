@@ -11,6 +11,9 @@ const QML_FILES: &[&str] = &[
     "qml/FilesPage.qml",
     "qml/TasksPage.qml",
     "qml/SettingsPage.qml",
+    "qml/DownloadBar.qml",
+    "qml/SettingsAbout.qml",
+    "qml/SettingsPlayback.qml",
 ];
 
 fn main() {

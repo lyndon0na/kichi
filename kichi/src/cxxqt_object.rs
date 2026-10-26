@@ -222,6 +222,7 @@ mod downloads;
 mod files;
 mod notifications;
 mod play;
+mod queue;
 mod settings;
 mod tasks;
 mod tray;
