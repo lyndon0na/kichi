@@ -277,6 +277,10 @@ impl QVariantList {
     pub(crate) fn append(&mut self, value: QVariant) {
         self.0.append(value);
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.len() == 0
+    }
 }
 
 mod actions;
@@ -333,12 +337,14 @@ pub struct KichiRust {
     pub(crate) known_running: std::collections::HashMap<String, bool>,
     /// 已经通知过的任务 id
     pub(crate) notified: std::collections::HashSet<String>,
-    /// 播放菜单（QML 当 model 用：label / available / reason / original）
+    /// 播放菜单（QML 当 model 用：label / original）。固定四项，不随网络变化
     pub(crate) play_menu: QVariantList,
     /// 菜单标题（文件名）
     pub(crate) play_title: QString,
-    /// 菜单对应的档位（含直链；只在 Rust 侧流转，不暴露给 QML）
-    pub(crate) pending_options: Vec<kichi_core::PlayOption>,
+    /// 菜单对应的文件 id（选中某一档后才用它取直链）
+    pub(crate) play_id: String,
+    /// 已选中档位、正在取直链（此时菜单关闭**不是**取消播放）
+    pub(crate) play_pending: bool,
     /// 播放请求代数：退出登录 / 重登后旧结果作废
     pub(crate) play_epoch: u64,
     /// 持久化设置（启动时读一次，改动即落盘）
@@ -438,7 +444,8 @@ impl Default for KichiRust {
             notified: std::collections::HashSet::new(),
             play_menu: QVariantList::default(),
             play_title: QString::default(),
-            pending_options: Vec::new(),
+            play_id: String::new(),
+            play_pending: false,
             play_epoch: 0,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),
@@ -500,6 +507,11 @@ impl KichiRust {
             .find(|entry| entry.id == id)
             .or_else(|| self.search_index.get(id).map(|hit| &hit.entry))
             .map(|entry| entry.name.clone())
+    }
+
+    /// 播放菜单对应的文件 id（菜单开着时才有值）。
+    pub(crate) fn play_target(&self) -> Option<String> {
+        (!self.play_id.is_empty()).then(|| self.play_id.clone())
     }
 
     /// 同 [`KichiRust::entry_name`]，按 id 找整个条目（下载要类别与名字）。

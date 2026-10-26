@@ -1,7 +1,11 @@
 import QtQuick
 import QtQuick.Controls
 
-// 清晰度菜单：后端取到档位后 playMenu 非空即弹出。
+// 清晰度菜单：固定四项（原画 / 1080P / 720P / 480P），点播放立刻弹出，不等网络。
+//
+// 只有用户点了某一项之后，后端才去请求档位与直链；请求回来发现没有那一档会回退，
+// 并在状态栏说明实际播的是哪一档。所以这里的行**永远是可点的**，
+// 不用（也无法）预先知道文件有没有这一档。
 //
 // 从 FilesPage.qml 拆出来：那是页面结构，这里是播放相关的弹层。
 // 页面只需要在拿到点击位置时调 openAt()。
@@ -83,14 +87,12 @@ Menu {
             topPadding: 0
             bottomPadding: 0
             text: modelData.label
-                  + (modelData.reason.length > 0 ? qsTr("（%1）").arg(modelData.reason) : "")
                   + (modelData.original ? qsTr(" · 原文件") : "")
-            enabled: modelData.available === true
             onClicked: menu.backend.playSelected(index)
         }
     }
 
-    // playMenu 一有内容就弹（后端已经过滤了「全部不可用」的情况）
+    // playMenu 一有内容就弹（内容是固定的四项，随时可以弹）
     Connections {
         target: menu.backend
 

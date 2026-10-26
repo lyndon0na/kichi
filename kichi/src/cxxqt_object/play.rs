@@ -1,12 +1,16 @@
-//! 播放：取档位 → 弹菜单 → 选中后用外部 mpv 串流。
+//! 播放：弹固定档位菜单 → 选中后取直链 → 用外部 mpv 串流。
 //!
-//! 直链只活在 Rust 侧（`pending_options`），QML 拿到的菜单里**没有 URL**，
+//! 菜单**不等网络**：四项（原画 / 1080P / 720P / 480P）是常量，点「播放」立刻弹出；
+//! 用户在菜单里选了某一档，才发那一次「取直链」的请求（签名链接只能从服务端拿）。
+//!
+//! 直链只活在 Rust 侧的局部变量里，QML 拿到的菜单里**没有 URL**，
 //! 也就没有把签名链接写进界面日志或剪贴板的机会。
 
 use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
+use kichi_core::types::Tier;
 use kichi_core::PlayOption;
 
 use super::actions::run_in_background;
@@ -29,7 +33,10 @@ pub(crate) fn reason_text(reason: Option<&str>) -> String {
 }
 
 impl qobject::Kichi {
-    /// 右键菜单点「播放」：取该文件的播放档位，填好菜单（只有一个可用档时直接播）。
+    /// 点「播放」：设置里选了具体档位就**直接**播那一档；否则立刻弹固定四项菜单。
+    ///
+    /// 两种路径都要发一次请求才能拿到签名直链；区别只是「弹出菜单前是否先等它」：
+    /// 菜单内容不依赖请求结果，所以「每次询问」不等网络，点开就有。
     pub fn request_play(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         let Some(name): Option<String> = self.as_ref().rust().entry_name(&id) else {
@@ -37,15 +44,74 @@ impl qobject::Kichi {
                 .set_message("该文件已不在当前列表中，请刷新后重试", false);
             return;
         };
-        let session = self.backend.session.clone();
-        let epoch = {
+        // 设置里指定了档位：等同用户在菜单里点了那一项，不弹菜单
+        if let Some(tier) = fixed_tier_of(self.settings.preferred_quality) {
+            self.as_mut().prepare_play(&id, &name);
+            self.as_mut().fetch_and_play(tier, &name);
+            return;
+        }
+        let mut menu = QVariantList::default();
+        for tier in crate::settings::FIXED_TIERS {
+            menu.append(QVariant::from(&tier_map(tier)));
+        }
+        {
             let mut rust = self.as_mut().rust_mut();
             rust.play_epoch = rust.play_epoch.wrapping_add(1);
-            rust.pending_options.clear();
-            rust.play_menu = QVariantList::default();
+            rust.play_menu = menu;
             rust.play_title = QString::from(name.as_str());
-            rust.play_epoch
+            rust.play_id = id;
+            // 上一个请求可能还在途：它已被 epoch 作废，这里把等待标记一并清掉，
+            // 否则菜单开着期间 cancel_play 会被误当成「正在取直链」而拒绝关闭
+            rust.play_pending = false;
+            rust.busy = false;
+            rust.status_message = QString::from(format!("「{name}」请选择清晰度").as_str());
+        }
+        self.as_mut().notify();
+    }
+
+    /// 菜单里选了一项（索引对应 `FIXED_TIERS`）：这时才去请求档位和直链。
+    pub fn play_selected(mut self: Pin<&mut Self>, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
         };
+        let Some(&tier) = crate::settings::FIXED_TIERS.get(index) else {
+            return;
+        };
+        if self.as_ref().rust().play_target().is_none() {
+            self.as_mut()
+                .set_message("播放选项已过期，请重新点播放", false);
+            return;
+        }
+        let name = self.play_title.to_string();
+        self.as_mut().fetch_and_play(tier, &name);
+    }
+
+    /// 记下这次播放的目标（id + 文件名），并作废之前的在途请求。
+    fn prepare_play(mut self: Pin<&mut Self>, id: &str, name: &str) {
+        let mut rust = self.as_mut().rust_mut();
+        rust.play_epoch = rust.play_epoch.wrapping_add(1);
+        rust.play_menu = QVariantList::default();
+        rust.play_title = QString::from(name);
+        rust.play_id = id.to_owned();
+        rust.play_pending = true;
+    }
+
+    /// 发请求取档位，回来后按用户要的那一档开播。
+    fn fetch_and_play(mut self: Pin<&mut Self>, tier: Tier, name: &str) {
+        // 菜单已经选完，先收起（这里不清 play_id，回包回来还要用它）
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_menu = QVariantList::default();
+            rust.play_pending = true;
+        }
+        let Some(id) = self.as_ref().rust().play_target() else {
+            self.as_mut()
+                .set_message("播放选项已过期，请重新点播放", false);
+            return;
+        };
+        let name = name.to_owned();
+        let session = self.backend.session.clone();
+        let epoch = self.as_ref().rust().play_epoch;
         self.as_mut()
             .set_message(&format!("正在获取「{name}」的播放链接……"), true);
 
@@ -56,94 +122,45 @@ impl qobject::Kichi {
                     return;
                 }
                 match result {
-                    Ok(options) => qichi.as_mut().show_play_menu(options, &name),
+                    Ok(options) => {
+                        qichi.as_mut().start_tier(&options, tier, &name);
+                    }
                     Err(err) => qichi.as_mut().on_failure(err),
                 }
             },
         );
     }
 
-    /// 菜单里选了一项（索引对应 `playMenu`）。
-    pub fn play_selected(mut self: Pin<&mut Self>, index: i32) {
-        if index < 0 {
-            return;
-        }
-        let Some(option) = self
-            .as_ref()
-            .rust()
-            .pending_options
-            .get(index as usize)
-            .cloned()
-        else {
-            self.as_mut()
-                .set_message("播放选项已过期，请重新点播放", false);
-            return;
-        };
-        if !option.playable() {
-            self.as_mut().set_message(
-                &format!(
-                    "「{}」暂时不能播放：{}",
-                    option.label,
-                    reason_text(option.reason)
-                ),
-                false,
-            );
-            return;
-        }
-        let title = player::title_for(&option, self.play_title.to_string().as_str());
-        self.as_mut().start_player(&option, &title);
-        self.as_mut().clear_play_menu();
-    }
-
-    /// 后台取完档位后的收尾（只在主线程调用）。
-    fn show_play_menu(mut self: Pin<&mut Self>, options: Vec<PlayOption>, name: &str) {
-        let playable: Vec<usize> = options
-            .iter()
-            .enumerate()
-            .filter(|(_, option)| option.playable())
-            .map(|(index, _)| index)
-            .collect();
-        if options.is_empty() {
+    /// 拿到档位后按用户点的档位挑一个开始播放（没有就回退，见 [`resolve`]）。
+    fn start_tier(mut self: Pin<&mut Self>, all: &[PlayOption], tier: Tier, name: &str) {
+        if all.is_empty() {
             self.as_mut()
                 .set_message(&format!("「{name}」没有可播放的链接"), false);
+            self.as_mut().finish_play();
             return;
         }
-        if playable.is_empty() {
-            let reasons = options
+        let Some((option, note)) = kichi_core::types::resolve(all, tier) else {
+            let reasons = all
                 .iter()
                 .map(|option| format!("{}：{}", option.label, reason_text(option.reason)))
                 .collect::<Vec<_>>()
                 .join("；");
             self.as_mut()
                 .set_message(&format!("「{name}」暂时不能播放（{reasons}）"), false);
+            self.as_mut().finish_play();
             return;
+        };
+        let title = player::title_for(&option, name);
+        self.as_mut().start_player(&option, &title);
+        self.as_mut().finish_play();
+        // 回退过就说清楚实际播的是哪一档，别让用户以为自己看到的是选的那档
+        // （放在 finish_play 之后：它只清播放目标，不动状态栏）
+        if let Some(note) = note {
+            self.as_mut().set_message(
+                &format!("「{name}」没有{note}，已播放{}", option.label),
+                false,
+            );
         }
-        // 按偏好直通：只有一个能播，或用户设了默认清晰度且该档可用
-        let direct = pick_preferred(&options, self.settings.preferred_quality);
-        if let Some(index) = direct {
-            let option = options[index].clone();
-            {
-                let mut rust = self.as_mut().rust_mut();
-                rust.pending_options = options;
-            }
-            let title = player::title_for(&option, name);
-            self.as_mut().start_player(&option, &title);
-            self.as_mut().clear_play_menu();
-            return;
-        }
-
-        let mut menu = QVariantList::default();
-        for option in &options {
-            menu.append(QVariant::from(&option_map(option)));
-        }
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.pending_options = options;
-            rust.play_menu = menu;
-            rust.busy = false;
-            rust.status_message = QString::from(format!("「{name}」请选择清晰度").as_str());
-        }
-        self.as_mut().notify();
     }
 
     /// 启动外部播放器（URL 过期时先重取一次）。
@@ -176,20 +193,40 @@ impl qobject::Kichi {
         );
     }
 
-    /// 用户关掉菜单：丢掉档位（连同直链），不留下任何状态。
+    /// 用户关掉菜单：丢掉文件与状态，什么都不请求。
+    ///
+    /// 选中某一项后菜单会自动关闭，那次关闭**不能**取消刚发起的请求
+    /// （`play_pending` 为真时直接忽略）。
     pub fn cancel_play(mut self: Pin<&mut Self>) {
-        if self.pending_options.is_empty() {
+        if self.play_pending {
+            return;
+        }
+        if self.play_menu.is_empty() && self.play_title.is_empty() {
             return;
         }
         self.as_mut().clear_play_menu();
     }
 
-    /// 收起菜单并丢掉直链。
+    /// 本轮播放结束（成功或其他分支都算）：清掉目标，允许下一次播放。
+    fn finish_play(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_pending = false;
+            rust.play_title = QString::default();
+            rust.play_id.clear();
+            rust.play_menu = QVariantList::default();
+        }
+        self.as_mut().notify();
+    }
+
+    /// 收起菜单并丢掉状态。
     fn clear_play_menu(mut self: Pin<&mut Self>) {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.play_menu = QVariantList::default();
-            rust.pending_options.clear();
+            rust.play_title = QString::default();
+            rust.play_id.clear();
+            rust.play_pending = false;
         }
         self.as_mut().notify();
     }
@@ -201,72 +238,29 @@ impl qobject::Kichi {
             rust.play_epoch = rust.play_epoch.wrapping_add(1);
             rust.play_menu = QVariantList::default();
             rust.play_title = QString::default();
-            rust.pending_options.clear();
+            rust.play_id.clear();
+            rust.play_pending = false;
         }
     }
 }
 
-/// 决定是否免菜单直通播放，返回要播的档位下标。
-///
-/// 语义（2026-10-26 按用户实测反馈修正）：
-/// - 「每次询问」：**永远弹菜单**，哪怕只有一个档。用户选了这个就是要自己确认，
-///   偷偷跳过菜单会让人觉得设置没作用。
-/// - 「优先原画」：有可用原画就播。
-/// - 「优先最高转码档」：先找转码档；**一个转码档都没有时用原画兜底**
-///   （实测很多文件只有原画一档，此时弹菜单对用户毫无意义）。
-/// - 偏好档确实无法满足（既无该档也没有可接受兜底）：返回 `None` 弹菜单解释。
-fn pick_preferred(options: &[PlayOption], quality: crate::settings::Quality) -> Option<usize> {
-    use crate::settings::Quality;
-    let playable: Vec<usize> = options
-        .iter()
-        .enumerate()
-        .filter(|(_, option)| option.playable())
-        .map(|(index, _)| index)
-        .collect();
-    if playable.is_empty() {
-        return None;
-    }
+/// 设置里的偏好 → 直接要播的固定档位（`Ask` 返回 None = 弹菜单）。
+fn fixed_tier_of(quality: crate::settings::Quality) -> Option<Tier> {
     match quality {
-        // 明确要求「每次询问」：不给捷径
-        Quality::Ask => None,
-        Quality::Original => playable
-            .iter()
-            .copied()
-            .find(|index| options[*index].original),
-        Quality::Transcode => {
-            let best_transcode = playable
-                .iter()
-                .copied()
-                .filter(|index| !options[*index].original)
-                .max_by_key(|index| options[*index].height.unwrap_or(0));
-            // 没有转码档时用原画兜底：这类文件只有原画，弹菜单没有可选项
-            best_transcode.or_else(|| {
-                playable
-                    .iter()
-                    .copied()
-                    .find(|index| options[*index].original)
-            })
-        }
+        crate::settings::Quality::Ask => None,
+        crate::settings::Quality::Original => Some(Tier::Original),
+        crate::settings::Quality::Transcode(name) => Some(Tier::Transcode(name)),
     }
 }
 
-/// 一个档位 → QML 小 map（不含 URL）。
-fn option_map(option: &PlayOption) -> QVariantMap {
+/// 固定档位 → QML 小 map。
+fn tier_map(tier: Tier) -> QVariantMap {
     let text = |value: &str| QVariant::from(&QString::from(value));
     let mut map = QVariantMap::default();
-    map.insert_clone(&QString::from("label"), &text(&option.label));
-    map.insert_clone(
-        &QString::from("available"),
-        &QVariant::from(&option.available),
-    );
+    map.insert_clone(&QString::from("label"), &text(tier.label()));
     map.insert_clone(
         &QString::from("original"),
-        &QVariant::from(&option.original),
-    );
-    map.insert_clone(&QString::from("reason"), &text(&reason_text(option.reason)));
-    map.insert_clone(
-        &QString::from("height"),
-        &QVariant::from(&option.height.map(|h| h as i32).unwrap_or(0)),
+        &QVariant::from(&(tier == Tier::Original)),
     );
     map
 }
@@ -285,101 +279,21 @@ mod tests {
         assert_eq!(reason_text(Some("other")), "other");
     }
 
-    fn option(label: &str, height: Option<u32>, original: bool, available: bool) -> PlayOption {
-        PlayOption {
-            label: label.into(),
-            url: "https://cdn.invalid/x?sign=S".into(),
-            kind: kichi_core::types::StreamKind::Original,
-            height,
-            original,
-            available,
-            reason: (!available).then_some(kichi_core::media::REASON_QUOTA),
-        }
-    }
-
-    fn sample_menu() -> Vec<PlayOption> {
-        vec![
-            option("原画", None, true, true),
-            option("1080P", Some(1080), false, true),
-            option("720P", Some(720), false, true),
-        ]
+    #[test]
+    fn menu_is_the_four_fixed_tiers_without_any_request() {
+        let labels: Vec<_> = crate::settings::FIXED_TIERS
+            .iter()
+            .map(|tier| tier.label())
+            .collect();
+        assert_eq!(labels, vec!["原画", "1080P", "720P", "480P"]);
     }
 
     #[test]
-    fn preferred_quality_picks_the_right_tier() {
-        use crate::settings::Quality;
-        let menu = sample_menu();
-        assert_eq!(
-            pick_preferred(&menu, Quality::Ask),
-            None,
-            "选了「每次询问」就必须弹菜单，哪怕只有一个档"
-        );
-        assert_eq!(pick_preferred(&menu, Quality::Original), Some(0));
-        assert_eq!(
-            pick_preferred(&menu, Quality::Transcode),
-            Some(1),
-            "转码挑最高档"
-        );
-    }
-
-    #[test]
-    fn ask_always_shows_the_menu_even_with_a_single_tier() {
-        use crate::settings::Quality;
-        // 实测大量文件只有「原画」一档：此时「每次询问」也必须弹菜单，
-        // 否则用户会以为设置根本没生效
-        let menu = vec![option("原画", None, true, true)];
-        assert_eq!(pick_preferred(&menu, Quality::Ask), None);
-    }
-
-    #[test]
-    fn transcode_preference_falls_back_to_original_when_no_transcode_exists() {
-        use crate::settings::Quality;
-        // 实测：很多文件只有原画档，选「优先最高转码档」时应该直接播原画，
-        // 弹一个只有一项的菜单对用户毫无意义
-        let menu = vec![option("原画", None, true, true)];
-        assert_eq!(pick_preferred(&menu, Quality::Transcode), Some(0));
-        // 原画不可用且没有转码档 -> 只能弹菜单
-        let menu = vec![option("原画", None, true, false)];
-        assert_eq!(pick_preferred(&menu, Quality::Transcode), None);
-    }
-
-    #[test]
-    fn unavailable_preference_falls_back_to_menu() {
-        use crate::settings::Quality;
-        // 原画不可用、但有转码档：偏好原画时回退菜单，让用户看到原因
-        let menu = vec![
-            option("原画", None, true, false),
-            option("1080P", Some(1080), false, true),
-        ];
-        assert_eq!(pick_preferred(&menu, Quality::Original), None);
-        // 有可用转码档时优先转码，不受原画不可用影响
-        assert_eq!(pick_preferred(&menu, Quality::Transcode), Some(1));
-    }
-
-    #[test]
-    fn nothing_playable_never_returns_an_index() {
-        use crate::settings::Quality;
-        let menu = vec![option("原画", None, true, false)];
-        for quality in [Quality::Ask, Quality::Original, Quality::Transcode] {
-            assert_eq!(pick_preferred(&menu, quality), None);
-        }
-        assert_eq!(pick_preferred(&[], Quality::Original), None);
-    }
-
-    #[test]
-    fn menu_map_never_carries_the_signed_url() {
-        let option = PlayOption {
-            label: "原画".into(),
-            url: "https://cdn.invalid/secret?sign=SECRET".into(),
-            kind: kichi_core::types::StreamKind::Original,
-            height: None,
-            original: true,
-            available: true,
-            reason: None,
-        };
-        let map = option_map(&option);
+    fn menu_map_never_carries_a_url() {
+        let map = tier_map(Tier::Transcode("1080P"));
         let debug = format!("{map:?}");
-        assert!(!debug.contains("SECRET"), "菜单里不得出现直链");
-        assert_eq!(map.len(), 5);
+        assert!(!debug.contains("cdn.invalid"));
+        assert!(!debug.contains("sign="));
+        assert_eq!(map.len(), 2);
     }
 }

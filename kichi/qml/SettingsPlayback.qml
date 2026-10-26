@@ -34,8 +34,10 @@ ColumnLayout {
             Layout.preferredWidth: 220
             model: [
                 { "value": "ask", "label": qsTr("每次询问（弹出档位菜单）") },
-                { "value": "original", "label": qsTr("优先原画") },
-                { "value": "transcode", "label": qsTr("优先最高转码档") }
+                { "value": "original", "label": qsTr("原画") },
+                { "value": "transcode:1080P", "label": qsTr("1080P") },
+                { "value": "transcode:720P", "label": qsTr("720P") },
+                { "value": "transcode:480P", "label": qsTr("480P") }
             ]
             textRole: "label"
             valueRole: "value"
@@ -61,6 +63,15 @@ ColumnLayout {
                 playback.backend.setPreferredQuality(qualityBox.model[index].value)
             }
         }
+    }
+
+    // 转码档按档位名精确匹配：选 1080P 而文件没有 1080P 档时播原画，不会自动降到 720P
+    Label {
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
+        color: palette.placeholderText
+        font.pixelSize: 12
+        text: qsTr("选具体档位后直接开播；该文件没有这一档就播放原画。「每次询问」的菜单固定列出 原画 / 1080P / 720P / 480P，没有的档位会写明。")
     }
 
     GridLayout {

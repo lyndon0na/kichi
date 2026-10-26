@@ -12,40 +12,82 @@
 
 use std::path::{Path, PathBuf};
 
+use kichi_core::types::Tier;
 use serde::{Deserialize, Serialize};
 
 /// 设置文件格式版本（将来不兼容改动时据此迁移）。
 pub const SETTINGS_VERSION: u32 = 1;
 
 /// 清晰度偏好（对应界面上的「默认清晰度」）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+///
+/// 转码档按**档位名**匹配（`"1080P"` 这样的字面量），不按高度范围：
+/// 平台返回什么名字就认什么名字，指定档位没有时回退原画（见 `kichi_core::types::resolve`）。
+///
+/// 序列化：`"ask"` / `"original"` / `"transcode:1080P"`（不用 serde 的枚举默认形态，
+/// 跨版本改起来太脆）。旧文件里的 `"transcode"` 认不出来，回「每次询问」——
+/// 不替用户猜一个档位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Quality {
     /// 每次弹出档位菜单自己挑（现状）
     #[default]
     Ask,
     /// 优先原画直通播放
     Original,
-    /// 优先转码档（最高清晰度那档）直通播放
-    Transcode,
+    /// 指定转码档；没有这一档就回退原画
+    Transcode(&'static str),
 }
 
+/// 菜单里固定列出的档位（原画在前）。唯一出处是 `kichi_core::types::TIERS`，这里只是转手。
+pub use kichi_core::types::TIERS as FIXED_TIERS;
+
+/// 界面上可选的转码档（顺序即下拉顺序），从 [`FIXED_TIERS`] 派生。
+pub const TRANSCODE_TIERS: [&str; 3] = match FIXED_TIERS {
+    [Tier::Original, Tier::Transcode(a), Tier::Transcode(b), Tier::Transcode(c)] => [a, b, c],
+    _ => ["1080P", "720P", "480P"],
+};
+
+/// 存盘前缀：`transcode:1080P`
+const TRANSCODE_PREFIX: &str = "transcode:";
+
 impl Quality {
+    /// 设置里存的原始字符串（`parse` 能读回来的那一种）。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ask => "ask",
             Self::Original => "original",
-            Self::Transcode => "transcode",
+            // 只有 TRANSCODE_TIERS 里的档位才会被构造出来（parse 守着，界面也只给这几个），
+            // 其余一律按「每次询问」存，免得存进一个谁也解析不回的字符串
+            Self::Transcode(tier) => Tier::Transcode(tier).setting_value(),
         }
     }
 
     /// 从界面字符串解析；无法识别的一律回「每次询问」。
     pub fn parse(text: &str) -> Self {
-        match text.trim() {
+        let text = text.trim();
+        if let Some(tier) = text.strip_prefix(TRANSCODE_PREFIX) {
+            return TRANSCODE_TIERS
+                .iter()
+                .find(|known| known.eq_ignore_ascii_case(tier))
+                .map(|known| Self::Transcode(known))
+                .unwrap_or(Self::Ask);
+        }
+        match text {
             "original" => Self::Original,
-            "transcode" => Self::Transcode,
             _ => Self::Ask,
         }
+    }
+}
+
+impl Serialize for Quality {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Quality {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Self::parse(&text))
     }
 }
 
@@ -289,7 +331,7 @@ mod tests {
     fn roundtrip_keeps_every_field() {
         let path = temp_path("roundtrip.json");
         let settings = Settings {
-            preferred_quality: Quality::Transcode,
+            preferred_quality: Quality::Transcode("1080P"),
             player_command: "mpv".into(),
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
@@ -354,10 +396,37 @@ mod tests {
     #[test]
     fn enum_parsing_is_lenient() {
         assert_eq!(Quality::parse("original"), Quality::Original);
-        assert_eq!(Quality::parse("transcode "), Quality::Transcode);
+        assert_eq!(
+            Quality::parse("transcode:1080P"),
+            Quality::Transcode("1080P")
+        );
+        assert_eq!(
+            Quality::parse(" transcode:720p "),
+            Quality::Transcode("720P"),
+            "档位名大小写不该影响识别"
+        );
+        assert_eq!(
+            Quality::parse("transcode"),
+            Quality::Ask,
+            "旧版的「优先最高转码档」没有对应档位，回每次询问而不是替用户猜"
+        );
+        assert_eq!(Quality::parse("transcode:1440P"), Quality::Ask);
         assert_eq!(Quality::parse("nonsense"), Quality::Ask);
         assert_eq!(SortField::parse("size"), SortField::Size);
         assert_eq!(SortField::parse(""), SortField::Name);
+    }
+
+    #[test]
+    fn quality_roundtrips_through_its_string_form() {
+        for quality in [
+            Quality::Ask,
+            Quality::Original,
+            Quality::Transcode("1080P"),
+            Quality::Transcode("720P"),
+            Quality::Transcode("480P"),
+        ] {
+            assert_eq!(Quality::parse(quality.as_str()), quality, "{quality:?}");
+        }
     }
 
     #[test]

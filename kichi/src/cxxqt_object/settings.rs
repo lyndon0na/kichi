@@ -222,10 +222,15 @@ mod tests {
 
     #[test]
     fn quality_text_roundtrip() {
-        assert_eq!(
-            Quality::parse(Quality::Original.as_str()),
-            Quality::Original
-        );
+        for quality in [
+            Quality::Ask,
+            Quality::Original,
+            Quality::Transcode("1080P"),
+            Quality::Transcode("720P"),
+            Quality::Transcode("480P"),
+        ] {
+            assert_eq!(Quality::parse(quality.as_str()), quality, "{quality:?}");
+        }
         assert_eq!(SortField::parse(SortField::Size.as_str()), SortField::Size);
     }
 }

@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::drive::DriveClient;
-use crate::types::{PlayOption, StreamKind};
+use crate::types::{PlayOption, StreamKind, Tier};
 use crate::Error;
 
 /// 档位不可用原因（界面层负责翻成中文）。
@@ -66,11 +66,12 @@ impl FileInfo {
         if options.is_empty() {
             if let Some(url) = self.fallback_url() {
                 options.push(PlayOption {
-                    label: "原画".to_owned(),
+                    label: Tier::Original.label().to_owned(),
                     url,
                     kind: StreamKind::Original,
                     height: None,
                     original: true,
+                    tier: Some(Tier::Original),
                     available: true,
                     reason: None,
                 });
@@ -133,29 +134,35 @@ impl MediaStream {
         } else {
             None
         };
-        let (label, kind) = self.label_and_kind();
+        let (label, kind, tier) = self.label_kind_and_tier();
         PlayOption {
             label,
             url: self.url.clone(),
             kind,
             height: self.height,
             original: self.original,
+            tier,
             available: reason.is_none(),
             reason,
         }
     }
 
-    /// 显示名 + 链接类别（转码档走 m3u8，原画走文件直链）。
-    fn label_and_kind(&self) -> (String, StreamKind) {
+    /// 显示名 + 链接类别（转码档走 m3u8，原画走文件直链）+ 归到哪个可选档位。
+    fn label_kind_and_tier(&self) -> (String, StreamKind, Option<Tier>) {
         if self.original {
-            return ("原画".to_owned(), StreamKind::Original);
+            return (
+                Tier::Original.label().to_owned(),
+                StreamKind::Original,
+                Some(Tier::Original),
+            );
         }
         let label = if self.name.trim().is_empty() {
             "转码".to_owned()
         } else {
             self.name.trim().to_owned()
         };
-        (label, StreamKind::Media)
+        let tier = Tier::from_stream_name(&label);
+        (label, StreamKind::Media, tier)
     }
 }
 
@@ -481,6 +488,22 @@ mod tests {
     }
 
     #[test]
+    fn options_are_grouped_into_the_fixed_tiers() {
+        let options = info(MIXED).play_options();
+        let tiers: Vec<_> = options.iter().map(|o| o.tier).collect();
+        assert_eq!(
+            tiers,
+            vec![
+                Some(Tier::Original),
+                None, // 2160P：菜单里不出现
+                Some(Tier::Transcode("720P")),
+                Some(Tier::Transcode("480P")),
+                None, // Hidden
+            ]
+        );
+    }
+
+    #[test]
     fn legacy_response_without_medias_uses_download_link() {
         let info =
             info(r#"{"name": "a.mp3", "web_content_link": "https://download.invalid/file"}"#);
@@ -607,6 +630,7 @@ mod tests {
             kind: StreamKind::Original,
             height: None,
             original: true,
+            tier: Some(Tier::Original),
             available: true,
             reason: None,
         };
