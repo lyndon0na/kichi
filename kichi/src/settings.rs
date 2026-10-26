@@ -98,6 +98,8 @@ pub struct Settings {
     pub window_width: i32,
     pub window_height: i32,
     pub window_maximized: bool,
+    /// 下载目录；空串表示用默认（`~/Downloads`）
+    pub download_dir: String,
 }
 
 impl Default for Settings {
@@ -114,6 +116,7 @@ impl Default for Settings {
             window_width: 0,
             window_height: 0,
             window_maximized: false,
+            download_dir: String::new(),
         }
     }
 }
@@ -127,6 +130,37 @@ impl Settings {
     /// 播放器参数（空串 → `None`）。
     pub fn player_args_override(&self) -> Option<&str> {
         non_empty(&self.player_args)
+    }
+
+    /// 下载目录（空串 → `~/Downloads`）。
+    ///
+    /// 不在这里创建目录：真正下载时才建，免得只是打开设置就多出文件夹。
+    pub fn download_dir_path(&self) -> PathBuf {
+        match non_empty(&self.download_dir) {
+            Some(text) => PathBuf::from(expand_home(text)),
+            None => default_download_dir(),
+        }
+    }
+}
+
+/// `~/xxx` 展开成家目录；`$HOME` 取不到时原样返回（相对路径也能用）。
+fn expand_home(text: &str) -> String {
+    let Some(rest) = text.strip_prefix("~/") else {
+        return text.to_owned();
+    };
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => format!("{}/{}", home.trim_end_matches('/'), rest),
+        _ => text.to_owned(),
+    }
+}
+
+/// 默认下载目录 `~/Downloads`；取不到家目录时退回系统临时目录。
+///
+/// 不写死 `/home/xxx`：这是给任何人在任何机器上用的默认值。
+pub fn default_download_dir() -> PathBuf {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => PathBuf::from(home).join("Downloads"),
+        _ => std::env::temp_dir(),
     }
 }
 
@@ -337,5 +371,29 @@ mod tests {
         assert!(settings.player_args_override().is_none());
         settings.player_command = "mpv".into();
         assert_eq!(settings.player_command_override(), Some("mpv"));
+    }
+
+    #[test]
+    fn download_dir_defaults_and_expands_home() {
+        // 空串 → 默认目录（~/Downloads），末尾就是 Downloads
+        let settings = Settings::default();
+        assert!(settings.download_dir_path().ends_with("Downloads"));
+        // ~/xxx 展开
+        let expanded = Settings {
+            download_dir: "~/Videos/kichi".into(),
+            ..Settings::default()
+        };
+        let path = expanded.download_dir_path();
+        if let Ok(home) = std::env::var("HOME") {
+            if !home.is_empty() {
+                assert_eq!(path, PathBuf::from(home).join("Videos/kichi"));
+            }
+        }
+        // 绝对路径原样用；前后空白不算数
+        let absolute = Settings {
+            download_dir: "  /tmp/kichi-dl  ".into(),
+            ..Settings::default()
+        };
+        assert_eq!(absolute.download_dir_path(), PathBuf::from("/tmp/kichi-dl"));
     }
 }
