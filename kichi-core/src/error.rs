@@ -69,6 +69,14 @@ impl Error {
             "task_daily_create_limit_vip" => Error::RateLimited { reason: desc },
             // 存储空间不足（8）
             "file_space_not_enough" => Error::RateLimited { reason: desc },
+            // 同目录已有同名文件/文件夹（3）：改名或新建时最常见
+            "file_duplicated_name" => {
+                Error::InvalidInput("这个名字已被同目录下的其他条目占用，请换一个".into())
+            }
+            // 条目已被别处删除 / 移动（owner / 多端同时操作）
+            "file_not_found" => {
+                Error::InvalidInput("这个条目已不存在（可能在其它设备上被删除或移动了）".into())
+            }
             _ => Error::Api {
                 code,
                 reason: reason.to_owned(),
@@ -113,17 +121,34 @@ mod tests {
 
     #[test]
     fn unknown_api_errors_keep_raw_payload() {
-        match Error::from_api(3, "file_duplicated_name", "name repeated") {
+        match Error::from_api(4, "some_future_error", "detail") {
             Error::Api {
                 code,
                 reason,
                 message,
             } => {
-                assert_eq!(code, 3);
-                assert_eq!(reason, "file_duplicated_name");
-                assert_eq!(message, "name repeated");
+                assert_eq!(code, 4);
+                assert_eq!(reason, "some_future_error");
+                assert_eq!(message, "detail");
             }
             other => panic!("应归类为 Api，实际是 {other:?}"),
         }
+    }
+
+    #[test]
+    fn duplicate_name_reads_as_plain_chinese() {
+        // 改名 / 新建文件夹最常见的失败：不能把错误码原样丢给用户
+        let err = Error::from_api(3, "file_duplicated_name", "name repeated");
+        assert!(matches!(err, Error::InvalidInput(_)));
+        let text = err.to_string();
+        assert!(text.contains("已被同目录"), "要说明是重名：{text}");
+        assert!(!text.contains("code"), "不该暴露错误码：{text}");
+    }
+
+    #[test]
+    fn missing_file_reads_as_plain_chinese() {
+        let err = Error::from_api(1, "file_not_found", "");
+        assert!(matches!(err, Error::InvalidInput(_)));
+        assert!(err.to_string().contains("已不存在"));
     }
 }

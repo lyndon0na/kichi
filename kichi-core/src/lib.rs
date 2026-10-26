@@ -9,6 +9,7 @@ pub mod config;
 pub mod drive;
 pub mod error;
 pub(crate) mod http;
+pub mod manage;
 pub mod media;
 pub mod tasks;
 pub mod types;

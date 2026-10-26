@@ -168,6 +168,45 @@ impl DriveClient {
         }
     }
 
+    /// 同 [`DriveClient::request`]，但带 JSON 请求体、且不解析响应。
+    ///
+    /// 写操作（改名 / 新建 / 批量移入回收站）成功时官方不一定回 JSON，
+    /// 解析反而会把成功当失败。
+    pub(crate) fn request_no_response_body(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        body: &serde_json::Value,
+    ) -> Result<(), Error> {
+        let action = action_for(method.as_str(), url);
+        let token = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+        let access = Some(self.access_token.as_ref());
+        let first = self.http.call_with_query_no_response(
+            method.clone(),
+            url,
+            query,
+            Body::Json(body),
+            access,
+            Some(token.token.as_str()).filter(|t| !t.is_empty()),
+        );
+        match first {
+            Err(err) if err.is_captcha() => {
+                self.captcha.invalidate();
+                let retry = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+                self.http.call_with_query_no_response(
+                    method,
+                    url,
+                    query,
+                    Body::Json(body),
+                    access,
+                    Some(retry.token.as_str()).filter(|t| !t.is_empty()),
+                )
+            }
+            other => other,
+        }
+    }
+
     /// 同 [`DriveClient::request`]，但响应体可能为空（DELETE 之类）。
     pub(crate) fn request_no_response(
         &self,

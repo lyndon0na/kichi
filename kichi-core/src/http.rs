@@ -123,6 +123,19 @@ impl HttpClient {
         access: Option<&str>,
         captcha: Option<&str>,
     ) -> Result<(), Error> {
+        self.call_with_query_no_response(method, url, query, Body::Empty, access, captcha)
+    }
+
+    /// 同 [`HttpClient::call_no_response`]，但可带请求体。
+    pub(crate) fn call_with_query_no_response(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        body: Body<'_>,
+        access: Option<&str>,
+        captcha: Option<&str>,
+    ) -> Result<(), Error> {
         let url = append_query(url, query);
         let mut req = self
             .client
@@ -137,6 +150,7 @@ impl HttpClient {
         if let Some(token) = captcha {
             req = req.header("x-captcha-token", token);
         }
+        req = attach_body(req, body);
 
         let response = req.send().map_err(|e| Error::Network(network_reason(&e)))?;
         let status = response.status();
