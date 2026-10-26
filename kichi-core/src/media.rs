@@ -77,6 +77,34 @@ impl FileInfo {
         options
     }
 
+    /// 下载用直链。
+    ///
+    /// 顺序照 rclone（`setMetaData`）：
+    /// 1. `links["application/octet-stream"]`；
+    /// 2. 若某档位链接 URL 的 `fid` 与它相同（= 原画那条），换成该档位链接——
+    ///    官方给 media 链接分配了不同的 CDN，速度通常更好；
+    /// 3. 没有 octet-stream 时退回 `web_content_link`。
+    ///
+    /// 注意：**不是** [`FileInfo::play_options`]，与播放权限无关；
+    /// 这里关心的是「能不能把整个文件拉回本地」。
+    pub fn download_url(&self) -> Option<String> {
+        let octet = self.octet_stream.trim();
+        if !octet.is_empty() {
+            let target_fid = query_param(octet, "fid");
+            if let Some(fid) = target_fid {
+                if let Some(media) = self.medias.iter().find(|media| {
+                    !media.url.is_empty()
+                        && query_param(&media.url, "fid").as_deref() == Some(fid.as_str())
+                }) {
+                    return Some(media.url.clone());
+                }
+            }
+            return Some(octet.to_owned());
+        }
+        let web = self.web_content_link.trim();
+        (!web.is_empty()).then(|| web.to_owned())
+    }
+
     /// 兜底下载直链（仅在没有任何 medias 时使用）。
     fn fallback_url(&self) -> Option<String> {
         [&self.web_content_link, &self.octet_stream]
@@ -245,6 +273,54 @@ impl FileDto {
     }
 }
 
+/// 从 URL 查询串里取一个参数（`fid` 用）。
+///
+/// 不引入 url crate：只按 `&` 拆、按 `=` 切，值做最小百分号解码。
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?').map(|(_, rest)| rest)?;
+    let query = query.split('#').next().unwrap_or(query);
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=')?;
+        if name == key {
+            return Some(percent_decode(value));
+        }
+    }
+    None
+}
+
+/// 最小百分号解码（只处理 `%XX` 与 `+`；其余原样保留）。
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// RFC3339 时间；空串 / 解析失败一律当作「没有」。
 fn parse_time(text: &str) -> Option<DateTime<Utc>> {
     let text = text.trim();
@@ -382,6 +458,64 @@ mod tests {
         let unnamed = info(r#"{"medias": [{"link": {"url": "u"}}]}"#);
         assert_eq!(unnamed.play_options()[0].label, "转码");
         assert!(unnamed.play_options()[0].playable());
+    }
+
+    #[test]
+    fn download_url_prefers_media_link_with_same_fid() {
+        // octet-stream 与某档位共享同一个 fid → 用那条 media 链接（rclone 行为）
+        let info = info(
+            r#"{
+                "name": "movie.mkv",
+                "web_content_link": "https://download.invalid/web",
+                "links": {"application/octet-stream": {"url": "https://download.invalid/o?fid=F1&expire=1"}},
+                "medias": [
+                    {"media_name": "720P", "link": {"url": "https://media.invalid/720?fid=F9"}},
+                    {"media_name": "原画", "is_origin": true, "link": {"url": "https://media.invalid/orig?fid=F1&x=2"}}
+                ]
+            }"#,
+        );
+        assert_eq!(
+            info.download_url().as_deref(),
+            Some("https://media.invalid/orig?fid=F1&x=2")
+        );
+    }
+
+    #[test]
+    fn download_url_without_matching_media_uses_octet_stream() {
+        let info = info(
+            r#"{"name": "a.bin",
+                "web_content_link": "https://download.invalid/web",
+                "links": {"application/octet-stream": {"url": "https://download.invalid/o?fid=F1"}},
+                "medias": [{"link": {"url": "https://media.invalid/other?fid=F2"}}]}"#,
+        );
+        assert_eq!(
+            info.download_url().as_deref(),
+            Some("https://download.invalid/o?fid=F1")
+        );
+    }
+
+    #[test]
+    fn download_url_falls_back_to_web_content_link() {
+        // 没有 octet-stream：用 web_content_link；都没有就是 None
+        let web = info(r#"{"web_content_link": "https://download.invalid/web"}"#);
+        assert_eq!(
+            web.download_url().as_deref(),
+            Some("https://download.invalid/web")
+        );
+        let none = info(r#"{"name": "x"}"#);
+        assert_eq!(none.download_url(), None);
+        let blank = info(r#"{"web_content_link": "   "}"#);
+        assert_eq!(blank.download_url(), None);
+    }
+
+    #[test]
+    fn query_param_decodes_and_misses_cleanly() {
+        assert_eq!(
+            query_param("https://x.invalid/a?fid=AB%2BC&t=1", "fid").as_deref(),
+            Some("AB+C")
+        );
+        assert_eq!(query_param("https://x.invalid/a?t=1", "fid"), None);
+        assert_eq!(query_param("https://x.invalid/a", "fid"), None);
     }
 
     #[test]
