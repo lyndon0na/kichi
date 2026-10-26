@@ -20,7 +20,7 @@ use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 use kichi_core::FileEntry;
 
 use super::actions::enqueue_ui;
-use super::files::{entry_map, list_from, sort_entries, ROOT_NAME};
+use super::files::{entry_map, sort_entries, ROOT_NAME};
 use super::qobject;
 use super::QVariantList;
 use crate::session::download::Cancel;
@@ -229,7 +229,11 @@ impl qobject::Kichi {
             .map(|crumb| crumb.name.clone())
             .unwrap_or_else(|| ROOT_NAME.to_owned());
         sort_entries(&mut entries, self.sort_field, self.sort_ascending);
-        let filtered = list_from(&entries);
+        // 本地筛出来的就是当前目录里的条目：所在文件夹直接写当前目录名
+        let mut filtered = QVariantList::default();
+        for entry in &entries {
+            filtered.append(QVariant::from(&current_dir_map(entry, &folder)));
+        }
         let count = entries.len();
         {
             let mut rust = self.as_mut().rust_mut();
@@ -328,6 +332,15 @@ impl qobject::Kichi {
         self.as_mut().rust_mut().search_results = list;
         self.as_mut().notify();
     }
+}
+
+/// 当前目录里的一条 → QML 小 map（结构与搜索结果一致，所在文件夹写当前目录名）。
+fn current_dir_map(entry: &FileEntry, folder: &str) -> QVariantMap {
+    let text = |value: &str| QVariant::from(&QString::from(value));
+    let mut map = entry_map(entry);
+    map.insert_clone(&QString::from("folderText"), &text(folder));
+    map.insert_clone(&QString::from("folderId"), &text(""));
+    map
 }
 
 /// 一条命中 → QML 小 map：条目字段与目录列表完全一致，外加「所在文件夹」。

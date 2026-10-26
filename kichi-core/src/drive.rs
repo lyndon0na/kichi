@@ -425,6 +425,11 @@ impl FileDto {
             parent_id,
         }
     }
+
+    /// 单个条目自身：名字 + 父目录 id（拼「所在文件夹」路径用）。
+    pub(crate) fn into_name_and_parent(self) -> (String, String) {
+        (self.name, self.parent_id.trim().to_owned())
+    }
 }
 
 /// 视频/音频扩展名表（判断播放入口用）。

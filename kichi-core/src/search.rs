@@ -41,6 +41,20 @@ impl DriveClient {
         let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
         Ok((files, next))
     }
+
+    /// 单个条目自身的名字与父目录 id（拼「所在文件夹」路径用）。
+    ///
+    /// 全盘列举的命中只带 `parent_id`，不带文件夹名字；只有这里能拿回来。
+    /// 实测（2026-10-26）：`GET /drive/v1/files/{id}` 对文件夹也返回自身
+    /// （`kind=drive#folder`，带真实 `parent_id`），根目录的文件夹 `parent_id` 为空。
+    pub fn parent_of(&self, id: &str) -> Result<(String, String), Error> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(Error::InvalidInput("条目 id 为空".into()));
+        }
+        let dto: FileDto = self.get(&self.config().file_url(id))?;
+        Ok(dto.into_name_and_parent())
+    }
 }
 
 /// 全盘列举的一页结果：条目本身 + 官方给的父目录 id。

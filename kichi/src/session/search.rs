@@ -194,16 +194,12 @@ impl PathCache {
 /// 路径最多回溯多少层（防环形结构把线程拖死）。
 const MAX_PATH_DEPTH: usize = 64;
 
-/// 取一个文件夹自己的名字与父目录 id（`list(id)` 找自己）。
+/// 取一个文件夹自己的名字与父目录 id。
 ///
-/// ⚠ 实测（2026-10-26 侦察）：`list(id)` 返回的是**子条目**，不含文件夹自身，
-/// 所以这里取不到时只能放弃路径（界面显示文件夹 id 兜底），不臆造名字。
+/// `list(id)` 返回的是**子条目**、不含文件夹自身（实测），所以必须走
+/// `GET /drive/v1/files/{id}`；取不到时放弃路径（界面不拿 id 冒充名字）。
 fn folder_meta(client: &kichi_core::DriveClient, folder_id: &str) -> Option<(String, String)> {
-    let (entries, _) = client.list(Some(folder_id), None).ok()?;
-    entries
-        .into_iter()
-        .find(|entry| entry.id == folder_id)
-        .map(|entry| (entry.name, String::new()))
+    client.parent_of(folder_id).ok()
 }
 
 /// 共享扫描句柄（桥接层用它跨线程发取消）。

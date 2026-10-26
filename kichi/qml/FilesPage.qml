@@ -5,12 +5,17 @@ import QtQuick.Layouts
 // 文件页（S3）：面包屑导航 + 目录列表。
 // 只调 backend 的 Q_INVOKABLE；配额沿用顶栏的 quotaSummary，不重复显示。
 // 播放（S5）：点行尾「▶」→ backend 取档位 → playMenu 非空时弹清晰度菜单。
+// 搜索（S9）：工具条搜索框先在当前目录本地筛（0 请求），「全盘搜索」才遍历网盘；
+// 搜索结果在 SearchResults.qml 里，和目录列表共用同一块列表框。
 Item {
     id: page
 
     property var backend: null
     // 「▶」按钮在页面坐标系里的位置（菜单从这里弹出）
     property point playAnchor: Qt.point(0, 0)
+
+    // 搜索视图开着：列表区换成结果
+    readonly property bool searching: page.backend !== null && page.backend.searchActive
 
     function crumbCount() {
         return page.backend ? page.backend.breadcrumb.length : 0
@@ -55,6 +60,88 @@ Item {
         if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(name))
             return "🖼️"
         return "📄"
+    }
+
+    // —— 搜索入口 ——
+
+    // 输入即筛当前目录（0 请求）；清空就退出搜索视图
+    function submitSearch(text) {
+        if (!page.backend)
+            return
+        if (String(text || "").trim().length === 0)
+            page.backend.exitSearch()
+        else
+            page.backend.searchLocal(text)
+    }
+
+    // 只在「还没在搜、搜索框也没字」时跳到搜索框：
+    // 正在搜时 `/` 要能正常打进关键词里
+    function focusSearchIfIdle() {
+        if (!page.backend || page.backend.authState !== "signedIn")
+            return false
+        if (page.searching || searchBar.text.length > 0)
+            return false
+        searchBar.field.forceActiveFocus()
+        return true
+    }
+
+    // Esc：搜索框有字 → 清空并回到当前目录；已空 → 退出搜索视图
+    function escapeSearch() {
+        if (!page.backend)
+            return
+        if (searchBar.text.length > 0) {
+            searchBar.text = ""
+            page.backend.exitSearch()
+        } else if (page.searching) {
+            page.backend.exitSearch()
+        }
+    }
+
+    // 搜索结果里的「▶」：把结果行里的坐标换算到页面坐标系，
+    // 清晰度菜单才弹在对的位置
+    function playFromResults(anchor) {
+        page.playAnchor = searchResults.mapToItem(page, anchor.x, anchor.y)
+    }
+
+    // 搜索被别处结束（点了结果里的文件夹）时清掉关键词，
+    // 否则搜索框留着旧字、一点「全盘搜索」又开搜
+    function syncSearchField() {
+        if (!page.backend)
+            return
+        if (!page.backend.searchActive && searchBar.text.length > 0)
+            searchBar.text = ""
+    }
+
+    // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
+    onVisibleChanged: {
+        if (!page.visible && page.searching && page.backend)
+            page.backend.exitSearch()
+    }
+
+    // —— 键盘：`/` 聚焦搜索框，Esc 逐级退出搜索 ——
+    // 挂在最外层 Item 上：没有输入框抢焦点时，按键才会冒泡到这里。
+    focus: false
+    Keys.onPressed: function (event) {
+        if (!page.backend)
+            return
+        if (event.key === Qt.Key_Slash) {
+            if (page.focusSearchIfIdle())
+                event.accepted = true
+        } else if (event.key === Qt.Key_Escape) {
+            if (page.searching || searchBar.text.length > 0) {
+                page.escapeSearch()
+                event.accepted = true
+            }
+        }
+    }
+
+    Connections {
+        target: page.backend
+
+        function onChanged() {
+            if (page.backend)
+                page.syncSearchField()
+        }
     }
 
     ColumnLayout {
@@ -124,6 +211,7 @@ Item {
             ToolButton {
                 text: qsTr("刷新")
                 enabled: page.backend !== null && !page.backend.busy
+                visible: !page.searching
                 onClicked: page.backend.refreshFiles()
             }
 
@@ -131,11 +219,23 @@ Item {
                 text: qsTr("＋ 新建文件夹")
                 enabled: page.backend !== null && !page.backend.busy
                          && !page.backend.fileActionRunning
+                visible: !page.searching
                 onClicked: menu.openNewFolder()
             }
         }
 
-        // —— 列表 ——
+        // —— 搜索条（工具条下方一行；细节在 FilesPageSearchBar.qml）——
+        FilesPageSearchBar {
+            id: searchBar
+            Layout.fillWidth: true
+            backend: page.backend
+            onQueryEdited: function (text) {
+                page.submitSearch(text)
+            }
+            onExitRequested: page.backend.exitSearch()
+        }
+
+        // —— 列表（当前目录 / 搜索结果共用这块区域）——
         Frame {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -146,109 +246,25 @@ Item {
 
                 anchors.fill: parent
                 clip: true
+                // 搜索视图显示结果；否则显示当前目录
+                visible: !page.searching
                 model: page.backend ? page.backend.files : []
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                 }
 
-                delegate: ItemDelegate {
+                delegate: FileRow {
                     id: row
                     width: ListView.view.width
-                    height: 44
-                    // 关掉委托的图标渲染：条目 map 里没有图片源，
-                    // 默认行为会把非图片值当 image provider 拉成空白缩略图
-                    icon.name: ""
-                    icon.source: ""
-                    icon.width: 0
-                    icon.height: 0
-                    icon.color: "transparent"
-
-                    onClicked: {
-                        if (page.backend && modelData.kind === "folder")
-                            page.backend.openDir(modelData.id)
+                    entry: modelData
+                    backend: page.backend
+                    // 右键菜单坐标相对整个页面：先换算再交给菜单
+                    onContextMenu: function (point) {
+                        menu.openContext(entry, point)
                     }
-
-                    // 右键：重命名 / 移至回收站
-                    TapHandler {
-                        acceptedButtons: Qt.RightButton
-                        onTapped: function (eventPoint) {
-                            if (!page.backend)
-                                return
-                            // eventPoint.position 是相对本行 delegate 的；
-                            // 菜单坐标相对整个页面，必须先换算，否则菜单会跳到页面上方
-                            var origin = row.mapToItem(page, 0, 0)
-                            menu.openContext(modelData,
-                                             Qt.point(origin.x + eventPoint.position.x,
-                                                      origin.y + eventPoint.position.y))
-                        }
-                    }
-
-                    contentItem: RowLayout {
-                        spacing: 10
-
-                        Label {
-                            text: page.iconFor(modelData)
-                            font.pixelSize: 18
-                        }
-
-                        Label {
-                            text: modelData.name
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-
-                        Label {
-                            text: qsTr("违规")
-                            visible: modelData.auditFlag
-                            color: "#c0392b"
-                        }
-
-                        Label {
-                            text: modelData.sizeText
-                            color: palette.placeholderText
-                            horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 100
-                        }
-
-                        Label {
-                            text: modelData.modifiedText
-                            visible: modelData.modifiedText.length > 0
-                            color: palette.placeholderText
-                            horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 130
-                        }
-
-                        // 只有视频/音频才显示播放入口
-                        ToolButton {
-                            text: qsTr("▶")
-                            visible: modelData.playable === true
-                            enabled: page.backend !== null && !page.backend.busy
-                                     && page.backend.playMenu.length === 0
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("用 mpv 播放")
-
-                            onClicked: {
-                                page.playAnchor = mapToItem(page, width / 2, height)
-                                page.backend.requestPlay(modelData.id)
-                            }
-                        }
-
-                        // 下载到本地（文件直接下；文件夹递归下，保留层级）
-                        ToolButton {
-                            text: qsTr("⬇")
-                            enabled: page.backend !== null && !page.backend.downloadRunning
-                            ToolTip.visible: hovered
-                            ToolTip.text: modelData.kind === "folder"
-                                          ? qsTr("下载整个文件夹到本地")
-                                          : qsTr("下载到本地")
-
-                            onClicked: page.backend.downloadEntry(modelData.id)
-                        }
-                    }
-
-                    HoverHandler {
-                        cursorShape: modelData.kind === "folder" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onPlayPressed: function (anchor) {
+                        page.playAnchor = row.mapToItem(page, anchor.x, anchor.y)
                     }
                 }
             }
@@ -257,8 +273,19 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("这个文件夹是空的")
                 color: palette.placeholderText
-                visible: page.backend !== null && !page.backend.busy
+                visible: !page.searching && page.backend !== null && !page.backend.busy
                          && page.backend.files.length === 0
+            }
+
+            // 搜索结果（全盘搜索时才出现，盖住同一块区域）
+            SearchResults {
+                id: searchResults
+                anchors.fill: parent
+                backend: page.searching ? page.backend : null
+
+                onPlayRequested: function (anchor) {
+                    page.playFromResults(anchor)
+                }
             }
         }
 
