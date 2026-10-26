@@ -237,10 +237,11 @@ Item {
         }
 
         // —— 列表（当前目录 / 搜索结果共用这块区域）——
-        Frame {
+        // 不用 Frame：它的边框画在外层，会被盖住的上下两条边吃掉，
+        // 只剩左右两段淡线，看起来像对不齐的框。列表直接铺在背景上。
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            padding: 0
 
             ListView {
                 id: fileList
