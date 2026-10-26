@@ -195,7 +195,7 @@ mod disk_tests {
     fn update_persists_to_the_configured_file() {
         let dir = std::env::temp_dir().join(format!("kichi-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录失败");
-        let path = dir.join("kichi-app.json");
+        let path = dir.join("settings.json");
         // 用环境变量指定路径，模拟真实运行时的 default_path()
         // SAFETY: 单测进程内串行，且只此处读写该变量
         unsafe { std::env::set_var("KICHI_SETTINGS_FILE", &path) };

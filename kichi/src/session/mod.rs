@@ -9,7 +9,7 @@ mod paths;
 mod store;
 mod tasks;
 
-pub use paths::store_path;
+pub use paths::{config_dir, store_path};
 pub use tasks::has_active;
 
 mod failure;

@@ -1,8 +1,8 @@
 //! 界面设置：清晰度偏好、播放器命令、通知开关、排序、窗口记忆。
 //!
-//! 存放位置 `~/.config/kichi/kichi-app.json`（`KICHI_SETTINGS_FILE` 可覆盖）。
-//! 文件名带 `kichi-app` 是为了不和旧版 kichi（aria2 那版）写在同一个
-//! `settings.json` 里互相覆盖。
+//! 存放位置 `~/.config/kichi/settings.json`（`KICHI_SETTINGS_FILE` 可覆盖）。
+//! 同目录还放令牌降级文件，整个 `kichi` 目录归本项目独占——
+//! 旧版（Python + aria2 那版）的配置已迁到 `~/.config/kichi-py`。
 //!
 //! 约定：
 //! - 文件不存在 → 全部默认值；文件损坏 → 回默认值并把原因交给界面提示，不静默吞掉；
@@ -135,19 +135,14 @@ fn non_empty(text: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-/// 设置文件的默认位置。
+/// 设置文件的默认位置：`<配置目录>/settings.json`。
 ///
-/// 优先 `KICHI_SETTINGS_FILE`；其次 `$XDG_CONFIG_HOME/kichi/kichi-app.json`，
-/// 再次 `~/.config/kichi/kichi-app.json`（与 Qt / KDE 的习惯一致）。
+/// 优先 `KICHI_SETTINGS_FILE` 覆盖，与 [`crate::session::config_dir`] 同目录。
 pub fn default_path() -> PathBuf {
     if let Some(path) = std::env::var_os("KICHI_SETTINGS_FILE") {
         return PathBuf::from(path);
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("kichi").join("kichi-app.json")
+    crate::session::config_dir().join("settings.json")
 }
 
 /// 读取设置。
@@ -198,11 +193,29 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
     let body =
         serde_json::to_vec_pretty(settings).map_err(|err| format!("序列化设置失败：{err}"))?;
     let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, body).map_err(|err| format!("写入设置失败：{err}"))?;
+    write_private(&temp, &body).map_err(|err| format!("写入设置失败：{err}"))?;
     std::fs::rename(&temp, path).map_err(|err| {
         let _ = std::fs::remove_file(&temp);
         format!("保存设置失败：{err}")
     })
+}
+
+/// 写一个只有本人可读写的文件（0600）。
+///
+/// 设置里虽然没有密码，但含播放器命令与窗口信息，同一台机器的其他用户
+/// 没必要能看到；和令牌降级文件保持一致的口径。
+fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(body)?;
+    file.flush()
 }
 
 #[cfg(test)]
@@ -244,6 +257,23 @@ mod tests {
         let (loaded, warning) = load(&path);
         assert!(warning.is_none());
         assert_eq!(loaded, settings);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn saved_file_is_private() {
+        let path = temp_path("private.json");
+        let _ = std::fs::remove_file(&path);
+        save(&path, &Settings::default()).expect("保存失败");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("读权限")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "设置文件应仅本人可读写");
+        }
         let _ = std::fs::remove_file(&path);
     }
 
