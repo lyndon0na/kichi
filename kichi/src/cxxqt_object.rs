@@ -43,6 +43,8 @@ pub mod qobject {
         #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
+        #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
+        #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -89,6 +91,18 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "openCrumb"]
         fn open_crumb(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "refreshTasks"]
+        fn refresh_tasks(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "addTask"]
+        fn add_task(self: Pin<&mut Self>, url: QString);
+
+        #[qinvokable]
+        #[cxx_name = "deleteTask"]
+        fn delete_task(self: Pin<&mut Self>, id: QString);
     }
 }
 
@@ -118,6 +132,7 @@ impl QVariantList {
 mod actions;
 mod backend;
 mod files;
+mod tasks;
 
 use backend::Backend;
 use files::Crumb;
@@ -142,6 +157,20 @@ pub struct KichiRust {
     pub(crate) listing: bool,
     /// 目录请求代数：退出登录 / 重登后旧结果作废
     pub(crate) list_epoch: u64,
+    /// 当前离线任务（QML 直接当 model 用）
+    pub(crate) tasks: QVariantList,
+    /// 当前任务的领域对象（通知判断、删除确认用）
+    pub(crate) task_list: Vec<kichi_core::OfflineTask>,
+    /// 任务页输入框内容（QML 双向绑定，提交成功后由 Rust 清空）
+    pub(crate) task_input: QString,
+    /// 有任务请求在途
+    pub(crate) tasks_loading: bool,
+    /// 任务请求代数：退出登录 / 重登后旧结果作废
+    pub(crate) tasks_epoch: u64,
+    /// 上一轮仍在进行中的任务（用于识别「刚结束」并只通知一次）
+    pub(crate) known_running: std::collections::HashMap<String, bool>,
+    /// 已经通知过的任务 id
+    pub(crate) notified: std::collections::HashSet<String>,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -165,6 +194,13 @@ impl Default for KichiRust {
             crumbs: vec![Crumb::root()],
             listing: false,
             list_epoch: 0,
+            tasks: QVariantList::default(),
+            task_list: Vec::new(),
+            task_input: QString::default(),
+            tasks_loading: false,
+            tasks_epoch: 0,
+            known_running: std::collections::HashMap::new(),
+            notified: std::collections::HashSet::new(),
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };

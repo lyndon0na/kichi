@@ -60,6 +60,7 @@ impl qobject::Kichi {
         if self.auth_state.to_string() == "signedIn" && self.busy {
             self.as_mut().refresh_identity_and_quota();
             self.as_mut().refresh_files();
+            self.as_ref().start_task_polling();
         }
     }
 
@@ -75,6 +76,7 @@ impl qobject::Kichi {
                     rust.busy = false;
                 }
                 self.as_mut().reset_files();
+                self.as_mut().stop_task_polling();
             }
             Err(err) => self
                 .as_mut()
@@ -143,6 +145,7 @@ impl qobject::Kichi {
         self.as_mut().notify();
         self.as_mut().refresh_identity_and_quota();
         self.as_mut().refresh_files();
+        self.as_ref().start_task_polling();
     }
 
     /// 错误统一出口：按类别更新属性，不吞错误。
