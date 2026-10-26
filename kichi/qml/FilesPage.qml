@@ -20,6 +20,30 @@ Item {
         return index === page.crumbCount() - 1
     }
 
+    function sortLabel() {
+        if (!page.backend)
+            return ""
+        var field = page.backend.sortField
+        var name = field === "size" ? qsTr("大小")
+                 : field === "modified" ? qsTr("时间")
+                 : qsTr("名称")
+        return name + (page.backend.sortAscending ? " ↑" : " ↓")
+    }
+
+    // 点一下换字段，再点当前字段则翻方向（与老习惯一致）
+    function cycleSort() {
+        if (!page.backend)
+            return
+        var order = ["name", "modified", "size"]
+        var index = order.indexOf(page.backend.sortField)
+        if (index < 0)
+            index = 0
+        if (index + 1 < order.length)
+            page.backend.setSorting(order[index + 1], page.backend.sortAscending)
+        else
+            page.backend.setSorting(page.backend.sortField, !page.backend.sortAscending)
+    }
+
     function iconFor(item) {
         if (item.kind === "folder")
             return "📁"
@@ -87,6 +111,14 @@ Item {
                 visible: running
                 Layout.preferredWidth: 24
                 Layout.preferredHeight: 24
+            }
+
+            ToolButton {
+                text: page.sortLabel()
+                enabled: page.backend !== null
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("点按切换排序字段（名称 → 时间 → 大小），循环到末尾再点翻转方向")
+                onClicked: page.cycleSort()
             }
 
             ToolButton {
