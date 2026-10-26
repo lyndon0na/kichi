@@ -42,7 +42,13 @@ ItemDelegate {
     icon.height: 0
     icon.color: "transparent"
 
-    onClicked: {
+    // 整行点击：文件夹就进入。显式 TapHandler 与按钮共存，
+    // 且不依赖 ItemDelegate 的默认 onClicked（它会被按钮吞掉）。
+    TapHandler {
+        onTapped: row.open()
+    }
+
+    function open() {
         if (row.backend && row.entry && row.entry.kind === "folder")
             row.backend.openDir(row.entry.id)
     }
@@ -62,6 +68,11 @@ ItemDelegate {
 
     contentItem: RowLayout {
         spacing: 10
+
+        // 让「点名区域」只覆盖图标和名字：右侧的 ▶ / ⬇ 按钮不能被它吞掉点击
+        TapHandler {
+            onTapped: row.open()
+        }
 
         Label {
             text: row.iconFor(row.entry)

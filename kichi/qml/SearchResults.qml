@@ -91,10 +91,13 @@ Item {
                 icon.height: 0
                 icon.color: "transparent"
 
-                onClicked: {
-                    // 全部揭示：文件夹直接进入（面包屑变真实层级）
-                    if (root.backend && modelData.kind === "folder")
-                        root.backend.searchOpenFolder(modelData.id)
+
+                // 与文件页一致：显式 TapHandler 点名区域，按钮不吞点击
+                TapHandler {
+                    onTapped: {
+                        if (root.backend && modelData.kind === "folder")
+                            root.backend.searchOpenFolder(modelData.id)
+                    }
                 }
 
                 contentItem: ColumnLayout {

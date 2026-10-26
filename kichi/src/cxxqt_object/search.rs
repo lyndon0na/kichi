@@ -314,15 +314,18 @@ impl qobject::Kichi {
                 if rust.search_index.contains_key(hit.id()) {
                     continue;
                 }
-                if rust.search_displayed < SEARCH_LIST_LIMIT {
-                    let value = QVariant::from(&hit_map(&hit));
-                    rust.search_results.append(value);
-                    rust.search_displayed += 1;
-                } else {
-                    rust.search_truncated = true;
-                }
                 rust.search_index.insert(hit.id().to_owned(), hit);
             }
+            let ordered = ordered_hits(&rust.search_index);
+            if ordered.len() > SEARCH_LIST_LIMIT {
+                rust.search_truncated = true;
+            }
+            let mut list = QVariantList::default();
+            for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
+                list.append(QVariant::from(&hit_map(hit)));
+            }
+            rust.search_results = list;
+            rust.search_displayed = ordered.len().min(SEARCH_LIST_LIMIT);
             rust.search_hits = i32::try_from(rust.search_index.len()).unwrap_or(i32::MAX);
             rust.search_status = QString::from(
                 format!(
@@ -370,8 +373,7 @@ impl qobject::Kichi {
     pub(crate) fn re_sort_search_results(mut self: Pin<&mut Self>) {
         let field = self.sort_field;
         let ascending = self.sort_ascending;
-        let mut hits: Vec<SearchHit> = self.search_index.values().cloned().collect();
-        hits.sort_by_key(|hit| hit.order);
+        let hits: Vec<SearchHit> = self.search_index.values().cloned().collect();
         let mut entries: Vec<FileEntry> = hits.iter().map(|hit| hit.entry.clone()).collect();
         sort_entries(&mut entries, field, ascending);
         // 排完按 id 回查所在文件夹：条目本身不带路径
@@ -387,6 +389,20 @@ impl qobject::Kichi {
         self.as_mut().rust_mut().search_results = list;
         self.as_mut().notify();
     }
+}
+
+/// 结果清单的显示顺序：**文件夹永远在前**，同类按扫到的先后。
+///
+/// 为什么必须显式排：全盘扫描是边扫边插入的，文件夹可能在第 50 页才出现，
+/// 顺着扫到的顺序排就会沉到几百条文件后面——用户以为「搜不到文件夹」。
+fn ordered_hits(index: &std::collections::HashMap<String, SearchHit>) -> Vec<SearchHit> {
+    let mut hits: Vec<SearchHit> = index.values().cloned().collect();
+    hits.sort_by(|a, b| {
+        b.is_folder()
+            .cmp(&a.is_folder())
+            .then(a.order.cmp(&b.order))
+    });
+    hits
 }
 
 /// 当前目录里的一条 → QML 小 map（结构与搜索结果一致，所在文件夹写当前目录名）。
@@ -532,6 +548,35 @@ mod tests {
         );
         assert_eq!(read(&map, "folderText"), "Bangumi/汉化日记/第 2 季");
         assert_eq!(read(&map, "sizeText"), "—", "文件夹没有大小");
+    }
+
+    #[test]
+    fn folders_are_listed_before_files_even_when_found_late() {
+        // 全盘扫描边扫边插：第 50 页才出现的文件夹也必须排在最前，
+        // 否则用户会以为「全盘搜索没有文件夹」（2026-10-26 实测踩到）
+        let mut index = std::collections::HashMap::new();
+        for (i, name) in ["a.mkv", "b.mkv", "c.mkv"].iter().enumerate() {
+            let mut h = hit(name, "", None);
+            h.order = i;
+            index.insert(h.id().to_owned(), h);
+        }
+        let mut late = SearchHit {
+            entry: entry("汉化日记", EntryKind::Folder),
+            folder_id: String::new(),
+            folder_path: None,
+            order: 9_999,
+        };
+        late.entry.id = "dir-1".to_owned();
+        index.insert("dir-1".to_owned(), late);
+
+        let ordered = ordered_hits(&index);
+        assert_eq!(ordered[0].name(), "汉化日记", "文件夹要在最前面");
+        assert!(ordered[0].is_folder());
+        assert_eq!(
+            ordered[1..].iter().map(|h| h.order).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "文件之间保持扫到的先后"
+        );
     }
 
     #[test]
