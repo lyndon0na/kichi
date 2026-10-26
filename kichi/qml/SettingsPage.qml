@@ -68,7 +68,12 @@ Item {
                         if (index >= 0 && index !== qualityBox.currentIndex)
                             qualityBox.currentIndex = index
                     }
-                    onActivated: if (page.backend) page.backend.setPreferredQuality(currentValue)
+                    // onActivated 时不保证 currentValue 已更新，用 index 从 model 里取
+                    onActivated: function (index) {
+                        if (!page.backend)
+                            return
+                        page.backend.setPreferredQuality(qualityBox.model[index].value)
+                    }
                 }
 
                 Label {
@@ -76,7 +81,7 @@ Item {
                     wrapMode: Text.Wrap
                     color: palette.placeholderText
                     font.pixelSize: 12
-                    text: qsTr("选「优先」后点播放直接起播；所偏好的档位不可用时会回退到档位菜单。")
+                    text: qsTr("「每次询问」总是弹档位菜单；选「优先」则直接起播。只有原画一档的文件，选转码也会直接播原画。")
                 }
             }
 
@@ -162,7 +167,10 @@ Item {
                 CheckBox {
                     text: qsTr("离线任务完成或失败时弹出系统通知")
                     checked: page.backend ? page.backend.notifyEnabled : true
-                    onToggled: if (page.backend) page.backend.setNotifyEnabled(checked)
+                    onToggled: function () {
+                        if (page.backend)
+                            page.backend.setNotifyEnabled(checked)
+                    }
                 }
                 Item { Layout.fillWidth: true }
             }
@@ -184,7 +192,10 @@ Item {
                 CheckBox {
                     text: qsTr("最小化到托盘（任务轮询与通知继续）")
                     checked: page.backend ? page.backend.closeToTray : false
-                    onToggled: if (page.backend) page.backend.setCloseToTray(checked)
+                    onToggled: function () {
+                        if (page.backend)
+                            page.backend.setCloseToTray(checked)
+                    }
                 }
                 Item { Layout.fillWidth: true }
             }
@@ -228,16 +239,22 @@ Item {
                         if (index >= 0 && index !== sortBox.currentIndex)
                             sortBox.currentIndex = index
                     }
-                    onActivated: if (page.backend)
-                        page.backend.setSorting(currentValue, ascendingBox.checked)
+                    onActivated: function (index) {
+                        if (!page.backend)
+                            return
+                        page.backend.setSorting(sortBox.model[index].value, ascendingBox.checked)
+                    }
                 }
 
                 CheckBox {
                     id: ascendingBox
                     text: qsTr("升序")
                     checked: page.backend ? page.backend.sortAscending : true
-                    onToggled: if (page.backend)
-                        page.backend.setSorting(sortBox.currentValue, checked)
+                    onToggled: function () {
+                        if (!page.backend)
+                            return
+                        page.backend.setSorting(sortBox.model[sortBox.currentIndex].value, checked)
+                    }
                 }
 
                 Label {

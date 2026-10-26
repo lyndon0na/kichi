@@ -208,11 +208,15 @@ impl qobject::Kichi {
 
 /// 决定是否免菜单直通播放，返回要播的档位下标。
 ///
-/// - 只有一个可用档：直接播（S5 起的行为）
-/// - 偏好「原画」：有可用原画就播
-/// - 偏好「转码」：挑可用且高度最高的转码档
-/// - 「每次询问」或偏好档不可用：返回 `None`，弹菜单让用户选
+/// 语义（2026-10-26 按用户实测反馈修正）：
+/// - 「每次询问」：**永远弹菜单**，哪怕只有一个档。用户选了这个就是要自己确认，
+///   偷偷跳过菜单会让人觉得设置没作用。
+/// - 「优先原画」：有可用原画就播。
+/// - 「优先最高转码档」：先找转码档；**一个转码档都没有时用原画兜底**
+///   （实测很多文件只有原画一档，此时弹菜单对用户毫无意义）。
+/// - 偏好档确实无法满足（既无该档也没有可接受兜底）：返回 `None` 弹菜单解释。
 fn pick_preferred(options: &[PlayOption], quality: crate::settings::Quality) -> Option<usize> {
+    use crate::settings::Quality;
     let playable: Vec<usize> = options
         .iter()
         .enumerate()
@@ -222,23 +226,27 @@ fn pick_preferred(options: &[PlayOption], quality: crate::settings::Quality) -> 
     if playable.is_empty() {
         return None;
     }
-    // 没设偏好时：唯一可播档直接播，省一步点击。
-    // 设了偏好时不吃这条捷径——用户明确说了想要哪档，那档不可用就该给他菜单看原因，
-    // 而不是自作主张播另一档。
-    if quality == crate::settings::Quality::Ask && playable.len() == 1 {
-        return playable.first().copied();
-    }
     match quality {
-        crate::settings::Quality::Ask => None,
-        crate::settings::Quality::Original => playable
+        // 明确要求「每次询问」：不给捷径
+        Quality::Ask => None,
+        Quality::Original => playable
             .iter()
             .copied()
             .find(|index| options[*index].original),
-        crate::settings::Quality::Transcode => playable
-            .iter()
-            .copied()
-            .filter(|index| !options[*index].original)
-            .max_by_key(|index| options[*index].height.unwrap_or(0)),
+        Quality::Transcode => {
+            let best_transcode = playable
+                .iter()
+                .copied()
+                .filter(|index| !options[*index].original)
+                .max_by_key(|index| options[*index].height.unwrap_or(0));
+            // 没有转码档时用原画兜底：这类文件只有原画，弹菜单没有可选项
+            best_transcode.or_else(|| {
+                playable
+                    .iter()
+                    .copied()
+                    .find(|index| options[*index].original)
+            })
+        }
     }
 }
 
@@ -304,7 +312,7 @@ mod tests {
         assert_eq!(
             pick_preferred(&menu, Quality::Ask),
             None,
-            "问一遍就该弹菜单"
+            "选了「每次询问」就必须弹菜单，哪怕只有一个档"
         );
         assert_eq!(pick_preferred(&menu, Quality::Original), Some(0));
         assert_eq!(
@@ -315,36 +323,36 @@ mod tests {
     }
 
     #[test]
+    fn ask_always_shows_the_menu_even_with_a_single_tier() {
+        use crate::settings::Quality;
+        // 实测大量文件只有「原画」一档：此时「每次询问」也必须弹菜单，
+        // 否则用户会以为设置根本没生效
+        let menu = vec![option("原画", None, true, true)];
+        assert_eq!(pick_preferred(&menu, Quality::Ask), None);
+    }
+
+    #[test]
+    fn transcode_preference_falls_back_to_original_when_no_transcode_exists() {
+        use crate::settings::Quality;
+        // 实测：很多文件只有原画档，选「优先最高转码档」时应该直接播原画，
+        // 弹一个只有一项的菜单对用户毫无意义
+        let menu = vec![option("原画", None, true, true)];
+        assert_eq!(pick_preferred(&menu, Quality::Transcode), Some(0));
+        // 原画不可用且没有转码档 -> 只能弹菜单
+        let menu = vec![option("原画", None, true, false)];
+        assert_eq!(pick_preferred(&menu, Quality::Transcode), None);
+    }
+
+    #[test]
     fn unavailable_preference_falls_back_to_menu() {
         use crate::settings::Quality;
-        // 原画不可用：偏好原画时应回退到菜单，而不是硬播别的档
+        // 原画不可用、但有转码档：偏好原画时回退菜单，让用户看到原因
         let menu = vec![
             option("原画", None, true, false),
             option("1080P", Some(1080), false, true),
         ];
         assert_eq!(pick_preferred(&menu, Quality::Original), None);
-        // 转码档全不可用同理
-        let menu = vec![
-            option("原画", None, true, true),
-            option("1080P", Some(1080), false, false),
-        ];
-        assert_eq!(pick_preferred(&menu, Quality::Transcode), None);
-    }
-
-    #[test]
-    fn single_playable_option_skips_the_menu() {
-        use crate::settings::Quality;
-        let menu = vec![
-            option("原画", None, true, false),
-            option("720P", Some(720), false, true),
-        ];
-        assert_eq!(
-            pick_preferred(&menu, Quality::Ask),
-            Some(1),
-            "没设偏好时省一步点击"
-        );
-        // 设了偏好则不吃这条捷径：偏好档不可用就弹菜单，让用户看到原因
-        assert_eq!(pick_preferred(&menu, Quality::Original), None);
+        // 有可用转码档时优先转码，不受原画不可用影响
         assert_eq!(pick_preferred(&menu, Quality::Transcode), Some(1));
     }
 
@@ -352,7 +360,9 @@ mod tests {
     fn nothing_playable_never_returns_an_index() {
         use crate::settings::Quality;
         let menu = vec![option("原画", None, true, false)];
-        assert_eq!(pick_preferred(&menu, Quality::Original), None);
+        for quality in [Quality::Ask, Quality::Original, Quality::Transcode] {
+            assert_eq!(pick_preferred(&menu, quality), None);
+        }
         assert_eq!(pick_preferred(&[], Quality::Original), None);
     }
 

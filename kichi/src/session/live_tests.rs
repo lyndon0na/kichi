@@ -351,3 +351,64 @@ fn describe_keys(value: &serde_json::Value) -> String {
     walk(value, "", &mut out);
     out.join(", ")
 }
+
+/// 排障：列出某目录下前几个视频文件各自的档位构成（默认忽略）。
+#[test]
+#[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+fn live_probe_play_options_shapes() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, _)) = loaded else {
+        panic!("KWallet 里没有会话");
+    };
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+
+    let mut checked = 0;
+    let mut folders = std::collections::VecDeque::new();
+    for entry in session.list_dir(None).expect("读根目录失败") {
+        if entry.media {
+            report_tiers(&session, &entry);
+            checked += 1;
+        } else if entry.kind == kichi_core::EntryKind::Folder {
+            folders.push_back(entry);
+        }
+    }
+    while checked < 4 {
+        let Some(folder) = folders.pop_front() else {
+            break;
+        };
+        let Ok(children) = session.list_dir(Some(folder.id.as_str())) else {
+            continue;
+        };
+        for entry in children {
+            if checked >= 4 {
+                break;
+            }
+            if entry.media {
+                report_tiers(&session, &entry);
+                checked += 1;
+            } else if entry.kind == kichi_core::EntryKind::Folder {
+                folders.push_back(entry);
+            }
+        }
+    }
+    println!("共检查 {checked} 个媒体文件");
+}
+
+fn report_tiers(session: &Session, entry: &kichi_core::FileEntry) {
+    let Ok(info) = media::file_info(session, &entry.id) else {
+        println!("{}: 取详情失败", entry.name);
+        return;
+    };
+    let options = info.play_options();
+    let playable = options.iter().filter(|o| o.playable()).count();
+    println!("{}", entry.name);
+    println!("  档位 {} 个，可用 {playable} 个", options.len());
+    for option in &options {
+        println!(
+            "    {:<8} original={:<5} height={:?} 可用={} 原因={:?}",
+            option.label, option.original, option.height, option.available, option.reason
+        );
+    }
+}
