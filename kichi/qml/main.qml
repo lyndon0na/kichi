@@ -43,6 +43,12 @@ ApplicationWindow {
 
             Item { Layout.fillWidth: true }
 
+            Label {
+                text: backend.account
+                visible: root.signedIn && backend.account.length > 0
+                color: palette.placeholderText
+            }
+
             BusyIndicator {
                 running: backend.busy
                 visible: running
@@ -74,7 +80,7 @@ ApplicationWindow {
             backend: backend
         }
 
-        HomePage {
+        FilesPage {
             backend: backend
         }
     }

@@ -6,7 +6,7 @@ fn main() {
         QmlModule::new("io.kichi")
             .qml_file("qml/main.qml")
             .qml_file("qml/LoginPage.qml")
-            .qml_file("qml/HomePage.qml"),
+            .qml_file("qml/FilesPage.qml"),
     )
     .files(["src/cxxqt_object.rs"])
     .build();

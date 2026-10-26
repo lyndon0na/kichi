@@ -59,18 +59,22 @@ impl qobject::Kichi {
     pub fn warm_up(mut self: Pin<&mut Self>) {
         if self.auth_state.to_string() == "signedIn" && self.busy {
             self.as_mut().refresh_identity_and_quota();
+            self.as_mut().refresh_files();
         }
     }
 
     pub fn sign_out(mut self: Pin<&mut Self>) {
         match self.backend.session.sign_out() {
             Ok(()) => {
-                let mut rust = self.as_mut().rust_mut();
-                rust.auth_state = QString::from("signedOut");
-                rust.captcha_required = false;
-                rust.captcha_url.clear();
-                rust.status_message = QString::from("已退出登录");
-                rust.busy = false;
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.auth_state = QString::from("signedOut");
+                    rust.captcha_required = false;
+                    rust.captcha_url.clear();
+                    rust.status_message = QString::from("已退出登录");
+                    rust.busy = false;
+                }
+                self.as_mut().reset_files();
             }
             Err(err) => self
                 .as_mut()
@@ -138,10 +142,11 @@ impl qobject::Kichi {
         }
         self.as_mut().notify();
         self.as_mut().refresh_identity_and_quota();
+        self.as_mut().refresh_files();
     }
 
     /// 错误统一出口：按类别更新属性，不吞错误。
-    fn on_failure(mut self: Pin<&mut Self>, failure: Failure) {
+    pub(super) fn on_failure(mut self: Pin<&mut Self>, failure: Failure) {
         match failure {
             Failure::Captcha { url } => {
                 let message = match &url {
@@ -215,7 +220,7 @@ impl qobject::Kichi {
 }
 
 /// 后台任务 → 结果回到主线程：`work` 在后台线程跑，`done` 在主线程更新属性。
-fn run_in_background<W, T, D>(work: W, done: D)
+pub(super) fn run_in_background<W, T, D>(work: W, done: D)
 where
     W: FnOnce() -> Result<T, Failure> + Send + 'static,
     T: Send + 'static,
@@ -252,16 +257,19 @@ fn enqueue(task: UiTask) {
 }
 
 /// 字节数转人类可读（GB 保留一位小数）。
-fn format_size(bytes: u64) -> String {
+pub(super) fn format_size(bytes: u64) -> String {
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
     const MB: f64 = 1024.0 * 1024.0;
+    const KB: f64 = 1024.0;
     let size = bytes as f64;
     if size >= GB {
         format!("{:.1} GB", size / GB)
     } else if size >= MB {
-        format!("{:.0} MB", size / MB)
+        format!("{:.1} MB", size / MB)
+    } else if size >= KB {
+        format!("{:.0} KB", size / KB)
     } else {
-        format!("{} KB", bytes / 1024)
+        format!("{bytes} B")
     }
 }
 

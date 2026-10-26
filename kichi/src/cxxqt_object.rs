@@ -23,6 +23,13 @@ pub mod qobject {
     unsafe extern "C++" {
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+
+        include!("cxx-qt-lib/qstringlist.h");
+        type QStringList = cxx_qt_lib::QStringList;
+
+        include!("cxx-qt-lib/qlist.h");
+        include!("cxx-qt-lib/qvariant.h");
+        type QVariantList = crate::cxxqt_object::QVariantList;
     }
 
     extern "RustQt" {
@@ -34,6 +41,8 @@ pub mod qobject {
         #[qproperty(QString, account, READ, NOTIFY = changed)]
         #[qproperty(QString, quota_summary, cxx_name = "quotaSummary", READ, NOTIFY = changed)]
         #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ, NOTIFY = changed)]
+        #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
+        #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -64,15 +73,54 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "pump"]
         fn pump(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "refreshFiles"]
+        fn refresh_files(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "openDir"]
+        fn open_dir(self: Pin<&mut Self>, id: QString);
+
+        #[qinvokable]
+        #[cxx_name = "openParent"]
+        fn open_parent(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "openCrumb"]
+        fn open_crumb(self: Pin<&mut Self>, index: i32);
     }
 }
 
-use cxx_qt_lib::QString;
+use cxx_qt_lib::{QString, QStringList, QVariant};
+
+/// Qt 的 `QVariantList`（即 `QList<QVariant>` 的别名）。
+///
+/// cxx-qt-lib 只导出 `QList<QVariant>`，其 ExternType Id 是 `QList<QVariant>`；
+/// cxx 桥接里的类型别名要求 Rust 类型 Id 与声明名一致，因此包一层
+/// `#[repr(transparent)]` 让桥接可以直接使用 Qt 的类型名。
+#[repr(transparent)]
+#[derive(Default)]
+pub(crate) struct QVariantList(cxx_qt_lib::QList<QVariant>);
+
+unsafe impl cxx::ExternType for QVariantList {
+    type Id = cxx::type_id!("QVariantList");
+    // 与 cxx-qt-lib 的 QList 保持一致：布局简单、可整体搬移，析构仍走 Rust 的 Drop
+    type Kind = cxx::kind::Trivial;
+}
+
+impl QVariantList {
+    pub(crate) fn append(&mut self, value: QVariant) {
+        self.0.append(value);
+    }
+}
 
 mod actions;
 mod backend;
+mod files;
 
 use backend::Backend;
+use files::Crumb;
 
 /// QObject `Kichi` 的 Rust 载体。
 pub struct KichiRust {
@@ -82,6 +130,18 @@ pub struct KichiRust {
     pub(crate) captcha_required: bool,
     pub(crate) account: QString,
     pub(crate) quota_summary: QString,
+    /// 当前目录的列表项（QML 直接当 model 用）
+    pub(crate) files: QVariantList,
+    /// 面包屑显示名（根 → 当前）
+    pub(crate) breadcrumb: QStringList,
+    /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
+    pub(crate) entries: Vec<kichi_core::FileEntry>,
+    /// 目录栈；根目录 id 为空串
+    pub(crate) crumbs: Vec<Crumb>,
+    /// 有目录列表请求在途（防止重复点击）
+    pub(crate) listing: bool,
+    /// 目录请求代数：退出登录 / 重登后旧结果作废
+    pub(crate) list_epoch: u64,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -89,6 +149,9 @@ pub struct KichiRust {
 
 impl Default for KichiRust {
     fn default() -> Self {
+        let mut breadcrumb = QStringList::default();
+        breadcrumb.append(QString::from(files::ROOT_NAME));
+
         let mut object = Self {
             auth_state: QString::from("signedOut"),
             status_message: QString::default(),
@@ -96,6 +159,12 @@ impl Default for KichiRust {
             captcha_required: false,
             account: QString::default(),
             quota_summary: QString::default(),
+            files: QVariantList::default(),
+            breadcrumb,
+            entries: Vec::new(),
+            crumbs: vec![Crumb::root()],
+            listing: false,
+            list_epoch: 0,
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };

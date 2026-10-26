@@ -16,8 +16,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use kichi_core::{
-    auth, captcha, Config, DriveClient, EntryKind, Error as CoreError, FileEntry, Quota,
-    REFRESH_MARGIN,
+    auth, captcha, Config, DriveClient, Error as CoreError, FileEntry, Quota, REFRESH_MARGIN,
 };
 
 /// 目录最多翻 40 页（20,000 条），防止异常分页把内存打满。
@@ -480,8 +479,8 @@ mod live_tests {
             println!(
                 "- [{}] {}（{} 字节，修改于 {:?}）",
                 match entry.kind {
-                    EntryKind::Folder => "目录",
-                    EntryKind::File => "文件",
+                    kichi_core::EntryKind::Folder => "目录",
+                    kichi_core::EntryKind::File => "文件",
                 },
                 entry.name,
                 entry.size,
@@ -490,7 +489,10 @@ mod live_tests {
         }
         assert!(!entries.is_empty(), "根目录列表为空，实际使用时应有条目");
 
-        if let Some(folder) = entries.iter().find(|e| e.kind == EntryKind::Folder) {
+        if let Some(folder) = entries
+            .iter()
+            .find(|e| e.kind == kichi_core::EntryKind::Folder)
+        {
             let children = session
                 .list_dir(Some(folder.id.as_str()))
                 .expect("读取子目录失败");
