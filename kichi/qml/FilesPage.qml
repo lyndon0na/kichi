@@ -282,6 +282,10 @@ Item {
             SearchResults {
                 id: searchResults
                 anchors.fill: parent
+                // 必须真隐藏：它内部的 ListView（Flickable）会吃掉鼠标按压。
+                // 只把 backend 置空、不设 visible 时，它透明地盖在目录列表上，
+                // 状态行以下的区域全被它截走——表现就是「只有第一行能点」
+                visible: page.searching
                 backend: page.searching ? page.backend : null
 
                 onPlayRequested: function (anchor) {

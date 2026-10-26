@@ -92,12 +92,10 @@ Item {
                 icon.color: "transparent"
 
 
-                // 与文件页一致：显式 TapHandler 点名区域，按钮不吞点击
-                TapHandler {
-                    onTapped: {
-                        if (root.backend && modelData.kind === "folder")
-                            root.backend.searchOpenFolder(modelData.id)
-                    }
+                // 与文件页一致：用 Control 的 onClicked，按钮消费自己的点击
+                onClicked: {
+                    if (root.backend && modelData.kind === "folder")
+                        root.backend.searchOpenFolder(modelData.id)
                 }
 
                 contentItem: ColumnLayout {
