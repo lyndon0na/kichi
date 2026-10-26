@@ -113,6 +113,11 @@ impl qobject::Kichi {
 }
 
 impl qobject::Kichi {
+    /// 退出前注销托盘（QML 在 Qt.quit() 之前调用）。
+    pub fn shutdown_tray(&self) {
+        super::tray::stop();
+    }
+
     /// 托盘菜单/图标点击 → 主线程动作。
     ///
     /// 「显示」只置一个标志，真正的 show/raise 由 QML 监听 `trayShowRequested`

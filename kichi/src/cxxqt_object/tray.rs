@@ -130,15 +130,21 @@ pub fn start() -> bool {
     }
 }
 
-/// 停止并注销托盘（用户关掉「关闭到托盘」时调用）。
+/// 注销托盘（退出应用前、或用户关掉「关闭到托盘」时调用）。
+///
+/// ⚠ 必须在进程真正退出**之前**调用：D-Bus 上 `org.kde.StatusNotifierItem-<pid>-N`
+/// 这个 well-known name 不会随进程消失自动从面板移除，KDE 会留下一个
+/// 点不动的僵尸图标（2026-10-26 用户实测踩到）。这里显式 shutdown。
 pub fn stop() {
     let taken = match handle_slot().lock() {
         Ok(mut slot) => slot.take(),
         Err(poisoned) => poisoned.into_inner().take(),
     };
     if let Some(handle) = taken {
-        // shutdown 返回 awaiter：这里不等它，托盘注销是尽力而为
-        let _ = handle.shutdown();
+        // 要**等**注销完成再返回：不等的话进程紧接着退出，
+        // D-Bus 名字还在，KDE 面板会留下点不动的僵尸图标。
+        // 这一步很快（就是一次 D-Bus 调用），放在退出前不值得做异步。
+        handle.shutdown().wait();
     }
 }
 

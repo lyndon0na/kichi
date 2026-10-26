@@ -25,6 +25,8 @@ ApplicationWindow {
     property bool isMaximized: false
     /// 缩到托盘后窗口隐藏，这里记住「是托盘收起来的」，不是用户主动关
     property bool hiddenToTray: false
+    /// 真的要退出（托盘菜单「退出」/注销托盘后），不缩回托盘
+    property bool reallyQuitting: false
 
     Component.onCompleted: {
         backend.warmUp()
@@ -56,6 +58,13 @@ ApplicationWindow {
     }
 
     onClosing: function (close) {
+        // 托盘点「退出」= 真退出，不能又被下面的缩托盘逻辑拦下来
+        // （Qt.quit() 同样会触发 onClosing，不特判就会出现
+        //  「点了退出图标还在、窗口也点不回来」——2026-10-26 用户实测）
+        if (root.reallyQuitting) {
+            backend.shutdownTray()
+            return
+        }
         if (backend.closeToTray && backend.trayAvailable) {
             close.accepted = false
             saveGeometryTimer.stop()
@@ -65,6 +74,9 @@ ApplicationWindow {
             backend.saveWindowGeometry(w, h, root.isMaximized)
             root.hiddenToTray = true
             root.hide()
+        } else {
+            // 真退出：注销托盘，否则 KDE 面板留下点不动的僵尸图标
+            backend.shutdownTray()
         }
     }
 
@@ -85,9 +97,12 @@ ApplicationWindow {
                 root.lastTrayShow = backend.trayShowRequested
                 root.restoreFromTray()
             }
-            // 退出：托盘「退出」，真退出而不是缩回托盘
-            if (backend.quitRequested)
+            // 退出：托盘「退出」，真退出而不是缩回托盘。
+            // 必须先注销托盘，否则 KDE 面板会留下点不动的僵尸图标
+            if (backend.quitRequested) {
+                root.reallyQuitting = true
                 Qt.quit()
+            }
         }
     }
 

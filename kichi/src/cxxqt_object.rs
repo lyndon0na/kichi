@@ -135,6 +135,11 @@ pub mod qobject {
         #[cxx_name = "cancelPlay"]
         fn cancel_play(self: Pin<&mut Self>);
 
+        /// 退出前调用：注销托盘 D-Bus 名字，避免面板留下点不动的僵尸图标
+        #[qinvokable]
+        #[cxx_name = "shutdownTray"]
+        fn shutdown_tray(self: &Self);
+
         #[qinvokable]
         #[cxx_name = "setPreferredQuality"]
         fn set_preferred_quality(self: Pin<&mut Self>, value: QString);
