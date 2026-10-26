@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
-use kichi_core::FileEntry;
+use kichi_core::{EntryKind, FileEntry};
 
 use super::actions::enqueue_ui;
 use super::files::{entry_map, sort_entries, ROOT_NAME};
@@ -180,18 +180,68 @@ impl qobject::Kichi {
     ///
     /// 搜索里点文件夹 = 一次「跳转」，用完就退出搜索视图——否则打开的目录
     /// 与被筛过的旧列表对不上，用户会以为进了错的文件夹。
-    /// （决策：计划只要求文件夹可进入；文件走行尾的播放/下载按钮。）
-    pub fn open_search_hit(mut self: Pin<&mut Self>, id: QString) {
+    pub fn search_open_folder(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         let Some(hit) = self.search_index.get(&id).cloned() else {
             self.as_mut().set_message("该结果已过期，请重新搜索", false);
             return;
         };
-        if !hit.is_folder() {
-            self.as_mut().set_message(
-                "结果里的文件请点行尾的播放 / 下载按钮；要进它所在的文件夹，搜索那个文件夹名",
-                false,
-            );
+        self.as_mut().navigate_to_folder(&hit);
+    }
+
+    /// 揭示一条结果所在的文件夹。
+    ///
+    /// - 文件夹结果：所在文件夹就是它自己 → 直接进入；
+    /// - 文件结果：进入它所在的那个文件夹（结果清单里显示的路径就是它）。
+    ///
+    /// `id` 是结果里的「所在文件夹」id；为空表示在根目录。
+    pub fn search_reveal_folder(mut self: Pin<&mut Self>, id: QString, is_folder: bool) {
+        let id = id.to_string();
+        // 结果是文件夹：揭示它 = 进入它自己，直接用结果清单里那一条
+        if is_folder {
+            if let Some(hit) = self.search_index.get(&id).cloned() {
+                self.as_mut().navigate_to_folder(&hit);
+                return;
+            }
+        }
+        // 文件结果：进入它所在的那个文件夹。
+        // 名字从同一文件夹下的其它命中反推（路径末尾那一段），推不出就按根目录处理。
+        let label = self
+            .search_index
+            .values()
+            .find(|hit| hit.folder_id == id)
+            .and_then(|hit| hit.folder_path.as_ref())
+            .and_then(|path| path.rsplit('/').next())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                if id.is_empty() {
+                    ROOT_NAME.to_owned()
+                } else {
+                    "所在文件夹".to_owned()
+                }
+            });
+        let hit = SearchHit {
+            entry: FileEntry {
+                id,
+                name: label,
+                kind: EntryKind::Folder,
+                size: 0,
+                modified_at: None,
+                md5: None,
+                audit_flagged: false,
+                media: false,
+            },
+            folder_id: String::new(),
+            folder_path: None,
+            order: 0,
+        };
+        self.as_mut().navigate_to_folder(&hit);
+    }
+
+    /// 清掉搜索状态并进入 `folder`（文件夹要么来自结果清单，要么是临时构造的）。
+    fn navigate_to_folder(mut self: Pin<&mut Self>, folder: &SearchHit) {
+        if folder.entry.kind != EntryKind::Folder {
+            self.as_mut().set_message("这不是文件夹，无法进入", false);
             return;
         }
         if self.listing {
@@ -212,10 +262,15 @@ impl qobject::Kichi {
             rust.search_status = QString::default();
             rust.search_index.clear();
             rust.search_truncated = false;
-            rust.crumbs.push(super::files::Crumb {
-                id: hit.id().to_owned(),
-                name: hit.name().to_owned(),
-            });
+            // 根目录：id 为空，目录栈回到只有根那一级
+            if folder.entry.id.is_empty() {
+                rust.crumbs = vec![super::files::Crumb::root()];
+            } else {
+                rust.crumbs.push(super::files::Crumb {
+                    id: folder.entry.id.clone(),
+                    name: folder.entry.name.clone(),
+                });
+            }
         }
         self.as_mut().sync_breadcrumb_visible();
         self.as_mut().refresh_files();
@@ -416,18 +471,22 @@ mod tests {
     use super::*;
     use kichi_core::EntryKind;
 
+    fn entry(name: &str, kind: EntryKind) -> FileEntry {
+        FileEntry {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            kind,
+            size: 1024,
+            modified_at: None,
+            md5: None,
+            audit_flagged: false,
+            media: kind == EntryKind::File,
+        }
+    }
+
     fn hit(name: &str, folder: &str, path: Option<&str>) -> SearchHit {
         SearchHit {
-            entry: FileEntry {
-                id: name.to_owned(),
-                name: name.to_owned(),
-                kind: EntryKind::File,
-                size: 1024,
-                modified_at: None,
-                md5: None,
-                audit_flagged: false,
-                media: true,
-            },
+            entry: entry(name, EntryKind::File),
             folder_id: folder.to_owned(),
             folder_path: path.map(str::to_owned),
             order: 0,
@@ -452,6 +511,27 @@ mod tests {
         assert_eq!(read(&map, "folderText"), "剧集/汉化日记 第 3 季");
         assert_eq!(read(&map, "folderId"), "season-3");
         assert_eq!(read(&map, "kind"), "file", "条目字段与目录列表一致");
+    }
+
+    #[test]
+    fn folder_hits_are_first_class_results() {
+        // 用户明确：不只是文件，文件夹也要搜得到、也要能进
+        let folder = SearchHit {
+            entry: entry("汉化日记 第 3 季", EntryKind::Folder),
+            folder_id: "season-2".to_owned(),
+            folder_path: Some("Bangumi/汉化日记/第 2 季".to_owned()),
+            order: 5,
+        };
+        let map = hit_map(&folder);
+        assert_eq!(read(&map, "kind"), "folder", "结果要保持文件夹身份");
+        assert_eq!(read(&map, "name"), "汉化日记 第 3 季");
+        assert_eq!(
+            read(&map, "folderId"),
+            "season-2",
+            "点「进入」要知道自己是谁"
+        );
+        assert_eq!(read(&map, "folderText"), "Bangumi/汉化日记/第 2 季");
+        assert_eq!(read(&map, "sizeText"), "—", "文件夹没有大小");
     }
 
     #[test]

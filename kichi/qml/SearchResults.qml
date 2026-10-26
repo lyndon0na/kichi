@@ -92,9 +92,9 @@ Item {
                 icon.color: "transparent"
 
                 onClicked: {
-                    // 只有文件夹能「进入」；文件走行尾的播放 / 下载
+                    // 全部揭示：文件夹直接进入（面包屑变真实层级）
                     if (root.backend && modelData.kind === "folder")
-                        root.backend.openSearchHit(modelData.id)
+                        root.backend.searchOpenFolder(modelData.id)
                 }
 
                 contentItem: ColumnLayout {
@@ -107,6 +107,13 @@ Item {
                         Label {
                             text: root.iconFor(modelData)
                             font.pixelSize: 18
+                        }
+
+                        // 类型标签：长列表里一眼分出「文件夹 / 文件」
+                        Label {
+                            text: modelData.kind === "folder" ? qsTr("文件夹") : qsTr("文件")
+                            color: modelData.kind === "folder" ? "#3c7dd9" : palette.placeholderText
+                            font.pixelSize: 12
                         }
 
                         Label {
@@ -136,9 +143,20 @@ Item {
                             Layout.preferredWidth: 120
                         }
 
+                        // 文件夹：直接「进入」（面包屑变成真实层级）
+                        ToolButton {
+                            readonly property bool isFolder: modelData.kind === "folder"
+                            text: qsTr("进入")
+                            visible: isFolder
+                            enabled: root.backend !== null
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("进入这个文件夹，面包屑会显示它在网盘里的真实位置")
+                            onClicked: root.backend.searchOpenFolder(modelData.id)
+                        }
+
                         ToolButton {
                             text: qsTr("▶")
-                            visible: modelData.playable === true
+                            visible: modelData.kind !== "folder" && modelData.playable === true
                             enabled: root.backend !== null
                                      && root.backend.playMenu.length === 0
                             ToolTip.visible: hovered
@@ -161,12 +179,22 @@ Item {
                         }
                     }
 
+                    // 「所在文件夹」本身也能点：文件夹条目推进去、文件条目揭示
                     Label {
                         Layout.fillWidth: true
                         text: qsTr("所在文件夹：%1").arg(modelData.folderText)
-                        color: palette.placeholderText
+                        color: modelData.folderId && modelData.folderId.length > 0
+                               ? palette.link : palette.placeholderText
                         font.pixelSize: 12
                         elide: Text.ElideMiddle
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !!modelData.folderId && modelData.folderId.length > 0
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: root.backend.searchRevealFolder(modelData.folderId,
+                                                                              modelData.kind === "folder")
+                        }
                     }
                 }
 

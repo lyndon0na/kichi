@@ -240,10 +240,15 @@ pub mod qobject {
         #[cxx_name = "exitSearch"]
         fn exit_search(self: Pin<&mut Self>);
 
-        /// 搜索：进入当前目录里的那个文件夹（面包屑仍是真实层级）
+        /// 搜索：进入结果里的文件夹（面包屑仍是真实层级）
         #[qinvokable]
-        #[cxx_name = "openSearchHit"]
-        fn open_search_hit(self: Pin<&mut Self>, id: QString);
+        #[cxx_name = "searchOpenFolder"]
+        fn search_open_folder(self: Pin<&mut Self>, id: QString);
+
+        /// 搜索：揭示文件所在的文件夹（文件夹条目就是进入它自己）
+        #[qinvokable]
+        #[cxx_name = "searchRevealFolder"]
+        fn search_reveal_folder(self: Pin<&mut Self>, id: QString, is_folder: bool);
     }
 }
 
