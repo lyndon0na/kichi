@@ -1,16 +1,23 @@
 //! 桥接对象：Rust 侧暴露给 QML 的登录状态与控制入口。
 //!
-//! cxx-qt 0.10 踩坑记录（均已实测复现，写进交付报告）：
-//! 1. 命名空间要写在桥接宏上 `#[cxx_qt::bridge(namespace = "...")]`。
-//!    写在 `type` 上的 `#[namespace]` 会让 `impl cxx_qt::Initialize` 报
-//!    `Kichi: Initialize is not satisfied`——这是本次卡最久的根因。
-//! 2. 桥接里不要出现 `qsignal` 或 `impl cxx_qt::Threading`（同样会丢构造器；
-//!    另一条佐证是 `Initialize` 的 impl 块里除 `#[namespace]` 外不许带属性）。
-//! 3. 属性变化靠 QML 的 `onStatusMessageChanged` 等逐属性绑定驱动；
-//!    后台结果走主线程队列（QML 定时器调用 `pump` 抽水），见 `actions.rs`。
-//! 4. invokable 声明端与实现端签名要一致（`Pin<&mut Self>` 对 `Pin<&mut Self>`）。
+//! cxx-qt 0.10 踩坑记录（均已实测复现）：
+//! 1. 桥接里**不要**声明 `impl cxx_qt::Initialize for Kichi {}`。
+//!    cxx-qt 只在「没有任何构造器声明」时自动生成默认构造器
+//!    （内部调用 `KichiRust::default()`）；一旦写了这个标记，
+//!    就要求你在桥接外真正实现 `Initialize`，否则编译报
+//!    `the trait bound Kichi: Initialize is not satisfied`。
+//! 2. 桥接上**不要**用 `#[cxx_qt::bridge(namespace = "...")]`：
+//!    它会把 `QString` 等 C++ 类型也塞进该命名空间，生成代码报
+//!    `'kichi::QString' has not been declared`。QML 类型名由
+//!    `QML_NAMED_ELEMENT` 决定，不需要 C++ 命名空间。
+//! 3. 桥接里不要出现 `qsignal` 或 `impl cxx_qt::Threading`，二者都会
+//!    让属性通知/线程回投失效；属性变化靠 QML 的
+//!    `onStatusMessageChanged` 等逐属性绑定，后台结果走主线程队列
+//!    （QML 定时器调用 `pump` 抽水），见 `actions.rs`。
+//! 4. invokable 声明端与实现端签名要一致：`Pin<&mut Self>` 对
+//!    `Pin<&mut Self>`，或 `&mut Self` 对 `&mut Self`。
 
-#[cxx_qt::bridge(namespace = "kichi")]
+#[cxx_qt::bridge]
 pub mod qobject {
     unsafe extern "C++" {
         include!("cxx-qt-lib/qstring.h");
@@ -51,8 +58,6 @@ pub mod qobject {
         #[cxx_name = "pump"]
         fn pump(self: Pin<&mut Self>);
     }
-
-    impl cxx_qt::Initialize for Kichi {}
 }
 
 use cxx_qt_lib::QString;
