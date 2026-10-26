@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-
 // 搜索结果（全盘扫描时显示，数据全部来自 backend 的 search* 属性）。
 //
 // 放在 FilesPage 的列表框里：搜索视图和当前目录共用同一块区域，
@@ -27,7 +26,7 @@ Item {
         anchors.fill: parent
         spacing: 6
 
-        // —— 状态行 + 「全盘搜索 / 停止」——
+        // —— 状态行（扫描中多一个「停止」）——
         RowLayout {
             Layout.fillWidth: true
             Layout.margins: 8
@@ -56,8 +55,8 @@ Item {
                 font.pixelSize: 12
             }
 
-            // 「全盘搜索 / 停止」只放在这里：搜索条那一行已有「全盘搜索」入口，
-            // 两处同名按钮并排会让人不知道该点哪个
+            // 扫描中才是「停止」；结束时这里不出现按钮——
+            // 想重来就改关键词或再点搜索框（同名按钮并排会让人不知道点哪个）
             Button {
                 text: qsTr("停止")
                 visible: root.scanning

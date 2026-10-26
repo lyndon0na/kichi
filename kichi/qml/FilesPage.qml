@@ -233,6 +233,7 @@ Item {
                 page.submitSearch(text)
             }
             onExitRequested: page.backend.exitSearch()
+            onSearchAllRequested: page.backend.searchAll()
         }
 
         // —— 列表（当前目录 / 搜索结果共用这块区域）——
