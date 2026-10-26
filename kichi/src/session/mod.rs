@@ -6,8 +6,10 @@
 
 mod paths;
 mod store;
+mod tasks;
 
 pub use paths::store_path;
+pub use tasks::has_active;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -398,6 +400,7 @@ impl std::fmt::Display for Failure {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+    use kichi_core::TaskPhase;
 
     /// 真实会话的自动刷新验证（默认忽略）。
     ///
@@ -455,6 +458,82 @@ mod live_tests {
         };
         assert_eq!(again.access_token, new_access, "刷新结果没有落盘");
         println!("刷新结果已写回存储");
+    }
+
+    /// 真实会话的离线任务验证（默认忽略）。
+    ///
+    /// 前置条件：先在本机用 GUI 登录一次。流程：
+    /// 列出任务 → 提交一个公开测试磁力 → 轮询到完成（最多 ~2 分钟）→ 删除任务记录。
+    /// 删除时 `delete_files=false`，云端产物保留。
+    #[test]
+    #[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+    fn live_offline_task_roundtrip() {
+        let path = store_path();
+        let loaded = store::load(&path).expect("读取会话存储失败");
+        let Some((saved, backend)) = loaded else {
+            panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+        };
+        println!("会话来源：{backend:?}");
+
+        let device_id = saved.device_id.clone();
+        let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+
+        let before = session.offline_tasks().expect("读取离线任务失败");
+        println!("现有离线任务 {} 条", before.len());
+        for task in before.iter().take(5) {
+            println!("- [{:?}] {} ({}%)", task.phase, task.name, task.progress);
+        }
+
+        // Blender 官方的 4.4MB 预告片：稳定、体积小，适合验证链路
+        const TEST_URL: &str =
+            "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4";
+        println!("提交测试任务：{TEST_URL}");
+        let created = session
+            .add_offline_task(TEST_URL)
+            .expect("提交离线任务失败");
+        println!(
+            "任务已创建：id={} 名称={:?} 阶段={:?}",
+            created.id, created.name, created.phase
+        );
+        assert!(!created.id.is_empty(), "新建任务没有 id");
+
+        // 轮询到该任务不再变化或超时
+        let mut final_phase = None;
+        for round in 1..=24 {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let tasks = session.offline_tasks().expect("轮询任务列表失败");
+            let Some(task) = tasks.iter().find(|t| t.id == created.id) else {
+                println!("第 {round} 轮：任务已不在列表中");
+                break;
+            };
+            println!(
+                "第 {round} 轮：[{:?}] {} ({}%) {}",
+                task.phase,
+                task.name,
+                task.progress,
+                task.message.as_deref().unwrap_or("")
+            );
+            if matches!(task.phase, TaskPhase::Completed | TaskPhase::Error) {
+                final_phase = Some(task.phase);
+                break;
+            }
+        }
+        println!("最终阶段：{final_phase:?}");
+        assert!(
+            final_phase.is_some(),
+            "轮询 2 分钟内任务没有进入完成/失败状态"
+        );
+
+        session
+            .delete_offline_task(&created.id)
+            .expect("删除任务失败");
+        println!("任务已删除（云端文件保留）");
+
+        let after = session.offline_tasks().expect("删除后再读取失败");
+        assert!(
+            !after.iter().any(|t| t.id == created.id),
+            "删除后任务仍在列表中"
+        );
     }
 
     /// 真实会话的目录列表验证（默认忽略）。
