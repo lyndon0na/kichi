@@ -15,7 +15,14 @@ use std::sync::Mutex;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use kichi_core::{auth, captcha, Config, DriveClient, Error as CoreError, Quota, REFRESH_MARGIN};
+use kichi_core::{
+    auth, captcha, Config, DriveClient, EntryKind, Error as CoreError, FileEntry, Quota,
+    REFRESH_MARGIN,
+};
+
+/// 目录最多翻 40 页（20,000 条），防止异常分页把内存打满。
+const MAX_LIST_PAGES: usize = 40;
+const LIST_PAGE_SIZE: usize = 500;
 
 pub use store::{Backend, StoreError};
 
@@ -334,6 +341,30 @@ impl Session {
         client.about().map_err(Failure::from)
     }
 
+    /// 读取一个目录的全部条目（自动翻页；阻塞）。
+    ///
+    /// `parent_id` 为 `None` 表示根目录。条目顺序保留官方返回顺序，
+    /// 排序交给界面层（文件夹优先等属于展示策略）。
+    pub fn list_dir(&self, parent_id: Option<&str>) -> Result<Vec<FileEntry>, Failure> {
+        let client = self.drive()?;
+        let mut entries = Vec::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES {
+            let (mut page, next) = client
+                .list(parent_id, page_token.as_deref())
+                .map_err(Failure::from)?;
+            entries.append(&mut page);
+            match next {
+                Some(token) => page_token = Some(token),
+                None => return Ok(entries),
+            }
+        }
+        Err(Failure::Other(format!(
+            "目录条目超过 {} 条，暂不支持完整显示",
+            MAX_LIST_PAGES * LIST_PAGE_SIZE
+        )))
+    }
+
     /// 取当前用户并回填身份（阻塞）。
     pub fn refresh_identity(&self) -> Result<(), Failure> {
         let client = self.drive()?;
@@ -425,5 +456,47 @@ mod live_tests {
         };
         assert_eq!(again.access_token, new_access, "刷新结果没有落盘");
         println!("刷新结果已写回存储");
+    }
+
+    /// 真实会话的目录列表验证（默认忽略）。
+    ///
+    /// 前置条件：先在本机用 GUI 登录一次。会读取根目录，并在存在子文件夹时
+    /// 进入第一个文件夹再列一次，验证 parent_id 与分页路径。
+    #[test]
+    #[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+    fn live_list_root_with_stored_session() {
+        let path = store_path();
+        let loaded = store::load(&path).expect("读取会话存储失败");
+        let Some((saved, backend)) = loaded else {
+            panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+        };
+        println!("会话来源：{backend:?}");
+
+        let device_id = saved.device_id.clone();
+        let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+        let entries = session.list_dir(None).expect("读取根目录失败");
+        println!("根目录共 {} 条", entries.len());
+        for entry in entries.iter().take(10) {
+            println!(
+                "- [{}] {}（{} 字节，修改于 {:?}）",
+                match entry.kind {
+                    EntryKind::Folder => "目录",
+                    EntryKind::File => "文件",
+                },
+                entry.name,
+                entry.size,
+                entry.modified_at
+            );
+        }
+        assert!(!entries.is_empty(), "根目录列表为空，实际使用时应有条目");
+
+        if let Some(folder) = entries.iter().find(|e| e.kind == EntryKind::Folder) {
+            let children = session
+                .list_dir(Some(folder.id.as_str()))
+                .expect("读取子目录失败");
+            println!("子目录「{}」共 {} 条", folder.name, children.len());
+        } else {
+            println!("根目录没有子文件夹，跳过子目录验证");
+        }
     }
 }
