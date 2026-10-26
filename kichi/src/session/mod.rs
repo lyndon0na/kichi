@@ -364,3 +364,66 @@ impl std::fmt::Display for Failure {
         }
     }
 }
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// 真实会话的自动刷新验证（默认忽略）。
+    ///
+    /// 前置条件：先在本机用 GUI 登录一次，令牌已存进 KWallet。
+    /// 做法：把内存里的过期时间压到 1 分钟后，`ensure_tokens` 应判定
+    /// 「5 分钟内到期」而主动刷新，并用新令牌成功查询容量。
+    #[test]
+    #[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+    fn live_auto_refresh_with_stored_session() {
+        let path = store_path();
+        let loaded = store::load(&path).expect("读取会话存储失败");
+        let Some((mut saved, backend)) = loaded else {
+            panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+        };
+        println!("会话来源：{backend:?}");
+
+        let old_access = saved.access_token.clone();
+        // 压到 1 分钟后过期 -> 命中「提前 5 分钟刷新」
+        saved.expires_unix = Utc::now().timestamp() + 60;
+        let device_id = saved.device_id.clone();
+        let config = Config::from_env();
+        let session = Session::new(config, path.clone(), Some(saved), device_id);
+
+        session.ensure_tokens().expect("自动刷新失败");
+
+        let refreshed = session.with_inner(|inner| {
+            inner
+                .current
+                .as_ref()
+                .map(|s| (s.access_token.clone(), s.expires_unix))
+        });
+        let Some((new_access, expires_unix)) = refreshed else {
+            panic!("刷新后会话丢失");
+        };
+        assert_ne!(
+            old_access, new_access,
+            "access_token 没有变化，可能没真正刷新"
+        );
+
+        let remaining = expires_unix - Utc::now().timestamp();
+        println!("刷新成功，新令牌剩余 {remaining} 秒");
+        assert!(remaining > 300, "新令牌有效期异常：{remaining} 秒");
+
+        let quota = session.quota().expect("用新令牌查询容量失败");
+        println!(
+            "新令牌可用：已用 {} GB，上限 {:?}",
+            quota.usage / 1024 / 1024 / 1024,
+            quota.limit.map(|l| l / 1024 / 1024 / 1024)
+        );
+
+        // 刷新结果应已写回存储：重新加载一次确认
+        let reloaded = store::load(&path).expect("重新读取失败");
+        let Some((again, _)) = reloaded else {
+            panic!("刷新后存储里没有会话");
+        };
+        assert_eq!(again.access_token, new_access, "刷新结果没有落盘");
+        println!("刷新结果已写回存储");
+    }
+}
