@@ -269,8 +269,8 @@ mod tests {
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
         // 模板第 13 位固定为 '4'
         assert_eq!(&id[12..13], "4");
-        // y 位（模板下标 14）最高位恒为 1（8-f）
-        let y: u32 = u32::from_str_radix(&id[14..15], 16).unwrap_or(0);
+        // y 位（模板下标 16）最高位恒为 1（8-f）
+        let y: u32 = u32::from_str_radix(&id[16..17], 16).unwrap_or(0);
         assert!((8..=15).contains(&y));
     }
 
