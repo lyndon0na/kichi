@@ -11,6 +11,7 @@ pub mod error;
 pub(crate) mod http;
 pub mod manage;
 pub mod media;
+pub mod search;
 pub mod tasks;
 pub mod types;
 
@@ -19,4 +20,5 @@ pub use config::Config;
 pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
 pub use media::FileInfo;
+pub use search::FileHit;
 pub use types::{EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair};

@@ -14,9 +14,12 @@ use crate::types::{EntryKind, FileEntry, Quota};
 use crate::{Config, Error};
 
 /// 单页最多返回的条目数（rclone 的 `ListLimit`）。
-const LIST_LIMIT: u32 = 500;
+///
+/// 注意：官方对全盘列举**固定每页 400 条**（2026-10-26 实测），给 500 也不会变。
+pub(crate) const LIST_LIMIT: u32 = 500;
 /// 文件列表只取已完成、未进回收站的条目。
-const LIST_FILTERS: &str = r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#;
+pub(crate) const LIST_FILTERS: &str =
+    r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#;
 
 /// 已登录的网盘客户端（内部令牌由调用方的 `Session` 提供）。
 pub struct DriveClient {
@@ -349,8 +352,11 @@ struct FileListResponse {
     next_page_token: String,
 }
 
+/// 官方文件条目（目录列表与全盘搜索共用）。
+///
+/// `pub(crate)`：只有 `drive` 与 `search` 两个模块需要它，不对外暴露 DTO。
 #[derive(Deserialize)]
-struct FileDto {
+pub(crate) struct FileDto {
     #[serde(default)]
     id: String,
     #[serde(default)]
@@ -371,6 +377,9 @@ struct FileDto {
     mime_type: String,
     #[serde(default)]
     file_extension: String,
+    /// 所在文件夹 id：全盘列举时靠它还原真实路径；根目录的条目为空串
+    #[serde(default)]
+    parent_id: String,
 }
 
 #[derive(Deserialize)]
@@ -380,7 +389,8 @@ struct AuditDto {
 }
 
 impl FileDto {
-    fn into_entry(self) -> FileEntry {
+    /// 转换成领域类型（不消耗 `parent_id`，调用方先取走）。
+    pub(crate) fn into_entry(self) -> FileEntry {
         let is_folder = self.kind == "drive#folder";
         let media = !is_folder
             && is_media(
@@ -404,6 +414,15 @@ impl FileDto {
                 !audit.status.is_empty() && !audit.status.eq_ignore_ascii_case("STATUS_OK")
             }),
             media,
+        }
+    }
+
+    /// 转换成搜索命中：条目 + 所在文件夹 id（全盘列举用）。
+    pub(crate) fn into_hit(self) -> crate::search::FileHit {
+        let parent_id = self.parent_id.trim().to_owned();
+        crate::search::FileHit {
+            entry: self.into_entry(),
+            parent_id,
         }
     }
 }
@@ -570,7 +589,6 @@ mod tests {
         let parsed: FileListResponse = serde_json::from_str(json).expect("列表应可解析");
         assert_eq!(parsed.files.len(), 3);
         let entries: Vec<FileEntry> = parsed.files.into_iter().map(FileDto::into_entry).collect();
-
         assert_eq!(entries[0].kind, EntryKind::Folder);
         assert_eq!(
             entries[0].modified_at.map(|t| t.timestamp()),
@@ -585,6 +603,21 @@ mod tests {
 
         assert_eq!(entries[2].modified_at, None, "空时间应为 None");
         assert!(entries[2].audit_flagged, "非 STATUS_OK 的审核状态应标记");
+    }
+
+    #[test]
+    fn search_hit_keeps_the_parent_folder() {
+        // 全盘列举的条目带 parent_id，拼「所在文件夹」真实路径全靠它
+        let json = r#"{"files":[
+            {"id":"f1","name":"第 1 集.mkv","kind":"drive#file","parent_id":"season-3"},
+            {"id":"f2","name":"根目录文件.mkv","kind":"drive#file"}
+        ]}"#;
+        let parsed: FileListResponse = serde_json::from_str(json).expect("应可解析");
+        let hits: Vec<crate::search::FileHit> =
+            parsed.files.into_iter().map(FileDto::into_hit).collect();
+        assert_eq!(hits[0].parent_id, "season-3");
+        assert_eq!(hits[0].entry.name, "第 1 集.mkv");
+        assert_eq!(hits[1].parent_id, "", "官方没给 parent_id 按根目录处理");
     }
 
     /// 用 2026-10-26 真实账号抓到的 `about` 响应结构做样本。
