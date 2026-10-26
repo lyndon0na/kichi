@@ -4,6 +4,7 @@
 //! 纪律（为将来拆 daemon 留路）：QML 只消费本模块产出的数据；
 //! 所有阻塞网络调用都经 `run_async` 丢到后台线程，结果回到 Qt 线程。
 
+pub mod download;
 pub mod media;
 mod paths;
 mod store;

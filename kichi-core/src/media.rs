@@ -10,6 +10,8 @@
 //!
 //! 直链是带签名的临时 URL：不缓存、不打印（最多打到域名）。
 
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -166,6 +168,75 @@ impl DriveClient {
         }
         let dto: FileDto = self.get(&self.config().file_url(id))?;
         Ok(dto.into_info())
+    }
+
+    /// 打开一个文件的下载流（已跟随重定向，`Read` 即文件字节）。
+    ///
+    /// 直链是带签名的临时 URL，**只发这一次 GET**，不复用 [`crate::http::HttpClient`]
+    /// ——那边的 30 秒总超时会把大文件拦腰砍断；这里连接超时短、读超时由调用方
+    /// 在逐块读取时自行计。
+    ///
+    /// 空文件与「官方没有下发链接」都会在真正发请求前就返回错误，省一次往返。
+    pub fn open_download(&self, info: &FileInfo) -> Result<DownloadStream, Error> {
+        let Some(url) = info.download_url() else {
+            return Err(Error::Other(
+                "官方没有下发这个文件的下载链接（可能是违规或受限文件）".to_owned(),
+            ));
+        };
+        // 先取流再写盘：这样「下载 0 字节就成功」不会变成一个没有内容的空文件
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(&self.config().user_agent)
+            .connect_timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|e| Error::Network(format!("无法创建下载客户端：{e}")))?;
+        let response = client
+            .get(&url)
+            .send()
+            .map_err(|e| Error::Network(network_reason(&e)))?;
+        let status = response.status();
+        if !status.is_success() {
+            // CDN 的错误页不是官方 JSON；带上状态码即可，别把整页 HTML 塞进界面
+            return Err(Error::Api {
+                code: i64::from(status.as_u16()),
+                reason: format!("download_http_{}", status.as_u16()),
+                message: "下载服务器拒绝了这个请求（链接可能已过期，可重试一次）".to_owned(),
+            });
+        }
+        let total = response.content_length();
+        Ok(DownloadStream {
+            response,
+            total_bytes: total,
+        })
+    }
+}
+
+/// 正在下载的字节流。`total_bytes` 来自 `Content-Length`（CDN 不给时为 `None`）。
+pub struct DownloadStream {
+    response: reqwest::blocking::Response,
+    total_bytes: Option<u64>,
+}
+
+impl DownloadStream {
+    /// 官方声明的总大小（可能为 `None`）。
+    pub fn total_bytes(&self) -> Option<u64> {
+        self.total_bytes
+    }
+}
+
+impl std::io::Read for DownloadStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.response.read(buf)
+    }
+}
+
+/// 网络错误文本（不含凭据；直链本身绝不打印）。
+fn network_reason(err: &reqwest::Error) -> String {
+    if err.is_timeout() {
+        "下载超时".to_owned()
+    } else if err.is_connect() {
+        "无法连接下载服务器".to_owned()
+    } else {
+        format!("下载中断：{err}")
     }
 }
 

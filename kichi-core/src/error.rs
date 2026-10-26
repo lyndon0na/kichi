@@ -39,6 +39,10 @@ pub enum Error {
         reason: String,
         message: String,
     },
+
+    /// 本地/业务侧的普通失败（不是网络错误，也不属于官方限制）。
+    #[error("{0}")]
+    Other(String),
 }
 
 impl Error {
