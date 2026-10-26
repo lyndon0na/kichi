@@ -74,17 +74,6 @@ Item {
             page.backend.searchLocal(text)
     }
 
-    // 只在「还没在搜、搜索框也没字」时跳到搜索框：
-    // 正在搜时 `/` 要能正常打进关键词里
-    function focusSearchIfIdle() {
-        if (!page.backend || page.backend.authState !== "signedIn")
-            return false
-        if (page.searching || searchBar.text.length > 0)
-            return false
-        searchBar.field.forceActiveFocus()
-        return true
-    }
-
     // Esc：搜索框有字 → 清空并回到当前目录；已空 → 退出搜索视图
     function escapeSearch() {
         if (!page.backend)
@@ -118,23 +107,11 @@ Item {
             page.backend.exitSearch()
     }
 
-    // —— 键盘：`/` 聚焦搜索框，Esc 逐级退出搜索 ——
-    // 挂在最外层 Item 上：没有输入框抢焦点时，按键才会冒泡到这里。
-    focus: false
-    Keys.onPressed: function (event) {
-        if (!page.backend)
-            return
-        if (event.key === Qt.Key_Slash) {
-            if (page.focusSearchIfIdle())
-                event.accepted = true
-        } else if (event.key === Qt.Key_Escape) {
-            if (page.searching || searchBar.text.length > 0) {
-                page.escapeSearch()
-                event.accepted = true
-            }
-        }
-    }
-
+    // —— Esc 逐级退出搜索 ——
+    //
+    // 只在搜索框有焦点时生效（见 FilesPageSearchBar 里的 Keys.onEscapePressed）。
+    // 页面级的 `/` 聚焦已按用户要求去掉：Wayland 下窗口级按键焦点不可靠，
+    // 写了也常常不生效，不如不承诺。
     Connections {
         target: page.backend
 
@@ -233,6 +210,7 @@ Item {
                 page.submitSearch(text)
             }
             onExitRequested: page.backend.exitSearch()
+            onEscapeRequested: page.escapeSearch()
             onSearchAllRequested: page.backend.searchAll()
         }
 

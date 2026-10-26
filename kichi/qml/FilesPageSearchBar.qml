@@ -15,6 +15,8 @@ Item {
     signal queryEdited(string text)
     // 点了 ✕
     signal exitRequested()
+    // 在搜索框里按了 Esc
+    signal escapeRequested()
     // 点了「⌕ 全盘」
     signal searchAllRequested()
 
@@ -31,11 +33,13 @@ Item {
         TextField {
             id: searchField
             Layout.fillWidth: true
-            placeholderText: qsTr("在文件里按名字搜索（先筛当前目录；按 / 聚焦，Esc 退出）")
+            placeholderText: qsTr("在文件里按名字搜索（先筛当前目录；Esc 清空 / 退出）")
             selectByMouse: true
             text: bar.backend ? bar.backend.searchQuery : ""
             onTextEdited: bar.queryEdited(text)
             onAccepted: bar.queryEdited(text)
+            // Esc：有字先清空回当前目录，已空则退出搜索视图
+            onEscapePressed: bar.escapeRequested()
         }
 
         // 全盘搜索：常驻（不再按搜索状态显隐），停止由结果头负责
