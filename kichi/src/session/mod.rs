@@ -363,6 +363,24 @@ impl Session {
         self.enrich_identity(&me.name, &me.email);
         Ok(())
     }
+
+    /// 给条目改名（阻塞）。
+    pub fn rename_entry(&self, id: &str, name: &str) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.rename(id, name).map_err(Failure::from)
+    }
+
+    /// 在当前目录下新建文件夹（阻塞）。`parent_id` 为空表示根目录。
+    pub fn create_folder(&self, parent_id: Option<&str>, name: &str) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.create_folder(parent_id, name).map_err(Failure::from)
+    }
+
+    /// 把条目移入回收站（阻塞）。只做回收站，不做彻底删除。
+    pub fn trash_entries(&self, ids: &[&str]) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.trash(ids).map_err(Failure::from)
+    }
 }
 
 /// 启动恢复的结果。
