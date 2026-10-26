@@ -70,11 +70,17 @@ pub mod qobject {
         #[qproperty(i32, download_done, cxx_name = "downloadDone", READ, NOTIFY = changed)]
         #[qproperty(i32, download_failed, cxx_name = "downloadFailed", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
+        #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
         #[qsignal]
         fn changed(self: Pin<&mut Self>);
+
+        /// 一次文件操作（改名 / 新建 / 删除）结束：动作、成功与否、给用户看的提示
+        #[qsignal]
+        #[cxx_name = "fileActionDone"]
+        fn file_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
 
         #[qinvokable]
         #[cxx_name = "login"]
@@ -190,6 +196,21 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setDownloadDir"]
         fn set_download_dir(self: Pin<&mut Self>, path: QString);
+
+        /// 给条目改名（成功后自动刷新当前目录）
+        #[qinvokable]
+        #[cxx_name = "renameEntry"]
+        fn rename_entry(self: Pin<&mut Self>, id: QString, name: QString);
+
+        /// 在当前目录下新建文件夹
+        #[qinvokable]
+        #[cxx_name = "createFolder"]
+        fn create_folder(self: Pin<&mut Self>, name: QString);
+
+        /// 把条目移入回收站（可恢复，界面上要二次确认）
+        #[qinvokable]
+        #[cxx_name = "trashEntry"]
+        fn trash_entry(self: Pin<&mut Self>, id: QString);
     }
 }
 
@@ -310,6 +331,8 @@ pub struct KichiRust {
     pub(crate) download_failed: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
+    /// 有文件操作（改名 / 新建 / 删除）在途，界面上禁用相关入口
+    pub(crate) file_action_running: bool,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -371,6 +394,7 @@ impl Default for KichiRust {
             download_done: 0,
             download_failed: 0,
             download_dir: QString::default(),
+            file_action_running: false,
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };

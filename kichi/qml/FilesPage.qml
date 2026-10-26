@@ -126,6 +126,13 @@ Item {
                 enabled: page.backend !== null && !page.backend.busy
                 onClicked: page.backend.refreshFiles()
             }
+
+            ToolButton {
+                text: qsTr("＋ 新建文件夹")
+                enabled: page.backend !== null && !page.backend.busy
+                         && !page.backend.fileActionRunning
+                onClicked: menu.openNewFolder()
+            }
         }
 
         // —— 列表 ——
@@ -159,6 +166,16 @@ Item {
                     onClicked: {
                         if (page.backend && modelData.kind === "folder")
                             page.backend.openDir(modelData.id)
+                    }
+
+                    // 右键：重命名 / 移至回收站
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: function (eventPoint) {
+                            if (!page.backend)
+                                return
+                            menu.openContext(modelData, eventPoint.position)
+                        }
                     }
 
                     contentItem: RowLayout {
@@ -246,12 +263,19 @@ Item {
         }
 
         Label {
-            text: qsTr("点视频/音频右侧的「▶」用 mpv 播放；点「⬇」下载到本地（文件夹会连同子目录一起下）。下载目录在设置页里改。")
+            text: qsTr("点视频/音频右侧的「▶」用 mpv 播放；点「⬇」下载到本地（文件夹会连同子目录一起下）。右键条目可重命名或移到回收站。下载目录在设置页里改。")
             color: palette.placeholderText
             font.pixelSize: 12
             wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
+    }
+
+    // —— 右键菜单与重命名 / 新建 / 删除弹窗（内容在 FilesPageMenu.qml）——
+    FilesPageMenu {
+        id: menu
+        anchors.fill: parent
+        backend: page.backend
     }
 
     // —— 清晰度菜单（后端取到档位后 playMenu 非空即弹出）——
