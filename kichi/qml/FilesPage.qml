@@ -153,6 +153,7 @@ Item {
                 }
 
                 delegate: ItemDelegate {
+                    id: row
                     width: ListView.view.width
                     height: 44
                     // 关掉委托的图标渲染：条目 map 里没有图片源，
@@ -174,7 +175,12 @@ Item {
                         onTapped: function (eventPoint) {
                             if (!page.backend)
                                 return
-                            menu.openContext(modelData, eventPoint.position)
+                            // eventPoint.position 是相对本行 delegate 的；
+                            // 菜单坐标相对整个页面，必须先换算，否则菜单会跳到页面上方
+                            var origin = row.mapToItem(page, 0, 0)
+                            menu.openContext(modelData,
+                                             Qt.point(origin.x + eventPoint.position.x,
+                                                      origin.y + eventPoint.position.y))
                         }
                     }
 

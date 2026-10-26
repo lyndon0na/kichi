@@ -24,34 +24,35 @@ Item {
     Menu {
         id: contextMenu
 
+        // 宽度只在这里定，子项跟着撑满：
+        // 每个 MenuItem 各自设 width 会比菜单容器还宽，高亮条就溢出去了
+        width: 200
+
+        // 在页面坐标系里 (point.x, point.y) 处弹出，超出边界时往回收
         function openAt(point) {
-            x = Math.max(0, Math.min(point.x, root.width - width))
-            y = Math.max(0, Math.min(point.y, root.height - height))
-            open()
+            var maxX = Math.max(0, root.width - width)
+            var maxY = Math.max(0, root.height - height)
+            popup(Math.max(0, Math.min(point.x, maxX)),
+                  Math.max(0, Math.min(point.y, maxY)))
         }
-
-        MenuItem {
-            text: root.targetName
-            enabled: false
-            width: 220
-        }
-
-        MenuSeparator {}
 
         MenuItem {
             text: qsTr("重命名…")
-            width: 220
             enabled: root.backend !== null && !root.backend.fileActionRunning
             onTriggered: root.openRename()
         }
 
         MenuItem {
             text: qsTr("移至回收站…")
-            width: 220
             enabled: root.backend !== null && !root.backend.fileActionRunning
             onTriggered: trashDialog.open()
         }
     }
+
+    // 三个弹窗统一的内容宽度。
+    // 宽度只在这一处定：子项用 fillWidth 撑满，别再各自写死，
+    // 否则漏写一处（如 TextField 的父布局没设宽度）就会溢出到弹窗外。
+    readonly property int dialogWidth: 380
 
     // —— 重命名 ——
     Dialog {
@@ -61,6 +62,7 @@ Item {
         modal: true
         anchors.centerIn: parent
         standardButtons: Dialog.Ok | Dialog.Cancel
+        width: root.dialogWidth + leftPadding + rightPadding
 
         property bool submitting: false
         property string errorText: ""
@@ -80,14 +82,14 @@ Item {
         onAccepted: root.submitRename(nameField.text)
 
         ColumnLayout {
-            width: 380
+            width: root.dialogWidth
             spacing: 8
 
             Label {
+                Layout.fillWidth: true
                 text: qsTr("原名称：%1").arg(root.targetName)
                 color: palette.placeholderText
                 elide: Text.ElideMiddle
-                Layout.maximumWidth: 380
             }
 
             TextField {
@@ -116,6 +118,7 @@ Item {
         modal: true
         anchors.centerIn: parent
         standardButtons: Dialog.Ok | Dialog.Cancel
+        width: root.dialogWidth + leftPadding + rightPadding
 
         property string errorText: ""
 
@@ -130,7 +133,7 @@ Item {
         }
 
         ColumnLayout {
-            width: 380
+            width: root.dialogWidth
             spacing: 8
 
             TextField {
@@ -163,6 +166,7 @@ Item {
         modal: true
         anchors.centerIn: parent
         standardButtons: Dialog.Ok | Dialog.Cancel
+        width: root.dialogWidth + leftPadding + rightPadding
 
         onAccepted: {
             if (root.backend && root.targetId.length > 0)
@@ -170,7 +174,7 @@ Item {
         }
 
         Label {
-            width: 400
+            width: root.dialogWidth
             wrapMode: Text.Wrap
             text: root.targetIsFolder
                 ? qsTr("确定把文件夹「%1」移入回收站吗？\n里面的所有文件和子文件夹都会一起移走。可以在 PikPak 官方客户端里恢复。")
