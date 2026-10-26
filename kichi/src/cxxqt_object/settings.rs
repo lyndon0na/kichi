@@ -120,6 +120,23 @@ impl qobject::Kichi {
         });
     }
 
+    /// 改下载目录（空串 = 恢复默认 `~/Downloads`）。
+    ///
+    /// 这里**不执行 mkdir**：只记路径，真正下载时才建目录。若是相对路径就按
+    /// 用户实际填的保存，取不到家目录时也能用。
+    pub fn set_download_dir(mut self: Pin<&mut Self>, path: QString) {
+        let path = path.to_string();
+        let trimmed = path.trim().to_owned();
+        if trimmed.chars().any(|c| c.is_control()) {
+            self.as_mut()
+                .set_message("下载目录里不能有换行或控制字符", false);
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.download_dir = trimmed;
+        });
+    }
+
     /// 统一的设置改动出口：先改内存、同步属性、再落盘。
     pub(crate) fn update_settings(mut self: Pin<&mut Self>, change: impl FnOnce(&mut Settings)) {
         let snapshot = {
@@ -151,6 +168,7 @@ impl qobject::Kichi {
             snapshot.window_height,
             snapshot.window_maximized,
         );
+        let download_dir = snapshot.download_dir.clone();
         let mut rust = self.as_mut().rust_mut();
         rust.preferred_quality = QString::from(quality);
         rust.player_command = QString::from(command);
@@ -163,6 +181,7 @@ impl qobject::Kichi {
         rust.window_width = width;
         rust.window_height = height;
         rust.window_maximized = maximized;
+        rust.download_dir = QString::from(download_dir.as_str());
     }
 }
 

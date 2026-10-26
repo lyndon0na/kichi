@@ -77,6 +77,7 @@ impl qobject::Kichi {
                 }
                 self.as_mut().reset_files();
                 self.as_mut().reset_play();
+                self.as_mut().reset_downloads();
                 self.as_mut().stop_task_polling();
             }
             Err(err) => self
@@ -305,9 +306,17 @@ fn tasks() -> &'static Mutex<VecDeque<UiTask>> {
 }
 
 /// 把一个「在主线程执行」的任务入队（可从任意线程调用）。
-fn enqueue(task: UiTask) {
+pub(super) fn enqueue(task: UiTask) {
     let mut queue = tasks().lock().unwrap_or_else(|e| e.into_inner());
     queue.push_back(task);
+}
+
+/// 同 [`enqueue`]，给其它桥接子模块用（下载等长任务）。
+pub(crate) fn enqueue_ui<F>(task: F)
+where
+    F: FnOnce(Pin<&mut qobject::Kichi>) + Send + 'static,
+{
+    enqueue(Box::new(task));
 }
 
 /// 字节数转人类可读（GB 保留一位小数）。

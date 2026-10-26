@@ -41,7 +41,8 @@ pub struct Cancel {
 }
 
 impl Cancel {
-    fn is_cancelled(&self) -> bool {
+    /// 是否已请求取消。
+    pub fn is_cancelled(&self) -> bool {
         self.flag.load(std::sync::atomic::Ordering::Relaxed)
     }
 

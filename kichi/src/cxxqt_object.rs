@@ -64,6 +64,12 @@ pub mod qobject {
         #[qproperty(bool, window_maximized, cxx_name = "windowMaximized", READ, NOTIFY = changed)]
         #[qproperty(QString, settings_path, cxx_name = "settingsPath", READ, NOTIFY = changed)]
         #[qproperty(QString, storage_backend, cxx_name = "storageBackend", READ, NOTIFY = changed)]
+        #[qproperty(QString, download_current, cxx_name = "downloadCurrent", READ, NOTIFY = changed)]
+        #[qproperty(bool, download_running, cxx_name = "downloadRunning", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_remaining, cxx_name = "downloadRemaining", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_done, cxx_name = "downloadDone", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_failed, cxx_name = "downloadFailed", READ, NOTIFY = changed)]
+        #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -167,6 +173,23 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "saveWindowGeometry"]
         fn save_window_geometry(self: Pin<&mut Self>, width: i32, height: i32, maximized: bool);
+
+        /// 下载一个文件或整个文件夹（文件夹递归排队）
+        #[qinvokable]
+        #[cxx_name = "downloadEntry"]
+        fn download_entry(self: Pin<&mut Self>, id: QString);
+
+        #[qinvokable]
+        #[cxx_name = "cancelDownloads"]
+        fn cancel_downloads(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "openDownloadDir"]
+        fn open_download_dir(self: &Self);
+
+        #[qinvokable]
+        #[cxx_name = "setDownloadDir"]
+        fn set_download_dir(self: Pin<&mut Self>, path: QString);
     }
 }
 
@@ -195,6 +218,7 @@ impl QVariantList {
 
 mod actions;
 mod backend;
+mod downloads;
 mod files;
 mod notifications;
 mod play;
@@ -276,6 +300,15 @@ pub struct KichiRust {
     pub(crate) settings_path: QString,
     /// 令牌存储后端（KWallet / 降级文件），设置页只读展示
     pub(crate) storage_backend: QString,
+    /// 下载进度文本（当前文件 · 已下 / 总量）
+    pub(crate) download_current: QString,
+    /// 是否有一批下载在跑（决定界面显示进度条与取消按钮）
+    pub(crate) download_running: bool,
+    pub(crate) download_remaining: i32,
+    pub(crate) download_done: i32,
+    pub(crate) download_failed: i32,
+    /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
+    pub(crate) download_dir: QString,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -331,6 +364,12 @@ impl Default for KichiRust {
                 crate::settings::default_path().to_string_lossy().as_ref(),
             ),
             storage_backend: QString::default(),
+            download_current: QString::default(),
+            download_running: false,
+            download_remaining: 0,
+            download_done: 0,
+            download_failed: 0,
+            download_dir: QString::default(),
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };
@@ -376,6 +415,8 @@ impl KichiRust {
         self.window_width = settings.window_width;
         self.window_height = settings.window_height;
         self.window_maximized = settings.window_maximized;
+        // 下载目录属性展示「实际生效的路径」，空串表示用默认
+        self.download_dir = QString::from(settings.download_dir.as_str());
         let backend = self.backend.restored_backend();
         self.storage_backend = QString::from(match backend {
             Some(crate::session::Backend::Keychain) => "系统钥匙串（KWallet）",
