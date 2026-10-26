@@ -3,6 +3,7 @@
 //! 轮询节奏（官方风险提示要求低频，见设计文档）：
 //! - 列表里有未完成任务：10 秒一次
 //! - 全部已结束（完成/失败）：5 分钟一次
+//!
 //! 定时循环跑在一条常驻后台线程里；每轮结果照旧经主线程队列由 `pump()` 取回，
 //! 不在后台线程碰任何 Qt 对象。退出登录时 `task_epoch` 自增，在途结果作废。
 
@@ -143,7 +144,7 @@ impl qobject::Kichi {
     }
 
     /// 登录成功后启动轮询线程（幂等）。
-    pub(crate) fn start_task_polling(self: &Self) {
+    pub(crate) fn start_task_polling(&self) {
         if poll_started().swap(true, Ordering::SeqCst) {
             poll_running().store(true, Ordering::SeqCst);
             return;
