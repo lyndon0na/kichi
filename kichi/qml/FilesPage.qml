@@ -147,8 +147,7 @@ Item {
                 spacing: 4
 
                 // 表头只属于当前目录视图：搜索结果列不同（多类型列、所在文件夹），
-                // 不硬套同一套列宽。排序箭头读的是 backend 的排序状态，
-                // 在设置页改了排序，这里回来也会跟着变。
+                // 不硬套同一套列宽。排序箭头读的是 backend 的排序状态。
                 FileListHeader {
                     visible: !page.searching
                     Layout.fillWidth: true

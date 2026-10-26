@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 设置页：播放 / 通知 / 窗口 / 文件列表。
+// 设置页：播放 / 下载 / 通知 / 窗口。
 // 顶层用 Item 而非 Page：Page 自带 header/footer，放进 StackLayout 容易撑爆高度。
 // 所有改动即时生效并落盘（backend 侧负责持久化与错误提示）。
 Item {
@@ -77,14 +77,6 @@ Item {
                 }
             }
 
-            Label {
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                color: palette.placeholderText
-                font.pixelSize: 12
-                text: qsTr("支持 ~/ 开头。文件页右键菜单选「下载」直接下到这里；同名文件自动加序号，不会覆盖。")
-            }
-
             // ── 通知 ───────────────────────────────────────────
             Label {
                 text: qsTr("通知")
@@ -133,72 +125,6 @@ Item {
                     }
                 }
                 Item { Layout.fillWidth: true }
-            }
-
-            // ── 文件列表 ───────────────────────────────────────
-            Label {
-                text: qsTr("文件列表")
-                font.bold: true
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-
-                Label {
-                    text: qsTr("排序方式")
-                    Layout.preferredWidth: 110
-                }
-                ComboBox {
-                    id: sortBox
-                    Layout.preferredWidth: 180
-                    model: [
-                        { "value": "name", "label": qsTr("名称") },
-                        { "value": "size", "label": qsTr("大小") },
-                        { "value": "modified", "label": qsTr("修改时间") }
-                    ]
-                    textRole: "label"
-                    valueRole: "value"
-
-                    Component.onCompleted: syncFromBackend()
-                    Connections {
-                        target: page.backend
-                        function onChanged() {
-                            sortBox.syncFromBackend()
-                        }
-                    }
-                    function syncFromBackend() {
-                        if (!page.backend)
-                            return
-                        var index = sortBox.indexOfValue(page.backend.sortField)
-                        if (index >= 0 && index !== sortBox.currentIndex)
-                            sortBox.currentIndex = index
-                    }
-                    onActivated: function (index) {
-                        if (!page.backend)
-                            return
-                        page.backend.setSorting(sortBox.model[index].value, ascendingBox.checked)
-                    }
-                }
-
-                CheckBox {
-                    id: ascendingBox
-                    text: qsTr("升序")
-                    checked: page.backend ? page.backend.sortAscending : true
-                    onToggled: function () {
-                        if (!page.backend)
-                            return
-                        page.backend.setSorting(sortBox.model[sortBox.currentIndex].value, checked)
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    color: palette.placeholderText
-                    font.pixelSize: 12
-                    text: qsTr("文件夹始终排在前面。也可以点文件页的列头切换排序。")
-                }
             }
 
             // ── 存储信息（只读；内容在 SettingsAbout.qml） ──────

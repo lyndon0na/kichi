@@ -61,14 +61,6 @@ ColumnLayout {
                 playback.backend.setPreferredQuality(qualityBox.model[index].value)
             }
         }
-
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            color: palette.placeholderText
-            font.pixelSize: 12
-            text: qsTr("「每次询问」总是弹档位菜单；选「优先」则直接起播。只有原画一档的文件，选转码也会直接播原画。")
-        }
     }
 
     GridLayout {

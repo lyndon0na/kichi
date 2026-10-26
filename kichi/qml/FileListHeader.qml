@@ -6,8 +6,7 @@ import QtQuick.Layouts
 //
 // 列宽由调用方（FilesPage）同时交给本组件和 FileRow，两边共用一套数值：
 // 表头那行和每一行都按同一组宽度摆位，改一处两边一起动。
-// 排序直接调 backend.setSorting：本地重排、不重新拉网，与设置页是同一份状态，
-// 所以从设置页改了排序，回来箭头也跟着变。
+// 排序直接调 backend.setSorting：本地重排、不重新拉网。
 Item {
     id: header
 
