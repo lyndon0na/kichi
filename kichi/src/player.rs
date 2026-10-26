@@ -44,11 +44,6 @@ impl PlayerConfig {
     pub fn program(&self) -> &str {
         &self.program
     }
-
-    /// 追加参数（供界面展示）。
-    pub fn args(&self) -> &[String] {
-        &self.access_args
-    }
 }
 
 impl Default for PlayerConfig {
