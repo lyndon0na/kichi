@@ -125,99 +125,67 @@ ApplicationWindow {
         onTriggered: backend.pump()
     }
 
-    header: ToolBar {
-        RowLayout {
-            anchors.fill: parent
-            spacing: 12
-
-            Label {
-                text: "kichi"
-                font.bold: true
-            }
-
-            Item { Layout.fillWidth: true }
-
-            Label {
-                text: backend.account
-                visible: root.signedIn && backend.account.length > 0
-                color: palette.placeholderText
-            }
-
-            BusyIndicator {
-                running: backend.busy
-                visible: running
-                Layout.preferredWidth: 24
-                Layout.preferredHeight: 24
-            }
-
-            Label {
-                text: backend.quotaSummary
-                visible: backend.quotaSummary.length > 0
-                elide: Text.ElideRight
-                Layout.maximumWidth: 400
-                // 完整内容在悬停提示里看，顶栏只负责概览
-                ToolTip.visible: quotaHover.containsMouse
-                ToolTip.text: backend.quotaSummary
-
-                MouseArea {
-                    id: quotaHover
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
-                }
-            }
-
-            Button {
-                text: qsTr("退出登录")
-                visible: root.signedIn
-                onClicked: signOutDialog.open()
-            }
-        }
-    }
-
     StackLayout {
         anchors.fill: parent
-        anchors.margins: 24
         currentIndex: root.signedIn ? 1 : 0
 
         LoginPage {
             backend: backend
         }
 
-        ColumnLayout {
+        RowLayout {
             spacing: 0
 
-            TabBar {
-                id: mainTabs
-                Layout.fillWidth: true
-                visible: root.signedIn
-
-                TabButton {
-                    text: qsTr("文件")
+            SideBar {
+                Layout.preferredWidth: root.width < 760 ? 168 : 208
+                Layout.fillHeight: true
+                backend: backend
+                currentIndex: root.currentPage
+                onPageRequested: function (index) {
+                    root.currentPage = index
                 }
-                TabButton {
-                    text: qsTr("离线任务")
-                }
-                TabButton {
-                    text: qsTr("设置")
-                }
+                onSignOutRequested: signOutDialog.open()
             }
 
-            StackLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                currentIndex: mainTabs.currentIndex
+                spacing: 0
 
-                FilesPage {
-                    backend: backend
+                Frame {
+                    Layout.fillWidth: true
+                    padding: 14
+
+                    RowLayout {
+                        anchors.fill: parent
+                        spacing: 12
+
+                        Label {
+                            text: root.pageTitle()
+                            font.pixelSize: 20
+                            font.bold: true
+                        }
+
+                        Item { Layout.fillWidth: true }
+                    }
                 }
 
-                TasksPage {
-                    backend: backend
-                }
+                StackLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    currentIndex: root.currentPage
 
-                SettingsPage {
-                    backend: backend
+                    FilesPage {
+                        backend: backend
+                    }
+
+                    TasksPage {
+                        backend: backend
+                    }
+
+                    SettingsPage {
+                        backend: backend
+                    }
                 }
             }
         }
@@ -249,5 +217,15 @@ ApplicationWindow {
         }
 
         onAccepted: backend.signOut()
+    }
+
+    property int currentPage: 0
+
+    function pageTitle() {
+        if (root.currentPage === 1)
+            return qsTr("离线任务")
+        if (root.currentPage === 2)
+            return qsTr("设置")
+        return qsTr("文件")
     }
 }

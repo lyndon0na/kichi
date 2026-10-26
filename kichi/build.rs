@@ -8,6 +8,7 @@ use cxx_qt_build::{CxxQtBuilder, QmlModule};
 const QML_FILES: &[&str] = &[
     "qml/main.qml",
     "qml/LoginPage.qml",
+    "qml/SideBar.qml",
     "qml/FilesPage.qml",
     "qml/FilesPageMenu.qml",
     "qml/FilesPagePlayMenu.qml",

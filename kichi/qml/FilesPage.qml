@@ -239,9 +239,11 @@ Item {
                     width: ListView.view.width
                     entry: modelData
                     backend: page.backend
-                    // 右键菜单坐标相对整个页面：先换算再交给菜单
+                    // FileRow 给的是行内坐标；菜单 root 与页面同尺寸，
+                    // 直接映射到菜单坐标系才能和 popup(x, y) 对齐。
                     onContextMenu: function (point) {
-                        menu.openContext(entry, point)
+                        var menuPoint = row.mapToItem(menu, point.x, point.y)
+                        menu.openContext(entry, menuPoint)
                     }
                     onPlayPressed: function (anchor) {
                         page.playAnchor = row.mapToItem(page, anchor.x, anchor.y)

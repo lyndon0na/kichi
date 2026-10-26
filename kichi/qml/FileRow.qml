@@ -12,7 +12,7 @@ ItemDelegate {
     property var entry: null
     property var backend: null
 
-    // 右键：页面坐标系里的位置（本行只换算到页面，菜单定位由页面决定）
+    // 右键：相对本行的位置（交给页面换算到菜单坐标系）
     signal contextMenu(point position)
 
     // 「▶」在页面坐标系里的按钮下沿中点（清晰度菜单从这里弹）
@@ -59,11 +59,9 @@ ItemDelegate {
         onTapped: function (eventPoint) {
             if (!row.entry)
                 return
-            // eventPoint.position 是相对本行 delegate 的；
-            // 菜单坐标相对整个页面，必须先换算，否则菜单会跳到页面上方
-            var origin = row.mapToItem(null, 0, 0)
-            row.contextMenu(Qt.point(origin.x + eventPoint.position.x,
-                                     origin.y + eventPoint.position.y))
+            // 只上报行内坐标。菜单的坐标系由页面负责换算，
+            // 这里先转成窗口坐标会被 popup 再偏移一次。
+            row.contextMenu(eventPoint.position)
         }
     }
 
