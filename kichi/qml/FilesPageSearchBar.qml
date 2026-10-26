@@ -38,8 +38,16 @@ Item {
             text: bar.backend ? bar.backend.searchQuery : ""
             onTextEdited: bar.queryEdited(text)
             onAccepted: bar.queryEdited(text)
-            // Esc：有字先清空回当前目录，已空则退出搜索视图
-            onEscapePressed: bar.escapeRequested()
+
+            // Esc：有字先清空回当前目录，已空则退出搜索视图。
+            // 注意：TextField 没有 onEscapePressed 属性，Esc 只能挂在 Keys 附加对象上。
+            // TextField 自己会「消费」Esc（取消编辑），所以要在按下的最早阶段拦下，
+            // 否则事件冒不到 Keys.onEscapePressed。
+            Keys.onShortcutOverride: function (event) {
+                if (event.key === Qt.Key_Escape)
+                    event.accepted = true
+            }
+            Keys.onEscapePressed: bar.escapeRequested()
         }
 
         // 全盘搜索：常驻（不再按搜索状态显隐），停止由结果头负责
