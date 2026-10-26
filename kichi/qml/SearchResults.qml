@@ -107,6 +107,11 @@ Item {
                 icon.height: 0
                 icon.color: "transparent"
 
+                // 指针在本行内的位置：双击菜单从鼠标处弹出，和右键菜单一致
+                property point pointerPos: cursorHint.hovered
+                                          ? cursorHint.point.position
+                                          : Qt.point(width / 2, height)
+
                 // 与文件页一致：单击选中；双击进入文件夹 / 播放媒体 / 下载其他文件
                 highlighted: root.selectedId.length > 0 && root.selectedId === modelData.id
                 onClicked: root.selectedId = modelData.id
@@ -116,9 +121,9 @@ Item {
                     if (modelData.kind === "folder") {
                         root.backend.searchOpenFolder(modelData.id)
                     } else if (modelData.playable === true) {
-                        // 锚点先在行内算，再换算到本视图坐标（页面再换算到页面坐标）
+                        // 用鼠标真实位置（与右键菜单一致）；没有悬停时退回行底中点
                         root.playRequested(modelData.id,
-                                           row.mapToItem(root, row.width / 2, row.height))
+                                           row.mapToItem(root, row.pointerPos.x, row.pointerPos.y))
                     } else {
                         root.backend.downloadEntry(modelData.id)
                     }
@@ -220,6 +225,7 @@ Item {
                 }
 
                 HoverHandler {
+                    id: cursorHint
                     cursorShape: modelData.kind === "folder" ? Qt.PointingHandCursor : Qt.ArrowCursor
                 }
 

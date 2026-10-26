@@ -75,12 +75,19 @@ ItemDelegate {
             return
         }
         if (row.entry.playable === true) {
-            // 锚点用行底中点：和右键菜单一样换算到页面坐标系
-            row.playRequested(row.entry.id, Qt.point(row.width / 2, row.height))
+            // 用鼠标真实位置：onDoubleClicked 不带坐标，只能自己记（见下方的
+            // HoverHandler）。没有悬停（触屏）时退回行底中点
+            row.playRequested(row.entry.id, row.pointerPos)
             return
         }
         row.backend.downloadEntry(row.entry.id)
     }
+
+    // 指针在本行内的位置：双击菜单从鼠标处弹出，和右键菜单一致。
+    // 鼠标一离开就用行底中点（触屏没有 hover 事件）
+    property point pointerPos: cursorHint.hovered
+                              ? cursorHint.point.position
+                              : Qt.point(width / 2, height)
 
     // 选中态用主题高亮色；未选中时透明，让列表背景透出来。
     // 不用 ItemDelegate 默认 background：Basic 风格的 highlighted 只画一圈边框，
@@ -157,6 +164,7 @@ ItemDelegate {
     }
 
     HoverHandler {
+        id: cursorHint
         cursorShape: row.entry && row.entry.kind === "folder"
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
     }

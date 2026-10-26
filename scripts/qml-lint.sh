@@ -38,11 +38,12 @@ fi
 
 # 已知基线：<文件>:<行>: <被豁免的关键词>
 # unqualified 是仓库里大量存在的历史写法，不影响加载，统一放行。
-# FilesPagePlayMenu.qml:44 是 Repeater delegate 里访问外层 menu id 的 lint 误报，
-#   该菜单在真实界面里已验证可弹出。
+# 第三条是 FilesPagePlayMenu.qml 里 Repeater delegate 访问外层 menu id 的 lint 误报
+#   （该菜单在真实界面里已验证可弹出）。不写文件名和行号：文件一改就会失效，
+#   而这条告警本身只出现在那种写法上。
 KNOWN=(
     ': Unqualified access'
-    'FilesPagePlayMenu.qml:44:29: Member "backend" not found on type "QQuickMenu"'
+    'Member "backend" not found on type "QQuickMenu"'
 )
 
 out="$("$LINT" -I "$MODULES" kichi/qml/*.qml 2>&1)"

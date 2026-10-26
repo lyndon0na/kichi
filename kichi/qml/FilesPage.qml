@@ -11,8 +11,6 @@ Item {
     id: page
 
     property var backend: null
-    // 右键菜单里点「播放」处的位置（页面坐标系，清晰度菜单从这里弹出）
-    property point playAnchor: Qt.point(0, 0)
     // 当前目录列表里选中的条目 id（空串 = 没有选中）
     property string selectedId: ""
 
@@ -58,8 +56,9 @@ Item {
 
     // 搜索结果里的播放 / 下载也在右键菜单里，锚点用右键位置
     function openResultContext(entry, point) {
-        var menuPoint = searchResults.mapToItem(menu, point.x, point.y)
-        menu.openContext(entry, menuPoint)
+        // 搜索结果给的是本视图坐标：换算成窗口坐标再交给右键菜单（绝对定位）
+        var windowPoint = searchResults.mapToItem(null, point.x, point.y)
+        menu.openContext(entry, windowPoint)
     }
 
     // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
@@ -188,18 +187,19 @@ Item {
                         highlighted: page.selectedId.length > 0
                                      && !!entry && page.selectedId === entry.id
                         onClicked: page.selectedId = entry.id
-                        // 双击媒体文件：页面把它换算到页面坐标系再弹清晰度菜单
+                        // 双击媒体文件：把行内的点换算成窗口坐标交给清晰度菜单。
+                        // ⚠ 必须用赋值，不能在上面写 anchorPoint: page.playAnchor 的绑定：
+                        // 给有绑定的属性赋值会永久断掉绑定，菜单就永远停在第一次的位置
                         onPlayRequested: function (id, point) {
-                            page.playAnchor = row.mapToItem(page, point.x, point.y)
+                            playMenu.anchorPoint = row.mapToItem(null, point.x, point.y)
                             if (page.backend)
                                 page.backend.requestPlay(id)
                         }
-                        // FileRow 给的是行内坐标；菜单 root 与页面同尺寸，
-                        // 直接映射到菜单坐标系才能和 popup(x, y) 对齐。
+                        // FileRow 给的是行内坐标：换算成窗口坐标再交给右键菜单
                         onContextMenu: function (point) {
                             page.selectedId = entry.id
-                            var menuPoint = row.mapToItem(menu, point.x, point.y)
-                            menu.openContext(entry, menuPoint)
+                            var windowPoint = row.mapToItem(null, point.x, point.y)
+                            menu.openContext(entry, windowPoint)
                         }
                     }
                 }
@@ -235,7 +235,8 @@ Item {
                     page.openResultContext(entry, point)
                 }
                 onPlayRequested: function (id, point) {
-                    page.playAnchor = searchResults.mapToItem(page, point.x, point.y)
+                    // 同目录列表：同样换算成窗口坐标（见上面 FileRow 处）
+                    playMenu.anchorPoint = searchResults.mapToItem(null, point.x, point.y)
                     if (page.backend)
                         page.backend.requestPlay(id)
                 }
@@ -255,14 +256,15 @@ Item {
         anchors.fill: parent
         backend: page.backend
         onPlayRequested: function (anchor) {
-            page.playAnchor = anchor
+            // 右键菜单给的已经是窗口坐标，直接当清晰度菜单的锚点
+            playMenu.anchorPoint = anchor
         }
     }
 
     // —— 清晰度菜单（内容在 FilesPagePlayMenu.qml）——
+    // 锚点由上面的点击处直接赋值（窗口坐标），这里不要再写 anchorPoint 绑定
     FilesPagePlayMenu {
         id: playMenu
         backend: page.backend
-        anchorPoint: page.playAnchor
     }
 }

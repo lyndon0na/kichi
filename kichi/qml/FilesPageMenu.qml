@@ -20,7 +20,7 @@ Item {
     property string targetName: ""
     property bool targetIsFolder: false
     property bool targetPlayable: false
-    // 右键处的位置（页面坐标系）：清晰度菜单从这里弹出
+    // 右键处的位置（**窗口**坐标系）：清晰度菜单从这里弹出
     property point targetPoint: Qt.point(0, 0)
 
     // 菜单里点「播放」：页面把位置交给清晰度菜单，再让后端取档位
@@ -30,16 +30,19 @@ Item {
     Menu {
         id: contextMenu
 
+        // 父项固定成窗口 overlay：Popup 的坐标是相对父项的，不固定就会跟着页面偏移
+        // （与清晰度菜单同一条纪律，见 docs/pitfalls.md 第 10 条）
+        parent: Overlay.overlay
+
         // 宽度只在这里定，子项跟着撑满：
         // 每个 MenuItem 各自设 width 会比菜单容器还宽，高亮条就溢出去了
         width: 200
 
-        // 在页面坐标系里 (point.x, point.y) 处弹出，超出边界时往回收
+        // 在窗口坐标系里 point 处弹出（左上角对准鼠标），和系统右键菜单一样。
+        // 用 popup(Qt.point) 绝对定位，不用 x / y：那套坐标是相对本菜单父项的
+        // （父项已固定为 overlay，见上）。超出窗口由 Menu 自己的 margins 夹回。
         function openAt(point) {
-            var maxX = Math.max(0, root.width - width)
-            var maxY = Math.max(0, root.height - height)
-            popup(Math.max(0, Math.min(point.x, maxX)),
-                  Math.max(0, Math.min(point.y, maxY)))
+            popup(Qt.point(point.x, point.y))
         }
 
         // 只有视频/音频才有播放入口
@@ -49,6 +52,7 @@ Item {
             enabled: root.backend !== null && !root.backend.busy
                      && root.backend.playMenu.length === 0
             onTriggered: {
+                // targetPoint 已经是窗口坐标，直接交给清晰度菜单
                 root.playRequested(root.targetPoint)
                 if (root.backend)
                     root.backend.requestPlay(root.targetId)
