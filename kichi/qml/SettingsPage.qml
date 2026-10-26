@@ -197,7 +197,7 @@ Item {
                     wrapMode: Text.Wrap
                     color: palette.placeholderText
                     font.pixelSize: 12
-                    text: qsTr("文件夹始终排在前面。")
+                    text: qsTr("文件夹始终排在前面。也可以点文件页的列头切换排序。")
                 }
             }
 

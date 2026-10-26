@@ -14,6 +14,7 @@ const QML_FILES: &[&str] = &[
     "qml/FilesPagePlayMenu.qml",
     "qml/FilesPageSearchBar.qml",
     "qml/SearchResults.qml",
+    "qml/FileListHeader.qml",
     "qml/FileRow.qml",
     "qml/TasksPage.qml",
     "qml/SettingsPage.qml",

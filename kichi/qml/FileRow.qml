@@ -12,6 +12,15 @@ ItemDelegate {
 
     property var entry: null
     property var backend: null
+    // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
+    property int iconColumnWidth: 24
+    property int sizeColumnWidth: 100
+    property int modifiedColumnWidth: 130
+    property int columnSpacing: 10
+    // 水平内边距固定：表头按同一个数值摆位。不依赖控件风格的默认 padding，
+    // 否则换风格（这里实测是 8 而不是 Qt 默认的 12）表头就和行错开。
+    leftPadding: 8
+    rightPadding: 8
 
     // 右键：相对本行的位置（交给页面换算到菜单坐标系）
     signal contextMenu(point position)
@@ -86,11 +95,14 @@ ItemDelegate {
     }
 
     contentItem: RowLayout {
-        spacing: 10
+        spacing: row.columnSpacing
 
+        // 固定宽度：图标宽度随 emoji 字形变，表头的「名称」就对不上文件名了
         Label {
             text: row.iconFor(row.entry)
             font.pixelSize: 18
+            Layout.preferredWidth: row.iconColumnWidth
+            horizontalAlignment: Text.AlignHCenter
             color: row.highlighted ? palette.highlightedText : palette.text
         }
 
@@ -112,17 +124,17 @@ ItemDelegate {
             color: row.highlighted ? palette.highlightedText : palette.placeholderText
             opacity: row.highlighted ? 0.8 : 1
             horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: 100
+            Layout.preferredWidth: row.sizeColumnWidth
         }
 
+        // 没有修改时间的条目也占住整列宽度：否则这一列会塌掉，
+        // 大小列跟着右移，表头就对不齐了
         Label {
-            readonly property string when: row.entry ? row.entry.modifiedText : ""
-            text: when
-            visible: when.length > 0
+            text: row.entry ? row.entry.modifiedText : ""
             color: row.highlighted ? palette.highlightedText : palette.placeholderText
             opacity: row.highlighted ? 0.8 : 1
             horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: 130
+            Layout.preferredWidth: row.modifiedColumnWidth
         }
     }
 

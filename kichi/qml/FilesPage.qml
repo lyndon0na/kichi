@@ -19,6 +19,15 @@ Item {
     // 搜索视图开着：列表区换成结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
 
+    // 列表列宽：表头（FileListHeader）与每一行（FileRow）共用同一组数值。
+    // 只在这里改，两边一起跟着变，不会出现「表头 100px、行里 90px」的错位。
+    readonly property int iconColumnWidth: 24
+    readonly property int sizeColumnWidth: 100
+    readonly property int modifiedColumnWidth: 130
+    // 行的水平内边距：FileRow 显式用它，表头也用它，不跟控件风格的默认值走
+    readonly property int rowPadding: 8
+    readonly property int columnSpacing: 10
+
     function crumbCount() {
         return page.backend ? page.backend.breadcrumb.length : 0
     }
@@ -133,44 +142,69 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            ListView {
-                id: fileList
-
+            ColumnLayout {
                 anchors.fill: parent
-                clip: true
-                // 搜索视图显示结果；否则显示当前目录
-                visible: !page.searching
-                model: page.backend ? page.backend.files : []
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
+                spacing: 4
+
+                // 表头只属于当前目录视图：搜索结果列不同（多类型列、所在文件夹），
+                // 不硬套同一套列宽。排序箭头读的是 backend 的排序状态，
+                // 在设置页改了排序，这里回来也会跟着变。
+                FileListHeader {
+                    visible: !page.searching
+                    Layout.fillWidth: true
+                    backend: page.backend
+                    iconColumnWidth: page.iconColumnWidth
+                    sizeColumnWidth: page.sizeColumnWidth
+                    modifiedColumnWidth: page.modifiedColumnWidth
+                    contentPadding: page.rowPadding
+                    columnSpacing: page.columnSpacing
                 }
 
-                delegate: FileRow {
-                    id: row
-                    width: ListView.view.width
-                    entry: modelData
-                    backend: page.backend
-                    // 单击选中；id 绑定而不是 index，刷新 / 排序后仍指向同一条目
-                    highlighted: page.selectedId.length > 0
-                                 && !!entry && page.selectedId === entry.id
-                    onClicked: page.selectedId = entry.id
-                    // 双击媒体文件：页面把它换算到页面坐标系再弹清晰度菜单
-                    onPlayRequested: function (id, point) {
-                        page.playAnchor = row.mapToItem(page, point.x, point.y)
-                        if (page.backend)
-                            page.backend.requestPlay(id)
+                ListView {
+                    id: fileList
+
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    // 搜索视图显示结果；否则显示当前目录
+                    visible: !page.searching
+                    model: page.backend ? page.backend.files : []
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded
                     }
-                    // FileRow 给的是行内坐标；菜单 root 与页面同尺寸，
-                    // 直接映射到菜单坐标系才能和 popup(x, y) 对齐。
-                    onContextMenu: function (point) {
-                        page.selectedId = entry.id
-                        var menuPoint = row.mapToItem(menu, point.x, point.y)
-                        menu.openContext(entry, menuPoint)
+
+                    delegate: FileRow {
+                        id: row
+                        width: ListView.view.width
+                        entry: modelData
+                        backend: page.backend
+                        iconColumnWidth: page.iconColumnWidth
+                        sizeColumnWidth: page.sizeColumnWidth
+                        modifiedColumnWidth: page.modifiedColumnWidth
+                        columnSpacing: page.columnSpacing
+                        // 单击选中；id 绑定而不是 index，刷新 / 排序后仍指向同一条目
+                        highlighted: page.selectedId.length > 0
+                                     && !!entry && page.selectedId === entry.id
+                        onClicked: page.selectedId = entry.id
+                        // 双击媒体文件：页面把它换算到页面坐标系再弹清晰度菜单
+                        onPlayRequested: function (id, point) {
+                            page.playAnchor = row.mapToItem(page, point.x, point.y)
+                            if (page.backend)
+                                page.backend.requestPlay(id)
+                        }
+                        // FileRow 给的是行内坐标；菜单 root 与页面同尺寸，
+                        // 直接映射到菜单坐标系才能和 popup(x, y) 对齐。
+                        onContextMenu: function (point) {
+                            page.selectedId = entry.id
+                            var menuPoint = row.mapToItem(menu, point.x, point.y)
+                            menu.openContext(entry, menuPoint)
+                        }
                     }
                 }
             }
 
+            // 居中对齐到列表区域：表头在时提示落在列表中间，不会压在表头上
             Label {
                 anchors.centerIn: parent
                 text: qsTr("这个文件夹是空的")
