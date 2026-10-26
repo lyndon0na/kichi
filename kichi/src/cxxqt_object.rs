@@ -188,6 +188,7 @@ impl QVariantList {
 mod actions;
 mod backend;
 mod files;
+mod notifications;
 mod play;
 mod settings;
 mod tasks;

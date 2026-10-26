@@ -253,8 +253,9 @@ impl qobject::Kichi {
         self.as_mut().set_message(&summary, false);
         self.as_mut().notify();
 
+        let notify_enabled = self.notify_enabled;
         for task in finished_now {
-            notify_finished(&task);
+            notify_finished(&task, notify_enabled);
         }
     }
 
@@ -321,7 +322,10 @@ fn sleep_interruptible(total: Duration) -> bool {
 }
 
 /// 桌面通知（走 XDG 门户，不依赖额外守护进程）。
-fn notify_finished(task: &OfflineTask) {
+fn notify_finished(task: &OfflineTask, enabled: bool) {
+    if !enabled {
+        return;
+    }
     let (summary, body) = match task.phase {
         TaskPhase::Completed => (
             "离线任务完成",
@@ -345,16 +349,7 @@ fn notify_finished(task: &OfflineTask) {
         ),
         _ => return,
     };
-    let outcome = notify_rust::Notification::new()
-        .appname("kichi")
-        .summary(summary)
-        .body(body.trim_end())
-        .icon("folder-download")
-        .timeout(notify_rust::Timeout::Milliseconds(8000))
-        .show();
-    if let Err(err) = outcome {
-        eprintln!("[kichi] 系统通知发送失败：{err}");
-    }
+    super::notifications::show(summary, body.trim_end(), "folder-download");
 }
 
 /// 一条任务 → QML 用的小 map（只带界面要显示的字段）。

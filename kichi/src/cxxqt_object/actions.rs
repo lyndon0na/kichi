@@ -171,8 +171,22 @@ impl qobject::Kichi {
                 }
                 self.as_mut().notify();
             }
+            limited @ Failure::RateLimited { .. } => {
+                // 配额/限速要解释清楚，否则用户会以为客户端坏了
+                let text = crate::session::rate_limit_text(&limited);
+                self.as_mut().set_message(&text, false);
+                self.as_mut().notify_rate_limited(&text);
+            }
             other => self.as_mut().set_message(&other.to_string(), false),
         }
+    }
+
+    /// 配额/限速弹一条系统通知（通知开关关闭时跳过）。
+    fn notify_rate_limited(self: Pin<&mut Self>, text: &str) {
+        if !self.notify_enabled {
+            return;
+        }
+        super::notifications::show("PikPak 配额或限速限制", text, "dialog-warning");
     }
 
     fn on_quota(mut self: Pin<&mut Self>, quota: kichi_core::Quota) {
