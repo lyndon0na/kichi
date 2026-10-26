@@ -152,20 +152,60 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 spacing: 0
 
-                // 页标题条：不用 Frame（Fusion 样式自带一圈边框），
-                // 这里只要留白 + 文字
-                Item {
+                // 页标题条：左边页名、中间搜索框（仅文件页）、右边目录操作。
+                // 不用 Frame（Fusion 样式自带一圈边框），这里只要留白 + 文字。
+                // 两侧各放一个撑开的空白，搜索框落在标题和按钮之间居中。
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: titleLabel.implicitHeight + 28
+                    Layout.leftMargin: 14
+                    Layout.rightMargin: 12
+                    Layout.topMargin: 11
+                    Layout.bottomMargin: 11
+                    spacing: 8
 
                     Label {
                         id: titleLabel
-                        anchors.left: parent.left
-                        anchors.leftMargin: 14
-                        anchors.verticalCenter: parent.verticalCenter
                         text: root.pageTitle()
                         font.pixelSize: 20
                         font.bold: true
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    FilesPageSearchBar {
+                        id: searchBar
+                        visible: root.currentPage === 0
+                        Layout.preferredWidth: 330
+                        Layout.minimumWidth: 160
+                        Layout.maximumWidth: 330
+                        Layout.alignment: Qt.AlignVCenter
+                        backend: backend
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    // 目录操作：只对文件页有意义。搜索视图里置灰（它们作用的是
+                    // 当前目录，不是搜索结果），但保留占位，免得搜索框左右跳。
+                    RowLayout {
+                        visible: root.currentPage === 0
+                        spacing: 5
+
+                        ToolButton {
+                            text: qsTr("刷新")
+                            enabled: !filesPage.searching && !backend.busy
+                            onClicked: backend.refreshFiles()
+                        }
+
+                        ToolButton {
+                            text: qsTr("＋ 新建文件夹")
+                            enabled: !filesPage.searching && !backend.busy
+                                     && !backend.fileActionRunning
+                            onClicked: filesPage.beginNewFolder()
+                        }
                     }
                 }
 
@@ -175,6 +215,7 @@ ApplicationWindow {
                     currentIndex: root.currentPage
 
                     FilesPage {
+                        id: filesPage
                         backend: backend
                     }
 

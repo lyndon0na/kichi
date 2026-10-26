@@ -1,4 +1,4 @@
-//! 云端搜索：先在当前目录本地筛（0 请求），「全盘搜索」才遍历网盘。
+//! 云端搜索：先在当前目录本地筛（0 请求），回车 / 搜索按钮才遍历网盘。
 //!
 //! 分工：
 //! - `session::search`：逐页扫描、名字匹配、可中断、三态结束；
@@ -82,12 +82,12 @@ impl qobject::Kichi {
         self.as_mut().apply_local_filter(matched, &status);
     }
 
-    /// 第二段：遍历整个网盘。本地没筛到也可以直接点它。
+    /// 第二段：遍历整个网盘（回车或点搜索框里的放大镜）。本地没筛到也可以直接点。
     pub fn search_all(mut self: Pin<&mut Self>) {
         let query = self.search_query.to_string().trim().to_owned();
         if query.is_empty() {
             self.as_mut()
-                .set_message("先输入关键词，再点「全盘搜索」", false);
+                .set_message("先输入关键词，再按回车或点搜索按钮", false);
             return;
         }
         if !self.search_settled {

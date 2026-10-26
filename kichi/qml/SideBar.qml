@@ -21,25 +21,12 @@ Rectangle {
         anchors.margins: 14
         spacing: 8
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
-            Label {
-                text: "kichi"
-                font.pixelSize: 24
-                font.bold: true
-                color: palette.windowText
-            }
-
-            Item { Layout.fillWidth: true }
-
-            BusyIndicator {
-                running: bar.backend !== null && bar.backend.busy
-                visible: running
-                Layout.preferredWidth: 22
-                Layout.preferredHeight: 22
-            }
+        // 加载指示只在面包屑里（当前目录名后面），侧栏不再重复一个
+        Label {
+            text: "kichi"
+            font.pixelSize: 24
+            font.bold: true
+            color: palette.windowText
         }
 
         Label {

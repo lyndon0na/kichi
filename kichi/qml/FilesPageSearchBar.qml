@@ -2,77 +2,129 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 文件页的搜索条（从 FilesPage.qml 抽出来：那里已到行数软上限）。
+// 文件页的搜索框（挂在 main.qml 标题行中间；这里只管「搜索」这一件事）。
 //
-// 进去：输入即筛当前目录（0 请求），回车同样；清空 = 回当前目录。
-// 「⌕ 全盘」：遍历网盘——唯一常驻的全盘入口（扫描中由结果头换成「停止」）。
+// 两段式（docs/adr/0004）：
+// - 输入 = 只筛当前目录已加载的条目（0 请求），清空 = 回当前目录；
+// - 回车 / 点输入框里内嵌的放大镜 = 全盘搜索（唯一会发请求的入口）。
 Item {
     id: bar
 
     property var backend: null
 
-    // 关键词改了（输入 / 回车 / 清空）：由页面去调 backend
-    signal queryEdited(string text)
-    // 点了 ✕
-    signal exitRequested()
-    // 在搜索框里按了 Esc
-    signal escapeRequested()
-    // 点了「⌕ 全盘」
-    signal searchAllRequested()
-
-    // 对外暴露输入框，页面拿它做 `/` 聚焦与 Esc 清空
-    property alias field: searchField
-    property alias text: searchField.text
+    // 扫描进行中：按钮置灰；停止入口在结果头里（SearchResults.qml）
+    readonly property bool scanning: backend !== null
+                                      && backend.searchActive
+                                      && !backend.searchSettled
 
     implicitHeight: searchField.implicitHeight
+    implicitWidth: 330
 
-    RowLayout {
+    // 输入即筛当前目录：清空就回到目录视图
+    function applyLocalFilter() {
+        if (!bar.backend)
+            return
+        if (searchField.text.trim().length === 0)
+            bar.backend.exitSearch()
+        else
+            bar.backend.searchLocal(searchField.text)
+    }
+
+    // 全盘搜索：唯一会发请求的入口
+    function startFullScan() {
+        if (!bar.backend || searchField.text.trim().length === 0)
+            return
+        bar.backend.searchAll()
+    }
+
+    function clearAndExit() {
+        searchField.text = ""
+        if (bar.backend)
+            bar.backend.exitSearch()
+    }
+
+    TextField {
+        id: searchField
+
         anchors.fill: parent
-        spacing: 8
+        placeholderText: qsTr("按名字筛选当前文件夹… 回车 = 全盘搜索")
+        selectByMouse: true
+        // 右边给内嵌的 ✕ / 🔍 让位，文字不钻到按钮底下
+        rightPadding: buttonRow.width + 8
 
-        TextField {
-            id: searchField
-            Layout.fillWidth: true
-            placeholderText: qsTr("在文件里按名字搜索（先筛当前目录；Esc 清空 / 退出）")
-            selectByMouse: true
-            text: bar.backend ? bar.backend.searchQuery : ""
-            onTextEdited: bar.queryEdited(text)
-            onAccepted: bar.queryEdited(text)
+        onTextEdited: bar.applyLocalFilter()
+        onAccepted: bar.startFullScan()
 
-            // Esc：有字先清空回当前目录，已空则退出搜索视图。
-            // 注意：TextField 没有 onEscapePressed 属性，Esc 只能挂在 Keys 附加对象上。
-            // TextField 自己会「消费」Esc（取消编辑），所以要在按下的最早阶段拦下，
-            // 否则事件冒不到 Keys.onEscapePressed。
-            Keys.onShortcutOverride: function (event) {
-                if (event.key === Qt.Key_Escape)
-                    event.accepted = true
-            }
-            Keys.onEscapePressed: bar.escapeRequested()
+        // Esc：有字先清空回当前目录，已空则退出搜索视图（与改动前一致）。
+        // TextField 自己会「消费」Esc，必须先在 ShortcutOverride 里接住。
+        Keys.onShortcutOverride: function (event) {
+            if (event.key === Qt.Key_Escape)
+                event.accepted = true
+        }
+        Keys.onEscapePressed: {
+            if (searchField.text.length > 0)
+                bar.clearAndExit()
+            else if (bar.backend && bar.backend.searchActive)
+                bar.backend.exitSearch()
+        }
+    }
+
+    // 内嵌按钮叠在输入框右侧。注意不能塞进 TextField 里当子项：
+    // TextField 的默认属性是 text（字符串），塞子项会直接加载失败。
+    Row {
+        id: buttonRow
+
+        anchors.right: parent.right
+        anchors.rightMargin: 3
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: 1
+
+        // 有字才出现：清空关键词并回到当前文件夹
+        ToolButton {
+            id: clearButton
+
+            readonly property int size: 20
+
+            width: size
+            height: size
+            text: qsTr("✕")
+            font.pixelSize: 11
+            padding: 0
+            flat: true
+            visible: searchField.text.length > 0
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("清空关键词，回到当前文件夹")
+            onClicked: bar.clearAndExit()
         }
 
-        // 全盘搜索：常驻（不再按搜索状态显隐），停止由结果头负责
-        Button {
-            readonly property bool running: bar.backend !== null
-                                            && bar.backend.searchActive
-                                            && !bar.backend.searchSettled
-            text: qsTr("全盘搜索")
-            enabled: bar.backend !== null && !running && bar.text.trim().length > 0
+        // 全盘搜索：内嵌在输入框里，唯一会发请求的按钮
+        ToolButton {
+            id: searchButton
+
+            readonly property int size: 20
+
+            width: size
+            height: size
+            text: qsTr("🔍")
+            font.pixelSize: 11
+            padding: 0
+            enabled: searchField.text.trim().length > 0 && !bar.scanning
             ToolTip.visible: hovered
             ToolTip.text: qsTr("遍历整个网盘按名字查找（逐页请求官方列表，条目多时要等一会儿）")
-            onClicked: bar.searchAllRequested()
+            onClicked: bar.startFullScan()
         }
+    }
 
-        // 「退出」：没在搜时也要占位（visible 不参与布局），
-        // 否则右边一出现按钮就会把整条输入框挤窄、文字跟着跳
-        ToolButton {
-            readonly property bool active: bar.backend !== null && bar.backend.searchActive
-            text: qsTr("✕")
-            visible: active
-            opacity: active ? 1 : 0
-            enabled: active
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("退出搜索，回到当前目录")
-            onClicked: bar.exitRequested()
+    // 搜索在别处结束（点了结果里的文件夹、离开文件页）时清掉关键词：
+    // 否则框里留着旧字，一按回车又搜一遍
+    Connections {
+        target: bar.backend
+
+        function onChanged() {
+            if (!bar.backend)
+                return
+            if (!bar.backend.searchActive && searchField.text.length > 0)
+                searchField.text = ""
         }
     }
 }

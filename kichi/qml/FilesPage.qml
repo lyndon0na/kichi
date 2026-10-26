@@ -5,8 +5,8 @@ import QtQuick.Layouts
 // 文件页（S3）：面包屑导航 + 目录列表。
 // 只调 backend 的 Q_INVOKABLE；配额沿用顶栏的 quotaSummary，不重复显示。
 // 播放（S5）：右键菜单点「播放」→ backend 取档位 → playMenu 非空时弹清晰度菜单。
-// 搜索（S9）：工具条搜索框先在当前目录本地筛（0 请求），「全盘搜索」才遍历网盘；
-// 搜索结果在 SearchResults.qml 里，和目录列表共用同一块列表框。
+// 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入只筛当前目录，
+// 全盘搜索由回车 / 内嵌按钮触发；结果在 SearchResults.qml 里，和目录列表共用同一块列表区。
 Item {
     id: page
 
@@ -27,30 +27,6 @@ Item {
         return index === page.crumbCount() - 1
     }
 
-    function sortLabel() {
-        if (!page.backend)
-            return ""
-        var field = page.backend.sortField
-        var name = field === "size" ? qsTr("大小")
-                 : field === "modified" ? qsTr("时间")
-                 : qsTr("名称")
-        return name + (page.backend.sortAscending ? " ↑" : " ↓")
-    }
-
-    // 点一下换字段，再点当前字段则翻方向（与老习惯一致）
-    function cycleSort() {
-        if (!page.backend)
-            return
-        var order = ["name", "modified", "size"]
-        var index = order.indexOf(page.backend.sortField)
-        if (index < 0)
-            index = 0
-        if (index + 1 < order.length)
-            page.backend.setSorting(order[index + 1], page.backend.sortAscending)
-        else
-            page.backend.setSorting(page.backend.sortField, !page.backend.sortAscending)
-    }
-
     function iconFor(item) {
         if (item.kind === "folder")
             return "📁"
@@ -65,27 +41,13 @@ Item {
     }
 
     // —— 搜索入口 ——
+    //
+    // 搜索框本身在标题行（FilesPageSearchBar.qml）：输入只筛本目录，
+    // 回车 / 内嵌按钮才全盘搜。本页只负责显示结果和从结果跳转。
 
-    // 输入即筛当前目录（0 请求）；清空就退出搜索视图
-    function submitSearch(text) {
-        if (!page.backend)
-            return
-        if (String(text || "").trim().length === 0)
-            page.backend.exitSearch()
-        else
-            page.backend.searchLocal(text)
-    }
-
-    // Esc：搜索框有字 → 清空并回到当前目录；已空 → 退出搜索视图
-    function escapeSearch() {
-        if (!page.backend)
-            return
-        if (searchBar.text.length > 0) {
-            searchBar.text = ""
-            page.backend.exitSearch()
-        } else if (page.searching) {
-            page.backend.exitSearch()
-        }
+    // 标题行的「＋ 新建文件夹」调这里：弹窗和菜单都在本页（FilesPageMenu）
+    function beginNewFolder() {
+        menu.openNewFolder()
     }
 
     // 搜索结果里的播放 / 下载也在右键菜单里，锚点用右键位置
@@ -94,47 +56,28 @@ Item {
         menu.openContext(entry, menuPoint)
     }
 
-    // 搜索被别处结束（点了结果里的文件夹）时清掉关键词，
-    // 否则搜索框留着旧字、一点「全盘搜索」又开搜
-    function syncSearchField() {
-        if (!page.backend)
-            return
-        if (!page.backend.searchActive && searchBar.text.length > 0)
-            searchBar.text = ""
-    }
-
     // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
+    // （搜索框里的字由 FilesPageSearchBar 自己跟着 searchActive 清）
     onVisibleChanged: {
         if (!page.visible && page.searching && page.backend)
             page.backend.exitSearch()
-    }
-
-    // —— Esc 逐级退出搜索 ——
-    //
-    // 只在搜索框有焦点时生效（见 FilesPageSearchBar 里的 Keys.onEscapePressed）。
-    // 页面级的 `/` 聚焦已按用户要求去掉：Wayland 下窗口级按键焦点不可靠，
-    // 写了也常常不生效，不如不承诺。
-    Connections {
-        target: page.backend
-
-        function onChanged() {
-            if (page.backend)
-                page.syncSearchField()
-        }
     }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 10
 
-        // —— 导航条 ——
+        // —— 导航条：上一级（图标）+ 面包屑 ——
+        // 正在加载的那一级名字后面跟着转圈，其余位置不放指示器。
         RowLayout {
             Layout.fillWidth: true
             spacing: 6
 
             ToolButton {
-                text: qsTr("↑ 上一级")
+                text: qsTr("↑")
                 enabled: page.backend !== null && !page.backend.busy && page.crumbCount() > 1
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("上一级（回到上级目录）")
                 onClicked: page.backend.openParent()
             }
 
@@ -168,52 +111,19 @@ Item {
                                 onClicked: page.backend.openCrumb(index)
                             }
                         }
+
+                        // 加载中转圈：只跟在当前目录名后面
+                        BusyIndicator {
+                            visible: page.isCurrentCrumb(index)
+                                     && page.backend !== null && page.backend.busy
+                            running: visible
+                            Layout.preferredWidth: 18
+                            Layout.preferredHeight: 18
+                            Layout.alignment: Qt.AlignVCenter
+                        }
                     }
                 }
             }
-
-            BusyIndicator {
-                running: page.backend !== null && page.backend.busy
-                visible: running
-                Layout.preferredWidth: 24
-                Layout.preferredHeight: 24
-            }
-
-            ToolButton {
-                text: page.sortLabel()
-                enabled: page.backend !== null
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("点按切换排序字段（名称 → 时间 → 大小），循环到末尾再点翻转方向")
-                onClicked: page.cycleSort()
-            }
-
-            ToolButton {
-                text: qsTr("刷新")
-                enabled: page.backend !== null && !page.backend.busy
-                visible: !page.searching
-                onClicked: page.backend.refreshFiles()
-            }
-
-            ToolButton {
-                text: qsTr("＋ 新建文件夹")
-                enabled: page.backend !== null && !page.backend.busy
-                         && !page.backend.fileActionRunning
-                visible: !page.searching
-                onClicked: menu.openNewFolder()
-            }
-        }
-
-        // —— 搜索条（工具条下方一行；细节在 FilesPageSearchBar.qml）——
-        FilesPageSearchBar {
-            id: searchBar
-            Layout.fillWidth: true
-            backend: page.backend
-            onQueryEdited: function (text) {
-                page.submitSearch(text)
-            }
-            onExitRequested: page.backend.exitSearch()
-            onEscapeRequested: page.escapeSearch()
-            onSearchAllRequested: page.backend.searchAll()
         }
 
         // —— 列表（当前目录 / 搜索结果共用这块区域）——
