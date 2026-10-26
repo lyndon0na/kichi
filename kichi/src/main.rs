@@ -5,6 +5,7 @@
 //! 实例化 `Kichi {}`（无需从 C++ 侧注入根对象）。
 
 mod cxxqt_object;
+mod player;
 mod session;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
