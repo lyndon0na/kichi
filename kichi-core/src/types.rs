@@ -46,12 +46,24 @@ pub struct FileEntry {
 }
 
 /// 离线任务阶段。
+///
+/// 官方的 `PHASE_TYPE_*` 集合并不能穷举（实测还有 `PAUSED` 与拼写为
+/// `UNKNOW` 的未知态），未识别的取值一律落到 [`TaskPhase::Unknown`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskPhase {
     Pending,
     Running,
+    Paused,
     Completed,
     Error,
+    Unknown,
+}
+
+impl TaskPhase {
+    /// 是否已经不再变化（完成或失败），轮询可据此退避。
+    pub fn is_settled(self) -> bool {
+        matches!(self, TaskPhase::Completed | TaskPhase::Error)
+    }
 }
 
 /// 离线下载任务。
@@ -67,6 +79,8 @@ pub struct OfflineTask {
     pub created_at: Option<DateTime<Utc>>,
     /// 完成后产物对应的文件 id
     pub file_id: Option<String>,
+    /// 产物大小（字节）；官方给字符串，缺失按 0 处理
+    pub file_size: u64,
 }
 
 /// 网盘配额与会员状态。

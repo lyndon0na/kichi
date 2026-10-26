@@ -102,19 +102,31 @@ impl DriveClient {
     }
 
     /// 同 [`DriveClient::get`]，额外附带查询参数。
-    fn get_with_query<R: serde::de::DeserializeOwned>(
+    pub(crate) fn get_with_query<R: serde::de::DeserializeOwned>(
         &self,
         url: &str,
         query: &[(String, String)],
     ) -> Result<R, Error> {
-        let action = action_for("GET", url);
+        self.request(reqwest::Method::GET, url, query, Body::Empty)
+    }
+
+    /// 统一请求入口：取 captcha 令牌发一次，被拒时作废并重取后重试一次。
+    pub(crate) fn request<R: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        body: Body<'_>,
+    ) -> Result<R, Error> {
+        let action = action_for(method.as_str(), url);
         let token = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+        let access = Some(self.access_token.as_ref());
         let first = self.http.call_with_query::<R>(
-            reqwest::Method::GET,
+            method.clone(),
             url,
             query,
-            Body::Empty,
-            Some(&self.access_token),
+            body.reborrow(),
+            access,
             Some(token.token.as_str()).filter(|t| !t.is_empty()),
         );
         match first {
@@ -122,16 +134,54 @@ impl DriveClient {
                 self.captcha.invalidate();
                 let retry = self.captcha.acquire(&action, None, Some(&self.user_id))?;
                 self.http.call_with_query(
-                    reqwest::Method::GET,
+                    method,
                     url,
                     query,
-                    Body::Empty,
-                    Some(&self.access_token),
+                    body,
+                    access,
                     Some(retry.token.as_str()).filter(|t| !t.is_empty()),
                 )
             }
             other => other,
         }
+    }
+
+    /// 同 [`DriveClient::request`]，但响应体可能为空（DELETE 之类）。
+    pub(crate) fn request_no_response(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+    ) -> Result<(), Error> {
+        let action = action_for(method.as_str(), url);
+        let token = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+        let access = Some(self.access_token.as_ref());
+        let first = self.http.call_no_response(
+            method.clone(),
+            url,
+            query,
+            access,
+            Some(token.token.as_str()).filter(|t| !t.is_empty()),
+        );
+        match first {
+            Err(err) if err.is_captcha() => {
+                self.captcha.invalidate();
+                let retry = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+                self.http.call_no_response(
+                    method,
+                    url,
+                    query,
+                    access,
+                    Some(retry.token.as_str()).filter(|t| !t.is_empty()),
+                )
+            }
+            other => other,
+        }
+    }
+
+    /// 运行时配置（`tasks` 模块据此拼任务端点）。
+    pub(crate) fn config(&self) -> &Config {
+        &self.config
     }
 
     /// 容量与用量。

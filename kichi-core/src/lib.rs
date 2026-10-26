@@ -9,10 +9,11 @@ pub mod config;
 pub mod drive;
 pub mod error;
 pub(crate) mod http;
+pub mod tasks;
 pub mod types;
 
 pub use auth::{LoginOutcome, REFRESH_MARGIN};
 pub use config::Config;
 pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
-pub use types::{EntryKind, FileEntry, Quota, TokenPair};
+pub use types::{EntryKind, FileEntry, OfflineTask, Quota, TaskPhase, TokenPair};

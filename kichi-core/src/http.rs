@@ -18,6 +18,17 @@ pub(crate) enum Body<'a> {
     Form(&'a [(&'a str, &'a str)]),
 }
 
+impl<'a> Body<'a> {
+    /// 借出等价的请求体，使其能先后用于两次请求（captcha 重试）。
+    pub(crate) fn reborrow(&self) -> Body<'_> {
+        match self {
+            Body::Empty => Body::Empty,
+            Body::Json(value) => Body::Json(value),
+            Body::Form(fields) => Body::Form(fields),
+        }
+    }
+}
+
 /// 带 PikPak 身份头的同步 HTTP 客户端（reqwest 内部连接池共享，克隆廉价）。
 #[derive(Clone)]
 pub(crate) struct HttpClient {
@@ -99,6 +110,43 @@ impl HttpClient {
         captcha: Option<&str>,
     ) -> Result<R, Error> {
         self.call(method, &append_query(url, query), body, access, captcha)
+    }
+
+    /// 发出请求但**不解析响应体**（官方部分端点成功时返回空体）。
+    ///
+    /// 非 2xx 时仍按官方错误负载归类。
+    pub(crate) fn call_no_response(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        access: Option<&str>,
+        captcha: Option<&str>,
+    ) -> Result<(), Error> {
+        let url = append_query(url, query);
+        let mut req = self
+            .client
+            .request(method, &url)
+            .header("Referer", "https://mypikpak.com/")
+            .header("x-client-id", &self.config.client_id)
+            .header("x-client-version", &self.config.client_version)
+            .header("x-device-id", &self.device_id);
+        if let Some(token) = access {
+            req = req.bearer_auth(token);
+        }
+        if let Some(token) = captcha {
+            req = req.header("x-captcha-token", token);
+        }
+
+        let response = req.send().map_err(|e| Error::Network(network_reason(&e)))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = response
+            .text()
+            .map_err(|e| Error::Network(network_reason(&e)))?;
+        Err(api_error(status, &text))
     }
 }
 
