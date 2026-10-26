@@ -23,6 +23,7 @@ ApplicationWindow {
 
     Component.onCompleted: backend.warmUp()
 
+
     // 后台线程的结果由主线程抽水投递（cxx-qt 0.10 下不能用 qsignal）
     Timer {
         interval: 100
@@ -80,8 +81,35 @@ ApplicationWindow {
             backend: backend
         }
 
-        FilesPage {
-            backend: backend
+        ColumnLayout {
+            spacing: 0
+
+            TabBar {
+                id: mainTabs
+                Layout.fillWidth: true
+                visible: root.signedIn
+
+                TabButton {
+                    text: qsTr("文件")
+                }
+                TabButton {
+                    text: qsTr("离线任务")
+                }
+            }
+
+            StackLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                currentIndex: mainTabs.currentIndex
+
+                FilesPage {
+                    backend: backend
+                }
+
+                TasksPage {
+                    backend: backend
+                }
+            }
         }
     }
 
