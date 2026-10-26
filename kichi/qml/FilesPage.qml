@@ -295,14 +295,6 @@ Item {
             Layout.fillWidth: true
             backend: page.backend
         }
-
-        Label {
-            text: qsTr("单击选中；双击文件夹进入、媒体文件播放、其他文件下载到本地。右键可重命名或移到回收站，下载目录在设置页里改。")
-            color: palette.placeholderText
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
-        }
     }
 
     // —— 右键菜单与重命名 / 新建 / 删除弹窗（内容在 FilesPageMenu.qml）——
