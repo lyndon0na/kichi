@@ -7,6 +7,7 @@
 mod cxxqt_object;
 mod player;
 mod session;
+mod settings;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
