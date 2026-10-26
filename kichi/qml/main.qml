@@ -152,21 +152,20 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 spacing: 0
 
-                Frame {
+                // 页标题条：不用 Frame（Fusion 样式自带一圈边框），
+                // 这里只要留白 + 文字
+                Item {
                     Layout.fillWidth: true
-                    padding: 14
+                    Layout.preferredHeight: titleLabel.implicitHeight + 28
 
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: 12
-
-                        Label {
-                            text: root.pageTitle()
-                            font.pixelSize: 20
-                            font.bold: true
-                        }
-
-                        Item { Layout.fillWidth: true }
+                    Label {
+                        id: titleLabel
+                        anchors.left: parent.left
+                        anchors.leftMargin: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.pageTitle()
+                        font.pixelSize: 20
+                        font.bold: true
                     }
                 }
 
