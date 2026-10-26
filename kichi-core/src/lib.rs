@@ -15,4 +15,4 @@ pub use auth::{LoginOutcome, REFRESH_MARGIN};
 pub use config::Config;
 pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
-pub use types::{Quota, TokenPair};
+pub use types::{EntryKind, FileEntry, Quota, TokenPair};

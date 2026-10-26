@@ -87,6 +87,38 @@ impl HttpClient {
         serde_json::from_str(&text)
             .map_err(|e| Error::ApiChanged(format!("响应不是预期的 JSON：{e}")))
     }
+
+    /// 同 [`HttpClient::call`]，额外附带查询参数（值做完整百分号转义）。
+    pub(crate) fn call_with_query<R: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        body: Body<'_>,
+        access: Option<&str>,
+        captcha: Option<&str>,
+    ) -> Result<R, Error> {
+        self.call(method, &append_query(url, query), body, access, captcha)
+    }
+}
+
+/// 把查询参数拼到 URL 末尾；空查询返回原 URL。
+fn append_query(url: &str, query: &[(String, String)]) -> String {
+    if query.is_empty() {
+        return url.to_owned();
+    }
+    let mut out = String::with_capacity(url.len() + 32 * query.len());
+    out.push_str(url);
+    out.push(if url.contains('?') { '&' } else { '?' });
+    for (index, (key, value)) in query.iter().enumerate() {
+        if index > 0 {
+            out.push('&');
+        }
+        out.push_str(&percent_encode(key));
+        out.push('=');
+        out.push_str(&percent_encode(value));
+    }
+    out
 }
 
 fn attach_body(req: RequestBuilder, body: Body<'_>) -> RequestBuilder {
@@ -207,5 +239,28 @@ mod tests {
     fn truncate_is_char_safe() {
         assert_eq!(truncate("一二三四", 2), "一二…");
         assert_eq!(truncate("ab", 2), "ab");
+    }
+
+    #[test]
+    fn append_query_percent_encodes_filters() {
+        let url = append_query(
+            "https://api-drive.mypikpak.com/drive/v1/files",
+            &[(
+                "filters".to_owned(),
+                r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"}}"#.to_owned(),
+            )],
+        );
+        assert!(url.starts_with("https://api-drive.mypikpak.com/drive/v1/files?"));
+        assert!(
+            url.contains("filters=%7B%22phase%22%3A%7B%22eq%22%3A%22PHASE_TYPE_COMPLETE%22%7D%7D")
+        );
+        assert_eq!(
+            append_query("https://example.test/a?x=1", &[]),
+            "https://example.test/a?x=1"
+        );
+        assert_eq!(
+            append_query("https://example.test/a?x=1", &[("y".into(), "a b".into())]),
+            "https://example.test/a?x=1&y=a%20b"
+        );
     }
 }

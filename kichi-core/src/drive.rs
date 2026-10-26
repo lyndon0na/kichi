@@ -1,16 +1,22 @@
-//! 网盘侧只读接口（S2 只用到容量 / 会员 / 当前用户）。
+//! 网盘侧接口：容量 / 会员 / 当前用户 / 文件列表。
 //!
 //! 每个请求都带 `x-captcha-token`；官方以 `captcha_invalid` 拒绝时，
 //! 作废并重取一次再试（rclone 同款兜底）。
 
 use std::sync::Arc;
 
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Deserializer};
 
 use crate::captcha::CaptchaSource;
 use crate::http::{Body, HttpClient};
-use crate::types::Quota;
+use crate::types::{EntryKind, FileEntry, Quota};
 use crate::{Config, Error};
+
+/// 单页最多返回的条目数（rclone 的 `ListLimit`）。
+const LIST_LIMIT: u32 = 500;
+/// 文件列表只取已完成、未进回收站的条目。
+const LIST_FILTERS: &str = r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#;
 
 /// 已登录的网盘客户端（内部令牌由调用方的 `Session` 提供）。
 pub struct DriveClient {
@@ -92,11 +98,21 @@ impl DriveClient {
 
     /// 带鉴权与 captcha 的 GET 请求（captcha 被拒时自动重试一次）。
     fn get<R: serde::de::DeserializeOwned>(&self, url: &str) -> Result<R, Error> {
+        self.get_with_query(url, &[])
+    }
+
+    /// 同 [`DriveClient::get`]，额外附带查询参数。
+    fn get_with_query<R: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        query: &[(String, String)],
+    ) -> Result<R, Error> {
         let action = action_for("GET", url);
         let token = self.captcha.acquire(&action, None, Some(&self.user_id))?;
-        let first = self.http.call::<R>(
+        let first = self.http.call_with_query::<R>(
             reqwest::Method::GET,
             url,
+            query,
             Body::Empty,
             Some(&self.access_token),
             Some(token.token.as_str()).filter(|t| !t.is_empty()),
@@ -105,9 +121,10 @@ impl DriveClient {
             Err(err) if err.is_captcha() => {
                 self.captcha.invalidate();
                 let retry = self.captcha.acquire(&action, None, Some(&self.user_id))?;
-                self.http.call(
+                self.http.call_with_query(
                     reqwest::Method::GET,
                     url,
+                    query,
                     Body::Empty,
                     Some(&self.access_token),
                     Some(retry.token.as_str()).filter(|t| !t.is_empty()),
@@ -144,6 +161,121 @@ impl DriveClient {
     pub fn me(&self) -> Result<UserInfo, Error> {
         self.get(&self.config.user_me_url())
     }
+
+    /// 列出一个文件夹（`parent_id` 为 `None` 表示根目录）。
+    ///
+    /// 一次返回 `LIST_LIMIT` 条，文件和文件夹混在一起，用 [`EntryKind`] 区分；
+    /// `next_page_token` 非空时表示还有下一页。
+    pub fn list(
+        &self,
+        parent_id: Option<&str>,
+        page_token: Option<&str>,
+    ) -> Result<(Vec<FileEntry>, Option<String>), Error> {
+        let query = list_query(parent_id, page_token);
+        let response: FileListResponse = self.get_with_query(&self.config.files_url(), &query)?;
+        if !response.kind.is_empty() && response.kind != "drive#fileList" {
+            return Err(Error::ApiChanged(format!(
+                "文件列表返回了意外的类型：{}",
+                response.kind
+            )));
+        }
+        let files = response
+            .files
+            .into_iter()
+            .map(FileDto::into_entry)
+            .collect();
+        let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
+        Ok((files, next))
+    }
+}
+
+/// 文件列表的查询参数（单独成函数便于单测）。
+fn list_query(parent_id: Option<&str>, page_token: Option<&str>) -> Vec<(String, String)> {
+    let mut query = vec![
+        ("limit".to_owned(), LIST_LIMIT.to_string()),
+        ("thumbnail_size".to_owned(), "SIZE_MEDIUM".to_owned()),
+        ("with_audit".to_owned(), "true".to_owned()),
+        ("filters".to_owned(), LIST_FILTERS.to_owned()),
+    ];
+    if let Some(parent) = parent_id.map(str::trim).filter(|id| !id.is_empty()) {
+        query.push(("parent_id".to_owned(), parent.to_owned()));
+    }
+    if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
+        query.push(("page_token".to_owned(), token.to_owned()));
+    }
+    query
+}
+
+#[derive(Deserialize)]
+struct FileListResponse {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    files: Vec<FileDto>,
+    #[serde(default)]
+    next_page_token: String,
+}
+
+#[derive(Deserialize)]
+struct FileDto {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    size: u64,
+    #[serde(default, deserialize_with = "lenient_time")]
+    modified_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    md5_checksum: String,
+    #[serde(default)]
+    audit: Option<AuditDto>,
+}
+
+#[derive(Deserialize)]
+struct AuditDto {
+    #[serde(default)]
+    status: String,
+}
+
+impl FileDto {
+    fn into_entry(self) -> FileEntry {
+        FileEntry {
+            id: self.id,
+            name: self.name,
+            kind: if self.kind == "drive#folder" {
+                EntryKind::Folder
+            } else {
+                EntryKind::File
+            },
+            size: self.size,
+            modified_at: self.modified_time,
+            md5: (!self.md5_checksum.is_empty()).then_some(self.md5_checksum),
+            audit_flagged: self.audit.is_some_and(|audit| {
+                !audit.status.is_empty() && !audit.status.eq_ignore_ascii_case("STATUS_OK")
+            }),
+        }
+    }
+}
+
+/// RFC3339 时间；官方可能给 `null`、空串或无法解析的值，一律按“没有时间”处理。
+fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    let Some(text) = value else {
+        return Ok(None);
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    Ok(DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|time| time.with_timezone(&Utc)))
 }
 
 #[derive(Deserialize)]
@@ -199,5 +331,60 @@ mod tests {
         };
         assert_eq!(quota.usage, 123);
         assert_eq!(quota.limit, 10_995_116_277_760);
+    }
+
+    #[test]
+    fn list_query_matches_rclone_parameters() {
+        let root = list_query(None, None);
+        let get = |key: &str| root.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(get("limit"), Some("500"));
+        assert_eq!(get("thumbnail_size"), Some("SIZE_MEDIUM"));
+        assert_eq!(get("with_audit"), Some("true"));
+        assert_eq!(
+            get("filters"),
+            Some(r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#)
+        );
+        assert_eq!(get("parent_id"), None, "根目录不应带 parent_id");
+        assert_eq!(get("page_token"), None);
+        assert!(!get("filters").unwrap_or_default().contains("kind"));
+
+        let child = list_query(Some("folder-1"), Some("page-2"));
+        assert!(child.contains(&("parent_id".to_owned(), "folder-1".to_owned())));
+        assert!(child.contains(&("page_token".to_owned(), "page-2".to_owned())));
+    }
+
+    #[test]
+    fn file_list_parses_lenient_fields() {
+        let json = r#"{
+            "kind": "drive#fileList",
+            "files": [
+                {"id":"f1","name":"电影","kind":"drive#folder","size":"0",
+                 "modified_time":"2026-10-20T12:34:56.789+08:00"},
+                {"id":"f2","name":"a.mkv","kind":"drive#file","size":"1099511627776",
+                 "modified_time":null,"md5_checksum":"ABC",
+                 "audit":{"status":"STATUS_OK"}},
+                {"id":"f3","name":"bad.mkv","kind":"drive#file","size":"12",
+                 "modified_time":"","audit":{"status":"STATUS_BANNED"}}
+            ],
+            "next_page_token": "tok"
+        }"#;
+        let parsed: FileListResponse = serde_json::from_str(json).expect("列表应可解析");
+        assert_eq!(parsed.files.len(), 3);
+        let entries: Vec<FileEntry> = parsed.files.into_iter().map(FileDto::into_entry).collect();
+
+        assert_eq!(entries[0].kind, EntryKind::Folder);
+        assert_eq!(
+            entries[0].modified_at.map(|t| t.timestamp()),
+            Some(1_792_470_896),
+            "带毫秒与时区的时间应正确换算"
+        );
+
+        assert_eq!(entries[1].kind, EntryKind::File);
+        assert_eq!(entries[1].size, 1_099_511_627_776, "字符串 size 应可解析");
+        assert_eq!(entries[1].md5.as_deref(), Some("ABC"));
+        assert!(!entries[1].audit_flagged);
+
+        assert_eq!(entries[2].modified_at, None, "空时间应为 None");
+        assert!(entries[2].audit_flagged, "非 STATUS_OK 的审核状态应标记");
     }
 }
