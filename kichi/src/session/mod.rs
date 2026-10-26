@@ -581,4 +581,117 @@ mod live_tests {
             println!("根目录没有子文件夹，跳过子目录验证");
         }
     }
+
+    /// 真实会话的播放档位验证（默认忽略）。
+    ///
+    /// 前置条件：先在本机用 GUI 登录一次。流程：在根目录里找第一个视频/音频
+    /// 文件 → 取详情 → 断言至少有一个可播档位 → 对选中的直链发一次探测请求
+    /// （只发 Range 头，下载 1 字节），确认官网真的在服务这个链接。
+    /// 同时打印 medias 的原始 JSON，核对官方是否下发了字幕字段。
+    #[test]
+    #[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+    fn live_play_options_for_a_media_file() {
+        let path = store_path();
+        let loaded = store::load(&path).expect("读取会话存储失败");
+        let Some((saved, backend)) = loaded else {
+            panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+        };
+        println!("会话来源：{backend:?}");
+
+        let device_id = saved.device_id.clone();
+        let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+
+        // 找一个媒体文件：优先根目录，没有再下探一级子目录（最多 3 个）
+        let mut found = None;
+        let roots = session.list_dir(None).expect("读取根目录失败");
+        let mut folders = Vec::new();
+        for entry in roots {
+            println!(
+                "根目录：{} [{}] media={}",
+                entry.name,
+                if entry.kind == kichi_core::EntryKind::Folder {
+                    "目录"
+                } else {
+                    "文件"
+                },
+                entry.media
+            );
+            if entry.media {
+                found = Some(entry.clone());
+                break;
+            }
+            if entry.kind == kichi_core::EntryKind::Folder {
+                folders.push(entry);
+            }
+        }
+        if found.is_none() {
+            for folder in folders.iter().take(3) {
+                let Ok(children) = session.list_dir(Some(folder.id.as_str())) else {
+                    continue;
+                };
+                println!("—— 子目录「{}」{} 条 ——", folder.name, children.len());
+                for entry in children.iter().take(8) {
+                    println!("   {} media={}", entry.name, entry.media);
+                }
+                if let Some(entry) = children.into_iter().find(|entry| entry.media) {
+                    found = Some(entry);
+                    break;
+                }
+            }
+        }
+        let Some(file) = found else {
+            println!("—— 诊断：根目录与子目录都没有 media 标记的条目 ——");
+            panic!("没找到媒体文件（video/audio），请先往网盘里放一个视频再跑");
+        };
+        println!("选中媒体文件：{}（id={}）", file.name, file.id);
+        let info = media::file_info(&session, &file.id).expect("取文件详情失败");
+        println!(
+            "详情：{} 个 medias，links 全空={}",
+            info.medias.len(),
+            info.all_links_empty
+        );
+        assert!(!info.all_links_empty, "官方没有下发任何链接");
+
+        let options = info.play_options();
+        for option in &options {
+            println!(
+                "- {:<8} 原画={:<5} 高度={:?} 可用={} 原因={:?} 主机={}",
+                option.label,
+                option.original,
+                option.height,
+                option.available,
+                option.reason,
+                crate::player::mask_url(&option.url)
+            );
+        }
+        let playable: Vec<_> = options.iter().filter(|o| o.playable()).collect();
+        assert!(!playable.is_empty(), "没有可播放的档位，界面上会无从播起");
+        assert!(
+            playable.iter().any(|o| o.original),
+            "连原画档都不可用：{}",
+            playable.len()
+        );
+
+        // 直链真实可用性：只取 1 字节，不下载整个文件（用系统 curl，不给 kichi 加依赖）
+        let target = playable
+            .iter()
+            .find(|o| o.original)
+            .copied()
+            .or_else(|| playable.first().copied())
+            .expect("上面的断言已保证非空");
+        let status = std::process::Command::new("curl")
+            .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "-r", "0-0"])
+            .arg("--max-time")
+            .arg("30")
+            .arg(&target.url)
+            .output()
+            .expect("调用 curl 探测直链失败");
+        let code = String::from_utf8_lossy(&status.stdout).trim().to_owned();
+        println!(
+            "直链探测：HTTP {code}（{}，{}）",
+            target.label,
+            crate::player::mask_url(&target.url)
+        );
+        assert!(code == "200" || code == "206", "直链不可用：HTTP {code}");
+    }
 }

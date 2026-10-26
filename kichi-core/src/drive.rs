@@ -284,6 +284,10 @@ struct FileDto {
     audit: Option<AuditDto>,
     #[serde(default)]
     file_category: String,
+    #[serde(default)]
+    mime_type: String,
+    #[serde(default)]
+    file_extension: String,
 }
 
 #[derive(Deserialize)]
@@ -294,10 +298,18 @@ struct AuditDto {
 
 impl FileDto {
     fn into_entry(self) -> FileEntry {
+        let is_folder = self.kind == "drive#folder";
+        let media = !is_folder
+            && is_media(
+                &self.name,
+                &self.file_category,
+                &self.mime_type,
+                &self.file_extension,
+            );
         FileEntry {
             id: self.id,
             name: self.name,
-            kind: if self.kind == "drive#folder" {
+            kind: if is_folder {
                 EntryKind::Folder
             } else {
                 EntryKind::File
@@ -308,12 +320,43 @@ impl FileDto {
             audit_flagged: self.audit.is_some_and(|audit| {
                 !audit.status.is_empty() && !audit.status.eq_ignore_ascii_case("STATUS_OK")
             }),
-            media: matches!(
-                self.file_category.to_ascii_uppercase().as_str(),
-                "VIDEO" | "AUDIO"
-            ),
+            media,
         }
     }
+}
+
+/// 视频/音频扩展名表（判断播放入口用）。
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "avi", "mov", "webm", "ts", "m2ts", "m4v", "flv", "wmv", "rmvb", "rm", "mpg",
+    "mpeg", "3gp", "ogv", "mp3", "flac", "wav", "m4a", "ogg", "opus", "aac", "ape", "wma",
+];
+
+/// 是否按媒体处理（决定是否显示播放入口）。
+///
+/// **实测（2026-10-26）**：文件列表接口在不带 `kind` 过滤时，
+/// `file_category` / `mime_type` / `file_extension` 全是空串（带 `kind`
+/// 过滤才下发），因此不能只信官方分类，必须按扩展名兜底，否则视频文件
+/// 在界面上没有播放按钮。官方分类可用时优先采信。
+pub(crate) fn is_media(name: &str, category: &str, mime: &str, extension: &str) -> bool {
+    let heard = |text: &str| matches!(text.trim().to_ascii_uppercase().as_str(), "VIDEO" | "AUDIO");
+    if heard(category) {
+        return true;
+    }
+    if mime.trim().to_ascii_lowercase().starts_with("video/")
+        || mime.trim().to_ascii_lowercase().starts_with("audio/")
+    {
+        return true;
+    }
+    let from_extension = |text: &str| {
+        let ext = text.trim().trim_start_matches('.').to_ascii_lowercase();
+        MEDIA_EXTENSIONS.contains(&ext.as_str())
+    };
+    if !extension.is_empty() && from_extension(extension) {
+        return true;
+    }
+    // 扩展名带点或列表里两者都缺时，从文件名末段取
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| from_extension(ext))
 }
 
 /// RFC3339 时间；官方可能给 `null`、空串或无法解析的值，一律按“没有时间”处理。
@@ -374,6 +417,23 @@ mod tests {
             "GET:/v1/user/me"
         );
         assert_eq!(action_for("GET", "/drive/v1/about"), "GET:/drive/v1/about");
+    }
+
+    #[test]
+    fn media_flag_survives_empty_official_category() {
+        // 实测：不带 kind 过滤时官方分类字段为空，靠扩展名兜底
+        assert!(is_media("Screencast_20261023.webm", "", "", ""));
+        assert!(is_media("预告片.MP4", "", "", ""));
+        assert!(is_media("song.flac", "", "", ""));
+        assert!(is_media(".hidden.txt.mp3", "", "", ""));
+        // 官方给了分类时优先采信（即使扩展名不认识）
+        assert!(is_media("noext", "VIDEO", "", ""));
+        assert!(is_media("file.bin", "", "video/mp4", ""));
+        // 非媒体
+        assert!(!is_media("settings.json", "", "", ""));
+        assert!(!is_media("archive.zip", "", "", ""));
+        assert!(!is_media("no-extension", "", "", ""));
+        assert!(!is_media("fake.mp4.txt", "", "", ""));
     }
 
     #[test]
