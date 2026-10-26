@@ -82,7 +82,7 @@ Item {
                 wrapMode: Text.Wrap
                 color: palette.placeholderText
                 font.pixelSize: 12
-                text: qsTr("支持 ~/ 开头。文件页点「⬇」直接下到这里；同名文件自动加序号，不会覆盖。")
+                text: qsTr("支持 ~/ 开头。文件页右键菜单选「下载」直接下到这里；同名文件自动加序号，不会覆盖。")
             }
 
             // ── 通知 ───────────────────────────────────────────

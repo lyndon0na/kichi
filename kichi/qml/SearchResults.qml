@@ -6,10 +6,14 @@ import QtQuick.Layouts
 //
 // 放在 FilesPage 的列表框里：搜索视图和当前目录共用同一块区域，
 // 换视图时不会跳高矮。条目行与目录列表保持一致，额外多一列「所在文件夹」。
+// 双击文件夹进入；播放 / 下载 / 重命名 / 删除走右键菜单（由页面弹出）。
 Item {
     id: root
 
     property var backend: null
+
+    // 右键：条目本身 + 结果行内的位置（页面换算到菜单坐标系）
+    signal contextMenu(var entry, point position)
 
     // 扫描中：状态行旁边转圈
     readonly property bool scanning: root.backend !== null
@@ -91,9 +95,8 @@ Item {
                 icon.height: 0
                 icon.color: "transparent"
 
-
-                // 与文件页一致：用 Control 的 onClicked，按钮消费自己的点击
-                onClicked: {
+                // 与文件页一致：双击进入文件夹（单击不再误触）
+                onDoubleClicked: {
                     if (root.backend && modelData.kind === "folder")
                         root.backend.searchOpenFolder(modelData.id)
                 }
@@ -154,30 +157,6 @@ Item {
                             ToolTip.text: qsTr("进入这个文件夹，面包屑会显示它在网盘里的真实位置")
                             onClicked: root.backend.searchOpenFolder(modelData.id)
                         }
-
-                        ToolButton {
-                            text: qsTr("▶")
-                            visible: modelData.kind !== "folder" && modelData.playable === true
-                            enabled: root.backend !== null
-                                     && root.backend.playMenu.length === 0
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("用 mpv 播放")
-                            onClicked: {
-                                root.playAnchor = row.mapToItem(root, row.width / 2, row.height)
-                                root.playRequested(root.playAnchor)
-                                root.backend.requestPlay(modelData.id)
-                            }
-                        }
-
-                        ToolButton {
-                            text: qsTr("⬇")
-                            enabled: root.backend !== null && !root.backend.downloadRunning
-                            ToolTip.visible: hovered
-                            ToolTip.text: modelData.kind === "folder"
-                                          ? qsTr("下载整个文件夹到本地")
-                                          : qsTr("下载到本地")
-                            onClicked: root.backend.downloadEntry(modelData.id)
-                        }
                     }
 
                     // 「所在文件夹」本身也能点：文件夹条目推进去、文件条目揭示
@@ -201,6 +180,14 @@ Item {
 
                 HoverHandler {
                     cursorShape: modelData.kind === "folder" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                }
+
+                // 右键菜单：只上报行内坐标，换算交给页面
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: function (eventPoint) {
+                        root.contextMenu(modelData, eventPoint.position)
+                    }
                 }
             }
 
@@ -229,11 +216,6 @@ Item {
             }
         }
     }
-
-    // 「▶」在结果行里的位置（页面坐标系）：清晰度菜单由父页面从这个点弹出
-    property point playAnchor: Qt.point(0, 0)
-
-    signal playRequested(point anchor)
 
     // 图标按扩展名猜（📁 🎬 🎵 🖼️ 📄）。与 FileRow 同一套规则；
     // 内联而不 `import "...js"`：外部脚本不进 qrc（实测打包后 404）。

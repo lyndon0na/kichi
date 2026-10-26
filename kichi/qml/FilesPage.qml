@@ -4,14 +4,14 @@ import QtQuick.Layouts
 
 // 文件页（S3）：面包屑导航 + 目录列表。
 // 只调 backend 的 Q_INVOKABLE；配额沿用顶栏的 quotaSummary，不重复显示。
-// 播放（S5）：点行尾「▶」→ backend 取档位 → playMenu 非空时弹清晰度菜单。
+// 播放（S5）：右键菜单点「播放」→ backend 取档位 → playMenu 非空时弹清晰度菜单。
 // 搜索（S9）：工具条搜索框先在当前目录本地筛（0 请求），「全盘搜索」才遍历网盘；
 // 搜索结果在 SearchResults.qml 里，和目录列表共用同一块列表框。
 Item {
     id: page
 
     property var backend: null
-    // 「▶」按钮在页面坐标系里的位置（菜单从这里弹出）
+    // 右键菜单里点「播放」处的位置（页面坐标系，清晰度菜单从这里弹出）
     property point playAnchor: Qt.point(0, 0)
 
     // 搜索视图开着：列表区换成结果
@@ -86,10 +86,10 @@ Item {
         }
     }
 
-    // 搜索结果里的「▶」：把结果行里的坐标换算到页面坐标系，
-    // 清晰度菜单才弹在对的位置
-    function playFromResults(anchor) {
-        page.playAnchor = searchResults.mapToItem(page, anchor.x, anchor.y)
+    // 搜索结果里的播放 / 下载也在右键菜单里，锚点用右键位置
+    function openResultContext(entry, point) {
+        var menuPoint = searchResults.mapToItem(menu, point.x, point.y)
+        menu.openContext(entry, menuPoint)
     }
 
     // 搜索被别处结束（点了结果里的文件夹）时清掉关键词，
@@ -245,9 +245,6 @@ Item {
                         var menuPoint = row.mapToItem(menu, point.x, point.y)
                         menu.openContext(entry, menuPoint)
                     }
-                    onPlayPressed: function (anchor) {
-                        page.playAnchor = row.mapToItem(page, anchor.x, anchor.y)
-                    }
                 }
             }
 
@@ -269,8 +266,8 @@ Item {
                 visible: page.searching
                 backend: page.searching ? page.backend : null
 
-                onPlayRequested: function (anchor) {
-                    page.playFromResults(anchor)
+                onContextMenu: function (entry, point) {
+                    page.openResultContext(entry, point)
                 }
             }
         }
@@ -282,7 +279,7 @@ Item {
         }
 
         Label {
-            text: qsTr("点视频/音频右侧的「▶」用 mpv 播放；点「⬇」下载到本地（文件夹会连同子目录一起下）。右键条目可重命名或移到回收站。下载目录在设置页里改。")
+            text: qsTr("双击文件夹进入；右键条目可播放、下载、重命名或移到回收站。下载目录在设置页里改。")
             color: palette.placeholderText
             font.pixelSize: 12
             wrapMode: Text.Wrap
@@ -295,6 +292,9 @@ Item {
         id: menu
         anchors.fill: parent
         backend: page.backend
+        onPlayRequested: function (anchor) {
+            page.playAnchor = anchor
+        }
     }
 
     // —— 清晰度菜单（内容在 FilesPagePlayMenu.qml）——

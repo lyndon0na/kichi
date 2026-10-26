@@ -4,7 +4,7 @@ import QtQuick.Layouts
 
 // 文件列表的一行（从 FilesPage.qml 抽出来：那里已到行数软上限）。
 //
-// 点文件夹进入；右键交给页面的菜单；「▶」播放、「⬇」下载。
+// 双击文件夹进入；播放 / 下载 / 重命名 / 删除都在右键菜单里。
 // 条目字段来自 Rust 侧的 entry_map（与搜索结果同一套字段）。
 ItemDelegate {
     id: row
@@ -14,9 +14,6 @@ ItemDelegate {
 
     // 右键：相对本行的位置（交给页面换算到菜单坐标系）
     signal contextMenu(point position)
-
-    // 「▶」在页面坐标系里的按钮下沿中点（清晰度菜单从这里弹）
-    signal playPressed(point anchor)
 
     // 图标按扩展名猜（📁 🎬 🎵 🖼️ 📄）。
     // 不用 `import "...js"`：外部脚本不进 qrc（实测打包后 404），
@@ -42,12 +39,10 @@ ItemDelegate {
     icon.height: 0
     icon.color: "transparent"
 
-    // 整行点击：文件夹就进入。
-    //
-    // 用 ItemDelegate 自己的 onClicked（Control 的标准信号，Item 里没有
-    // 这个信号，写 TapHandler 反而会和按钮抢手势）。
-    // 右侧按钮各自消费点击，不会触发它。
-    onClicked: row.open()
+    // 整行双击：文件夹就进入。用 Control 自己的 onDoubleClicked
+    // （Item 里没有这个信号，写 TapHandler 反而会和右键手势抢）。
+    // 单击不再触发任何动作，避免手滑进目录。
+    onDoubleClicked: row.open()
 
     function open() {
         if (row.backend && row.entry && row.entry.kind === "folder")
@@ -99,33 +94,6 @@ ItemDelegate {
             color: palette.placeholderText
             horizontalAlignment: Text.AlignRight
             Layout.preferredWidth: 130
-        }
-
-        // 只有视频/音频才显示播放入口
-        ToolButton {
-            text: qsTr("▶")
-            visible: row.entry ? row.entry.playable === true : false
-            enabled: row.backend !== null && !row.backend.busy
-                     && row.backend.playMenu.length === 0
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("用 mpv 播放")
-
-            onClicked: {
-                row.playPressed(mapToItem(row, width / 2, height))
-                row.backend.requestPlay(row.entry.id)
-            }
-        }
-
-        // 下载到本地（文件直接下；文件夹递归下，保留层级）
-        ToolButton {
-            text: qsTr("⬇")
-            enabled: row.backend !== null && !row.backend.downloadRunning
-            ToolTip.visible: hovered
-            ToolTip.text: row.entry && row.entry.kind === "folder"
-                          ? qsTr("下载整个文件夹到本地")
-                          : qsTr("下载到本地")
-
-            onClicked: row.backend.downloadEntry(row.entry.id)
         }
     }
 

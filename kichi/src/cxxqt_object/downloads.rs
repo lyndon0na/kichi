@@ -23,7 +23,7 @@ use crate::session::download::Cancel;
 use crate::session::Failure;
 
 impl qobject::Kichi {
-    /// 下载一个条目（文件直接下；文件夹递归排队）。界面点「⬇」走这里。
+    /// 下载一个条目（文件直接下；文件夹递归排队）。界面右键菜单的「下载」走这里。
     pub fn download_entry(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中

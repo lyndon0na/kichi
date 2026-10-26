@@ -29,7 +29,7 @@ pub(crate) fn reason_text(reason: Option<&str>) -> String {
 }
 
 impl qobject::Kichi {
-    /// 点「▶」：取该文件的播放档位，填好菜单（只有一个可用档时直接播）。
+    /// 右键菜单点「播放」：取该文件的播放档位，填好菜单（只有一个可用档时直接播）。
     pub fn request_play(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         let Some(name): Option<String> = self.as_ref().rust().entry_name(&id) else {

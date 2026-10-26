@@ -19,6 +19,12 @@ Item {
     property string targetId: ""
     property string targetName: ""
     property bool targetIsFolder: false
+    property bool targetPlayable: false
+    // 右键处的位置（页面坐标系）：清晰度菜单从这里弹出
+    property point targetPoint: Qt.point(0, 0)
+
+    // 菜单里点「播放」：页面把位置交给清晰度菜单，再让后端取档位
+    signal playRequested(point anchor)
 
     // —— 右键菜单 ——
     Menu {
@@ -35,6 +41,32 @@ Item {
             popup(Math.max(0, Math.min(point.x, maxX)),
                   Math.max(0, Math.min(point.y, maxY)))
         }
+
+        // 只有视频/音频才有播放入口
+        MenuItem {
+            text: qsTr("播放（mpv）")
+            visible: root.targetPlayable
+            enabled: root.backend !== null && !root.backend.busy
+                     && root.backend.playMenu.length === 0
+            onTriggered: {
+                root.playRequested(root.targetPoint)
+                if (root.backend)
+                    root.backend.requestPlay(root.targetId)
+            }
+        }
+
+        // 下载到本地（文件直接下；文件夹递归下，保留层级）
+        MenuItem {
+            text: root.targetIsFolder ? qsTr("下载整个文件夹到本地")
+                                      : qsTr("下载到本地")
+            enabled: root.backend !== null && !root.backend.downloadRunning
+            onTriggered: {
+                if (root.backend)
+                    root.backend.downloadEntry(root.targetId)
+            }
+        }
+
+        MenuSeparator {}
 
         MenuItem {
             text: qsTr("重命名…")
@@ -193,6 +225,8 @@ Item {
         targetId = entry.id
         targetName = entry.name
         targetIsFolder = entry.kind === "folder"
+        targetPlayable = entry.playable === true
+        targetPoint = point
         contextMenu.openAt(point)
     }
 

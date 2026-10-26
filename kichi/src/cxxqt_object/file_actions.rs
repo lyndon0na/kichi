@@ -88,7 +88,7 @@ impl qobject::Kichi {
             return;
         }
         let session = self.backend.session.clone();
-        let ids = vec![id];
+        let ids = [id];
         self.as_mut().set_message("正在移入回收站……", true);
         run_in_background(
             move || {
