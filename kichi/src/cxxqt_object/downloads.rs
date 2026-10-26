@@ -26,7 +26,8 @@ impl qobject::Kichi {
     /// 下载一个条目（文件直接下；文件夹递归排队）。界面点「⬇」走这里。
     pub fn download_entry(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
-        let Some(entry) = self.entries.iter().find(|e| e.id == id).cloned() else {
+        // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
+        let Some(entry) = self.as_ref().rust().find_entry(&id) else {
             self.as_mut()
                 .set_message("该条目已不在当前列表中，请刷新后重试", false);
             return;

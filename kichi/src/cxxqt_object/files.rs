@@ -147,7 +147,10 @@ impl qobject::Kichi {
     }
 
     /// 把列表与状态写回属性（只在主线程调用）。
-    fn show_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
+    ///
+    /// 在本地筛选（搜索结果）里叫这个名字：筛选只是换一批条目展示，
+    /// 计数与状态栏文案照旧。
+    pub(crate) fn show_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
         sort_entries(&mut entries, self.sort_field, self.sort_ascending);
         let files = list_from(&entries);
         let count = entries.len();
@@ -168,7 +171,13 @@ impl qobject::Kichi {
     }
 
     /// 改了排序：对已缓存的条目本地重排，不重新拉网（QML 的 `files` 随之刷新）。
+    ///
+    /// 搜索视图里没有 `files` 那一栏可排：改按同一规则重排搜索结果。
     pub(crate) fn re_sort_entries(mut self: Pin<&mut Self>) {
+        if self.search_active {
+            self.as_mut().re_sort_search_results();
+            return;
+        }
         if self.entries.is_empty() {
             return;
         }
@@ -183,8 +192,13 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
+    /// 改名 / 搜索里进文件夹后要把面包屑刷出去（`sync_breadcrumb` 是同模块私有的）。
+    pub(crate) fn sync_breadcrumb_visible(mut self: Pin<&mut Self>) {
+        self.as_mut().sync_breadcrumb();
+    }
+
     /// 目录栈 → 面包屑属性（显示名，顺序从根到当前）。
-    fn sync_breadcrumb(mut self: Pin<&mut Self>) {
+    pub(crate) fn sync_breadcrumb(mut self: Pin<&mut Self>) {
         let crumb_names = {
             let this = self.as_ref();
             this.rust()
@@ -242,7 +256,7 @@ pub(crate) fn sort_entries(
 }
 
 /// 条目 → QML 模型。
-fn list_from(entries: &[FileEntry]) -> QVariantList {
+pub(crate) fn list_from(entries: &[FileEntry]) -> QVariantList {
     let mut files = QVariantList::default();
     for entry in entries {
         files.append(QVariant::from(&entry_map(entry)));
@@ -251,7 +265,9 @@ fn list_from(entries: &[FileEntry]) -> QVariantList {
 }
 
 /// 一条列表项 → QML 用的小 map（只带界面要显示的字段）。
-fn entry_map(entry: &FileEntry) -> QVariantMap {
+///
+/// 搜索结果的条目行也用这一份：两边字段一致，界面就不必分辨数据从哪来。
+pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
     let text = |value: &str| QVariant::from(&QString::from(value));
     let kind = match entry.kind {
         EntryKind::Folder => "folder",

@@ -49,16 +49,31 @@ pub struct ScanBatch {
     pub hits: Vec<SearchHit>,
 }
 
-/// 一条搜索命中：条目 + 所在文件夹（`None` = 根目录）+ 扫到的顺序。
+/// 一条搜索命中：条目 + 所在文件夹 + 扫到的顺序。
 #[derive(Debug, Clone)]
 pub struct SearchHit {
-    pub id: String,
-    pub name: String,
+    /// 完整的列表条目（界面按目录列表那一套字段显示）
+    pub entry: kichi_core::FileEntry,
+    /// 所在文件夹 id：点进去直接到真实层级；空串 = 根目录
     pub folder_id: String,
+    /// 所在文件夹的真实路径（尽力还原；拼不出时为 `None`）
     pub folder_path: Option<String>,
-    pub is_folder: bool,
-    /// 扫到的顺序：结果「先到先显示」，界面用 id 认条目，用 order 排序
+    /// 扫到的顺序：结果「先到先显示」，同批结果按它排
     pub order: usize,
+}
+
+impl SearchHit {
+    pub fn id(&self) -> &str {
+        &self.entry.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.entry.name
+    }
+
+    pub fn is_folder(&self) -> bool {
+        self.entry.kind == kichi_core::EntryKind::Folder
+    }
 }
 
 impl Session {
@@ -97,11 +112,9 @@ impl Session {
                 }
                 let (folder_id, folder_path) = folder_of(&client, &mut path, &hit);
                 hits.push(SearchHit {
-                    id: hit.entry.id,
-                    name: hit.entry.name,
+                    entry: hit.entry,
                     folder_id,
                     folder_path,
-                    is_folder: hit.entry.kind == kichi_core::EntryKind::Folder,
                     order: scanned - 1,
                 });
             }

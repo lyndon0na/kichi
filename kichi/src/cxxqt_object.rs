@@ -71,6 +71,14 @@ pub mod qobject {
         #[qproperty(i32, download_failed, cxx_name = "downloadFailed", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
+        #[qproperty(bool, search_active, cxx_name = "searchActive", READ, NOTIFY = changed)]
+        #[qproperty(QString, search_query, cxx_name = "searchQuery", READ, NOTIFY = changed)]
+        #[qproperty(QVariantList, search_results, cxx_name = "searchResults", READ, NOTIFY = changed)]
+        #[qproperty(i32, search_scanned, cxx_name = "searchScanned", READ, NOTIFY = changed)]
+        #[qproperty(i32, search_hits, cxx_name = "searchHits", READ, NOTIFY = changed)]
+        #[qproperty(bool, search_settled, cxx_name = "searchSettled", READ, NOTIFY = changed)]
+        #[qproperty(QString, search_status, cxx_name = "searchStatus", READ, NOTIFY = changed)]
+        #[qproperty(bool, search_truncated, cxx_name = "searchTruncated", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -211,6 +219,31 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "trashEntry"]
         fn trash_entry(self: Pin<&mut Self>, id: QString);
+
+        /// 搜索：先在当前目录已加载的条目里本地筛（0 请求）
+        #[qinvokable]
+        #[cxx_name = "searchLocal"]
+        fn search_local(self: Pin<&mut Self>, query: QString);
+
+        /// 搜索：遍历整个网盘（结果先到先显示，可随时停止）
+        #[qinvokable]
+        #[cxx_name = "searchAll"]
+        fn search_all(self: Pin<&mut Self>);
+
+        /// 搜索：停止全盘扫描（已扫出的结果保留）
+        #[qinvokable]
+        #[cxx_name = "stopSearch"]
+        fn stop_search(self: Pin<&mut Self>);
+
+        /// 搜索：退出搜索视图，回到当前目录
+        #[qinvokable]
+        #[cxx_name = "exitSearch"]
+        fn exit_search(self: Pin<&mut Self>);
+
+        /// 搜索：进入当前目录里的那个文件夹（面包屑仍是真实层级）
+        #[qinvokable]
+        #[cxx_name = "openSearchHit"]
+        fn open_search_hit(self: Pin<&mut Self>, id: QString);
     }
 }
 
@@ -245,6 +278,7 @@ mod files;
 mod notifications;
 mod play;
 mod queue;
+mod search;
 mod settings;
 mod tasks;
 mod tray;
@@ -334,6 +368,29 @@ pub struct KichiRust {
     pub(crate) download_dir: QString,
     /// 有文件操作（改名 / 新建 / 删除）在途，界面上禁用相关入口
     pub(crate) file_action_running: bool,
+    /// 搜索视图是否打开（打开时文件页显示结果而不是当前目录）
+    pub(crate) search_active: bool,
+    /// 当前搜索关键词（QML 输入框双向绑定的那一份）
+    pub(crate) search_query: QString,
+    /// 搜索结果（QML 直接当 model 用）
+    pub(crate) search_results: QVariantList,
+    /// 全盘扫描已扫过的条目数
+    pub(crate) search_scanned: i32,
+    /// 命中条数（= `search_results` 的长度，QML 不必自己数）
+    pub(crate) search_hits: i32,
+    /// 全盘扫描是否已结束（扫完 / 停止 / 异常）
+    pub(crate) search_settled: bool,
+    /// 搜索状态行文案（扫描进度或结束三态的解释）
+    pub(crate) search_status: QString,
+    /// 已在 `search_results` 里显示的条数（上限 [`SEARCH_LIST_LIMIT`]）
+    pub(crate) search_displayed: usize,
+    /// 命中数超过显示上限（界面据此提示「只显示前 N 条」）
+    pub(crate) search_truncated: bool,
+    /// 在途扫描：代数（停止 / 退出搜索 / 登出都 +1，旧结果丢弃）与取消信号
+    pub(crate) search_epoch: u64,
+    pub(crate) search_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
+    /// 搜索命中的领域数据（结果清单里的 id → 条目 / 路径）
+    pub(crate) search_index: std::collections::HashMap<String, crate::session::SearchHit>,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -396,6 +453,18 @@ impl Default for KichiRust {
             download_failed: 0,
             download_dir: QString::default(),
             file_action_running: false,
+            search_active: false,
+            search_query: QString::default(),
+            search_results: QVariantList::default(),
+            search_scanned: 0,
+            search_hits: 0,
+            search_settled: true,
+            search_status: QString::default(),
+            search_displayed: 0,
+            search_truncated: false,
+            search_epoch: 0,
+            search_cancel: None,
+            search_index: std::collections::HashMap::new(),
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };
@@ -406,12 +475,25 @@ impl Default for KichiRust {
 }
 
 impl KichiRust {
-    /// 按 id 找当前列表里的条目名（不看条目类型，调用方自己判断）。
+    /// 按 id 找条目的名字：先看当前目录，再看搜索结果。
+    ///
+    /// 搜索视图里点播放 / 下载时，条目只存在于结果清单里，
+    /// 只看 `entries` 会误报「已不在当前列表中」。
     pub(crate) fn entry_name(&self, id: &str) -> Option<String> {
         self.entries
             .iter()
             .find(|entry| entry.id == id)
+            .or_else(|| self.search_index.get(id).map(|hit| &hit.entry))
             .map(|entry| entry.name.clone())
+    }
+
+    /// 同 [`KichiRust::entry_name`]，按 id 找整个条目（下载要类别与名字）。
+    pub(crate) fn find_entry(&self, id: &str) -> Option<kichi_core::FileEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .or_else(|| self.search_index.get(id).map(|hit| &hit.entry))
+            .cloned()
     }
 
     /// 构造时读设置：属性先落地，再让界面看到（QML 构造时属性已可读）。

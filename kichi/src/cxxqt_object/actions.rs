@@ -78,6 +78,7 @@ impl qobject::Kichi {
                 self.as_mut().reset_files();
                 self.as_mut().reset_play();
                 self.as_mut().reset_downloads();
+                self.as_mut().reset_search();
                 self.as_mut().stop_task_polling();
             }
             Err(err) => self
@@ -178,7 +179,7 @@ impl qobject::Kichi {
     }
 
     /// 错误统一出口：按类别更新属性，不吞错误。
-    pub(super) fn on_failure(mut self: Pin<&mut Self>, failure: Failure) {
+    pub(crate) fn on_failure(mut self: Pin<&mut Self>, failure: Failure) {
         match failure {
             Failure::Captcha { url } => {
                 let message = match &url {
@@ -320,7 +321,7 @@ where
 }
 
 /// 字节数转人类可读（GB 保留一位小数）。
-pub(super) fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
     const MB: f64 = 1024.0 * 1024.0;
     const KB: f64 = 1024.0;
