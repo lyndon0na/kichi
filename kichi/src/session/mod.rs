@@ -7,10 +7,12 @@
 pub mod download;
 pub mod media;
 mod paths;
+pub mod search;
 mod store;
 mod tasks;
 
 pub use paths::{config_dir, store_path};
+pub use search::{ScanBatch, ScanEnd, SearchHit};
 pub use tasks::has_active;
 
 mod failure;
