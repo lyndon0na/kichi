@@ -45,6 +45,8 @@ pub mod qobject {
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
+        #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
+        #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -103,6 +105,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "deleteTask"]
         fn delete_task(self: Pin<&mut Self>, id: QString);
+
+        #[qinvokable]
+        #[cxx_name = "requestPlay"]
+        fn request_play(self: Pin<&mut Self>, id: QString);
+
+        #[qinvokable]
+        #[cxx_name = "playSelected"]
+        fn play_selected(self: Pin<&mut Self>, index: i32);
     }
 }
 
@@ -132,6 +142,7 @@ impl QVariantList {
 mod actions;
 mod backend;
 mod files;
+mod play;
 mod tasks;
 
 use backend::Backend;
@@ -171,6 +182,14 @@ pub struct KichiRust {
     pub(crate) known_running: std::collections::HashMap<String, bool>,
     /// 已经通知过的任务 id
     pub(crate) notified: std::collections::HashSet<String>,
+    /// 播放菜单（QML 当 model 用：label / available / reason / original）
+    pub(crate) play_menu: QVariantList,
+    /// 菜单标题（文件名）
+    pub(crate) play_title: QString,
+    /// 菜单对应的档位（含直链；只在 Rust 侧流转，不暴露给 QML）
+    pub(crate) pending_options: Vec<kichi_core::PlayOption>,
+    /// 播放请求代数：退出登录 / 重登后旧结果作废
+    pub(crate) play_epoch: u64,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -201,6 +220,10 @@ impl Default for KichiRust {
             tasks_epoch: 0,
             known_running: std::collections::HashMap::new(),
             notified: std::collections::HashSet::new(),
+            play_menu: QVariantList::default(),
+            play_title: QString::default(),
+            pending_options: Vec::new(),
+            play_epoch: 0,
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };
@@ -210,6 +233,14 @@ impl Default for KichiRust {
 }
 
 impl KichiRust {
+    /// 按 id 找当前列表里的条目名（不看条目类型，调用方自己判断）。
+    pub(crate) fn entry_name(&self, id: &str) -> Option<String> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.name.clone())
+    }
+
     /// 构造时恢复会话（只读本地存储 + 必要时刷新一次令牌）。
     fn apply_restored(&mut self) {
         use crate::session::State;

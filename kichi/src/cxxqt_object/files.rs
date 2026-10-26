@@ -220,5 +220,9 @@ fn entry_map(entry: &FileEntry) -> QVariantMap {
         &QString::from("auditFlag"),
         &QVariant::from(&entry.audit_flagged),
     );
+    map.insert_clone(
+        &QString::from("playable"),
+        &QVariant::from(&(entry.kind == EntryKind::File && entry.media)),
+    );
     map
 }
