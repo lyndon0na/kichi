@@ -201,6 +201,7 @@ mod play;
 mod settings;
 mod tasks;
 mod tray;
+mod tray_icon;
 
 use backend::Backend;
 use files::Crumb;

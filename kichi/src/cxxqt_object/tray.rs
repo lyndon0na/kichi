@@ -39,9 +39,15 @@ impl ksni::Tray for TrayIcon {
         "kichi".to_owned()
     }
 
+    /// 图标走内嵌位图，不依赖系统图标主题（换机器/换主题都不受影响）。
+    ///
+    /// 同时给出 `icon_name` 作为兜底：某些实现只认名字。
     fn icon_name(&self) -> String {
-        // Breeze 主题里存在的名字；取不到时 KDE 会显示占位图标
-        "folder-cloud".to_owned()
+        "kichi".to_owned()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        super::tray_icon::icon_pixmaps()
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {

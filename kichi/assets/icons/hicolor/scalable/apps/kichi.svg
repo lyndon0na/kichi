@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!--
+    kichi 图标（breeze 线条风格）：圆角方框 + k，只有描边、不填充。
+    与托盘图标（kichi/src/cxxqt_object/tray_icon.rs）是同一图形：
+    那边按尺寸生成像素，这里给桌面环境用（窗口图标 / .desktop）。
+  -->
+  <g fill="none" stroke="#A0A0A0" stroke-width="2.4"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- 圆角方框 -->
+    <rect x="5" y="5" width="54" height="54" rx="12" ry="12"/>
+    <!-- 字母 k：竖干 + 两条斜笔 -->
+    <path d="M 25 20 V 44 M 25 32 L 40 20 M 25 32 L 40 44"/>
+  </g>
+</svg>
