@@ -39,7 +39,11 @@ pub mod qobject {
         #[qproperty(QString, status_message, cxx_name = "statusMessage", READ, NOTIFY = changed)]
         #[qproperty(bool, busy, READ, NOTIFY = changed)]
         #[qproperty(QString, account, READ, NOTIFY = changed)]
-        #[qproperty(QString, quota_summary, cxx_name = "quotaSummary", READ, NOTIFY = changed)]
+        #[qproperty(QString, quota_used_text, cxx_name = "quotaUsed", READ, NOTIFY = changed)]
+        #[qproperty(QString, quota_limit_text, cxx_name = "quotaLimit", READ, NOTIFY = changed)]
+        /// 容量占用比例 0..1；`-1` = 不限量 / 未知，QML 据此隐藏进度条
+        #[qproperty(f64, quota_ratio, cxx_name = "quotaRatio", READ, NOTIFY = changed)]
+        #[qproperty(bool, quota_vip, cxx_name = "quotaVip", READ, NOTIFY = changed)]
         #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
@@ -299,7 +303,10 @@ pub struct KichiRust {
     pub(crate) busy: bool,
     pub(crate) captcha_required: bool,
     pub(crate) account: QString,
-    pub(crate) quota_summary: QString,
+    pub(crate) quota_used_text: QString,
+    pub(crate) quota_limit_text: QString,
+    pub(crate) quota_ratio: f64,
+    pub(crate) quota_vip: bool,
     /// 当前目录的列表项（QML 直接当 model 用）
     pub(crate) files: QVariantList,
     /// 面包屑显示名（根 → 当前）
@@ -412,7 +419,10 @@ impl Default for KichiRust {
             busy: false,
             captcha_required: false,
             account: QString::default(),
-            quota_summary: QString::default(),
+            quota_used_text: QString::default(),
+            quota_limit_text: QString::default(),
+            quota_ratio: -1.0,
+            quota_vip: false,
             files: QVariantList::default(),
             breadcrumb,
             entries: Vec::new(),

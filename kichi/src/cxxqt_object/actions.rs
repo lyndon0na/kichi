@@ -219,27 +219,28 @@ impl qobject::Kichi {
     }
 
     fn on_quota(mut self: Pin<&mut Self>, quota: kichi_core::Quota) {
+        let used = format_size(quota.usage);
         let limit = quota
             .limit
             .map(format_size)
             .unwrap_or_else(|| "无限制".to_owned());
-        let vip = if quota.vip { "会员" } else { "免费账号" };
-        let mut summary = format!("{vip} · 已用 {} / {limit}", format_size(quota.usage));
-        // 离线下载额度（实测官方有下发；不限量时也明说，免得用户以为没查到）
-        if let Some(used) = quota.cloud_download_usage {
-            let cap = match quota.cloud_download_limit {
-                Some(Some(limit)) => format_size(limit),
-                Some(None) => "不限".to_owned(),
-                None => "未知".to_owned(),
-            };
-            summary.push_str(&format!(" · 离线下载 {} / {cap}", format_size(used)));
-        }
+        // 不限量 / 上限为 0 时给 -1，QML 隐藏进度条，避免除零和「永远 0%」的假象
+        let ratio = match quota.limit {
+            None | Some(0) => -1.0,
+            Some(limit) => (quota.usage as f64 / limit as f64).clamp(0.0, 1.0),
+        };
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.quota_summary = QString::from(summary.as_str());
+            rust.quota_used_text = QString::from(used.as_str());
+            rust.quota_limit_text = QString::from(limit.as_str());
+            rust.quota_ratio = ratio;
+            rust.quota_vip = quota.vip;
         }
-        self.as_mut()
-            .set_message(&format!("账号信息已同步：{summary}"), false);
+        let vip = if quota.vip { "会员" } else { "免费账号" };
+        self.as_mut().set_message(
+            &format!("账号信息已同步：{vip} · 已用 {used} / {limit}"),
+            false,
+        );
     }
 
     /// 后台刷新身份与容量（身份失败不阻断容量）。

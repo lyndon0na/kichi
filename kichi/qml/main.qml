@@ -266,6 +266,6 @@ ApplicationWindow {
             return qsTr("离线任务")
         if (root.currentPage === 2)
             return qsTr("设置")
-        return qsTr("文件")
+        return qsTr("我的文件")
     }
 }
