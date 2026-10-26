@@ -6,14 +6,19 @@ import QtQuick.Layouts
 //
 // 放在 FilesPage 的列表框里：搜索视图和当前目录共用同一块区域，
 // 换视图时不会跳高矮。条目行与目录列表保持一致，额外多一列「所在文件夹」。
-// 双击文件夹进入；播放 / 下载 / 重命名 / 删除走右键菜单（由页面弹出）。
+// 单击选中；双击文件夹进入、媒体文件播放、其他文件下载；
+// 重命名 / 删除等走右键菜单（由页面弹出）。
 Item {
     id: root
 
     property var backend: null
+    // 当前选中的结果 id（本视图内生效；与目录列表的选中互不干扰）
+    property string selectedId: ""
 
     // 右键：条目本身 + 结果行内的位置（页面换算到菜单坐标系）
     signal contextMenu(var entry, point position)
+    // 双击媒体文件：条目 id + 本视图内的锚点（页面再换算到页面坐标系）
+    signal playRequested(string id, point position)
 
     // 扫描中：状态行旁边转圈
     readonly property bool scanning: root.backend !== null
@@ -95,10 +100,28 @@ Item {
                 icon.height: 0
                 icon.color: "transparent"
 
-                // 与文件页一致：双击进入文件夹（单击不再误触）
+                // 与文件页一致：单击选中；双击进入文件夹 / 播放媒体 / 下载其他文件
+                highlighted: root.selectedId.length > 0 && root.selectedId === modelData.id
+                onClicked: root.selectedId = modelData.id
                 onDoubleClicked: {
-                    if (root.backend && modelData.kind === "folder")
+                    if (!root.backend)
+                        return
+                    if (modelData.kind === "folder") {
                         root.backend.searchOpenFolder(modelData.id)
+                    } else if (modelData.playable === true) {
+                        // 锚点先在行内算，再换算到本视图坐标（页面再换算到页面坐标）
+                        root.playRequested(modelData.id,
+                                           row.mapToItem(root, row.width / 2, row.height))
+                    } else {
+                        root.backend.downloadEntry(modelData.id)
+                    }
+                }
+
+                background: Rectangle {
+                    radius: 4
+                    color: row.highlighted ? palette.highlight
+                         : row.down ? palette.mid
+                         : "transparent"
                 }
 
                 contentItem: ColumnLayout {
@@ -111,12 +134,15 @@ Item {
                         Label {
                             text: root.iconFor(modelData)
                             font.pixelSize: 18
+                            color: row.highlighted ? palette.highlightedText : palette.text
                         }
 
                         // 类型标签：长列表里一眼分出「文件夹 / 文件」
                         Label {
                             text: modelData.kind === "folder" ? qsTr("文件夹") : qsTr("文件")
-                            color: modelData.kind === "folder" ? "#3c7dd9" : palette.placeholderText
+                            color: row.highlighted ? palette.highlightedText
+                                 : modelData.kind === "folder" ? "#3c7dd9"
+                                 : palette.placeholderText
                             font.pixelSize: 12
                         }
 
@@ -124,17 +150,19 @@ Item {
                             text: modelData.name
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                            color: row.highlighted ? palette.highlightedText : palette.text
                         }
 
                         Label {
                             text: qsTr("违规")
                             visible: modelData.auditFlag
-                            color: "#c0392b"
+                            color: row.highlighted ? palette.highlightedText : "#c0392b"
                         }
 
                         Label {
                             text: modelData.sizeText
-                            color: palette.placeholderText
+                            color: row.highlighted ? palette.highlightedText : palette.placeholderText
+                            opacity: row.highlighted ? 0.8 : 1
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: 90
                         }
@@ -142,7 +170,8 @@ Item {
                         Label {
                             text: modelData.modifiedText
                             visible: modelData.modifiedText.length > 0
-                            color: palette.placeholderText
+                            color: row.highlighted ? palette.highlightedText : palette.placeholderText
+                            opacity: row.highlighted ? 0.8 : 1
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: 120
                         }
@@ -163,7 +192,8 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         text: qsTr("所在文件夹：%1").arg(modelData.folderText)
-                        color: modelData.folderId && modelData.folderId.length > 0
+                        color: row.highlighted ? palette.highlightedText
+                             : modelData.folderId && modelData.folderId.length > 0
                                ? palette.link : palette.placeholderText
                         font.pixelSize: 12
                         elide: Text.ElideMiddle
@@ -186,6 +216,7 @@ Item {
                 TapHandler {
                     acceptedButtons: Qt.RightButton
                     onTapped: function (eventPoint) {
+                        root.selectedId = modelData.id
                         root.contextMenu(modelData, eventPoint.position)
                     }
                 }

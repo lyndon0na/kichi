@@ -13,6 +13,8 @@ Item {
     property var backend: null
     // 右键菜单里点「播放」处的位置（页面坐标系，清晰度菜单从这里弹出）
     property point playAnchor: Qt.point(0, 0)
+    // 当前目录列表里选中的条目 id（空串 = 没有选中）
+    property string selectedId: ""
 
     // 搜索视图开着：列表区换成结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
@@ -239,9 +241,20 @@ Item {
                     width: ListView.view.width
                     entry: modelData
                     backend: page.backend
+                    // 单击选中；id 绑定而不是 index，刷新 / 排序后仍指向同一条目
+                    highlighted: page.selectedId.length > 0
+                                 && !!entry && page.selectedId === entry.id
+                    onClicked: page.selectedId = entry.id
+                    // 双击媒体文件：页面把它换算到页面坐标系再弹清晰度菜单
+                    onPlayRequested: function (id, point) {
+                        page.playAnchor = row.mapToItem(page, point.x, point.y)
+                        if (page.backend)
+                            page.backend.requestPlay(id)
+                    }
                     // FileRow 给的是行内坐标；菜单 root 与页面同尺寸，
                     // 直接映射到菜单坐标系才能和 popup(x, y) 对齐。
                     onContextMenu: function (point) {
+                        page.selectedId = entry.id
                         var menuPoint = row.mapToItem(menu, point.x, point.y)
                         menu.openContext(entry, menuPoint)
                     }
@@ -269,6 +282,11 @@ Item {
                 onContextMenu: function (entry, point) {
                     page.openResultContext(entry, point)
                 }
+                onPlayRequested: function (id, point) {
+                    page.playAnchor = searchResults.mapToItem(page, point.x, point.y)
+                    if (page.backend)
+                        page.backend.requestPlay(id)
+                }
             }
         }
 
@@ -279,7 +297,7 @@ Item {
         }
 
         Label {
-            text: qsTr("双击文件夹进入；右键条目可播放、下载、重命名或移到回收站。下载目录在设置页里改。")
+            text: qsTr("单击选中；双击文件夹进入、媒体文件播放、其他文件下载到本地。右键可重命名或移到回收站，下载目录在设置页里改。")
             color: palette.placeholderText
             font.pixelSize: 12
             wrapMode: Text.Wrap
