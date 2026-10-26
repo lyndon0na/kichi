@@ -171,6 +171,14 @@ impl qobject::Kichi {
         );
     }
 
+    /// 用户关掉菜单：丢掉档位（连同直链），不留下任何状态。
+    pub fn cancel_play(mut self: Pin<&mut Self>) {
+        if self.pending_options.is_empty() {
+            return;
+        }
+        self.as_mut().clear_play_menu();
+    }
+
     /// 收起菜单并丢掉直链。
     fn clear_play_menu(mut self: Pin<&mut Self>) {
         {

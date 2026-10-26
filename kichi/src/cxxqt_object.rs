@@ -113,6 +113,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "playSelected"]
         fn play_selected(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "cancelPlay"]
+        fn cancel_play(self: Pin<&mut Self>);
     }
 }
 

@@ -116,6 +116,13 @@ Item {
                 delegate: ItemDelegate {
                     width: ListView.view.width
                     height: 44
+                    // 关掉委托的图标渲染：条目 map 里没有图片源，
+                    // 默认行为会把非图片值当 image provider 拉成空白缩略图
+                    icon.name: ""
+                    icon.source: ""
+                    icon.width: 0
+                    icon.height: 0
+                    icon.color: "transparent"
 
                     onClicked: {
                         if (page.backend && modelData.kind === "folder")
@@ -201,40 +208,35 @@ Item {
     Menu {
         id: playMenu
 
-        // 弹出时按锚点定位；关掉就把后端的菜单清空
+        // 弹出时按锚点定位并夹在页面内
         function openAt(point) {
             x = Math.max(0, Math.min(point.x - width / 2, page.width - width))
             y = Math.max(0, Math.min(point.y + 4, page.height - height))
             open()
         }
 
-        onClosed: {
-            // 用户直接关掉菜单 = 放弃这次播放（不调后端，下次 requestPlay 会覆盖）
+        // 用户点菜单外面关掉时，把后端的档位一起清掉（避免残留的直链）
+        onClosed: page.backend ? page.backend.cancelPlay() : undefined
+
+        // 标题 + 档位条目（不用 contentItem：老 Qt 版本没有这个属性）
+        MenuItem {
+            text: page.backend ? page.backend.playTitle : ""
+            enabled: false
+            width: 260
         }
 
-        contentItem: Column {
-            spacing: 2
-            padding: 4
+        MenuSeparator {}
 
-            Label {
-                text: page.backend ? page.backend.playTitle : ""
-                font.bold: true
-                elide: Text.ElideMiddle
-                width: Math.min(implicitWidth, 320)
-                padding: 6
-            }
+        Repeater {
+            model: page.backend ? page.backend.playMenu : []
 
-            Repeater {
-                model: page.backend ? page.backend.playMenu : []
-
-                delegate: MenuItem {
-                    text: modelData.label
-                          + (modelData.reason.length > 0 ? qsTr("（%1）").arg(modelData.reason) : "")
-                          + (modelData.original ? qsTr(" · 原文件") : "")
-                    enabled: modelData.available === true
-                    width: Math.max(240, implicitWidth + 24)
-                    onClicked: page.backend.playSelected(index)
-                }
+            delegate: MenuItem {
+                text: modelData.label
+                      + (modelData.reason.length > 0 ? qsTr("（%1）").arg(modelData.reason) : "")
+                      + (modelData.original ? qsTr(" · 原文件") : "")
+                enabled: modelData.available === true
+                width: 260
+                onClicked: page.backend.playSelected(index)
             }
         }
     }
@@ -244,7 +246,13 @@ Item {
         target: page.backend
 
         function onChanged() {
-            if (page.backend && page.backend.playMenu.length > 0 && !playMenu.visible)
+            // 后端清空了菜单（选中开播 / 出错 / 登出），界面上的菜单也要收起
+            if (!page.backend || page.backend.playMenu.length === 0) {
+                if (playMenu.visible)
+                    playMenu.close()
+                return
+            }
+            if (!playMenu.visible)
                 playMenu.openAt(page.playAnchor)
         }
     }
