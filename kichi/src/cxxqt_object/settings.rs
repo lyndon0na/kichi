@@ -50,7 +50,32 @@ impl qobject::Kichi {
     }
 
     /// 关闭到托盘。
+    ///
+    /// 打开时立刻启托盘，起不来就**保持开关打开但取消勾选的假象**——
+    /// 不，更直接：把原因告诉用户并自动关掉这个开关。宁可功能不可用，
+    /// 也不能让用户以为「关窗 = 缩到托盘」结果真的退出了。
     pub fn set_close_to_tray(mut self: Pin<&mut Self>, enabled: bool) {
+        if enabled && !super::tray::start() {
+            {
+                let mut rust = self.as_mut().rust_mut();
+                rust.tray_available = false;
+            }
+            self.as_mut().set_message(
+                "系统托盘不可用（当前桌面没有托盘或 D-Bus 不支持），「关闭到托盘」已保持关闭",
+                false,
+            );
+            self.as_mut().update_settings(|settings| {
+                settings.close_to_tray = false;
+            });
+            return;
+        }
+        if !enabled {
+            super::tray::stop();
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.tray_available = enabled;
+        }
         self.as_mut().update_settings(|settings| {
             settings.close_to_tray = enabled;
         });

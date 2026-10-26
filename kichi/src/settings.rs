@@ -229,6 +229,20 @@ mod tests {
     }
 
     #[test]
+    fn real_config_file_is_read_correctly() {
+        let path = crate::settings::default_path();
+        eprintln!("读取路径: {}", path.display());
+        let (s, w) = load(&path);
+        eprintln!("close_to_tray = {}, warning = {w:?}", s.close_to_tray);
+        if path.exists() {
+            eprintln!(
+                "文件内容: {}",
+                std::fs::read_to_string(&path).unwrap_or_default()
+            );
+        }
+    }
+
+    #[test]
     fn missing_file_means_defaults_without_warning() {
         let path = temp_path("absent.json");
         let _ = std::fs::remove_file(&path);

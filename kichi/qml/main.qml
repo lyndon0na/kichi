@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.platform as Platform
 
 // 由 build.rs 的 QmlModule("io.kichi") 生成
 import io.kichi 1.0
@@ -57,7 +56,7 @@ ApplicationWindow {
     }
 
     onClosing: function (close) {
-        if (backend.closeToTray && trayIcon.available) {
+        if (backend.closeToTray && backend.trayAvailable) {
             close.accepted = false
             saveGeometryTimer.stop()
             // 最大化时保留上一次普通尺寸，别把最大化尺寸当成还原尺寸
@@ -69,38 +68,36 @@ ApplicationWindow {
         }
     }
 
-    // —— 托盘（仅「关闭到托盘」打开时出现；Weston 等无托盘宿主的环境自动不显示）——
-    Platform.SystemTrayIcon {
-        id: trayIcon
+    // —— 托盘 ——
+    // ⚠ 2026-10-26 实测：Qt.labs.platform 的 SystemTrayIcon 在 KDE 平台主题下
+    // 会走 KStatusNotifierItem，它要构造 QMenu（QtWidgets），而本应用只有
+    // QGuiApplication → qFatal → 启动即 abort。容器一变就崩，连「关掉设置」
+    // 的机会都没有。已改用 Rust 侧 ksni（纯 D-Bus），见 cxxqt_object/tray.rs。
 
-        visible: backend.closeToTray && available
-        tooltip: "kichi"
+    // 托盘事件：用 Connections 而不是 onXxxChanged（后者对 cxx-qt 生成的
+    // 信号名推导不可靠，实测会报 "Cannot assign to non-existent property"）
+    Connections {
+        target: backend
 
-        icon.name: "folder-cloud"
-
-        menu: Platform.Menu {
-            Platform.MenuItem {
-                text: qsTr("显示 kichi")
-                onTriggered: root.restoreFromTray()
-            }
-            Platform.MenuItem {
-                text: qsTr("退出")
-                onTriggered: Qt.quit()
-            }
-        }
-
-        onActivated: function (reason) {
-            if (reason === Platform.SystemTrayIcon.Trigger
-                    || reason === Platform.SystemTrayIcon.DoubleClick)
+        function onChanged() {
+            // 显示：托盘点了图标或「显示 kichi」
+            if (backend.trayShowRequested > 0 && root.lastTrayShow !== backend.trayShowRequested) {
+                root.lastTrayShow = backend.trayShowRequested
                 root.restoreFromTray()
+            }
+            // 退出：托盘「退出」，真退出而不是缩回托盘
+            if (backend.quitRequested)
+                Qt.quit()
         }
     }
 
+    property int lastTrayShow: 0
+
+    /// 从托盘唤回窗口。窗口本来就在前台时也执行 show/raise，当作「置顶」处理。
     function restoreFromTray() {
-        if (!root.hiddenToTray)
-            return
         root.hiddenToTray = false
-        root.show()
+        if (!root.visible)
+            root.show()
         root.raise()
         root.requestActivate()
     }

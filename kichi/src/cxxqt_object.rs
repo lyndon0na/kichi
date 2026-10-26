@@ -54,6 +54,9 @@ pub mod qobject {
         #[qproperty(QString, player_default_args, cxx_name = "playerDefaultArgs", READ, NOTIFY = changed)]
         #[qproperty(bool, notify_enabled, cxx_name = "notifyEnabled", READ, NOTIFY = changed)]
         #[qproperty(bool, close_to_tray, cxx_name = "closeToTray", READ, NOTIFY = changed)]
+        #[qproperty(bool, tray_available, cxx_name = "trayAvailable", READ, NOTIFY = changed)]
+        #[qproperty(i32, tray_show_requested, cxx_name = "trayShowRequested", READ, NOTIFY = changed)]
+        #[qproperty(bool, quit_requested, cxx_name = "quitRequested", READ, NOTIFY = changed)]
         #[qproperty(QString, sort_field_text, cxx_name = "sortField", READ, NOTIFY = changed)]
         #[qproperty(bool, sort_ascending, cxx_name = "sortAscending", READ, NOTIFY = changed)]
         #[qproperty(i32, window_width, cxx_name = "windowWidth", READ, NOTIFY = changed)]
@@ -192,6 +195,7 @@ mod notifications;
 mod play;
 mod settings;
 mod tasks;
+mod tray;
 
 use backend::Backend;
 use files::Crumb;
@@ -250,6 +254,12 @@ pub struct KichiRust {
     pub(crate) player_default_args: QString,
     pub(crate) notify_enabled: bool,
     pub(crate) close_to_tray: bool,
+    /// 托盘是否真的起来了（失败时界面禁用「关闭到托盘」）
+    pub(crate) tray_available: bool,
+    /// 托盘要求显示窗口的计数（QML 监听变化后 show/raise）
+    pub(crate) tray_show_requested: i32,
+    /// 托盘要求退出
+    pub(crate) quit_requested: bool,
     /// 排序字段（枚举给重排用；字符串 `sort_field_text` 给 QML）
     pub(crate) sort_field: crate::settings::SortField,
     pub(crate) sort_field_text: QString,
@@ -302,6 +312,9 @@ impl Default for KichiRust {
             player_default_args: QString::from(crate::player::DEFAULT_ARGS),
             notify_enabled: true,
             close_to_tray: false,
+            tray_available: false,
+            tray_show_requested: 0,
+            quit_requested: false,
             sort_field: crate::settings::SortField::Name,
             sort_field_text: QString::from("name"),
             sort_ascending: true,
@@ -363,6 +376,11 @@ impl KichiRust {
             Some(crate::session::Backend::File) => "降级文件（钥匙串不可用）",
             None => "尚未使用",
         });
+        // 上次开着「关闭到托盘」：这次启动就得把托盘拉起来，
+        // 否则用户以为缩进托盘了、实际没有，关窗会直接退出
+        if settings.close_to_tray {
+            self.tray_available = tray::start();
+        }
     }
 
     /// 构造时恢复会话（只读本地存储 + 必要时刷新一次令牌）。

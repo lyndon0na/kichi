@@ -90,6 +90,11 @@ impl qobject::Kichi {
     /// 主线程抽水：执行后台线程投递过来的结果（QML 定时器驱动）。
     pub fn pump(mut self: Pin<&mut Self>) {
         let mut handled = false;
+        // 托盘事件（显示/退出）也在主线程消费
+        for event in super::tray::poll() {
+            self.as_mut().handle_tray_event(event);
+            handled = true;
+        }
         loop {
             let task = {
                 let mut queue = tasks().lock().unwrap_or_else(|e| e.into_inner());
@@ -108,6 +113,23 @@ impl qobject::Kichi {
 }
 
 impl qobject::Kichi {
+    /// 托盘菜单/图标点击 → 主线程动作。
+    ///
+    /// 「显示」只置一个标志，真正的 show/raise 由 QML 监听 `trayShowRequested`
+    /// 执行：窗口操作必须在 QML 侧做，Rust 侧拿不到 ApplicationWindow。
+    fn handle_tray_event(mut self: Pin<&mut Self>, event: super::tray::TrayEvent) {
+        match event {
+            super::tray::TrayEvent::Show => {
+                self.as_mut().rust_mut().tray_show_requested += 1;
+                self.as_mut().notify();
+            }
+            super::tray::TrayEvent::Quit => {
+                self.as_mut().rust_mut().quit_requested = true;
+                self.as_mut().notify();
+            }
+        }
+    }
+
     /// 通知 QML：所有属性都挂在这个信号上。
     pub(crate) fn notify(mut self: Pin<&mut Self>) {
         self.as_mut().changed();

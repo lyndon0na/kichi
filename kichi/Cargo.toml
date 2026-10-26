@@ -11,6 +11,7 @@ cxx = "1"
 cxx-qt = "0.10"
 cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
 keyring = "4"
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 kichi-core = { path = "../kichi-core" }
 notify-rust = "4"
 serde = { version = "1", features = ["derive"] }
