@@ -10,9 +10,8 @@ Item {
 
     property var backend: null
 
-    // 输入框在编辑中时不要被 backend 的刷新覆盖（否则打字会被打断）
-    property bool commandDirty: false
-    property bool argsDirty: false
+    // 下载目录输入框在编辑中时不要被 backend 的刷新覆盖（否则打字会被打断）
+    property bool downloadDirty: false
 
     Flickable {
         id: scroller
@@ -28,9 +27,15 @@ Item {
             width: scroller.width
             spacing: 16
 
-            // ── 播放 ───────────────────────────────────────────
+            // ── 播放（内容在 SettingsPlayback.qml） ────────────
+            SettingsPlayback {
+                Layout.fillWidth: true
+                backend: page.backend
+            }
+
+            // ── 下载 ───────────────────────────────────────────
             Label {
-                text: qsTr("播放")
+                text: qsTr("下载")
                 font.bold: true
             }
 
@@ -39,102 +44,34 @@ Item {
                 spacing: 12
 
                 Label {
-                    text: qsTr("默认清晰度")
+                    text: qsTr("下载目录")
                     Layout.preferredWidth: 110
                 }
 
-                ComboBox {
-                    id: qualityBox
-                    Layout.preferredWidth: 220
-                    model: [
-                        { "value": "ask", "label": qsTr("每次询问（弹出档位菜单）") },
-                        { "value": "original", "label": qsTr("优先原画") },
-                        { "value": "transcode", "label": qsTr("优先最高转码档") }
-                    ]
-                    textRole: "label"
-                    valueRole: "value"
-
-                    Component.onCompleted: syncFromBackend()
-                    Connections {
-                        target: page.backend
-                        function onChanged() {
-                            qualityBox.syncFromBackend()
-                        }
-                    }
-                    function syncFromBackend() {
-                        if (!page.backend)
-                            return
-                        var index = qualityBox.indexOfValue(page.backend.preferredQuality)
-                        if (index >= 0 && index !== qualityBox.currentIndex)
-                            qualityBox.currentIndex = index
-                    }
-                    // onActivated 时不保证 currentValue 已更新，用 index 从 model 里取
-                    onActivated: function (index) {
-                        if (!page.backend)
-                            return
-                        page.backend.setPreferredQuality(qualityBox.model[index].value)
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    color: palette.placeholderText
-                    font.pixelSize: 12
-                    text: qsTr("「每次询问」总是弹档位菜单；选「优先」则直接起播。只有原画一档的文件，选转码也会直接播原画。")
-                }
-            }
-
-            GridLayout {
-                Layout.fillWidth: true
-                columns: 3
-                columnSpacing: 12
-                rowSpacing: 8
-
-                Label {
-                    text: qsTr("播放器命令")
-                    Layout.preferredWidth: 110
-                }
                 TextField {
-                    id: commandField
+                    id: downloadField
                     Layout.fillWidth: true
                     selectByMouse: true
-                    placeholderText: page.backend ? page.backend.playerDefaultCommand : ""
-                    text: page.backend ? page.backend.playerCommand : ""
-                    onTextEdited: page.commandDirty = true
-                    onEditingFinished: page.applyPlayer()
+                    placeholderText: qsTr("留空 = ~/Downloads")
+                    text: page.backend ? page.backend.downloadDir : ""
+                    onTextEdited: page.downloadDirty = true
+                    onEditingFinished: page.applyDownloadDir()
                 }
-                Label { text: "" }
 
-                Label {
-                    text: qsTr("附加参数")
-                    Layout.preferredWidth: 110
-                }
-                TextField {
-                    id: argsField
-                    Layout.fillWidth: true
-                    selectByMouse: true
-                    placeholderText: page.backend ? page.backend.playerDefaultArgs : ""
-                    text: page.backend ? page.backend.playerArgs : ""
-                    onTextEdited: page.argsDirty = true
-                    onEditingFinished: page.applyPlayer()
-                }
                 RowLayout {
                     spacing: 6
 
                     Button {
                         text: qsTr("应用")
-                        enabled: page.commandDirty || page.argsDirty
-                        onClicked: page.applyPlayer()
+                        enabled: page.downloadDirty
+                        onClicked: page.applyDownloadDir()
                     }
                     Button {
-                        text: qsTr("恢复默认")
+                        text: qsTr("打开目录")
                         flat: true
                         onClicked: {
-                            page.commandDirty = false
-                            page.argsDirty = false
                             if (page.backend)
-                                page.backend.resetPlayer()
+                                page.backend.openDownloadDir()
                         }
                     }
                 }
@@ -145,9 +82,7 @@ Item {
                 wrapMode: Text.Wrap
                 color: palette.placeholderText
                 font.pixelSize: 12
-                text: qsTr("默认：%1 %2。留空表示使用默认；文件名用 {title} 占位，直链走临时清单不进命令行。")
-                        .arg(page.backend ? page.backend.playerDefaultCommand : "")
-                        .arg(page.backend ? page.backend.playerDefaultArgs : "")
+                text: qsTr("支持 ~/ 开头。文件页点「⬇」直接下到这里；同名文件自动加序号，不会覆盖。")
             }
 
             // ── 通知 ───────────────────────────────────────────
@@ -266,50 +201,22 @@ Item {
                 }
             }
 
-            // ── 存储信息（只读） ───────────────────────────────
-            Label {
-                text: qsTr("关于")
-                font.bold: true
-            }
-
-            GridLayout {
+            // ── 存储信息（只读；内容在 SettingsAbout.qml） ──────
+            SettingsAbout {
                 Layout.fillWidth: true
-                columns: 2
-                columnSpacing: 12
-                rowSpacing: 6
-
-                Label {
-                    text: qsTr("令牌存储")
-                    color: palette.placeholderText
-                }
-                Label {
-                    text: page.backend ? page.backend.storageBackend : ""
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                }
-
-                Label {
-                    text: qsTr("设置文件")
-                    color: palette.placeholderText
-                }
-                Label {
-                    text: page.backend ? page.backend.settingsPath : ""
-                    Layout.fillWidth: true
-                    wrapMode: Text.WrapAnywhere
-                    font.family: "monospace"
-                    font.pixelSize: 12
-                }
+                backend: page.backend
             }
 
             Item { Layout.fillHeight: true }
         }
     }
 
-    function applyPlayer() {
+    function applyDownloadDir() {
         if (!page.backend)
             return
-        page.commandDirty = false
-        page.argsDirty = false
-        page.backend.setPlayer(commandField.text, argsField.text)
+        page.downloadDirty = false
+        page.backend.setDownloadDir(downloadField.text)
+        // 后端可能因为非法路径拒绝，读回真实生效值
+        downloadField.text = page.backend.downloadDir
     }
 }
