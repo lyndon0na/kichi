@@ -26,8 +26,17 @@ Item {
                 spacing: 8
 
                 Label {
-                    // 账号与容量由 Rust 侧同步后写在状态消息里
-                    text: page.backend ? page.backend.statusMessage : ""
+                    text: qsTr("账号：%1").arg(
+                              page.backend && page.backend.account.length > 0
+                              ? page.backend.account : qsTr("同步中……"))
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+
+                Label {
+                    text: qsTr("空间：%1").arg(
+                              page.backend && page.backend.quotaSummary.length > 0
+                              ? page.backend.quotaSummary : qsTr("同步中……"))
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
                 }

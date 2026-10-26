@@ -50,6 +50,13 @@ ApplicationWindow {
                 Layout.preferredHeight: 24
             }
 
+            Label {
+                text: backend.quotaSummary
+                visible: backend.quotaSummary.length > 0
+                elide: Text.ElideRight
+                Layout.maximumWidth: 260
+            }
+
             Button {
                 text: qsTr("退出登录")
                 visible: root.signedIn

@@ -80,6 +80,7 @@ impl qobject::Kichi {
 
     /// 主线程抽水：执行后台线程投递过来的结果（QML 定时器驱动）。
     pub fn pump(mut self: Pin<&mut Self>) {
+        let mut handled = false;
         loop {
             let task = {
                 let mut queue = tasks().lock().unwrap_or_else(|e| e.into_inner());
@@ -87,23 +88,40 @@ impl qobject::Kichi {
             };
             let Some(task) = task else { break };
             task(self.as_mut());
+            handled = true;
+        }
+        // 任务执行期间可能改了多个字段，这里统一通知一次；
+        // 没有任务时不发信号，避免定时器空转刷爆绑定。
+        if handled {
+            self.as_mut().notify();
         }
     }
 }
 
 impl qobject::Kichi {
+    /// 通知 QML：所有属性都挂在这个信号上。
+    pub(crate) fn notify(mut self: Pin<&mut Self>) {
+        self.as_mut().changed();
+    }
+
     /// 统一更新状态类属性。
     pub(crate) fn set_message(mut self: Pin<&mut Self>, text: &str, busy: bool) {
-        let mut rust = self.as_mut().rust_mut();
-        rust.status_message = QString::from(text);
-        rust.busy = busy;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.status_message = QString::from(text);
+            rust.busy = busy;
+        }
+        self.as_mut().notify();
     }
 
     fn set_captcha(mut self: Pin<&mut Self>, url: Option<&str>) {
-        let mut rust = self.as_mut().rust_mut();
-        rust.captcha_required = true;
-        rust.captcha_url = url.unwrap_or_default().to_owned();
-        rust.busy = false;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.captcha_required = true;
+            rust.captcha_url = url.unwrap_or_default().to_owned();
+            rust.busy = false;
+        }
+        self.as_mut().notify();
     }
 
     /// 登录成功后的统一收尾：更新状态、查询身份与容量。
@@ -116,6 +134,7 @@ impl qobject::Kichi {
             rust.status_message = QString::from("登录成功，正在同步账号信息……");
             rust.busy = true;
         }
+        self.as_mut().notify();
         self.as_mut().refresh_identity_and_quota();
     }
 
@@ -133,10 +152,13 @@ impl qobject::Kichi {
                 self.as_mut().set_captcha(url.as_deref());
             }
             Failure::Auth(reason) => {
-                let mut rust = self.as_mut().rust_mut();
-                rust.auth_state = QString::from("expired");
-                rust.status_message = QString::from(format!("登录状态失效：{reason}").as_str());
-                rust.busy = false;
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.auth_state = QString::from("expired");
+                    rust.status_message = QString::from(format!("登录状态失效：{reason}").as_str());
+                    rust.busy = false;
+                }
+                self.as_mut().notify();
             }
             other => self.as_mut().set_message(&other.to_string(), false),
         }
@@ -149,6 +171,10 @@ impl qobject::Kichi {
             .unwrap_or_else(|| "无限制".to_owned());
         let vip = if quota.vip { "会员" } else { "免费账号" };
         let summary = format!("{vip} · 已用 {} / {limit}", format_size(quota.usage));
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.quota_summary = QString::from(summary.as_str());
+        }
         self.as_mut()
             .set_message(&format!("账号信息已同步：{summary}"), false);
     }
@@ -167,7 +193,11 @@ impl qobject::Kichi {
                     }
                 };
                 match identity {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if let Some(email) = qichi.as_mut().rust().backend.session.email() {
+                            qichi.as_mut().rust_mut().account = QString::from(email.as_str());
+                        }
+                    }
                     // 身份查询失败只提示，不影响容量
                     Err(err) => qichi
                         .as_mut()

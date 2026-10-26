@@ -10,11 +10,12 @@
 //!    它会把 `QString` 等 C++ 类型也塞进该命名空间，生成代码报
 //!    `'kichi::QString' has not been declared`。QML 类型名由
 //!    `QML_NAMED_ELEMENT` 决定，不需要 C++ 命名空间。
-//! 3. 桥接里不要出现 `qsignal` 或 `impl cxx_qt::Threading`，二者都会
-//!    让属性通知/线程回投失效；属性变化靠 QML 的
-//!    `onStatusMessageChanged` 等逐属性绑定，后台结果走主线程队列
-//!    （QML 定时器调用 `pump` 抽水），见 `actions.rs`。
-//! 4. invokable 声明端与实现端签名要一致：`Pin<&mut Self>` 对
+//! 3. 属性必须带 NOTIFY 信号，否则 QML 永远不会重新求值绑定
+//!    （现象：点登录毫无反应、状态文字不更新）。这里所有属性共用一个
+//!    `changed` 信号，Rust 侧每次改完字段调用 `notify()` 即可。
+//! 4. 桥接里不要出现 `impl cxx_qt::Threading`，线程回投会失效；
+//!    后台结果走主线程队列（QML 定时器调用 `pump` 抽水），见 `actions.rs`。
+//! 5. invokable 声明端与实现端签名要一致：`Pin<&mut Self>` 对
 //!    `Pin<&mut Self>`，或 `&mut Self` 对 `&mut Self`。
 
 #[cxx_qt::bridge]
@@ -27,11 +28,17 @@ pub mod qobject {
     extern "RustQt" {
         #[qobject]
         #[qml_element]
-        #[qproperty(QString, auth_state, cxx_name = "authState", READ)]
-        #[qproperty(QString, status_message, cxx_name = "statusMessage", READ)]
-        #[qproperty(bool, busy, READ)]
-        #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ)]
+        #[qproperty(QString, auth_state, cxx_name = "authState", READ, NOTIFY = changed)]
+        #[qproperty(QString, status_message, cxx_name = "statusMessage", READ, NOTIFY = changed)]
+        #[qproperty(bool, busy, READ, NOTIFY = changed)]
+        #[qproperty(QString, account, READ, NOTIFY = changed)]
+        #[qproperty(QString, quota_summary, cxx_name = "quotaSummary", READ, NOTIFY = changed)]
+        #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
+
+        /// 统一变更通知：所有属性都挂这一个信号
+        #[qsignal]
+        fn changed(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "login"]
@@ -73,6 +80,8 @@ pub struct KichiRust {
     pub(crate) status_message: QString,
     pub(crate) busy: bool,
     pub(crate) captcha_required: bool,
+    pub(crate) account: QString,
+    pub(crate) quota_summary: QString,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -85,6 +94,8 @@ impl Default for KichiRust {
             status_message: QString::default(),
             busy: false,
             captcha_required: false,
+            account: QString::default(),
+            quota_summary: QString::default(),
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };
