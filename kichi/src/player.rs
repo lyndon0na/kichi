@@ -33,15 +33,18 @@ pub struct PlayerConfig {
 }
 
 impl PlayerConfig {
-    /// 从环境变量构造（`KICHI_PLAYER` 覆盖程序与前置参数）。
-    pub fn from_env() -> Self {
-        let overridden = read_env("KICHI_PLAYER").and_then(|command| parse_command(&command));
-        let mut config = overridden.unwrap_or_default();
-        config.access_args = split_words(
-            read_env("KICHI_PLAYER_ARGS")
-                .as_deref()
-                .unwrap_or(DEFAULT_ARGS),
-        );
+    /// 按优先级取配置：环境变量 > 界面设置 > 内置默认。
+    ///
+    /// 环境变量排在设置之前：它本来就是排障与临时覆盖用的，
+    /// 优先级更高才不会被界面里存着的命令挡住。
+    pub fn resolve(settings_command: Option<&str>, settings_args: Option<&str>) -> Self {
+        let command = read_env("KICHI_PLAYER").or_else(|| settings_command.map(str::to_owned));
+        let mut config = command
+            .as_deref()
+            .and_then(parse_command)
+            .unwrap_or_default();
+        let args = read_env("KICHI_PLAYER_ARGS").or_else(|| settings_args.map(str::to_owned));
+        config.access_args = split_words(args.as_deref().unwrap_or(DEFAULT_ARGS));
         config
     }
 
@@ -212,6 +215,19 @@ mod tests {
         let mut config = parse_command(DEFAULT_PLAYER).expect("默认命令可解析");
         config.access_args = split_words(DEFAULT_ARGS);
         config
+    }
+
+    #[test]
+    fn settings_override_defaults_but_not_environment() {
+        // 设置提供命令与参数
+        let config = PlayerConfig::resolve(Some("mpv"), Some("--fs"));
+        assert_eq!(config.program, "mpv");
+        assert_eq!(config.access_args, vec!["--fs"]);
+
+        // 空设置回落到内置默认
+        let config = PlayerConfig::resolve(None, None);
+        assert_eq!(config.program, "flatpak");
+        assert!(config.access_args.contains(&"--ytdl=no".to_owned()));
     }
 
     #[test]

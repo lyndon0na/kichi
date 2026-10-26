@@ -27,6 +27,11 @@ impl Backend {
         self.restored.notice.as_deref().unwrap_or_default()
     }
 
+    /// 令牌实际存到了哪里（设置页只读展示用）；`None` = 本次还没读过存储。
+    pub(crate) fn restored_backend(&self) -> Option<crate::session::Backend> {
+        self.restored.backend
+    }
+
     pub(crate) fn storage(&self) -> String {
         match self.restored.backend {
             Some(crate::session::Backend::File) => {

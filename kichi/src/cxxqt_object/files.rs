@@ -148,12 +148,8 @@ impl qobject::Kichi {
 
     /// 把列表与状态写回属性（只在主线程调用）。
     fn show_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
-        entries
-            .sort_by_cached_key(|entry| (entry.kind == EntryKind::File, entry.name.to_lowercase()));
-        let mut files = QVariantList::default();
-        for entry in &entries {
-            files.append(QVariant::from(&entry_map(entry)));
-        }
+        sort_entries(&mut entries, self.sort_field, self.sort_ascending);
+        let files = list_from(&entries);
         let count = entries.len();
         let folder = self
             .crumbs
@@ -167,6 +163,22 @@ impl qobject::Kichi {
             rust.listing = false;
             rust.busy = false;
             rust.status_message = QString::from(format!("「{folder}」共 {count} 项"));
+        }
+        self.as_mut().notify();
+    }
+
+    /// 改了排序：对已缓存的条目本地重排，不重新拉网（QML 的 `files` 随之刷新）。
+    pub(crate) fn re_sort_entries(mut self: Pin<&mut Self>) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let mut entries = self.entries.clone();
+        sort_entries(&mut entries, self.sort_field, self.sort_ascending);
+        let files = list_from(&entries);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.files = files;
+            rust.entries = entries;
         }
         self.as_mut().notify();
     }
@@ -188,6 +200,54 @@ impl qobject::Kichi {
         self.as_mut().rust_mut().breadcrumb = names;
         self.as_mut().notify();
     }
+}
+
+/// 排序：文件夹永远在前，同类按设置字段比较，方向由 `ascending` 决定。
+///
+/// 名称比较用 lower-case（中文不受影响，英文大小写不打架）；大小相同时
+/// 回落到名称，保证同一目录多次刷新顺序稳定。
+pub(crate) fn sort_entries(
+    entries: &mut [FileEntry],
+    field: crate::settings::SortField,
+    ascending: bool,
+) {
+    use crate::settings::SortField;
+    let name = |entry: &FileEntry| entry.name.to_lowercase();
+    let folder_first = |a: &FileEntry, b: &FileEntry| {
+        (a.kind == EntryKind::Folder)
+            .cmp(&(b.kind == EntryKind::Folder))
+            .reverse()
+    };
+    entries.sort_by(|a, b| {
+        // 目录/文件分组与排序方向无关，先决出来
+        let group = folder_first(a, b);
+        if group != std::cmp::Ordering::Equal {
+            return group;
+        }
+        let order = match field {
+            SortField::Name => name(a).cmp(&name(b)),
+            SortField::Size => a.size.cmp(&b.size).then_with(|| name(a).cmp(&name(b))),
+            SortField::Modified => {
+                let left = a.modified_at.map(|time| time.timestamp()).unwrap_or(0);
+                let right = b.modified_at.map(|time| time.timestamp()).unwrap_or(0);
+                left.cmp(&right).then_with(|| name(a).cmp(&name(b)))
+            }
+        };
+        if ascending {
+            order
+        } else {
+            order.reverse()
+        }
+    });
+}
+
+/// 条目 → QML 模型。
+fn list_from(entries: &[FileEntry]) -> QVariantList {
+    let mut files = QVariantList::default();
+    for entry in entries {
+        files.append(QVariant::from(&entry_map(entry)));
+    }
+    files
 }
 
 /// 一条列表项 → QML 用的小 map（只带界面要显示的字段）。
@@ -225,4 +285,95 @@ fn entry_map(entry: &FileEntry) -> QVariantMap {
         &QVariant::from(&(entry.kind == EntryKind::File && entry.media)),
     );
     map
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+    use crate::settings::SortField;
+    use chrono::{TimeZone, Utc};
+
+    fn entry(name: &str, kind: EntryKind, size: u64, day: u32) -> FileEntry {
+        FileEntry {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            kind,
+            size,
+            modified_at: Utc.with_ymd_and_hms(2026, 1, day, 0, 0, 0).single(),
+            md5: None,
+            audit_flagged: false,
+            media: false,
+        }
+    }
+
+    fn names(entries: &[FileEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    fn sample() -> Vec<FileEntry> {
+        vec![
+            entry("Beta.mkv", EntryKind::File, 300, 3),
+            entry("alpha.mkv", EntryKind::File, 100, 1),
+            entry("Zeta", EntryKind::Folder, 0, 20),
+            entry("Aaa", EntryKind::Folder, 0, 10),
+        ]
+    }
+
+    #[test]
+    fn folders_always_come_first() {
+        for field in [SortField::Name, SortField::Size, SortField::Modified] {
+            let mut entries = sample();
+            sort_entries(&mut entries, field, false);
+            let split = entries.partition_point(|e| e.kind == EntryKind::Folder);
+            assert_eq!(split, 2, "{field:?} 降序时文件夹也必须在前");
+            assert!(entries[..split].iter().all(|e| e.kind == EntryKind::Folder));
+        }
+    }
+
+    #[test]
+    fn name_sort_is_case_insensitive() {
+        let mut entries = sample();
+        sort_entries(&mut entries, SortField::Name, true);
+        assert_eq!(
+            names(&entries),
+            vec!["Aaa", "Zeta", "alpha.mkv", "Beta.mkv"]
+        );
+        sort_entries(&mut entries, SortField::Name, false);
+        assert_eq!(
+            names(&entries),
+            vec!["Zeta", "Aaa", "Beta.mkv", "alpha.mkv"]
+        );
+    }
+
+    #[test]
+    fn size_and_time_sort_apply_to_files_only_order() {
+        let mut entries = sample();
+        sort_entries(&mut entries, SortField::Size, true);
+        assert_eq!(
+            names(&entries),
+            vec!["Aaa", "Zeta", "alpha.mkv", "Beta.mkv"]
+        );
+        sort_entries(&mut entries, SortField::Size, false);
+        assert_eq!(
+            names(&entries),
+            vec!["Zeta", "Aaa", "Beta.mkv", "alpha.mkv"]
+        );
+
+        let mut entries = sample();
+        sort_entries(&mut entries, SortField::Modified, true);
+        assert_eq!(
+            names(&entries),
+            vec!["Aaa", "Zeta", "alpha.mkv", "Beta.mkv"]
+        );
+    }
+
+    #[test]
+    fn equal_keys_fall_back_to_name_for_stable_output() {
+        let mut entries = vec![
+            entry("b", EntryKind::File, 5, 1),
+            entry("a", EntryKind::File, 5, 1),
+        ];
+        sort_entries(&mut entries, SortField::Size, true);
+        assert_eq!(names(&entries), vec!["a", "b"]);
+    }
 }

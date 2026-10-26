@@ -47,6 +47,20 @@ pub mod qobject {
         #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
+        #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
+        #[qproperty(QString, player_command, cxx_name = "playerCommand", READ, NOTIFY = changed)]
+        #[qproperty(QString, player_args, cxx_name = "playerArgs", READ, NOTIFY = changed)]
+        #[qproperty(QString, player_default_command, cxx_name = "playerDefaultCommand", READ, NOTIFY = changed)]
+        #[qproperty(QString, player_default_args, cxx_name = "playerDefaultArgs", READ, NOTIFY = changed)]
+        #[qproperty(bool, notify_enabled, cxx_name = "notifyEnabled", READ, NOTIFY = changed)]
+        #[qproperty(bool, close_to_tray, cxx_name = "closeToTray", READ, NOTIFY = changed)]
+        #[qproperty(QString, sort_field_text, cxx_name = "sortField", READ, NOTIFY = changed)]
+        #[qproperty(bool, sort_ascending, cxx_name = "sortAscending", READ, NOTIFY = changed)]
+        #[qproperty(i32, window_width, cxx_name = "windowWidth", READ, NOTIFY = changed)]
+        #[qproperty(i32, window_height, cxx_name = "windowHeight", READ, NOTIFY = changed)]
+        #[qproperty(bool, window_maximized, cxx_name = "windowMaximized", READ, NOTIFY = changed)]
+        #[qproperty(QString, settings_path, cxx_name = "settingsPath", READ, NOTIFY = changed)]
+        #[qproperty(QString, storage_backend, cxx_name = "storageBackend", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -117,6 +131,34 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "cancelPlay"]
         fn cancel_play(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "setPreferredQuality"]
+        fn set_preferred_quality(self: Pin<&mut Self>, value: QString);
+
+        #[qinvokable]
+        #[cxx_name = "setPlayer"]
+        fn set_player(self: Pin<&mut Self>, command: QString, args: QString);
+
+        #[qinvokable]
+        #[cxx_name = "resetPlayer"]
+        fn reset_player(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "setNotifyEnabled"]
+        fn set_notify_enabled(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "setCloseToTray"]
+        fn set_close_to_tray(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "setSorting"]
+        fn set_sorting(self: Pin<&mut Self>, field: QString, ascending: bool);
+
+        #[qinvokable]
+        #[cxx_name = "saveWindowGeometry"]
+        fn save_window_geometry(self: Pin<&mut Self>, width: i32, height: i32, maximized: bool);
     }
 }
 
@@ -147,6 +189,7 @@ mod actions;
 mod backend;
 mod files;
 mod play;
+mod settings;
 mod tasks;
 
 use backend::Backend;
@@ -194,6 +237,28 @@ pub struct KichiRust {
     pub(crate) pending_options: Vec<kichi_core::PlayOption>,
     /// 播放请求代数：退出登录 / 重登后旧结果作废
     pub(crate) play_epoch: u64,
+    /// 持久化设置（启动时读一次，改动即落盘）
+    pub(crate) settings: crate::settings::Settings,
+    /// 清晰度偏好（"ask" / "original" / "transcode"，QML 展示用）
+    pub(crate) preferred_quality: QString,
+    /// 自定义播放器命令 / 参数（空串 = 用默认）
+    pub(crate) player_command: QString,
+    pub(crate) player_args: QString,
+    /// 内置默认播放器命令 / 参数（设置页展示与「恢复默认」参考）
+    pub(crate) player_default_command: QString,
+    pub(crate) player_default_args: QString,
+    pub(crate) notify_enabled: bool,
+    pub(crate) close_to_tray: bool,
+    /// 排序字段（枚举给重排用；字符串 `sort_field_text` 给 QML）
+    pub(crate) sort_field: crate::settings::SortField,
+    pub(crate) sort_field_text: QString,
+    pub(crate) sort_ascending: bool,
+    pub(crate) window_width: i32,
+    pub(crate) window_height: i32,
+    pub(crate) window_maximized: bool,
+    pub(crate) settings_path: QString,
+    /// 令牌存储后端（KWallet / 降级文件），设置页只读展示
+    pub(crate) storage_backend: QString,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -228,9 +293,28 @@ impl Default for KichiRust {
             play_title: QString::default(),
             pending_options: Vec::new(),
             play_epoch: 0,
+            settings: crate::settings::Settings::default(),
+            preferred_quality: QString::from("ask"),
+            player_command: QString::default(),
+            player_args: QString::default(),
+            player_default_command: QString::from(crate::player::DEFAULT_PLAYER),
+            player_default_args: QString::from(crate::player::DEFAULT_ARGS),
+            notify_enabled: true,
+            close_to_tray: false,
+            sort_field: crate::settings::SortField::Name,
+            sort_field_text: QString::from("name"),
+            sort_ascending: true,
+            window_width: 0,
+            window_height: 0,
+            window_maximized: false,
+            settings_path: QString::from(
+                crate::settings::default_path().to_string_lossy().as_ref(),
+            ),
+            storage_backend: QString::default(),
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };
+        object.load_settings();
         object.apply_restored();
         object
     }
@@ -243,6 +327,41 @@ impl KichiRust {
             .iter()
             .find(|entry| entry.id == id)
             .map(|entry| entry.name.clone())
+    }
+
+    /// 构造时读设置：属性先落地，再让界面看到（QML 构造时属性已可读）。
+    fn load_settings(&mut self) {
+        let path = crate::settings::default_path();
+        self.settings_path = QString::from(path.to_string_lossy().as_ref());
+        let (settings, warning) = crate::settings::load(&path);
+        self.settings = settings;
+        self.sync_settings_initial();
+        if let Some(warning) = warning {
+            // 设置坏掉不该拦住使用：提示走状态栏，其余照默认跑
+            self.status_message = QString::from(warning.as_str());
+        }
+    }
+
+    /// 启动时把设置刷到属性上（不写盘、不触发错误提示）。
+    fn sync_settings_initial(&mut self) {
+        let settings = self.settings.clone();
+        self.preferred_quality = QString::from(settings.preferred_quality.as_str());
+        self.player_command = QString::from(settings.player_command.as_str());
+        self.player_args = QString::from(settings.player_args.as_str());
+        self.notify_enabled = settings.notify_enabled;
+        self.close_to_tray = settings.close_to_tray;
+        self.sort_field = settings.sort_field;
+        self.sort_field_text = QString::from(settings.sort_field.as_str());
+        self.sort_ascending = settings.sort_ascending;
+        self.window_width = settings.window_width;
+        self.window_height = settings.window_height;
+        self.window_maximized = settings.window_maximized;
+        let backend = self.backend.restored_backend();
+        self.storage_backend = QString::from(match backend {
+            Some(crate::session::Backend::Keychain) => "系统钥匙串（KWallet）",
+            Some(crate::session::Backend::File) => "降级文件（钥匙串不可用）",
+            None => "尚未使用",
+        });
     }
 
     /// 构造时恢复会话（只读本地存储 + 必要时刷新一次令牌）。
