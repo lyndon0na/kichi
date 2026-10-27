@@ -133,7 +133,9 @@ fn download_all(
         };
         let note = |text: &str| {
             transfers::note(batch, index, text);
-            post_sync();
+            // 说明不是结构变化：走 live 贴到当前文件行（第二行）上。
+            // 以前走 post_sync 时它被下载中的第二行隐藏，等于看不见。
+            post_live();
         };
         let callbacks = DownloadCallbacks {
             progress: &progress,

@@ -96,6 +96,16 @@ ItemDelegate {
         return row.liveField("sizeText", fallback)
     }
 
+    /// 速度 + 剩余时间，或「已卡住 N 秒」（只有 transferLive 带这个键）
+    function liveRateText() {
+        return row.liveField("rateText", "")
+    }
+
+    /// 下载中的重试 / 续传说明（恢复后 5 秒由 Rust 清空）
+    function liveNoteText() {
+        return row.liveField("noteText", "")
+    }
+
     // 行高写死（与文件列表同一做法）：交给控件自己算会让各状态高低不一
     implicitHeight: 60
     padding: 8
@@ -147,7 +157,25 @@ ItemDelegate {
                     color: row.notice ? palette.placeholderText : palette.text
                 }
 
+                // 速度 / 剩余时间 / 卡住：在名称与状态之间固定占位。
+                // 放在大小列右侧的话，下载结束速度变空时状态 / 大小 / › 会横向跳动；
+                // 这里只让名称让出 190px（只在下载中显示，其余状态不占位）。
                 Label {
+                    objectName: "rateText"
+                    visible: row.running
+                    text: row.liveRateText()
+                    font.pixelSize: 12
+                    verticalAlignment: Text.AlignVCenter
+                    color: palette.placeholderText
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideRight
+                    Layout.preferredWidth: 190
+                    Layout.minimumWidth: 110
+                    Layout.maximumWidth: 190
+                }
+
+                Label {
+                    objectName: "stateText"
                     visible: !row.notice
                     text: row.stateText
                     font.pixelSize: 12
@@ -208,6 +236,8 @@ ItemDelegate {
                 KProgressBar {
                     objectName: "rowProgress"
                     Layout.fillWidth: true
+                    // 窄窗口下别被右侧文案挤成 0
+                    Layout.minimumWidth: 40
                     from: 0
                     to: 100
                     value: Math.max(row.liveProgress(row.progress), 0)
@@ -219,6 +249,19 @@ ItemDelegate {
                     font.pixelSize: 12
                     verticalAlignment: Text.AlignVCenter
                     color: palette.placeholderText
+                }
+
+                // 重试 / 续传说明：以前只在快照 detail 里、被下载中的第二行隐藏，
+                // 实际看不见；现在跟着 transferLive 一起贴到这一行。
+                Label {
+                    objectName: "noteText"
+                    visible: text.length > 0
+                    text: row.liveNoteText()
+                    font.pixelSize: 12
+                    verticalAlignment: Text.AlignVCenter
+                    color: palette.placeholderText
+                    elide: Text.ElideMiddle
+                    Layout.maximumWidth: 320
                 }
             }
 

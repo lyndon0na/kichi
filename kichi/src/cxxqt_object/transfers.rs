@@ -14,11 +14,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use cxx_qt_lib::QVariant;
 use kichi_core::{EntryKind, FileEntry};
 
-use super::transfers_view::{build_snapshot, live_map};
+use super::transfers_rate::{NoteState, SpeedMeter};
+use super::transfers_view::{build_snapshot, live_map_at};
 use super::QVariantList;
 
 /// 进程内最多保留的记录数（超出丢最早的已结束记录，进行中的绝不丢）。
@@ -125,10 +127,14 @@ pub(crate) struct Transfer {
     pub(crate) state: TransferState,
     pub(crate) bytes: u64,
     pub(crate) total: Option<u64>,
-    /// 失败 / 取消原因（完成行的说明由 path 派生）
+    /// 失败 / 取消原因（完成行的说明由 path 派生）；下载中则是重试 / 续传说明
     pub(crate) detail: String,
     /// 成功落盘的最终路径；未完成 / 失败为 None
     pub(crate) path: Option<PathBuf>,
+    /// 5 秒速度窗口 + 卡住时钟（只在内存，见 `transfers_rate.rs`）
+    pub(crate) speed: SpeedMeter,
+    /// 下载中说明的存活状态（重试 / 续传说明恢复 5 秒后自动消失）
+    pub(crate) note: NoteState,
 }
 
 impl Transfer {
@@ -211,6 +217,9 @@ pub(crate) fn progress(batch: u64, index: usize, bytes: u64, total: Option<u64>)
 }
 
 /// 下载中的状态提示（续传 / 重试原因）；只写进行中行的 detail。
+///
+/// 走 `post_live()` 下发（见 `queue_worker`）：它是下载中的高频说明，
+/// 不属于结构变化，跟着 `transferLive` 贴到行上，不重建列表。
 pub(crate) fn note(batch: u64, index: usize, text: &str) {
     with_records(|records| note_in(records, batch, index, text));
 }
@@ -256,12 +265,29 @@ pub(crate) fn snapshot() -> (QVariantList, i32) {
     with_records(|records| build_snapshot(records.as_slice()))
 }
 
+/// 是否有单文件行正在下载（心跳只在此时才有意义）。
+pub(crate) fn has_running_file() -> bool {
+    with_records(|records| {
+        records.iter().any(|record| {
+            record.state == TransferState::Running && record.job.kind == EntryKind::File
+        })
+    })
+}
+
 /// 正在下载那一条的实时进度（当前文件行 + 文件夹父行聚合）。
 ///
 /// 单独成一路属性：进度每 250ms 变一次，若跟着整个模型重建，`ListView`
 /// 会整列表重灌、滚动位置回到顶部（2026-10-27 实测），下载期间就没法翻看了。
 /// QML 按 key 取对应行，父行与当前文件行都在这一份里。
 pub(crate) fn live_snapshot() -> QVariantList {
+    live_snapshot_at(Instant::now())
+}
+
+/// [`live_snapshot`] 的注入时间版本（测试用；生产走 `Instant::now()`）。
+///
+/// 速度 / 卡住 / 说明都由 `now` 现算：卡住秒数没有进度回调也能靠主线程
+/// 1Hz 心跳（[`super::downloads`] 的 `maybe_heartbeat_live`）继续走。
+pub(crate) fn live_snapshot_at(now: Instant) -> QVariantList {
     with_records(|records| {
         let mut list = QVariantList::default();
         let Some(running) = records.iter().find(|record| {
@@ -269,14 +295,14 @@ pub(crate) fn live_snapshot() -> QVariantList {
         }) else {
             return list;
         };
-        list.append(QVariant::from(&live_map(running)));
+        list.append(QVariant::from(&live_map_at(running, now)));
         if running.child {
             if let Some(parent) = records
                 .iter()
                 .find(|record| record.batch == running.batch && is_folder_ledger(record))
             {
-                list.append(QVariant::from(&super::transfers_view::parent_live_map(
-                    parent, records,
+                list.append(QVariant::from(&super::transfers_view::parent_live_map_at(
+                    parent, records, now,
                 )));
             }
         }
@@ -306,6 +332,8 @@ pub(super) fn row_from(batch: u64, index: usize, source_id: &str, job: &Transfer
         total: (job.size > 0).then_some(job.size),
         detail: String::new(),
         path: None,
+        speed: SpeedMeter::default(),
+        note: NoteState::default(),
     }
 }
 
@@ -340,19 +368,28 @@ fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[TransferJob
 }
 
 fn begin_in(records: &mut [Transfer], batch: u64, index: usize) {
-    let changed = if let Some(record) = find_file(records, batch, index) {
-        if record.state == TransferState::Queued {
-            record.state = TransferState::Running;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
+    begin_in_at(records, batch, index, Instant::now());
+}
+
+/// [`begin_in`] 的注入时间版本（测试用）。
+pub(crate) fn begin_in_at(records: &mut [Transfer], batch: u64, index: usize, now: Instant) {
+    let changed = match find_file(records, batch, index) {
+        Some(record) => begin_record(record, now),
+        None => false,
     };
     if changed {
         refresh_parent_state(records, batch);
     }
+}
+
+/// 一条记录开始下载：状态转「下载中」，卡住时钟落在 `now`（还没收到字节也算）。
+pub(crate) fn begin_record(record: &mut Transfer, now: Instant) -> bool {
+    if record.state != TransferState::Queued {
+        return false;
+    }
+    record.state = TransferState::Running;
+    record.speed.begin(now);
+    true
 }
 
 /// 文件夹批次的总账行状态由子行聚合而来。
@@ -445,20 +482,58 @@ fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
 }
 
 fn progress_in(records: &mut [Transfer], batch: u64, index: usize, bytes: u64, total: Option<u64>) {
+    progress_in_at(records, batch, index, bytes, total, Instant::now());
+}
+
+/// [`progress_in`] 的注入时间版本（测试用）。
+pub(crate) fn progress_in_at(
+    records: &mut [Transfer],
+    batch: u64,
+    index: usize,
+    bytes: u64,
+    total: Option<u64>,
+    now: Instant,
+) {
     if let Some(record) = find_file(records, batch, index) {
-        if record.state == TransferState::Running {
-            record.bytes = bytes;
-            record.total = total.or(record.total);
-        }
+        progress_record(record, now, bytes, total);
     }
 }
 
-fn note_in(records: &mut [Transfer], batch: u64, index: usize, text: &str) {
-    if let Some(record) = find_file(records, batch, index) {
-        if record.state == TransferState::Running {
-            record.detail = text.to_owned();
-        }
+/// 单条记录的进度：写字节数，同时喂速度窗口与说明状态。
+pub(crate) fn progress_record(record: &mut Transfer, now: Instant, bytes: u64, total: Option<u64>) {
+    if record.state != TransferState::Running {
+        return;
     }
+    record.bytes = bytes;
+    record.total = total.or(record.total);
+    record.speed.observe(now, bytes);
+    record.note.observe(now, bytes);
+}
+
+fn note_in(records: &mut [Transfer], batch: u64, index: usize, text: &str) {
+    note_in_at(records, batch, index, text, Instant::now());
+}
+
+/// [`note_in`] 的注入时间版本（测试用）：写 `detail` 的同时重置说明存活计时。
+pub(crate) fn note_in_at(
+    records: &mut [Transfer],
+    batch: u64,
+    index: usize,
+    text: &str,
+    now: Instant,
+) {
+    if let Some(record) = find_file(records, batch, index) {
+        note_record(record, now, text);
+    }
+}
+
+/// 单条记录的重试 / 续传说明：未恢复前一直显示，恢复后 5 秒消失。
+pub(crate) fn note_record(record: &mut Transfer, now: Instant, text: &str) {
+    if record.state != TransferState::Running {
+        return;
+    }
+    record.detail = text.to_owned();
+    record.note.write(now, record.bytes);
 }
 
 fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &Path) {

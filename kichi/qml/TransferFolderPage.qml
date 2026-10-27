@@ -89,6 +89,8 @@ Item {
     readonly property var liveProgress: page.liveField("progress", page.folderValue("progress", 0))
     readonly property string liveProgressText: page.liveField("progressText", page.folderValue("progressText", ""))
     readonly property string liveSizeText: page.liveField("sizeText", page.folderValue("sizeText", ""))
+    /// 整批速度 + 剩余时间 / 卡住（只有 transferLive 带这个键）
+    readonly property string folderRateText: page.liveField("rateText", "")
 
     /// 把 Rust 的详情快照贴到 ListModel 上：只做增删改，不移动、不重排。
     ///
@@ -216,6 +218,18 @@ Item {
                 font.pixelSize: 12
                 verticalAlignment: Text.AlignVCenter
                 color: palette.placeholderText
+            }
+
+            // 整批速度 + ETA / 卡住：紧跟百分比，窄窗口省略
+            Label {
+                objectName: "folderRateText"
+                visible: page.folderValue("running", false) && text.length > 0
+                text: page.folderRateText
+                font.pixelSize: 12
+                verticalAlignment: Text.AlignVCenter
+                color: palette.placeholderText
+                elide: Text.ElideRight
+                Layout.maximumWidth: 260
             }
 
             Label {

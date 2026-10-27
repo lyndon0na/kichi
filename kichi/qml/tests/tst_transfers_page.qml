@@ -798,9 +798,11 @@ TestCase {
 
         backend.transferLive = [
             { key: "1:folder", progress: 62, progressText: "62% · 31/50",
-              sizeText: "62 MB / 100 MB" },
+              sizeText: "62 MB / 100 MB", rateText: "3.7 MB/s · 剩 2 分 30 秒",
+              noteText: "" },
             { key: "1:0", progress: 42, progressText: "42%",
-              sizeText: "4 MB / 10 MB" }
+              sizeText: "4 MB / 10 MB", rateText: "812 KB/s · 剩 45 秒",
+              noteText: "" }
         ]
         wait(80)
 
@@ -815,6 +817,155 @@ TestCase {
         verify(childBar !== null && childBar.visible, "详情页当前文件显示进度条")
         compare(Math.round(childBar.value), 42, "详情页子行按自己的 key 取进度")
         compare(detailControlAt(0, "sizeText").text, "4 MB / 10 MB")
+    }
+
+    // —— 速度 / 剩余时间 / 卡住 / 重试说明（2026-10-27）——
+
+    // 主列表文件夹父行显示整批速度 + ETA；详情页头部也显示整批速度。
+    function test_folder_row_and_detail_header_show_batch_rate() {
+        var folder = folderRecord("1:folder", "running", {
+            childCount: 50,
+            running: true,
+            progress: 62,
+            progressText: "62% · 31/50",
+            sizeText: "1.2 GB / 3.4 GB"
+        })
+        publish([folder], [
+            childRecord("1:0", "done", "a.mkv"),
+            childRecord("1:1", "running", "b.mkv"),
+            childRecord("1:2", "queued", "c.mkv")
+        ])
+        wait(80)
+
+        backend.transferLive = [
+            { key: "1:folder", progress: 62, progressText: "62% · 31/50",
+              sizeText: "1.2 GB / 3.4 GB",
+              rateText: "3.7 MB/s · 剩 2 分 30 秒", noteText: "" },
+            { key: "1:1", progress: 42, progressText: "42%",
+              sizeText: "4 MB / 10 MB",
+              rateText: "3.7 MB/s · 剩 1 分 30 秒", noteText: "" }
+        ]
+        wait(80)
+
+        var rate = controlAt(0, "rateText")
+        verify(rate !== null && rate.visible, "下载中的文件夹行速度列可见")
+        compare(rate.text, "3.7 MB/s · 剩 2 分 30 秒", "父行显示整批速度 + ETA")
+        compare(controlAt(0, "openDetailsHint").visible, true, "运行中的文件夹行保留下钻提示")
+
+        openFolderAt(0)
+        wait(80)
+        var header = findChild(page, "folderRateText")
+        verify(header !== null && header.visible, "详情页头部显示整批速度")
+        compare(header.text, "3.7 MB/s · 剩 2 分 30 秒")
+
+        // 详情页子行按自己的 key 取单文件速度
+        var childRate = detailControlAt(1, "rateText")
+        verify(childRate !== null && childRate.visible, "详情页当前文件显示速度列")
+        compare(childRate.text, "3.7 MB/s · 剩 1 分 30 秒")
+        var finishedRate = detailControlAt(0, "rateText")
+        verify(finishedRate === null || !finishedRate.visible,
+               "已完成的子行不显示速度")
+    }
+
+    // 卡住文案替换速度；百分比、进度条、状态文字不变。
+    function test_stall_text_replaces_speed_without_touching_progress() {
+        publish([record("1:0", "running")])
+        wait(60)
+        var stateLabel = controlAt(0, "stateText")
+
+        backend.transferLive = [
+            { key: "1:0", progress: 41, progressText: "41%",
+              sizeText: "4 MB / 10 MB",
+              rateText: "已卡住 7 秒", noteText: "" }
+        ]
+        wait(60)
+
+        var rate = controlAt(0, "rateText")
+        verify(rate !== null && rate.visible)
+        compare(rate.text, "已卡住 7 秒", "卡住时只报卡住")
+        compare(controlAt(0, "rowProgress").value, 41, "进度条不动")
+        compare(controlAt(0, "sizeText").text, "4 MB / 10 MB", "大小列不动")
+        compare(controlAt(0, "stateText").text, "下载中", "状态列不变色、不改字")
+        verify(controlAt(0, "stateText") === stateLabel, "状态文字还是同一个控件")
+
+        // 恢复后切回速度
+        backend.transferLive = [
+            { key: "1:0", progress: 43, progressText: "43%",
+              sizeText: "4.3 MB / 10 MB",
+              rateText: "3.7 MB/s · 剩 2 秒", noteText: "" }
+        ]
+        wait(60)
+        compare(controlAt(0, "rateText").text, "3.7 MB/s · 剩 2 秒")
+    }
+
+    // 重试说明出现在第二行；进度条仍然可见；说明为空时占位高度不变。
+    function test_note_appears_below_and_keeps_the_progress_bar() {
+        publish([folderRecord("1:folder", "running", {
+            childCount: 3,
+            running: true,
+            progressText: "41% · 12/30"
+        })], [
+            childRecord("1:0", "running", "a.mkv")
+        ])
+        wait(60)
+
+        backend.transferLive = [
+            { key: "1:folder", progress: 41, progressText: "41% · 12/30",
+              sizeText: "840 MB / 2.1 GB",
+              rateText: "已卡住 7 秒",
+              noteText: "3 秒后从 45 MB 继续（1/3）" },
+            { key: "1:0", progress: 41, progressText: "41%",
+              sizeText: "840 MB / 2.1 GB",
+              rateText: "已卡住 7 秒",
+              noteText: "3 秒后从 45 MB 继续（1/3）" }
+        ]
+        wait(60)
+
+        var note = controlAt(0, "noteText")
+        verify(note !== null && note.visible, "下载中的行显示重试说明")
+        compare(note.text, "3 秒后从 45 MB 继续（1/3）")
+        var bar = controlAt(0, "rowProgress")
+        verify(bar !== null && bar.visible, "说明出现时进度条仍在")
+        compare(controlAt(0, "rateText").text, "已卡住 7 秒", "卡住与重试说明可以共存")
+
+        // 说明过期（Rust 给空串）：标签消失、行高不变
+        var heightBefore = rowAt(0).height
+        backend.transferLive = [
+            { key: "1:folder", progress: 45, progressText: "45% · 13/30",
+              sizeText: "900 MB / 2.1 GB",
+              rateText: "3.7 MB/s · 剩 5 分", noteText: "" },
+            { key: "1:0", progress: 45, progressText: "45%",
+              sizeText: "900 MB / 2.1 GB",
+              rateText: "3.7 MB/s · 剩 1 分", noteText: "" }
+        ]
+        wait(60)
+        var gone = controlAt(0, "noteText")
+        verify(gone === null || !gone.visible, "说明过期后消失")
+        compare(rowAt(0).height, heightBefore, "第二行槽位固定，行高不变")
+    }
+
+    // 排队 / 完成 / 失败行：不显示速度、卡住、说明（说明仍走原 detail）。
+    function test_idle_rows_have_no_rate_or_note() {
+        // 进行中在前；已结束新→旧（3:0 失败、2:0 完成）
+        publish([
+            record("1:0", "queued"),
+            record("2:0", "done"),
+            record("3:0", "failed")
+        ])
+        wait(60)
+
+        for (var i = 0; i < 3; i++) {
+            var rate = controlAt(i, "rateText")
+            verify(rate === null || !rate.visible,
+                   "第 " + i + " 行不该有速度列")
+            var note = controlAt(i, "noteText")
+            verify(note === null || !note.visible,
+                   "第 " + i + " 行不该有下载说明")
+        }
+        // 失败原因仍按原路径显示在说明行
+        var detail = controlAt(1, "detailLink")
+        verify(detail !== null && detail.text.indexOf("下载超时") >= 0,
+               "失败原因照旧")
     }
 
     // —— 单条动作：完成行「打开位置」/ 失败行「重试」（2026-10-27）——

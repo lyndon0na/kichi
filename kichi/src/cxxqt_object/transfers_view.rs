@@ -8,11 +8,13 @@
 //! 子行聚合而来；子行本身只进文件夹详情页的快照。
 
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
+use std::time::Instant;
 
 use super::actions::format_size;
 use super::transfers::{
     folder_download_path, is_folder_ledger, record_key, Transfer, TransferState,
 };
+use super::transfers_rate::{batch_rate_info, file_rate_info};
 use super::QVariantList;
 
 /// 一次最多交给 QML 的行数（大文件夹下载时避免整列表反复重建拖慢界面）。
@@ -328,7 +330,18 @@ fn detail_record_map(record: &Transfer) -> QVariantMap {
 }
 
 /// 一条记录 → 进度行的 map（只带下载中要刷新的字段）。
+///
+/// `rateText` / `noteText` 只在这一份里出现：它们每秒都会变，放进
+/// `transfers` / `transferDetail` 快照会让 QML 每秒 `setProperty` 整表。
+///
+/// 生产路径统一走 [`live_map_at`]（一次快照只取一次时钟）；这里转发给单测。
+#[cfg(test)]
 pub(crate) fn live_map(record: &Transfer) -> QVariantMap {
+    live_map_at(record, Instant::now())
+}
+
+/// [`live_map`] 的注入时间版本（测试用）。
+pub(crate) fn live_map_at(record: &Transfer, now: Instant) -> QVariantMap {
     let percent = percent_of(record);
     let progress_text = percent
         .map(|value| format!("{value}%"))
@@ -337,26 +350,44 @@ pub(crate) fn live_map(record: &Transfer) -> QVariantMap {
         Some(total) => format!("{} / {}", format_size(record.bytes), format_size(total)),
         None => format_size(record.bytes),
     };
+    let rate = file_rate_info(record, now);
 
     let mut map = QVariantMap::default();
     insert(&mut map, "key", text(&record_key(record)));
     insert(&mut map, "progress", QVariant::from(&percent.unwrap_or(-1)));
     insert(&mut map, "progressText", text(&progress_text));
     insert(&mut map, "sizeText", text(&size_text));
+    insert(&mut map, "rateText", text(&rate.rate));
+    insert(&mut map, "noteText", text(&rate.note));
     map
 }
 
 /// 文件夹父行的实时聚合（字节数取当前最新值，只带刷新用到的字段）。
+///
+/// 生产路径统一走 [`parent_live_map_at`]；这里转发给单测。
+#[cfg(test)]
 pub(crate) fn parent_live_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
+    parent_live_map_at(record, records, Instant::now())
+}
+
+/// [`parent_live_map`] 的注入时间版本（测试用）。
+pub(crate) fn parent_live_map_at(
+    record: &Transfer,
+    records: &[Transfer],
+    now: Instant,
+) -> QVariantMap {
     let stats = batch_stats(records, record.batch);
     let (progress, progress_text, size_text) =
         folder_progress_fields(&stats, TransferState::Running);
+    let rate = batch_rate_info(records, record.batch, now);
 
     let mut map = QVariantMap::default();
     insert(&mut map, "key", text(&record_key(record)));
     insert(&mut map, "progress", QVariant::from(&progress));
     insert(&mut map, "progressText", text(&progress_text));
     insert(&mut map, "sizeText", text(&size_text));
+    insert(&mut map, "rateText", text(&rate.rate));
+    insert(&mut map, "noteText", text(&rate.note));
     map
 }
 

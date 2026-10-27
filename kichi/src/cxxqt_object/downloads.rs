@@ -12,6 +12,8 @@
 //! 调度器推进、把记录表刷到 QML 属性。
 
 use std::pin::Pin;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
@@ -22,7 +24,21 @@ use super::reveal;
 use super::transfers;
 use super::transfers_actions;
 use super::transfers_detail;
+use super::transfers_rate::heartbeat_due;
 use crate::session::Failure;
+
+/// 上一次推 `transferLive` 的时刻（心跳节流；只有主线程读写）。
+fn last_live_push() -> &'static Mutex<Option<Instant>> {
+    static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+/// 记下这次推送：结构同步也会顺带刷新 `transferLive`，心跳不必马上再来一次。
+fn mark_live_pushed() {
+    *last_live_push()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+}
 
 impl qobject::Kichi {
     /// 下载一个条目（文件直接下；文件夹轮到时递归读目录）。界面右键菜单的「下载」走这里。
@@ -261,6 +277,7 @@ impl qobject::Kichi {
             rust.download_running = running;
             rust.download_queued = queued;
         }
+        mark_live_pushed();
         self.as_mut().notify();
     }
 
@@ -270,8 +287,39 @@ impl qobject::Kichi {
     /// 滚动位置回到顶部（2026-10-27 实测），下载期间就没法往下翻。
     pub(crate) fn sync_transfer_live(mut self: Pin<&mut Self>) {
         let live = transfers::live_snapshot();
+        mark_live_pushed();
         self.as_mut().rust_mut().transfer_live = live;
         self.as_mut().notify();
+    }
+
+    /// 主线程 1Hz 心跳：没有进度回调时也让「已卡住 N 秒」继续走。
+    ///
+    /// QML 的 `pump()` 每 100ms 调一次，这里按 `LIVE_HEARTBEAT` 节流。
+    /// 卡住时下载线程一个字节都收不到、自然没有回调；只靠 `progress` 推送的话
+    /// 秒数会停在卡住的那一刻（见 `docs/pitfalls.md`）。
+    ///
+    /// 只碰 `transferLive`：`transfers` / `transferRevision` 一概不动，
+    /// 否则整个列表会被重建、滚动位置被冲回顶部。
+    pub(crate) fn maybe_heartbeat_live(mut self: Pin<&mut Self>) {
+        // 进度只在下载中推送，空闲时 transferLive 是空的；用记录表兜底，
+        // 免得残留值让心跳每秒空转一次。
+        if self.transfer_live.is_empty() || !transfers::has_running_file() {
+            return;
+        }
+        let now = Instant::now();
+        let due = {
+            let mut last = last_live_push()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let due = heartbeat_due(*last, now);
+            if due {
+                *last = Some(now);
+            }
+            due
+        };
+        if due {
+            self.as_mut().sync_transfer_live();
+        }
     }
 
     /// 下载相关错误的统一提示（令牌失效仍走登录失效分支）。

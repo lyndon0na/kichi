@@ -389,6 +389,7 @@ mod tasks;
 mod transfers;
 mod transfers_actions;
 mod transfers_detail;
+mod transfers_rate;
 mod transfers_view;
 mod tray;
 mod tray_icon;

@@ -111,6 +111,9 @@ impl qobject::Kichi {
         if handled {
             self.as_mut().notify();
         }
+        // 卡住时下载线程没有进度回调，秒数只能由主线程按 1Hz 自己走。
+        // 只改 transferLive，不碰列表模型。
+        self.as_mut().maybe_heartbeat_live();
     }
 }
 
