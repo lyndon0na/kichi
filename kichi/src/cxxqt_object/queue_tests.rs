@@ -331,3 +331,52 @@ fn retry_shares_the_duplicate_key_with_a_normal_download() {
     transfers::reset();
     reset();
 }
+
+#[test]
+fn release_reports_single_file_result() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve(
+        entry("file-1", EntryKind::File, "a.mkv"),
+        PathBuf::from("/tmp"),
+    )
+    .expect("登记");
+    let _ = next_start().expect("轮到这一批");
+    add_result(batch, JobOutcome::Saved);
+    let report = release(batch).expect("批次结束后应有汇总");
+    assert_eq!(report.name, "a.mkv");
+    assert!(!report.folder);
+    assert_eq!((report.done, report.failed), (1, 0));
+    assert_eq!(report.failure, None, "成功时不带失败原因");
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn release_reports_last_failure() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve(
+        entry("file-2", EntryKind::File, "b.mkv"),
+        PathBuf::from("/tmp"),
+    )
+    .expect("登记");
+    let _ = next_start().expect("轮到这一批");
+    add_result(batch, JobOutcome::Failed { reason: "断网" });
+    add_result(
+        batch,
+        JobOutcome::Failed {
+            reason: "磁盘已满"
+        },
+    );
+    let report = release(batch).expect("批次结束后应有汇总");
+    assert_eq!(report.done, 0);
+    assert_eq!(report.failed, 2);
+    assert_eq!(
+        report.failure.as_deref(),
+        Some("磁盘已满"),
+        "单文件批次的通知用最后一条失败原因"
+    );
+    transfers::reset();
+    reset();
+}

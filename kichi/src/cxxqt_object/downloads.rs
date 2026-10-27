@@ -132,8 +132,14 @@ impl qobject::Kichi {
     pub(crate) fn advance_downloads(mut self: Pin<&mut Self>) {
         let session = self.backend.session.clone();
         let failures = queue::advance(&session);
-        if let Some(reason) = failures.last() {
-            self.as_mut().set_message(reason, false);
+        let had_failures = !failures.is_empty();
+        for failure in &failures {
+            self.as_mut()
+                .notify_batch_failed(&failure.name, failure.folder, &failure.reason);
+        }
+        if had_failures {
+            // 失败不进状态栏（用户选择），只清掉可能残留的「开始下载…」
+            self.as_mut().set_message("", false);
         }
         self.as_mut().sync_transfers();
     }
@@ -158,7 +164,14 @@ impl qobject::Kichi {
                     .as_mut()
                     .set_message(&format!("开始下载 {total} 个文件……"), false),
                 // 线程起不来：`start_download` 已把这一批标失败并释放
-                queue::StartOutcome::Failed(reason) => self.as_mut().set_message(&reason, false),
+                queue::StartOutcome::Failed(failure) => {
+                    self.as_mut().notify_batch_failed(
+                        &failure.name,
+                        failure.folder,
+                        &failure.reason,
+                    );
+                    self.as_mut().set_message("", false);
+                }
                 // 这一批已不是当前批次 / 期间被取消：记录已收尾，下面照常推进
                 queue::StartOutcome::NotCurrent | queue::StartOutcome::Cancelled => {}
             }
@@ -176,16 +189,20 @@ impl qobject::Kichi {
     ) -> Option<Vec<queue::Job>> {
         let failure = match result {
             _ if cancelled => {
+                // 用户主动取消：不弹系统通知
                 transfers::cancel_batch(batch, "");
-                queue::release(batch);
+                let _ = queue::release(batch);
                 self.as_mut().sync_transfers();
                 return None;
             }
             Ok(jobs) if jobs.is_empty() => {
                 const REASON: &str = "这个位置没有可下载的文件";
                 transfers::fail_batch(batch, REASON);
-                queue::release(batch);
-                self.as_mut().set_message(REASON, false);
+                if let Some(report) = queue::release(batch) {
+                    self.as_mut()
+                        .notify_batch_failed(&report.name, report.folder, REASON);
+                }
+                self.as_mut().set_message("", false);
                 self.as_mut().sync_transfers();
                 return None;
             }
@@ -193,8 +210,8 @@ impl qobject::Kichi {
             Err(err) => err,
         };
         transfers::fail_batch(batch, &failure.to_string());
-        queue::release(batch);
-        self.as_mut().on_download_failure(failure);
+        let report = queue::release(batch);
+        self.as_mut().on_download_failure(failure, report);
         self.as_mut().sync_transfers();
         None
     }
@@ -229,12 +246,32 @@ impl qobject::Kichi {
     }
 
     /// 下载相关错误的统一提示（令牌失效仍走登录失效分支）。
-    fn on_download_failure(mut self: Pin<&mut Self>, failure: Failure) {
-        if matches!(failure, Failure::Auth(_)) {
+    fn on_download_failure(
+        mut self: Pin<&mut Self>,
+        failure: Failure,
+        report: Option<queue::BatchReport>,
+    ) {
+        if matches!(&failure, Failure::Auth(_) | Failure::RateLimited { .. }) {
+            // 这两类已有专门提示：限流弹配额通知，登录失效直接回登录页
             self.as_mut().on_failure(failure);
             return;
         }
-        self.as_mut().set_message(&failure.to_string(), false);
+        if let Some(report) = report {
+            self.as_mut()
+                .notify_batch_failed(&report.name, report.folder, &failure.to_string());
+        }
+        // 失败不进状态栏（用户选择）
+        self.as_mut().set_message("", false);
+    }
+
+    /// 批次级失败通知（准备阶段失败 / 线程起不来）；失败原因不写状态栏。
+    fn notify_batch_failed(self: Pin<&mut Self>, name: &str, folder: bool, reason: &str) {
+        if !self.notify_enabled {
+            return;
+        }
+        super::notifications::show_notice(&super::notifications::batch_failed(
+            name, folder, reason,
+        ));
     }
 
     /// 登出时作废下载：取消在途任务并清空记录与徽标。

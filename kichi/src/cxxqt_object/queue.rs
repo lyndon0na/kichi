@@ -41,6 +41,31 @@ pub(crate) struct Job {
     pub(crate) audit_flagged: bool,
 }
 
+/// 一个文件下载完的结果（只用于批次汇总；具体路径 / 原因在 `transfers`）。
+pub(crate) enum JobOutcome<'a> {
+    Saved,
+    Failed { reason: &'a str },
+}
+
+/// 一批结束时交给界面做通知 / 状态栏的汇总。
+#[derive(Debug)]
+pub(crate) struct BatchReport {
+    pub(crate) name: String,
+    pub(crate) folder: bool,
+    pub(crate) done: usize,
+    pub(crate) failed: usize,
+    /// 最后一条失败原因（单文件批次通知用）
+    pub(crate) failure: Option<String>,
+}
+
+/// 批次还没开始就失败（读目录 / 空文件夹 / 线程起不来）。
+#[derive(Debug)]
+pub(crate) struct BatchFailure {
+    pub(crate) name: String,
+    pub(crate) folder: bool,
+    pub(crate) reason: String,
+}
+
 /// 一批在调度器里的阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingState {
@@ -68,6 +93,8 @@ struct Pending {
     failed: usize,
     /// 单文件重试时保留的层级；普通下载 / 文件夹批次为空
     sub_dir: Vec<String>,
+    /// 最后一条失败原因（单文件批次通知用）
+    failure: Option<String>,
 }
 
 impl Pending {
@@ -135,6 +162,7 @@ fn enqueue(
         done: 0,
         failed: 0,
         sub_dir,
+        failure: None,
     });
 }
 
@@ -207,9 +235,9 @@ pub(crate) fn counts() -> (bool, i32) {
 
 /// 推进队列：没有正在跑的批次时，pop 下一批并起线程。
 ///
-/// 返回启动失败的原因（线程起不来这类必须显式收尾，不能像
+/// 返回启动失败的批次（线程起不来这类必须显式收尾并通知，不能像
 /// `run_in_background` 那样只打 stderr）。主线程调用。
-pub(crate) fn advance(session: &Arc<Session>) -> Vec<String> {
+pub(crate) fn advance(session: &Arc<Session>) -> Vec<BatchFailure> {
     let mut failures = Vec::new();
     loop {
         let Some(start) = next_start() else {
@@ -218,8 +246,12 @@ pub(crate) fn advance(session: &Arc<Session>) -> Vec<String> {
         if let Err(err) = spawn_batch(session, &start) {
             let reason = format!("无法创建下载线程：{err}");
             transfers::fail_batch(start.batch, &reason);
-            release(start.batch);
-            failures.push(reason);
+            let _ = release(start.batch);
+            failures.push(BatchFailure {
+                name: start.entry.name.clone(),
+                folder: start.folder,
+                reason,
+            });
         }
     }
 }
@@ -272,7 +304,7 @@ pub(crate) enum StartOutcome {
     /// 这期间被取消：记录已标「已取消」，占用已释放
     Cancelled,
     /// 线程起不来：记录已标失败，占用已释放
-    Failed(String),
+    Failed(BatchFailure),
 }
 
 /// 目录收集完成：把整批记录展开成排队行并启动下载线程。主线程调用。
@@ -282,16 +314,21 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
             .current
             .as_mut()
             .filter(|pending| pending.batch == batch)?;
-        Some((current.dir.clone(), current.cancel.clone()))
+        Some((
+            current.dir.clone(),
+            current.cancel.clone(),
+            current.entry.name.clone(),
+            current.folder(),
+        ))
     });
-    let Some((dir, cancel)) = found else {
+    let Some((dir, cancel, name, folder)) = found else {
         return StartOutcome::NotCurrent;
     };
     // 读目录那几秒里可能刚好按了取消：这时不要再把总账行展开成整批
     // （否则记录会从「已取消」闪回「排队中」再变回来）
     if cancel.is_cancelled() {
         transfers::cancel_batch(batch, "");
-        release(batch);
+        let _ = release(batch);
         return StartOutcome::Cancelled;
     }
     with_scheduler(|scheduler| {
@@ -328,51 +365,69 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
         Err(err) => {
             let reason = format!("无法创建下载线程：{err}");
             transfers::fail_batch(batch, &reason);
-            release(batch);
-            StartOutcome::Failed(reason)
+            let _ = release(batch);
+            StartOutcome::Failed(BatchFailure {
+                name,
+                folder,
+                reason,
+            })
         }
     }
 }
 
 /// 跳过一批（收集失败 / 空目录 / 读完目录前被取消）。主线程调用。
 ///
-/// 只释放这一批；后面排队的批次由随后的 [`advance`] 接手。
-pub(crate) fn release(batch: u64) -> Option<(usize, usize)> {
+/// 返回这一批的汇总（名称 / 是否文件夹 / 成败计数 / 最后失败原因），
+/// 供收尾时拼系统通知。只释放这一批；后面排队的批次由随后的 [`advance`] 接手。
+pub(crate) fn release(batch: u64) -> Option<BatchReport> {
     with_scheduler(|scheduler| {
-        if scheduler
+        let pending = if scheduler
             .current
             .as_ref()
             .is_some_and(|pending| pending.batch == batch)
         {
-            return scheduler
-                .current
-                .take()
-                .map(|done| (done.done, done.failed));
-        }
-        // 测试里会直接释放还没轮到、也没起线程的批次
-        let index = scheduler
-            .queue
-            .iter()
-            .position(|pending| pending.batch == batch)?;
-        scheduler
-            .queue
-            .remove(index)
-            .map(|pending| (pending.done, pending.failed))
+            scheduler.current.take()?
+        } else {
+            // 测试里会直接释放还没轮到、也没起线程的批次
+            let index = scheduler
+                .queue
+                .iter()
+                .position(|pending| pending.batch == batch)?;
+            scheduler.queue.remove(index)?
+        };
+        let Pending {
+            entry,
+            done,
+            failed,
+            failure,
+            ..
+        } = pending;
+        Some(BatchReport {
+            name: entry.name,
+            folder: entry.kind == EntryKind::Folder,
+            done,
+            failed,
+            failure,
+        })
     })
 }
 
-/// 记一条文件的结果（下载线程调用；只影响收尾文案）。
-pub(crate) fn add_result(batch: u64, ok: bool) {
+/// 记一条文件的结果（下载线程调用；只影响收尾汇总）。
+pub(crate) fn add_result(batch: u64, outcome: JobOutcome<'_>) {
     with_scheduler(|scheduler| {
         if let Some(pending) = scheduler
             .current
             .as_mut()
             .filter(|pending| pending.batch == batch)
         {
-            if ok {
-                pending.done += 1;
-            } else {
-                pending.failed += 1;
+            match outcome {
+                JobOutcome::Saved => {
+                    pending.done += 1;
+                }
+                JobOutcome::Failed { reason } => {
+                    pending.failed += 1;
+                    pending.failure = Some(reason.to_owned());
+                }
             }
         }
     });

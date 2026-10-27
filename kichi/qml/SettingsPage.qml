@@ -100,11 +100,11 @@ Item {
                 spacing: 12
 
                 Label {
-                    text: qsTr("任务完成通知")
+                    text: qsTr("任务结束通知")
                     Layout.preferredWidth: 110
                 }
                 CheckBox {
-                    text: qsTr("离线任务完成或失败时弹出系统通知")
+                    text: qsTr("下载或离线任务结束时弹出系统通知")
                     checked: page.backend ? page.backend.notifyEnabled : true
                     onToggled: function () {
                         if (page.backend)
