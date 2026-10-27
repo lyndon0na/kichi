@@ -84,7 +84,6 @@ impl Session {
         progress: &Progress<'_>,
         cancel: &Cancel,
     ) -> Result<Downloaded, Failure> {
-        let client = self.drive()?;
         let info = file_info(self, file_id, Some(cancel))?;
         let name = safe_file_name(if name_hint.trim().is_empty() {
             &info.name
@@ -95,6 +94,9 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(Failure::Other("下载已取消".to_owned()));
         }
+        // `file_info` 里已经 `drive()` 过：这里按令牌命中会话缓存，不新建连接池。
+        // 别把它提到 `file_info` 之前——那样会白建一个一次请求都不发的池。
+        let client = self.drive()?;
         let stream = client.open_download(&info).map_err(Failure::from)?;
 
         std::fs::create_dir_all(target_dir)

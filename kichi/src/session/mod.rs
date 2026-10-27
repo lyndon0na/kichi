@@ -12,6 +12,8 @@ pub mod search;
 mod store;
 mod tasks;
 
+mod client_cache;
+
 pub use paths::{config_dir, store_path};
 pub use search::{ScanBatch, ScanEnd, SearchHit};
 pub use tasks::has_active;
@@ -24,11 +26,13 @@ pub use failure::{rate_limit_text, Failure};
 mod live_tests;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
+use client_cache::ClientCache;
 use kichi_core::{auth, captcha, Config, DriveClient, FileEntry, Quota, REFRESH_MARGIN};
 
 /// 目录最多翻 40 页（20,000 条），防止异常分页把内存打满。
@@ -81,6 +85,8 @@ pub struct Session {
     config: Config,
     store_path: PathBuf,
     inner: Mutex<Inner>,
+    /// 网盘客户端缓存（按 access token）：连接池与 TLS session 都在里面
+    clients: ClientCache,
 }
 
 struct Inner {
@@ -177,6 +183,7 @@ impl Session {
             config,
             store_path,
             inner: Mutex::new(Inner { current, device_id }),
+            clients: ClientCache::default(),
         }
     }
 
@@ -233,6 +240,8 @@ impl Session {
             email: username.trim().to_owned(),
         };
         store::save(&self.store_path, &saved)?;
+        // 可能是换账号登录：旧账号的 client（以及里面的连接）不能留着
+        self.clients.clear();
         self.with_inner(|inner| inner.current = Some(saved));
         Ok(())
     }
@@ -282,6 +291,8 @@ impl Session {
     }
 
     fn replace_tokens(&self, tokens: kichi_core::TokenPair) -> Result<(), StoreError> {
+        // 令牌一换，按令牌缓存的网盘 client 就作废了（换账号不可能复用）
+        self.clients.clear();
         let updated = self.with_inner(|inner| {
             let saved = inner.current.as_mut()?;
             saved.access_token = tokens.access_token;
@@ -297,6 +308,8 @@ impl Session {
     }
 
     fn clear_tokens(&self) {
+        // 登出 / 令牌失效：缓存里的 client 连同连接池一起放掉
+        self.clients.clear();
         self.with_inner(|inner| inner.current = None);
     }
 
@@ -307,15 +320,8 @@ impl Session {
         Ok(())
     }
 
-    /// 构造网盘客户端（阻塞调用方：可能在后台线程）。令牌失败自动刷新一次。
-    pub fn drive(&self) -> Result<DriveClient, Failure> {
-        if let Err(err) = self.ensure_tokens() {
-            if matches!(err, Failure::Auth(_)) {
-                let _ = store::clear(&self.store_path);
-                self.clear_tokens();
-            }
-            return Err(err);
-        }
+    /// 当前令牌与设备身份（未登录 → Auth 失败）。
+    fn current_credentials(&self) -> Result<(String, String, String), Failure> {
         let current = self.with_inner(|inner| {
             inner.current.as_ref().map(|s| {
                 (
@@ -325,8 +331,29 @@ impl Session {
                 )
             })
         });
-        let (access, user_id, device_id) = current.ok_or(Failure::Auth("尚未登录".into()))?;
-        DriveClient::new(&self.config, &device_id, &access, &user_id).map_err(Failure::from)
+        current.ok_or(Failure::Auth("尚未登录".into()))
+    }
+
+    /// 构造网盘客户端（阻塞调用方：可能在后台线程）。令牌失败自动刷新一次。
+    ///
+    /// 同一个 access token 复用同一个 client（连接池 + TLS 不重建）；
+    /// 令牌一换就重建，因此长批次跨刷新也安全。
+    pub fn drive(&self) -> Result<Arc<DriveClient>, Failure> {
+        if let Err(err) = self.ensure_tokens() {
+            if matches!(err, Failure::Auth(_)) {
+                let _ = store::clear(&self.store_path);
+                self.clear_tokens();
+            }
+            return Err(err);
+        }
+        let (access, user_id, device_id) = self.current_credentials()?;
+        if let Some(client) = self.clients.get(&access) {
+            return Ok(client);
+        }
+        let built = Arc::new(
+            DriveClient::new(&self.config, &device_id, &access, &user_id).map_err(Failure::from)?,
+        );
+        Ok(self.clients.install(access, built))
     }
 
     /// 取当前容量（阻塞）。
