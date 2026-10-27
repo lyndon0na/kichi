@@ -5,6 +5,9 @@
 //! `docs/adr/0002-download-never-overwrite.md`）：
 //! - 同名冲突自动加序号 `name (1).ext`，**绝不覆盖**已有文件；
 //! - 先写 `<名>.kichi-part`，完成才 rename，断电不留半个文件冒充成品。
+//!
+//! 名字长度也在这里收敛：单个名字按字节截到 [`MAX_NAME_BYTES`]（保留扩展名，
+//! 加 8 位短哈希区分），见 `docs/adr/0007-long-filename-truncation.md`。
 
 use std::fs::File;
 use std::io;
@@ -14,6 +17,13 @@ use super::Failure;
 
 /// 临时文件后缀。
 const PART_SUFFIX: &str = ".kichi-part";
+
+/// 单个名字的字节预算：255（NAME_MAX）− 11（`.kichi-part`）− 8（`-<pid>` 兜底）= 236。
+const MAX_NAME_BYTES: usize = 236;
+/// 超过这个长度的「扩展名」不当扩展名看，整名一起截（防止超长假扩展名把名字吃光）。
+const MAX_EXT_BYTES: usize = 16;
+/// 截断标记：`-` + 8 位十六进制短哈希。
+const HASH_LEN: usize = 9;
 
 /// 临时文件名：`<正式名>.kichi-part`。
 fn part_path_for(path: &Path) -> PathBuf {
@@ -108,10 +118,58 @@ fn split_ext(name: &str) -> (String, String) {
     }
 }
 
+/// 向前退到 UTF-8 字符边界（不截断半个汉字）。
+fn floor_boundary(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// FNV-1a 32 位：稳定、无依赖、跨版本结果不变。
+///
+/// 只用 `DefaultHasher` 是不够的——标准库不承诺它的哈希值跨版本稳定，
+/// 换个 Rust 版本同一个云端文件就会换成另一个本地名。
+fn short_hash(text: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in text.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// 把超长名字截到 `budget` 字节以内：保留扩展名，插 `-<8 位哈希>` 区分。
+///
+/// 没超长时原样返回（一个字节都不改）。超长时扩展名（含点）最多 16 字节；
+/// 更长的「扩展名」当假扩展名，整名一起截。哈希来源是调用方给的原始名字，
+/// 保证同一个云端名永远映射到同一个本地名。
+fn cap_name(name: &str, budget: usize, hash_of: &str) -> String {
+    if name.len() <= budget {
+        return name.to_owned();
+    }
+    let marker = format!("-{:08x}", short_hash(hash_of));
+    let (stem, ext) = split_ext(name);
+    // 离谱的假扩展名不当扩展名：整名一起截
+    let (stem, ext) = if ext.len() <= MAX_EXT_BYTES {
+        (stem, ext)
+    } else {
+        (name.to_owned(), String::new())
+    };
+    let keep = budget.saturating_sub(marker.len() + ext.len());
+    format!("{}{marker}{ext}", floor_boundary(&stem, keep))
+}
+
 /// 把官方文件名收敛成安全的本地文件名。
 ///
 /// 官方允许 `/`、`\` 等字符出现在名字里（在它那边是合法文件名），
 /// 落到本地可能被当成路径分隔符写到别的目录去——一律替换掉。
+/// 超过 [`MAX_NAME_BYTES`] 的名字会被截断（保留扩展名 + 短哈希），
+/// 否则 255 字节的 `NAME_MAX` 会让下载直接失败。
 pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -124,14 +182,14 @@ pub fn safe_file_name(name: &str) -> String {
     // 去掉末尾的点（Windows/部分挂载点会吃掉它，留着容易变成隐藏或空名）
     let trimmed = cleaned.trim().trim_end_matches('.').to_owned();
     if trimmed.is_empty() || trimmed.chars().all(|c| c == '.') {
-        "未命名文件".to_owned()
+        return "未命名文件".to_owned();
+    }
+    // 以点开头会被当成隐藏文件；官方名字很少这样，加个下划线前缀保住可见性
+    if trimmed.starts_with('.') {
+        // 前缀也占字节预算
+        format!("_{}", cap_name(&trimmed, MAX_NAME_BYTES - 1, name))
     } else {
-        // 以点开头会被当成隐藏文件；官方名字很少这样，加个下划线前缀保住可见性
-        if trimmed.starts_with('.') {
-            format!("_{trimmed}")
-        } else {
-            trimmed
-        }
+        cap_name(&trimmed, MAX_NAME_BYTES, name)
     }
 }
 
@@ -235,5 +293,96 @@ mod tests {
         assert_eq!(safe_file_name("正常 名字.mkv"), "正常 名字.mkv");
         assert_eq!(safe_file_name(".."), "未命名文件", "纯点会变空名");
         assert_eq!(safe_file_name("truncated."), "truncated");
+    }
+
+    #[test]
+    fn long_ascii_name_keeps_extension_and_hash() {
+        let long = format!("{}.mkv", "a".repeat(300));
+        let name = safe_file_name(&long);
+        assert!(name.len() <= MAX_NAME_BYTES, "超长名字必须截断");
+        assert!(name.ends_with(".mkv"), "扩展名要保留：{name}");
+        let marker = &name[name.len() - ".mkv".len() - HASH_LEN..name.len() - ".mkv".len()];
+        assert!(
+            marker.starts_with('-') && marker[1..].chars().all(|c| c.is_ascii_hexdigit()),
+            "扩展名前要有 -xxxxxxxx 短哈希：{marker}"
+        );
+        assert_eq!(marker.len(), HASH_LEN);
+    }
+
+    #[test]
+    fn long_chinese_name_cuts_on_char_boundary() {
+        let long = format!("{}.mkv", "长".repeat(100));
+        assert!(long.len() > MAX_NAME_BYTES);
+        let name = safe_file_name(&long);
+        assert!(name.len() <= MAX_NAME_BYTES);
+        assert!(name.ends_with(".mkv"));
+        // 没被切半个汉字：掐掉后缀与哈希后仍是完整 UTF-8 前缀
+        let stem = name.trim_end_matches(".mkv");
+        let head = &stem[..stem.len() - HASH_LEN];
+        assert!(head.chars().all(|c| c == '长'), "只能是完整汉字：{head}");
+        assert!(!head.is_empty());
+    }
+
+    #[test]
+    fn long_name_without_extension_ends_cleanly() {
+        let name = safe_file_name(&"x".repeat(300));
+        assert!(name.len() <= MAX_NAME_BYTES);
+        assert!(!name.ends_with('.') && !name.ends_with(' '));
+    }
+
+    #[test]
+    fn absurd_extension_is_not_preserved() {
+        let long = format!("abc.{}", "x".repeat(300));
+        let name = safe_file_name(&long);
+        assert!(name.len() <= MAX_NAME_BYTES);
+        assert!(!name.ends_with(&"x".repeat(300)), "假扩展名不能整段留下");
+        // 整名一起截：结尾是短哈希本身（没有保留任何扩展名）
+        let tail = &name[name.len() - HASH_LEN..];
+        assert!(
+            tail.starts_with('-') && tail[1..].chars().all(|c| c.is_ascii_hexdigit()),
+            "假扩展名被丢弃后应以短哈希结尾：{name}"
+        );
+    }
+
+    #[test]
+    fn truncated_names_with_different_tails_stay_distinct() {
+        let first = format!("{}{}", "a".repeat(300), "1.mkv");
+        let second = format!("{}{}", "a".repeat(300), "2.mkv");
+        let first = safe_file_name(&first);
+        let second = safe_file_name(&second);
+        assert_ne!(first, second, "尾部不同的超长名截断后不能撞名");
+    }
+
+    #[test]
+    fn name_at_budget_returns_unchanged() {
+        let base = "a".repeat(MAX_NAME_BYTES - ".mkv".len());
+        let exact = format!("{base}.mkv");
+        assert_eq!(exact.len(), MAX_NAME_BYTES);
+        assert_eq!(safe_file_name(&exact), exact, "预算内一个字节都不改");
+    }
+
+    #[test]
+    fn long_hidden_name_keeps_underscore_prefix() {
+        let long = format!(".{}.mkv", "h".repeat(300));
+        let name = safe_file_name(&long);
+        assert!(name.len() <= MAX_NAME_BYTES);
+        assert!(name.starts_with('_'), "点开头仍要加下划线：{name}");
+    }
+
+    /// 直接复现原 bug：截断后带上临时后缀 / 序号 / 进程号兜底仍能落盘。
+    #[test]
+    fn capped_name_actually_creates_on_disk_with_part_and_index() {
+        let dir = temp_dir("long-name");
+        let long = format!("{}.mkv", "长".repeat(200));
+        let name = safe_file_name(&long);
+        assert!(name.len() + PART_SUFFIX.len() <= 255);
+        // 走到序号兜底也不会超：最坏是 " (9999)" 与 "-<pid>"
+        let (stem, ext) = split_ext(&name);
+        assert!(format!("{stem} (9999){ext}{PART_SUFFIX}").len() <= 255);
+        assert!(format!("{stem}-{}{ext}{PART_SUFFIX}", std::process::id()).len() <= 255);
+        let (file, part, _) = claim_part(&dir, &name).expect("超长名截断后必须能创建");
+        assert!(part.exists());
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
