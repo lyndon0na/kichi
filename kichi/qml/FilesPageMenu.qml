@@ -22,6 +22,8 @@ Item {
     property bool targetPlayable: false
     // 这个条目是否已在下载队列里（打开菜单时问一次后端；见 openContext）
     property bool targetPending: false
+    // 这个文件是否有可续传的断点（同一次打开菜单时问一次）
+    property bool targetHasPartial: false
     // 右键处的位置（**窗口**坐标系）：清晰度菜单从这里弹出
     property point targetPoint: Qt.point(0, 0)
 
@@ -67,6 +69,7 @@ Item {
         MenuItem {
             text: root.targetPending
                   ? qsTr("已在下载队列中，去查看")
+                  : root.targetHasPartial ? qsTr("继续下载")
                   : root.targetIsFolder ? qsTr("下载整个文件夹到本地")
                                         : qsTr("下载到本地")
             enabled: root.backend !== null
@@ -238,6 +241,9 @@ Item {
         targetPlayable = entry.playable === true
         // 每次打开都重新问一次：条目可能刚下完（已释放）或刚被排上
         targetPending = root.backend !== null && root.backend.isDownloadPending(entry.id)
+        // 文件夹没有「单文件断点」；只有文件才可能显示「继续下载」
+        targetHasPartial = !targetIsFolder && root.backend !== null
+                           && root.backend.hasPartialDownload(entry.id)
         targetPoint = point
         contextMenu.openAt(point)
     }

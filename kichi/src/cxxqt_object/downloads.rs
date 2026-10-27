@@ -54,6 +54,15 @@ impl qobject::Kichi {
         queue::is_pending(&id.to_string())
     }
 
+    /// 这个文件是否有可续传的断点（右键菜单显示「继续下载」）。
+    ///
+    /// 只认当前下载目录里的断点：换了目录之后接着点下载会重新落一份，
+    /// 菜单里不该假装「继续」。
+    pub fn has_partial_download(&self, id: QString) -> bool {
+        let dir = self.settings.download_dir_path();
+        crate::session::partials::lookup(&id.to_string(), &dir).is_some()
+    }
+
     /// 取消所有未结束的批次（排队中的直接放掉，正在跑的等线程收尾；已下完的文件保留）。
     pub fn cancel_downloads(mut self: Pin<&mut Self>) {
         queue::cancel_all();

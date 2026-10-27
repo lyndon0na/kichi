@@ -193,6 +193,11 @@ pub(crate) fn progress(batch: u64, index: usize, bytes: u64, total: Option<u64>)
     with_records(|records| progress_in(records, batch, index, bytes, total));
 }
 
+/// 下载中的状态提示（续传 / 重试原因）；只写进行中行的 detail。
+pub(crate) fn note(batch: u64, index: usize, text: &str) {
+    with_records(|records| note_in(records, batch, index, text));
+}
+
 /// 下载成功：记下落盘路径。
 pub(crate) fn finish_ok(batch: u64, index: usize, path: &Path) {
     with_records(|records| finish_ok_in(records, batch, index, path));
@@ -324,6 +329,14 @@ fn progress_in(records: &mut [Transfer], batch: u64, index: usize, bytes: u64, t
         if record.state == TransferState::Running {
             record.bytes = bytes;
             record.total = total.or(record.total);
+        }
+    }
+}
+
+fn note_in(records: &mut [Transfer], batch: u64, index: usize, text: &str) {
+    if let Some(record) = find(records, batch, index) {
+        if record.state == TransferState::Running {
+            record.detail = text.to_owned();
         }
     }
 }

@@ -1,0 +1,311 @@
+//! 断点续传的执行细节：Part / 选断点 / 流式追加 / 重试决策。
+//!
+//! 从 `download.rs` 拆出来守行数上限：那边管「一次下载」的入口与取消语义，
+//! 这里管「从哪个字节继续、写到哪里、失败了怎么重试」。纯函数（`plan_resume`）
+//! 与索引在 `partials.rs`，HTTP Range 语义在 `kichi-core/src/dl.rs`。
+
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use kichi_core::dl::DownloadStream;
+use kichi_core::Error as CoreError;
+
+use super::download::{Cancel, Downloaded, Progress};
+use super::download_naming::{claim_part, finalize_part};
+use super::partials::{self, plan_resume, PartialEntry};
+use super::Failure;
+use crate::format::size as readable_size;
+
+/// 每次读的块大小（64 KiB：够大够快，进度回调也不至于太密）。
+pub(super) const CHUNK: usize = 64 * 1024;
+/// 断流自动重试次数（默认；`KICHI_DOWNLOAD_RETRIES` 可覆盖，0 = 关闭）。
+pub(super) const DEFAULT_RETRIES: u32 = 3;
+/// 重试等待：1s / 3s / 8s；超过三次的配置沿用 8s。
+pub(super) const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+    Duration::from_secs(8),
+];
+/// 覆盖自动重试次数的环境变量。
+pub(super) const RETRIES_ENV: &str = "KICHI_DOWNLOAD_RETRIES";
+
+/// 官方明确说是 0 字节：不发 GET，直接在本地落一个 0 字节文件。
+///
+/// 仍然走 `claim_part` 的「不覆盖 + `.kichi-part` 原子占位」，
+/// 完成（`sync_all` + rename）后才算成功，和普通下载的落盘约定一致。
+pub(super) fn save_empty_file(target_dir: &Path, name: &str) -> Result<Downloaded, Failure> {
+    std::fs::create_dir_all(target_dir)
+        .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
+    let (file, part_path, final_path) = claim_part(target_dir, name)?;
+    if let Err(err) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&part_path);
+        return Err(Failure::Other(format!("写入本地文件失败：{err}")));
+    }
+    drop(file);
+    std::fs::rename(&part_path, &final_path).map_err(|err| {
+        let _ = std::fs::remove_file(&part_path);
+        Failure::Other(format!("保存下载文件失败：{err}"))
+    })?;
+    Ok(Downloaded {
+        path: final_path,
+        bytes: 0,
+    })
+}
+
+/// 准备好的临时文件：要么已经完整（只需改名），要么可以继续写。
+pub(super) enum Prepared {
+    Complete(Downloaded),
+    Streaming(Part),
+}
+
+/// 一个正在写的 `.kichi-part`。
+pub(super) struct Part {
+    pub(super) file: File,
+    pub(super) part_path: PathBuf,
+    pub(super) final_path: PathBuf,
+    /// 已写入的绝对字节数（以磁盘实际长度为准）
+    pub(super) offset: u64,
+    /// 完整文件大小（可能未知）
+    pub(super) total: Option<u64>,
+}
+
+impl Part {
+    /// 以磁盘实际长度为准（半块写失败时内存计数不可信）。
+    pub(super) fn disk_len(&self) -> io::Result<u64> {
+        self.file.metadata().map(|meta| meta.len())
+    }
+
+    pub(super) fn truncate(&mut self) -> io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.offset = 0;
+        Ok(())
+    }
+
+    pub(super) fn remember(&self, file_id: &str) {
+        partials::remember(&PartialEntry::new(
+            file_id,
+            &self.part_path,
+            &self.final_path,
+            self.total,
+        ));
+    }
+
+    /// 取消 / 本地写坏：删临时文件并忘掉索引。
+    pub(super) fn cleanup(self, file_id: &str) {
+        drop(self.file);
+        if let Err(err) = std::fs::remove_file(&self.part_path) {
+            if err.kind() != io::ErrorKind::NotFound {
+                eprintln!(
+                    "[kichi] 删除临时下载文件失败（{}）：{err}",
+                    self.part_path.display()
+                );
+            }
+        }
+        partials::forget(file_id);
+    }
+}
+
+/// 选断点 / 建 part / 打开写句柄。已经完整时直接改名并返回成功。
+pub(super) fn prepare_part(
+    file_id: &str,
+    name: &str,
+    target_dir: &Path,
+    remote_size: Option<u64>,
+) -> Result<Prepared, Failure> {
+    let entry = partials::lookup(file_id, target_dir);
+    let part_len = entry
+        .as_ref()
+        .and_then(|entry| std::fs::metadata(entry.part_path()).ok())
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let plan = plan_resume(entry.as_ref(), remote_size, part_len);
+
+    if let Some(entry) = entry {
+        let part_path = entry.part_path();
+        let final_path = entry.final_path();
+        if plan.complete {
+            let file = OpenOptions::new()
+                .write(true)
+                .open(&part_path)
+                .map_err(local_write_failure)?;
+            if let Err(err) = file.sync_all() {
+                drop(file);
+                let _ = std::fs::remove_file(&part_path);
+                partials::forget(file_id);
+                return Err(local_write_failure(err));
+            }
+            drop(file);
+            let path = finalize_part(&part_path, &final_path)?;
+            partials::forget(file_id);
+            return Ok(Prepared::Complete(Downloaded {
+                path,
+                bytes: plan.total.unwrap_or(part_len),
+            }));
+        }
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(&part_path)
+            .map_err(local_write_failure)?;
+        if plan.truncate {
+            if let Err(err) = file
+                .set_len(0)
+                .and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ()))
+            {
+                drop(file);
+                let _ = std::fs::remove_file(&part_path);
+                partials::forget(file_id);
+                return Err(local_write_failure(err));
+            }
+        }
+        let offset = file.metadata().map_err(local_write_failure)?.len();
+        file.seek(SeekFrom::Start(offset))
+            .map_err(local_write_failure)?;
+        let part = Part {
+            file,
+            part_path,
+            final_path,
+            offset,
+            total: plan.total,
+        };
+        // 即使是续传也刷新索引（total / 时间戳），进程中途退出后还能接着下
+        part.remember(file_id);
+        return Ok(Prepared::Streaming(part));
+    }
+
+    let (file, part_path, final_path) = claim_part(target_dir, name)?;
+    let mut file = file;
+    file.seek(SeekFrom::Start(0)).map_err(local_write_failure)?;
+    let part = Part {
+        file,
+        part_path,
+        final_path,
+        offset: 0,
+        total: remote_size,
+    };
+    part.remember(file_id);
+    Ok(Prepared::Streaming(part))
+}
+
+/// 一次流式写入的结果。
+pub(super) enum ReadOutcome {
+    Complete,
+    /// 网络类错误：可以重试，part 保留
+    Retryable(String),
+    /// 本地写盘错误：删 part，不再重试
+    Local(String),
+    Cancelled,
+}
+
+pub(super) fn read_into_part(
+    stream: &mut DownloadStream,
+    part: &mut Part,
+    progress: &Progress<'_>,
+    cancel: &Cancel,
+) -> ReadOutcome {
+    let mut buffer = vec![0u8; CHUNK];
+    loop {
+        if cancel.is_cancelled() {
+            return ReadOutcome::Cancelled;
+        }
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            Err(err) => {
+                // 卡在读超时的那几十秒里按的取消仍然算「已取消」
+                if cancel.is_cancelled() {
+                    return ReadOutcome::Cancelled;
+                }
+                let reason = if err.kind() == io::ErrorKind::TimedOut {
+                    format!("下载超时：{err}")
+                } else {
+                    format!("下载中断：{err}")
+                };
+                return ReadOutcome::Retryable(reason);
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        if let Err(err) = part.file.write_all(&buffer[..read]) {
+            return ReadOutcome::Local(format!("写入本地文件失败：{err}"));
+        }
+        part.offset += read as u64;
+        progress(part.offset, part.total);
+    }
+    match part.total {
+        Some(total) if part.offset < total => ReadOutcome::Retryable(format!(
+            "连接提前结束：收到 {} / {}",
+            readable_size(part.offset),
+            readable_size(total)
+        )),
+        Some(total) if part.offset > total => {
+            ReadOutcome::Local("下载长度超出预期，已放弃这个临时文件".to_owned())
+        }
+        _ => ReadOutcome::Complete,
+    }
+}
+
+/// 打开下载流失败时该怎么做（纯函数，方便单测矩阵）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpenAction {
+    /// 地址 / 凭据等不可重试：失败，断点保留
+    Fatal,
+    /// 网络类：等一会儿再试；`refresh` = 重取详情换新链接
+    Retry { refresh: bool },
+    /// Range 位置不可用：截断 part 从 0 立刻重来
+    RestartFromZero,
+}
+
+pub(super) fn classify_open_error(err: &CoreError, offset: u64) -> OpenAction {
+    match err {
+        CoreError::RangeNotSatisfiable { .. } if offset > 0 => OpenAction::RestartFromZero,
+        CoreError::RangeNotSatisfiable { .. } => OpenAction::Fatal,
+        CoreError::Api { code, .. } => match code {
+            403 | 410 => OpenAction::Retry { refresh: true },
+            429 => OpenAction::Retry { refresh: false },
+            500..=599 => OpenAction::Retry { refresh: false },
+            _ => OpenAction::Fatal,
+        },
+        CoreError::Network(_) | CoreError::DownloadTimeout(_) => {
+            OpenAction::Retry { refresh: false }
+        }
+        _ => OpenAction::Fatal,
+    }
+}
+
+/// 第 `attempt` 次重试（0 起）前等多久。
+pub(super) fn retry_delay(attempt: u32) -> Duration {
+    let index = usize::try_from(attempt).unwrap_or(usize::MAX);
+    RETRY_DELAYS
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| *RETRY_DELAYS.last().unwrap_or(&Duration::from_secs(8)))
+}
+
+/// 自动重试次数（0 = 关闭）；非法 / 空串回默认。
+pub(super) fn download_retries() -> u32 {
+    std::env::var(RETRIES_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_RETRIES)
+}
+
+pub(super) fn local_write_failure(err: io::Error) -> Failure {
+    Failure::Other(format!("写入本地文件失败：{err}"))
+}
+
+/// 失败行带上断点提示；0 字节不硬凑「可重试续传」。
+pub(super) fn resume_failure(reason: String, downloaded: u64) -> Failure {
+    if downloaded == 0 {
+        Failure::Other(reason)
+    } else {
+        Failure::Other(format!(
+            "{reason}（已下载 {}，可重试续传）",
+            readable_size(downloaded)
+        ))
+    }
+}

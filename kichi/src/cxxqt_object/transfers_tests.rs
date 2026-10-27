@@ -92,6 +92,22 @@ fn progress_only_applies_to_running() {
 }
 
 #[test]
+fn note_only_touches_active_rows() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["a", "b"]);
+    note_in(&mut records, 1, 0, "排队中不该有提示");
+    assert_eq!(records[0].detail, "", "排队中的行不接受 note");
+
+    begin_in(&mut records, 1, 0);
+    note_in(&mut records, 1, 0, "已从 45.0 MB 处继续");
+    assert_eq!(records[0].detail, "已从 45.0 MB 处继续");
+
+    finish_ok_in(&mut records, 1, 0, Path::new("/tmp/a.mkv"));
+    note_in(&mut records, 1, 0, "迟到的提示");
+    assert_eq!(records[0].detail, "", "完成行不显示旧提示");
+}
+
+#[test]
 fn finishing_records_path_instead_of_detail() {
     let mut records = Vec::new();
     add_batch(&mut records, 1, &["a", "b"]);

@@ -6,7 +6,9 @@
 
 pub mod download;
 mod download_naming;
+mod download_resume;
 pub mod media;
+pub mod partials;
 mod paths;
 pub mod search;
 mod store;

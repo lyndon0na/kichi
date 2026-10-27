@@ -40,6 +40,18 @@ pub enum Error {
         message: String,
     },
 
+    /// 下载等响应头超时（不是连接失败；文案已经写好，不再加前缀）。
+    #[error("{0}")]
+    DownloadTimeout(String),
+
+    /// 服务器拒绝从请求的偏移继续（HTTP 416，或 206 的区间信息对不上）。
+    /// 调用方应把 `.kichi-part` 截断后从 0 重来。
+    #[error("服务器不接受从这个位置继续下载")]
+    RangeNotSatisfiable {
+        /// 服务器在 `Content-Range: bytes */<total>` 里给的总大小
+        total: Option<u64>,
+    },
+
     /// 本地/业务侧的普通失败（不是网络错误，也不属于官方限制）。
     #[error("{0}")]
     Other(String),

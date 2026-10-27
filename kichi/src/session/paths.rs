@@ -22,3 +22,11 @@ pub fn store_path() -> PathBuf {
     }
     config_dir().join("session.token")
 }
+
+/// 下载断点索引位置。可用 `KICHI_PARTIALS_FILE` 覆盖。
+pub fn partials_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("KICHI_PARTIALS_FILE") {
+        return PathBuf::from(path);
+    }
+    config_dir().join("partials.json")
+}

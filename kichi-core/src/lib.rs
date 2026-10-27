@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod captcha;
 pub mod config;
+pub mod dl;
 pub mod drive;
 pub mod error;
 pub(crate) mod http;
@@ -17,6 +18,7 @@ pub mod types;
 
 pub use auth::{LoginOutcome, REFRESH_MARGIN};
 pub use config::Config;
+pub use dl::DownloadStream;
 pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
 pub use media::{FileInfo, NoLinkReason};

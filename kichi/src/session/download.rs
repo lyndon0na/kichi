@@ -8,22 +8,26 @@
 //! 落盘约定见 [`download_naming`]：先写 `<名>.kichi-part`，**下载完整成功后才
 //! rename** 成正式文件名；中途取消/断网只删掉临时文件，绝不留下半个文件冒充成品。
 
-use std::io::{self, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::download_naming::claim_part;
+use kichi_core::dl::download_idle;
+
 // 文件名策略在 `download_naming`（那里有单测），这里转出去给队列层用。
+use super::download_naming::finalize_part;
 pub use super::download_naming::safe_file_name;
+use super::download_resume::{
+    classify_open_error, download_retries, local_write_failure, prepare_part, read_into_part,
+    resume_failure, retry_delay, save_empty_file, OpenAction, Part, Prepared, ReadOutcome,
+};
 use super::media::file_info;
+use super::partials::{self, PartialEntry};
 use super::{Failure, Session};
 use crate::format::size as readable_size;
 
-/// 每次读的块大小（64 KiB：够大够快，进度回调也不至于太密）。
-const CHUNK: usize = 64 * 1024;
 /// 可取消等待的检查间隔（最坏多等这么久就发现取消）。
 const CANCEL_POLL: Duration = Duration::from_millis(50);
-
 /// 一次下载的结果。
 #[derive(Debug, Clone)]
 pub struct Downloaded {
@@ -31,9 +35,6 @@ pub struct Downloaded {
     pub path: PathBuf,
     pub bytes: u64,
 }
-
-/// 下载进度回调（在下载线程里调用，调用方自己保证线程安全）。
-pub type Progress<'a> = dyn Fn(u64, Option<u64>) + Send + 'a;
 
 /// 取消信号：下载线程每块检查一次。
 #[derive(Debug, Default)]
@@ -71,30 +72,6 @@ pub fn sleep_cancellable(cancel: &Cancel, total: Duration) -> bool {
     }
 }
 
-/// 官方明确说是 0 字节：不发 GET，直接在本地落一个 0 字节文件。
-///
-/// 仍然走 `claim_part` 的「不覆盖 + `.kichi-part` 原子占位」，
-/// 完成（`sync_all` + rename）后才算成功，和普通下载的落盘约定一致。
-fn save_empty_file(target_dir: &Path, name: &str) -> Result<Downloaded, Failure> {
-    std::fs::create_dir_all(target_dir)
-        .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
-    let (file, part_path, final_path) = claim_part(target_dir, name)?;
-    if let Err(err) = file.sync_all() {
-        drop(file);
-        let _ = std::fs::remove_file(&part_path);
-        return Err(Failure::Other(format!("写入本地文件失败：{err}")));
-    }
-    drop(file);
-    std::fs::rename(&part_path, &final_path).map_err(|err| {
-        let _ = std::fs::remove_file(&part_path);
-        Failure::Other(format!("保存下载文件失败：{err}"))
-    })?;
-    Ok(Downloaded {
-        path: final_path,
-        bytes: 0,
-    })
-}
-
 impl Session {
     /// 下载一个文件到 `target_dir`（目录不存在会自动创建）。阻塞。
     ///
@@ -106,15 +83,22 @@ impl Session {
     ///
     /// 详情明确 `size == 0` 时不取链接，直接落一个 0 字节文件并算成功
     /// （对齐 rclone 的 `Open`）。
+    ///
+    /// 断点续传（`docs/adr/0011-resumable-downloads.md`）：
+    /// - 失败 / 退出时保留 `.kichi-part` 与索引，下次同一个云端 id 从断点继续；
+    /// - 取消 / 本地写盘失败删除临时文件；
+    /// - 网络类错误自动重试（默认 3 次，1s / 3s / 8s），403/410 重取一次详情换链接。
     pub fn download_file(
         &self,
         file_id: &str,
         name_hint: &str,
         list_audit_flagged: bool,
         target_dir: &Path,
-        progress: &Progress<'_>,
+        callbacks: DownloadCallbacks<'_>,
         cancel: &Cancel,
     ) -> Result<Downloaded, Failure> {
+        let progress = callbacks.progress;
+        let note = callbacks.note;
         let info = file_info(self, file_id, Some(cancel), list_audit_flagged)?;
         let name = safe_file_name(if name_hint.trim().is_empty() {
             &info.name
@@ -131,161 +115,248 @@ impl Session {
         if info.is_zero_byte() {
             return save_empty_file(target_dir, &name);
         }
-        // `file_info` 里已经 `drive()` 过：这里按令牌命中会话缓存，不新建连接池。
-        // 别把它提到 `file_info` 之前——那样会白建一个一次请求都不发的池。
-        let client = self.drive()?;
-        let stream = client.open_download(&info).map_err(Failure::from)?;
-
+        // 没有可用的下载链接：先报错，别留下一个空的 .kichi-part 和索引
+        if info.download_url().is_none() {
+            return Err(Failure::Other(
+                "官方没有下发这个文件的下载链接（可能是违规或受限文件）".to_owned(),
+            ));
+        }
         std::fs::create_dir_all(target_dir)
             .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
-        // 选名 + 原子占位一步做完：两个任务同时选中同名时，只有一个能抢到
-        let (mut file, part_path, final_path) = claim_part(target_dir, &name)?;
+        // `file_info` 里已经 `drive()` 过：这里按令牌命中会话缓存，不新建连接池。
+        let mut client = self.drive()?;
+        let prepared = prepare_part(file_id, &name, target_dir, info.size)?;
+        let mut part = match prepared {
+            Prepared::Complete(downloaded) => return Ok(downloaded),
+            Prepared::Streaming(part) => part,
+        };
 
-        let mut source = stream;
-        let total = source.total_bytes();
+        let max_retries = download_retries();
+        let mut retries: u32 = 0;
+        let mut info = info;
+        let mut first_attempt = true;
 
-        let mut written: u64 = 0;
-        let mut buffer = vec![0u8; CHUNK];
-        progress(0, total);
         loop {
             if cancel.is_cancelled() {
-                drop(file);
-                let _ = std::fs::remove_file(&part_path);
+                part.cleanup(file_id);
                 return Err(Failure::Other("下载已取消".to_owned()));
             }
-            let read = match source.read(&mut buffer) {
-                Ok(read) => read,
+            let offset = match part.disk_len() {
+                Ok(offset) => offset,
                 Err(err) => {
-                    drop(file);
-                    let _ = std::fs::remove_file(&part_path);
-                    // 卡在读超时的那几十秒里按的取消仍然算「已取消」，
-                    // 不能因为网络先返回超时就被记成失败
-                    if cancel.is_cancelled() {
-                        return Err(Failure::Other("下载已取消".to_owned()));
-                    }
-                    if err.kind() == io::ErrorKind::TimedOut {
-                        return Err(Failure::Other(format!(
-                            "下载超时：{err}（已下载 {}）",
-                            readable_size(written)
-                        )));
-                    }
-                    return Err(Failure::Other(format!("下载中断：{err}")));
+                    part.cleanup(file_id);
+                    return Err(local_write_failure(err));
                 }
             };
-            if read == 0 {
-                break;
+            part.offset = offset;
+            if first_attempt {
+                first_attempt = false;
+                if offset > 0 {
+                    note(&format!("已从 {} 处继续", readable_size(offset)));
+                }
             }
-            if let Err(err) = file.write_all(&buffer[..read]) {
-                drop(file);
-                let _ = std::fs::remove_file(&part_path);
-                return Err(Failure::Other(format!("写入本地文件失败：{err}")));
-            }
-            written += read as u64;
-            progress(written, total);
-        }
-        // flush + sync 都成功才算落盘，再改名
-        if let Err(err) = file.flush().and_then(|()| file.sync_all()) {
-            drop(file);
-            let _ = std::fs::remove_file(&part_path);
-            return Err(Failure::Other(format!("写入本地文件失败：{err}")));
-        }
-        drop(file);
+            progress(offset, part.total);
 
-        if let Some(total) = total {
-            if written != total {
-                let _ = std::fs::remove_file(&part_path);
-                return Err(Failure::Other(format!(
-                    "下载不完整：收到 {written} / {total} 字节"
-                )));
+            let opened = client.open_download_from_with(&info, offset, download_idle());
+            let mut stream = match opened {
+                Ok(stream) => stream,
+                Err(err) => {
+                    // 卡在读超时的那几十秒里按的取消仍然算「已取消」
+                    if cancel.is_cancelled() {
+                        part.cleanup(file_id);
+                        return Err(Failure::Other("下载已取消".to_owned()));
+                    }
+                    match classify_open_error(&err, offset) {
+                        OpenAction::RestartFromZero => {
+                            if let Err(err) = part.truncate() {
+                                part.cleanup(file_id);
+                                return Err(local_write_failure(err));
+                            }
+                            note("服务器要求从头下载");
+                            continue;
+                        }
+                        OpenAction::Retry { refresh } => {
+                            if retries >= max_retries {
+                                part.remember(file_id);
+                                return Err(resume_failure(err.to_string(), offset));
+                            }
+                            retries += 1;
+                            let delay = retry_delay(retries - 1);
+                            let head = if refresh {
+                                "下载链接已过期"
+                            } else {
+                                "连接中断"
+                            };
+                            note(&format!(
+                                "{head}，{} 秒后从 {} 继续（{}/{}）",
+                                delay.as_secs(),
+                                readable_size(offset),
+                                retries,
+                                max_retries
+                            ));
+                            if !sleep_cancellable(cancel, delay) {
+                                part.cleanup(file_id);
+                                return Err(Failure::Other("下载已取消".to_owned()));
+                            }
+                            if refresh {
+                                match file_info(self, file_id, Some(cancel), list_audit_flagged) {
+                                    Ok(refreshed) => {
+                                        info = refreshed;
+                                        client = self.drive()?;
+                                        // 换链接期间云端文件可能被替换：大小变了就丢弃旧 part
+                                        if let (Some(old), Some(new)) = (part.total, info.size) {
+                                            if old != new {
+                                                if let Err(err) = part.truncate() {
+                                                    part.cleanup(file_id);
+                                                    return Err(local_write_failure(err));
+                                                }
+                                                note("云端文件已变化，从头下载");
+                                            }
+                                        }
+                                        part.total = info.size.or(part.total);
+                                    }
+                                    Err(err) => {
+                                        if cancel.is_cancelled() {
+                                            part.cleanup(file_id);
+                                            return Err(Failure::Other("下载已取消".to_owned()));
+                                        }
+                                        if matches!(
+                                            err,
+                                            Failure::Auth(_)
+                                                | Failure::RateLimited { .. }
+                                                | Failure::Captcha { .. }
+                                        ) {
+                                            part.remember(file_id);
+                                            return Err(err);
+                                        }
+                                        if retries >= max_retries {
+                                            part.remember(file_id);
+                                            return Err(resume_failure(err.to_string(), offset));
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        OpenAction::Fatal => {
+                            // 登录失效 / 配额 / 其它不可重试：断点保留，让用户稍后手动重试
+                            part.remember(file_id);
+                            return Err(Failure::from(err));
+                        }
+                    }
+                }
+            };
+
+            // 200 表示服务器忽略了 Range：part 必须截断重写；206 的位置由 core 校验。
+            let start = stream.start_offset();
+            if start == 0 && offset > 0 {
+                if let Err(err) = part.truncate() {
+                    part.cleanup(file_id);
+                    return Err(local_write_failure(err));
+                }
+                note("服务器不支持续传，从头下载");
+            } else if start != offset {
+                // core 正常不会走到这里；真遇到就按「从头」处理，别把字节写错位置
+                if let Err(err) = part.truncate() {
+                    part.cleanup(file_id);
+                    return Err(local_write_failure(err));
+                }
+                note("服务器返回的续传位置不对，从头下载");
+                continue;
+            }
+            if part.total.is_none() {
+                part.total = stream.total_bytes().or(info.size);
+            } else if start == 0 {
+                // 服务器从头给整个文件：以这次响应的完整大小为准
+                part.total = stream.total_bytes().or(info.size).or(part.total);
+            }
+
+            match read_into_part(&mut stream, &mut part, progress, cancel) {
+                ReadOutcome::Complete => {
+                    let total = part.total;
+                    let Part {
+                        mut file,
+                        part_path,
+                        final_path,
+                        offset,
+                        ..
+                    } = part;
+                    // flush + sync 都成功才算落盘，再改名
+                    if let Err(err) = file.flush().and_then(|()| file.sync_all()) {
+                        drop(file);
+                        let _ = std::fs::remove_file(&part_path);
+                        partials::forget(file_id);
+                        return Err(local_write_failure(err));
+                    }
+                    drop(file);
+                    match finalize_part(&part_path, &final_path) {
+                        Ok(path) => {
+                            partials::forget(file_id);
+                            return Ok(Downloaded {
+                                path,
+                                bytes: offset,
+                            });
+                        }
+                        Err(err) => {
+                            // 改名失败不丢已下完的数据；索引留着，重试时会走「直接改名」
+                            partials::remember(&PartialEntry::new(
+                                file_id,
+                                &part_path,
+                                &final_path,
+                                total,
+                            ));
+                            return Err(err);
+                        }
+                    }
+                }
+                ReadOutcome::Cancelled => {
+                    part.cleanup(file_id);
+                    return Err(Failure::Other("下载已取消".to_owned()));
+                }
+                ReadOutcome::Local(reason) => {
+                    // 本地写盘错误（磁盘满等）：可能有半块写坏，删 part 并忘掉索引
+                    part.cleanup(file_id);
+                    return Err(Failure::Other(reason));
+                }
+                ReadOutcome::Retryable(reason) => {
+                    if retries >= max_retries {
+                        part.remember(file_id);
+                        return Err(resume_failure(reason, part.offset));
+                    }
+                    retries += 1;
+                    let delay = retry_delay(retries - 1);
+                    note(&format!(
+                        "连接中断，{} 秒后从 {} 继续（{}/{}）",
+                        delay.as_secs(),
+                        readable_size(part.offset),
+                        retries,
+                        max_retries
+                    ));
+                    if !sleep_cancellable(cancel, delay) {
+                        part.cleanup(file_id);
+                        return Err(Failure::Other("下载已取消".to_owned()));
+                    }
+                }
             }
         }
-        std::fs::rename(&part_path, &final_path).map_err(|err| {
-            let _ = std::fs::remove_file(&part_path);
-            Failure::Other(format!("保存下载文件失败：{err}"))
-        })?;
-        Ok(Downloaded {
-            path: final_path,
-            bytes: written,
-        })
     }
+}
+
+/// 下载进度回调（在下载线程里调用，调用方自己保证线程安全）。
+pub type Progress<'a> = dyn Fn(u64, Option<u64>) + Send + 'a;
+
+/// 状态 / 重试提示回调（传输行 detail；与进度同风格）。
+pub type Note<'a> = dyn Fn(&str) + Send + 'a;
+
+/// 下载过程中的两条回投路径（下载线程调用）。
+///
+/// 合成一个结构只是为了守住参数个数：进度与提示的语义不同，但生命周期一致。
+#[derive(Clone, Copy)]
+pub struct DownloadCallbacks<'a> {
+    pub progress: &'a Progress<'a>,
+    pub note: &'a Note<'a>,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kichi-download-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
-    }
-
-    #[test]
-    fn cancel_is_shared_across_threads() {
-        let cancel = std::sync::Arc::new(Cancel::default());
-        let clone = cancel.clone();
-        let handle = std::thread::spawn(move || clone.cancel());
-        handle.join().expect("线程正常结束");
-        assert!(cancel.is_cancelled());
-    }
-
-    #[test]
-    fn cancellable_sleep_returns_early_when_cancelled() {
-        let cancel = std::sync::Arc::new(Cancel::default());
-        let clone = cancel.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(60));
-            clone.cancel();
-        });
-        let started = Instant::now();
-        assert!(
-            !sleep_cancellable(&cancel, Duration::from_secs(5)),
-            "期间被取消要返回 false"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "不能等满 5 秒：{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[test]
-    fn cancellable_sleep_finishes_normally_without_cancel() {
-        let cancel = Cancel::default();
-        let started = Instant::now();
-        assert!(sleep_cancellable(&cancel, Duration::from_millis(80)));
-        assert!(started.elapsed() >= Duration::from_millis(80));
-    }
-
-    #[test]
-    fn empty_file_is_saved_without_part_leftover() {
-        let dir = temp_dir("empty");
-        let downloaded = save_empty_file(&dir.join("nested"), "empty.mkv").expect("落空文件");
-        assert_eq!(downloaded.bytes, 0);
-        assert_eq!(downloaded.path, dir.join("nested").join("empty.mkv"));
-        assert_eq!(
-            std::fs::metadata(&downloaded.path)
-                .expect("文件应存在")
-                .len(),
-            0,
-            "不能留下任何内容"
-        );
-        assert!(
-            !dir.join("nested").join("empty.mkv.kichi-part").exists(),
-            "完成后退名，不能残留 .kichi-part"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn empty_file_never_overwrites_an_existing_one() {
-        let dir = temp_dir("empty-twice");
-        let first = save_empty_file(&dir, "same.mkv").expect("第一次");
-        let second = save_empty_file(&dir, "same.mkv").expect("第二次");
-        assert_eq!(first.path, dir.join("same.mkv"));
-        assert_eq!(second.path, dir.join("same (1).mkv"), "同名要加序号");
-        assert_eq!(second.bytes, 0);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+#[path = "download_tests.rs"]
+mod tests;

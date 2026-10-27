@@ -240,6 +240,11 @@ pub mod qobject {
         #[cxx_name = "isDownloadPending"]
         fn is_download_pending(self: &Self, id: QString) -> bool;
 
+        /// 这个文件是否有可续传的断点（右键菜单显示「继续下载」）
+        #[qinvokable]
+        #[cxx_name = "hasPartialDownload"]
+        fn has_partial_download(self: &Self, id: QString) -> bool;
+
         #[qinvokable]
         #[cxx_name = "cancelDownloads"]
         fn cancel_downloads(self: Pin<&mut Self>);

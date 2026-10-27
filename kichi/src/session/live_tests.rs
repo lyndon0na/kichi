@@ -489,3 +489,102 @@ fn live_probe_detail_link_fields() {
         .count();
     println!("medias：{} 个，非空链接 {with_url} 个", medias.len());
 }
+
+/// 真实 CDN 的 Range 探针（默认忽略）。
+///
+/// 目的：确认 `Range: bytes=100-` 真的返回 206 + `Content-Range`，而不是
+/// 200 全量。若 CDN 忽略 Range，跨重启续传会退化成「从头重下」，本计划
+/// 的前提不成立。
+///
+/// 优先用 `KICHI_TEST_FILE_ID` 指定文件；否则在根目录 / 前几层子目录里找
+/// 一个大于 1 MiB 的文件。跑前提醒用户：会发真实下载请求（只读 116 字节）。
+#[test]
+#[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+fn live_probe_download_range() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, _)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+
+    let mut chosen = None;
+    if let Ok(id) = std::env::var("KICHI_TEST_FILE_ID") {
+        if !id.trim().is_empty() {
+            chosen = Some(id.trim().to_owned());
+        }
+    }
+    if chosen.is_none() {
+        let mut folders = std::collections::VecDeque::new();
+        folders.push_back(None);
+        for _ in 0..4 {
+            let Some(parent) = folders.pop_front() else {
+                break;
+            };
+            let Ok(entries) = session.list_dir(parent.as_deref()) else {
+                continue;
+            };
+            for entry in entries {
+                match entry.kind {
+                    kichi_core::EntryKind::File if entry.size > 1024 * 1024 => {
+                        chosen = Some(entry.id.clone());
+                    }
+                    kichi_core::EntryKind::Folder if folders.len() < 8 => {
+                        folders.push_back(Some(entry.id.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            if chosen.is_some() {
+                break;
+            }
+        }
+    }
+    let Some(id) = chosen else {
+        panic!("没找到大于 1 MiB 的文件；请用 KICHI_TEST_FILE_ID 指定一个");
+    };
+
+    let info = media::file_info(&session, &id, None, false).expect("取文件详情失败");
+    println!(
+        "文件：{}（id={}，详情 size={:?}）",
+        info.name, info.id, info.size
+    );
+    let client = session.drive().expect("构造客户端失败");
+    let mut stream = match client.open_download_from(&info, 100) {
+        Ok(stream) => stream,
+        Err(err) => panic!("从偏移 100 打开下载流失败：{}", probe_error(&err)),
+    };
+    println!(
+        "Range bytes=100- → start_offset={}，total_bytes={:?}",
+        stream.start_offset(),
+        stream.total_bytes()
+    );
+    assert_eq!(
+        stream.start_offset(),
+        100,
+        "CDN 忽略了 Range（200 全量）；跨重启续传会退化成从头重下"
+    );
+    if let (Some(full), Some(detail)) = (stream.total_bytes(), info.size) {
+        assert_eq!(full, detail, "Content-Range 的总大小与详情 size 不一致");
+    }
+    let mut buffer = vec![0u8; 16];
+    let read = std::io::Read::read(&mut stream, &mut buffer).expect("读取续传流失败");
+    println!("从偏移 100 读到 {read} 字节（内容不打印）");
+    assert!(read > 0, "206 响应没有 body");
+}
+
+/// 探针打印错误时只报类别 / 状态码，绝不带签名 URL。
+fn probe_error(err: &kichi_core::Error) -> String {
+    match err {
+        kichi_core::Error::Api { code, .. } => format!("HTTP {code}"),
+        kichi_core::Error::Network(_) => "网络错误".to_owned(),
+        kichi_core::Error::DownloadTimeout(_) => "下载超时".to_owned(),
+        kichi_core::Error::RangeNotSatisfiable { total } => {
+            format!("Range 不可用（total={total:?}）")
+        }
+        kichi_core::Error::Auth { .. } => "认证失败".to_owned(),
+        kichi_core::Error::RateLimited { .. } => "限流 / 配额".to_owned(),
+        other => other.to_string(),
+    }
+}

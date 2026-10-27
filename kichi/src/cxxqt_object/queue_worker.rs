@@ -3,7 +3,7 @@
 //! 调度与占用表在 [`super::queue`]；本文件只在后台跑，不碰 Qt 对象，
 //! 所有界面更新都经 `actions::enqueue_ui` 回主线程。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use kichi_core::{EntryKind, FileEntry};
 
 use super::queue::{add_result, current_epoch, BatchReport, Job, JobOutcome, MAX_DEPTH};
 use super::transfers;
-use crate::session::download::Cancel;
+use crate::session::download::{Cancel, DownloadCallbacks};
 use crate::session::{Failure, Session};
 
 /// 进度回投的最小间隔。
@@ -107,7 +107,7 @@ pub(crate) fn run_jobs(
 /// 逐条下载（[`run_jobs`] 的主体；panic 由调用方兜底）。
 fn download_all(
     session: &Arc<Session>,
-    dir: &PathBuf,
+    dir: &Path,
     batch: u64,
     jobs: &[Job],
     cancel: &Arc<Cancel>,
@@ -120,7 +120,7 @@ fn download_all(
         transfers::begin(batch, index);
         post_sync();
 
-        let mut target = dir.clone();
+        let mut target = dir.to_path_buf();
         for part in &job.sub_dir {
             target.push(crate::session::download::safe_file_name(part));
         }
@@ -131,12 +131,20 @@ fn download_all(
                 post_live();
             }
         };
+        let note = |text: &str| {
+            transfers::note(batch, index, text);
+            post_sync();
+        };
+        let callbacks = DownloadCallbacks {
+            progress: &progress,
+            note: &note,
+        };
         let outcome = session.download_file(
             &job.id,
             &job.name,
             job.audit_flagged,
             &target,
-            &progress,
+            callbacks,
             cancel,
         );
         // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
