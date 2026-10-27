@@ -29,6 +29,7 @@ fn display_path_keeps_folder_hierarchy() {
         sub_dir: vec!["剧集".into(), "第一季".into()],
         name: "第 1 集.mkv".into(),
         size: 0,
+        audit_flagged: false,
     };
     assert_eq!(display_path(&nested), "剧集/第一季/第 1 集.mkv");
     let single = Job {

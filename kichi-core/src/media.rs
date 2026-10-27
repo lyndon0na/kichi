@@ -17,7 +17,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::drive::DriveClient;
+use crate::drive::{audit_flagged, AuditDto, DriveClient};
 use crate::types::{PlayOption, StreamKind, Tier};
 use crate::Error;
 
@@ -47,19 +47,32 @@ pub fn download_idle() -> Duration {
         .unwrap_or(DEFAULT_DOWNLOAD_IDLE)
 }
 
+/// 链接全空时的确定原因（能确定就不用再等 5 秒重试）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoLinkReason {
+    /// 官方明确说这是 0 字节文件：下载落空文件，播放直接报错。
+    ZeroByte,
+    /// 官方审核标记异常（违规 / 受限）：重试也不会下发链接。
+    Restricted,
+}
+
 /// 文件详情里与播放相关的部分。
 #[derive(Debug, Clone, Default)]
 pub struct FileInfo {
     pub id: String,
     pub name: String,
+    /// 官方声明的字节数；`None` = 详情没下发或值不可解析。
+    /// **只有 `Some(0)` 才代表官方明确说这是空文件。**
+    pub size: Option<u64>,
+    /// 详情里的 `audit.status`；`None` = 详情没下发 audit。
+    /// 空状态按未下发处理（见 [`FileInfo::audit_flagged`]）。
+    pub audit_status: Option<String>,
     /// 原始下载直链（可能为空：非视频或官方未下发）
     pub web_content_link: String,
     /// `links["application/octet-stream"].url`
     pub octet_stream: String,
     /// `medias` 原始档位
     pub medias: Vec<MediaStream>,
-    /// 该文件是否没有任何可用链接（session 层据此延迟重试）
-    pub all_links_empty: bool,
 }
 
 /// `medias[]` 的一项。
@@ -75,6 +88,50 @@ pub struct MediaStream {
 }
 
 impl FileInfo {
+    /// 官方是否明确说这是空文件。
+    ///
+    /// `size` 缺失或不可解析一律不算——0 在这里有语义，不能把「不知道」当 0。
+    pub fn is_zero_byte(&self) -> bool {
+        self.size == Some(0)
+    }
+
+    /// 详情里的审核状态是否异常。
+    ///
+    /// - `None`：详情没下发 audit；
+    /// - `Some(false)`：详情明确 `STATUS_OK`（空状态按未下发处理）；
+    /// - `Some(true)`：详情明确异常。
+    pub fn audit_flagged(&self) -> Option<bool> {
+        self.audit_status.as_deref().map(audit_flagged)
+    }
+
+    /// 该文件是否没有任何可用链接。
+    ///
+    /// 改成方法而不是 DTO 里的字段：链接分散在三个来源里，
+    /// 派生值存字段容易与来源不同步。
+    pub fn all_links_empty(&self) -> bool {
+        self.web_content_link.trim().is_empty()
+            && self.octet_stream.trim().is_empty()
+            && self.medias.iter().all(|media| media.url.trim().is_empty())
+    }
+
+    /// 链接全空时，官方是否已经给了「重试也没用」的确定原因。
+    ///
+    /// 顺序：只有链接全空才判定；0 字节优先于审核异常（空文件即便被标记
+    /// 违规也还是空文件，下载落空文件更符合用户预期）。都无法确定时返回
+    /// `None`，调用方保留 5 秒重试。
+    pub fn no_link_reason(&self) -> Option<NoLinkReason> {
+        if !self.all_links_empty() {
+            return None;
+        }
+        if self.is_zero_byte() {
+            return Some(NoLinkReason::ZeroByte);
+        }
+        if self.audit_flagged() == Some(true) {
+            return Some(NoLinkReason::Restricted);
+        }
+        None
+    }
+
     /// 选出可播放的档位（原画在前，转码按清晰度降序）。
     pub fn play_options(&self) -> Vec<PlayOption> {
         let mut options: Vec<PlayOption> = self.medias.iter().map(MediaStream::to_option).collect();
@@ -198,6 +255,18 @@ impl DriveClient {
         }
         let dto: FileDto = self.get(&self.config().file_url(id))?;
         Ok(dto.into_info())
+    }
+
+    /// 排障用：文件详情的原始响应（只给真实账号探针看字段形状）。
+    ///
+    /// 返回值含签名直链，**绝不打印整个响应**；只按字段取需要的标量。
+    #[doc(hidden)]
+    pub fn file_detail_raw_for_probe(&self, id: &str) -> Result<serde_json::Value, Error> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(Error::InvalidInput("文件 id 为空".into()));
+        }
+        self.get(&self.config().file_url(id))
     }
 
     /// 打开一个文件的下载流（已跟随重定向，`Read` 即文件字节）。
@@ -342,6 +411,14 @@ struct FileDto {
     id: String,
     #[serde(default)]
     name: String,
+    /// 详情里的 `size`：数字 / 字符串都收。
+    ///
+    /// **不能**复用 `drive::lenient_u64`——那边把缺失当 0，而这里 0 有
+    /// 「官方明确说是空文件」的语义。缺失 / `null` / 空串 / 非法值一律 `None`。
+    #[serde(default, deserialize_with = "lenient_optional_u64")]
+    size: Option<u64>,
+    #[serde(default)]
+    audit: Option<AuditDto>,
     #[serde(default)]
     web_content_link: String,
     #[serde(default)]
@@ -397,6 +474,12 @@ impl FileDto {
             .and_then(|links| links.octet_stream)
             .map(|link| link.url)
             .unwrap_or_default();
+        // 空状态按「未下发」处理：只有非空才存 Some，才能区分
+        // 「官方明确说 OK」与「官方什么都没说」
+        let audit_status = self.audit.and_then(|audit| {
+            let status = audit.status.trim();
+            (!status.is_empty()).then(|| status.to_owned())
+        });
         let medias = self
             .medias
             .into_iter()
@@ -426,18 +509,29 @@ impl FileDto {
                 }
             })
             .collect::<Vec<_>>();
-        let all_links_empty = medias.iter().all(|media| media.url.is_empty())
-            && self.web_content_link.trim().is_empty()
-            && octet.trim().is_empty();
         FileInfo {
             id: self.id,
             name: self.name,
+            size: self.size,
+            audit_status,
             web_content_link: self.web_content_link,
             octet_stream: octet,
             medias,
-            all_links_empty,
         }
     }
+}
+
+/// 数字 / 字符串都收的可选无符号整数；缺失、`null`、空串、非法值 → `None`。
+fn lenient_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    })
 }
 
 /// 从 URL 查询串里取一个参数（`fid` 用）。
@@ -704,9 +798,89 @@ mod tests {
     #[test]
     fn all_links_empty_is_reported_for_retry() {
         let empty = info(r#"{"name": "x", "medias": [{"link": {"url": "  "}}]}"#);
-        assert!(empty.all_links_empty);
+        assert!(empty.all_links_empty());
         let ready = info(MIXED);
-        assert!(!ready.all_links_empty);
+        assert!(!ready.all_links_empty(), "有一档链接就不算全空");
+    }
+
+    #[test]
+    fn detail_size_only_counts_when_official_says_zero() {
+        let cases = [
+            (r#"{"size":"0"}"#, Some(0)),
+            (r#"{"size":0}"#, Some(0)),
+            (r#"{"size":"123"}"#, Some(123)),
+            (r#"{"size":123}"#, Some(123)),
+            (r#"{"name":"x"}"#, None),
+            (r#"{"size":null}"#, None),
+            (r#"{"size":""}"#, None),
+            (r#"{"size":"abc"}"#, None),
+            (r#"{"size":-1}"#, None),
+        ];
+        for (json, expected) in cases {
+            assert_eq!(info(json).size, expected, "输入 {json}");
+        }
+        assert!(info(r#"{"size":"0"}"#).is_zero_byte());
+        assert!(
+            !info(r#"{"name":"x"}"#).is_zero_byte(),
+            "不知道大小绝不能当 0"
+        );
+    }
+
+    #[test]
+    fn detail_audit_distinguishes_ok_from_missing() {
+        assert_eq!(info(r#"{"name":"x"}"#).audit_flagged(), None);
+        assert_eq!(
+            info(r#"{"audit":{"status":"STATUS_OK"}}"#).audit_flagged(),
+            Some(false)
+        );
+        assert_eq!(
+            info(r#"{"audit":{"status":"STATUS_BANNED"}}"#).audit_flagged(),
+            Some(true)
+        );
+        assert_eq!(
+            info(r#"{"audit":{"status":"  "}}"#).audit_flagged(),
+            None,
+            "空状态按未下发处理"
+        );
+        assert_eq!(
+            info(r#"{"audit":{"status":"status_ok"}}"#).audit_flagged(),
+            Some(false),
+            "与列表共用同一条判定（大小写不敏感）"
+        );
+    }
+
+    #[test]
+    fn no_link_reason_prefers_zero_byte_over_restricted() {
+        use NoLinkReason::*;
+        assert_eq!(
+            info(r#"{"size":0,"web_content_link":"https://download.invalid/x"}"#).no_link_reason(),
+            None,
+            "有链接就不算无链接"
+        );
+        assert_eq!(
+            info(r#"{"size":"0","web_content_link":"","medias":[{"link":{"url":" "}}]}"#)
+                .no_link_reason(),
+            Some(ZeroByte)
+        );
+        assert_eq!(
+            info(r#"{"audit":{"status":"STATUS_BANNED"},"web_content_link":""}"#).no_link_reason(),
+            Some(Restricted)
+        );
+        assert_eq!(
+            info(r#"{"size":0,"audit":{"status":"STATUS_BANNED"},"web_content_link":""}"#)
+                .no_link_reason(),
+            Some(ZeroByte),
+            "0 字节优先于审核标记"
+        );
+        assert_eq!(
+            info(r#"{"audit":{"status":"STATUS_OK"},"web_content_link":""}"#).no_link_reason(),
+            None
+        );
+        assert_eq!(
+            info(r#"{"name":"x"}"#).no_link_reason(),
+            None,
+            "什么都不确定时保留 5 秒重试"
+        );
     }
 
     #[test]

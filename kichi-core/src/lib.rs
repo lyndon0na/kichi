@@ -19,6 +19,6 @@ pub use auth::{LoginOutcome, REFRESH_MARGIN};
 pub use config::Config;
 pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
-pub use media::FileInfo;
+pub use media::{FileInfo, NoLinkReason};
 pub use search::FileHit;
 pub use types::{EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair};

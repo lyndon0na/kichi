@@ -392,10 +392,19 @@ pub(crate) struct FileDto {
     parent_id: String,
 }
 
+/// 审核状态 DTO：列表与详情共用（`media.rs` 的详情也要读它）。
 #[derive(Deserialize)]
-struct AuditDto {
+pub(crate) struct AuditDto {
     #[serde(default)]
-    status: String,
+    pub(crate) status: String,
+}
+
+/// 审核状态是否异常：空状态按「未下发」处理，不算异常。
+///
+/// 列表的 `FileEntry::audit_flagged` 与详情的 `FileInfo::audit_flagged()`
+/// 必须共用这一条，避免两处判定漂移。
+pub(crate) fn audit_flagged(status: &str) -> bool {
+    !status.is_empty() && !status.eq_ignore_ascii_case("STATUS_OK")
 }
 
 impl FileDto {
@@ -420,9 +429,7 @@ impl FileDto {
             size: self.size,
             modified_at: self.modified_time,
             md5: (!self.md5_checksum.is_empty()).then_some(self.md5_checksum),
-            audit_flagged: self.audit.is_some_and(|audit| {
-                !audit.status.is_empty() && !audit.status.eq_ignore_ascii_case("STATUS_OK")
-            }),
+            audit_flagged: self.audit.is_some_and(|audit| audit_flagged(&audit.status)),
             media,
         }
     }

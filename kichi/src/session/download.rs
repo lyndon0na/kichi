@@ -71,20 +71,51 @@ pub fn sleep_cancellable(cancel: &Cancel, total: Duration) -> bool {
     }
 }
 
+/// 官方明确说是 0 字节：不发 GET，直接在本地落一个 0 字节文件。
+///
+/// 仍然走 `claim_part` 的「不覆盖 + `.kichi-part` 原子占位」，
+/// 完成（`sync_all` + rename）后才算成功，和普通下载的落盘约定一致。
+fn save_empty_file(target_dir: &Path, name: &str) -> Result<Downloaded, Failure> {
+    std::fs::create_dir_all(target_dir)
+        .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
+    let (file, part_path, final_path) = claim_part(target_dir, name)?;
+    if let Err(err) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&part_path);
+        return Err(Failure::Other(format!("写入本地文件失败：{err}")));
+    }
+    drop(file);
+    std::fs::rename(&part_path, &final_path).map_err(|err| {
+        let _ = std::fs::remove_file(&part_path);
+        Failure::Other(format!("保存下载文件失败：{err}"))
+    })?;
+    Ok(Downloaded {
+        path: final_path,
+        bytes: 0,
+    })
+}
+
 impl Session {
     /// 下载一个文件到 `target_dir`（目录不存在会自动创建）。阻塞。
     ///
     /// `name_hint` 是列表里的文件名；官方详情里也可能给名字，优先用列表的
     /// （列表是用户眼前看到的那个）。`progress` 每读一块调一次。
+    ///
+    /// `list_audit_flagged` 来自文件列表：详情没下发 audit 时，用它判断
+    /// 「违规 / 受限」并跳过没用的 5 秒重试。
+    ///
+    /// 详情明确 `size == 0` 时不取链接，直接落一个 0 字节文件并算成功
+    /// （对齐 rclone 的 `Open`）。
     pub fn download_file(
         &self,
         file_id: &str,
         name_hint: &str,
+        list_audit_flagged: bool,
         target_dir: &Path,
         progress: &Progress<'_>,
         cancel: &Cancel,
     ) -> Result<Downloaded, Failure> {
-        let info = file_info(self, file_id, Some(cancel))?;
+        let info = file_info(self, file_id, Some(cancel), list_audit_flagged)?;
         let name = safe_file_name(if name_hint.trim().is_empty() {
             &info.name
         } else {
@@ -93,6 +124,12 @@ impl Session {
         // 取消后不再建连接：这一步可能白等响应头
         if cancel.is_cancelled() {
             return Err(Failure::Other("下载已取消".to_owned()));
+        }
+        // 0 字节：官方不会给内容，也不必为此发一次 GET。
+        // 不调用 progress(0, Some(0))：传输页进行中行会显示「0 B / 0 B」，
+        // 不调用时完成行直接显示「0 B」。
+        if info.is_zero_byte() {
+            return save_empty_file(target_dir, &name);
         }
         // `file_info` 里已经 `drive()` 过：这里按令牌命中会话缓存，不新建连接池。
         // 别把它提到 `file_info` 之前——那样会白建一个一次请求都不发的池。
@@ -177,6 +214,13 @@ impl Session {
 mod tests {
     use super::*;
 
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kichi-download-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
     #[test]
     fn cancel_is_shared_across_threads() {
         let cancel = std::sync::Arc::new(Cancel::default());
@@ -212,5 +256,36 @@ mod tests {
         let started = Instant::now();
         assert!(sleep_cancellable(&cancel, Duration::from_millis(80)));
         assert!(started.elapsed() >= Duration::from_millis(80));
+    }
+
+    #[test]
+    fn empty_file_is_saved_without_part_leftover() {
+        let dir = temp_dir("empty");
+        let downloaded = save_empty_file(&dir.join("nested"), "empty.mkv").expect("落空文件");
+        assert_eq!(downloaded.bytes, 0);
+        assert_eq!(downloaded.path, dir.join("nested").join("empty.mkv"));
+        assert_eq!(
+            std::fs::metadata(&downloaded.path)
+                .expect("文件应存在")
+                .len(),
+            0,
+            "不能留下任何内容"
+        );
+        assert!(
+            !dir.join("nested").join("empty.mkv.kichi-part").exists(),
+            "完成后退名，不能残留 .kichi-part"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_file_never_overwrites_an_existing_one() {
+        let dir = temp_dir("empty-twice");
+        let first = save_empty_file(&dir, "same.mkv").expect("第一次");
+        let second = save_empty_file(&dir, "same.mkv").expect("第二次");
+        assert_eq!(first.path, dir.join("same.mkv"));
+        assert_eq!(second.path, dir.join("same (1).mkv"), "同名要加序号");
+        assert_eq!(second.bytes, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

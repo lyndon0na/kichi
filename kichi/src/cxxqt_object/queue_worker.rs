@@ -59,6 +59,7 @@ fn walk(
                 sub_dir: path.clone(),
                 name: entry.name.clone(),
                 size: entry.size,
+                audit_flagged: entry.audit_flagged,
             }),
         }
     }
@@ -122,7 +123,14 @@ fn download_all(
                 post_live();
             }
         };
-        let outcome = session.download_file(&job.id, &job.name, &target, &progress, cancel);
+        let outcome = session.download_file(
+            &job.id,
+            &job.name,
+            job.audit_flagged,
+            &target,
+            &progress,
+            cancel,
+        );
         // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
         if my_epoch != current_epoch() {
             return;
@@ -325,6 +333,7 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
             sub_dir: Vec::new(),
             name: start.entry.name.clone(),
             size: start.entry.size,
+            audit_flagged: start.entry.audit_flagged,
         };
         let dir = start.dir.clone();
         builder

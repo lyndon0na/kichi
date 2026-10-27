@@ -37,6 +37,8 @@ pub(crate) struct Job {
     pub(crate) name: String,
     /// 官方标注的大小（0 = 未知），记录表在排队阶段就能显示大小
     pub(crate) size: u64,
+    /// 列表里的审核标记：详情没下发 audit 时用来跳过无用的 5 秒重试
+    pub(crate) audit_flagged: bool,
 }
 
 /// 一批在调度器里的阶段。

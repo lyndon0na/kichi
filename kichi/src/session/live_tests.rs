@@ -245,13 +245,16 @@ fn live_play_options_for_a_media_file() {
         panic!("没找到媒体文件（video/audio），请先往网盘里放一个视频再跑");
     };
     println!("选中媒体文件：{}（id={}）", file.name, file.id);
-    let info = media::file_info(&session, &file.id, None).expect("取文件详情失败");
+    let info =
+        media::file_info(&session, &file.id, None, file.audit_flagged).expect("取文件详情失败");
     println!(
-        "详情：{} 个 medias，links 全空={}",
+        "详情：{} 个 medias，links 全空={}，size={:?}，audit={:?}",
         info.medias.len(),
-        info.all_links_empty
+        info.all_links_empty(),
+        info.size,
+        info.audit_status
     );
-    assert!(!info.all_links_empty, "官方没有下发任何链接");
+    assert!(!info.all_links_empty(), "官方没有下发任何链接");
 
     let options = info.play_options();
     for option in &options {
@@ -397,7 +400,7 @@ fn live_probe_play_options_shapes() {
 }
 
 fn report_tiers(session: &Session, entry: &kichi_core::FileEntry) {
-    let Ok(info) = media::file_info(session, &entry.id, None) else {
+    let Ok(info) = media::file_info(session, &entry.id, None, entry.audit_flagged) else {
         println!("{}: 取详情失败", entry.name);
         return;
     };
@@ -411,4 +414,78 @@ fn report_tiers(session: &Session, entry: &kichi_core::FileEntry) {
             option.label, option.original, option.height, option.available, option.reason
         );
     }
+}
+
+/// 真实会话的详情链接字段探针（默认忽略）。
+///
+/// 目的：核实详情到底下发不下发 `size` / `audit` / `phase`，以及 0 字节
+/// 文件是否真的没有任何链接。**只打印字段形状，不打印任何 URL / token。**
+///
+/// 优先用 `KICHI_TEST_FILE_ID` 指定文件；否则在根目录找第一个
+/// `size == 0` 的文件。跑前提醒用户：会发真实请求。
+#[test]
+#[ignore = "需要先在 GUI 登录一次（会话在 KWallet 里）"]
+fn live_probe_detail_link_fields() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, _)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+
+    let id = match std::env::var("KICHI_TEST_FILE_ID") {
+        Ok(id) if !id.trim().is_empty() => id.trim().to_owned(),
+        _ => {
+            let entries = session.list_dir(None).expect("读取根目录失败");
+            entries
+                .into_iter()
+                .find(|entry| entry.kind == kichi_core::EntryKind::File && entry.size == 0)
+                .map(|entry| entry.id)
+                .expect("根目录没有 0 字节文件；请用 KICHI_TEST_FILE_ID 指定一个")
+        }
+    };
+
+    let client = session.drive().expect("构造客户端失败");
+    let raw = client
+        .file_detail_raw_for_probe(&id)
+        .expect("取文件详情原始响应失败");
+
+    println!(
+        "size 原始值：{}",
+        raw.get("size").unwrap_or(&serde_json::Value::Null)
+    );
+    println!(
+        "audit.status：{:?}",
+        raw.pointer("/audit/status")
+            .and_then(|value| value.as_str())
+    );
+    println!(
+        "phase：{:?}",
+        raw.get("phase").and_then(|value| value.as_str())
+    );
+
+    let link_empty = |value: Option<&serde_json::Value>| match value.and_then(|v| v.as_str()) {
+        Some(url) => url.trim().is_empty(),
+        None => true,
+    };
+    println!(
+        "octet 链接为空：{}",
+        link_empty(raw.pointer("/links/application~1octet-stream/url"))
+    );
+    println!(
+        "web_content_link 为空：{}",
+        link_empty(raw.get("web_content_link"))
+    );
+
+    let medias = raw
+        .get("medias")
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let with_url = medias
+        .iter()
+        .filter(|media| !link_empty(media.pointer("/link/url")))
+        .count();
+    println!("medias：{} 个，非空链接 {with_url} 个", medias.len());
 }

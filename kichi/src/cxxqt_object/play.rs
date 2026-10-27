@@ -133,6 +133,13 @@ impl qobject::Kichi {
                 .fail_play_loading("播放选项已过期，请重新点播放");
             return;
         };
+        // 列表里的审核标记只作为详情没下发 audit 时的兜底：
+        // 播放列表刷新导致条目暂时找不到时按 false 处理，退回详情判断。
+        let audit_flagged = self
+            .as_ref()
+            .rust()
+            .find_entry(&id)
+            .is_some_and(|entry| entry.audit_flagged);
         let name = name.to_owned();
         let session = self.backend.session.clone();
         let epoch = self.as_ref().rust().play_epoch;
@@ -140,7 +147,7 @@ impl qobject::Kichi {
         run_in_background(
             {
                 let cancel = cancel.clone();
-                move || media::play_options(&session, &id, Some(&cancel))
+                move || media::play_options(&session, &id, Some(&cancel), audit_flagged)
             },
             move |mut qichi, result| {
                 if qichi.as_ref().rust().play_epoch != epoch {
