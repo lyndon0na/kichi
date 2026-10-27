@@ -11,7 +11,7 @@ import QtQuick.Shapes
 Item {
     id: icon
 
-    /// folder / download / settings / logout
+    /// folder / transfer / download / settings / logout
     property string name: ""
     property color color: "transparent"
 
@@ -22,6 +22,8 @@ Item {
         folder: "M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2",
         download: "M19 18a3.5 3.5 0 0 0 0 -7h-1a5 5 0 0 0 -9.3 -2a4.6 4.6 0 0 0 -2.7 8.4"
                   + " M12 13v8 M9 18l3 3l3 -3",
+        // Tabler「arrows-exchange」：左右双箭头，和云朵下载区分开
+        transfer: "M7 10h14l-4 -4 M17 14h-14l4 4",
         settings: "M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066"
                   + "c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35"
                   + "a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37"

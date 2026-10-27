@@ -2,7 +2,8 @@
 //!
 //! 与 `downloads.rs` 分工：
 //! - `downloads.rs`：QML 能看到的入口（右键菜单的「下载」、取消、打开目录）与属性刷新；
-//! - 本文件：队列状态、文件夹递归、串行下载线程、进度节流与回投。
+//! - 本文件：队列状态、文件夹递归、串行下载线程、进度节流与回投；
+//! - `transfers.rs`：本次运行内的逐条记录（排队 / 下载中 / 完成 / 失败 / 取消）。
 //!
 //! 后台线程绝不碰 Qt 对象：结果一律经 `actions::enqueue_ui` 回主线程。
 
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use kichi_core::{EntryKind, FileEntry};
 
-use super::actions::format_size;
+use super::transfers;
 use crate::session::download::{Cancel, Progress};
 use crate::session::{Failure, Session};
 
@@ -28,20 +29,16 @@ pub(crate) struct Job {
     /// 落盘用的相对目录（文件夹下载时保留层级；单文件为空）
     pub(crate) sub_dir: Vec<String>,
     pub(crate) name: String,
+    /// 官方标注的大小（0 = 未知），记录表在排队阶段就能显示大小
+    pub(crate) size: u64,
 }
 
 /// 一次生效的批量下载状态（单文件也包成一个批量，收尾逻辑统一）。
 #[derive(Debug, Default)]
 pub(crate) struct Batch {
     pub(crate) running: bool,
-    /// 队列里还没轮到 + 正在下的条目数
-    pub(crate) remaining: usize,
     pub(crate) done: usize,
     pub(crate) failed: usize,
-    /// 正在下载的条目（QML 显示进度用）
-    pub(crate) current: String,
-    pub(crate) current_bytes: u64,
-    pub(crate) current_total: Option<u64>,
     /// 取消信号：整批共用一个，取消即停
     pub(crate) cancel: Arc<Cancel>,
 }
@@ -71,8 +68,8 @@ pub(crate) fn bump_epoch() {
 
 /// 是否已有下载在跑（同一时刻只有一条队列线程）。
 fn busy() -> &'static AtomicBool {
-    static FLAG: OnceLock<AtomicBool> = OnceLock::new();
-    FLAG.get_or_init(|| AtomicBool::new(false))
+    static BUSY: OnceLock<AtomicBool> = OnceLock::new();
+    BUSY.get_or_init(|| AtomicBool::new(false))
 }
 
 pub(crate) fn is_busy() -> bool {
@@ -117,6 +114,7 @@ fn walk(
                 id: entry.id.clone(),
                 sub_dir: path.clone(),
                 name: entry.name.clone(),
+                size: entry.size,
             }),
         }
     }
@@ -124,33 +122,30 @@ fn walk(
 }
 
 /// 队列线程：逐条下载，结果回投主线程。
-pub(crate) fn run_queue(session: Arc<Session>, dir: std::path::PathBuf, jobs: Vec<Job>) {
+pub(crate) fn run_queue(
+    session: Arc<Session>,
+    dir: std::path::PathBuf,
+    batch: u64,
+    jobs: Vec<Job>,
+) {
     let my_epoch = epoch().load(Ordering::SeqCst);
     let cancel = with_batch(|state| state.cancel.clone());
-    for job in jobs {
+    for (index, job) in jobs.iter().enumerate() {
         if my_epoch != epoch().load(Ordering::SeqCst) || cancel.is_cancelled() {
             break;
         }
-        with_batch(|state| {
-            state.current = display_path(&job);
-            state.current_bytes = 0;
-            state.current_total = None;
-        });
-        post_progress(job.clone(), 0, None);
+        transfers::begin(batch, index);
+        post_sync();
 
         let mut target = dir.clone();
         for part in &job.sub_dir {
             target.push(crate::session::download::safe_file_name(part));
         }
         let throttle = Throttle::default();
-        let reporter = job.clone();
         let progress = |bytes: u64, total: Option<u64>| {
             if throttle.should_send(bytes, total) {
-                with_batch(|state| {
-                    state.current_bytes = bytes;
-                    state.current_total = total;
-                });
-                post_progress(reporter.clone(), bytes, total);
+                transfers::progress(batch, index, bytes, total);
+                post_live();
             }
         };
         let outcome = session.download_file(
@@ -160,28 +155,34 @@ pub(crate) fn run_queue(session: Arc<Session>, dir: std::path::PathBuf, jobs: Ve
             &progress as &Progress<'_>,
             &cancel,
         );
+        // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
+        if my_epoch != epoch().load(Ordering::SeqCst) {
+            return;
+        }
         let cancelled = cancel.is_cancelled();
-        with_batch(|state| {
-            state.remaining = state.remaining.saturating_sub(1);
-            match &outcome {
-                Ok(_) => state.done += 1,
-                Err(_) => state.failed += 1,
-            }
-        });
         match outcome {
-            Ok(downloaded) => post_saved(&job.name, &downloaded.path),
+            Ok(downloaded) => {
+                with_batch(|state| state.done += 1);
+                transfers::finish_ok(batch, index, &downloaded.path.display().to_string());
+                post_saved(&job.name, &downloaded.path, my_epoch);
+            }
             Err(_) if cancelled => {
-                // 取消不算失败：把刚计入的一次失败退回去，数量对得上总账
-                with_batch(|state| {
-                    state.failed = state.failed.saturating_sub(1);
-                    state.remaining = state.remaining.saturating_add(1);
-                });
+                // 取消不算失败：数量对得上总账，记录由下面的统一收尾标成已取消
                 break;
             }
-            Err(err) => post_failed(&job.name, &err.to_string()),
+            Err(err) => {
+                with_batch(|state| state.failed += 1);
+                transfers::finish_err(batch, index, &err.to_string());
+                post_failed(&job.name, &err.to_string(), my_epoch);
+            }
         }
     }
-    post_finished(cancel.is_cancelled());
+    // 取消 / 登出导致提前退出时，还没轮到的条目也要收尾。
+    // 取消时当前条可能刚好下载成功，也会落在这里。
+    if cancel.is_cancelled() {
+        transfers::cancel_batch(batch, "");
+    }
+    post_finished(cancel.is_cancelled(), my_epoch);
 }
 
 /// 进度节流：250ms 或进 1% 才发。
@@ -218,7 +219,7 @@ impl Throttle {
 }
 
 /// 条目 → 界面上显示的路径（`剧集/第 1 集.mkv`）。
-fn display_path(job: &Job) -> String {
+pub(crate) fn display_path(job: &Job) -> String {
     if job.sub_dir.is_empty() {
         job.name.clone()
     } else {
@@ -228,24 +229,33 @@ fn display_path(job: &Job) -> String {
 
 // —— 后台线程 → 主线程（不碰 Qt 对象，只入队）——
 
-fn post_progress(job: Job, bytes: u64, total: Option<u64>) {
+/// 记录变了（开始 / 完成 / 失败 / 取消）→ 主线程重建模型。
+fn post_sync() {
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            with_batch(|state| {
-                state.current = display_path(&job);
-                state.current_bytes = bytes;
-                state.current_total = total;
-            });
-            qichi.as_mut().sync_download_state();
+            qichi.as_mut().sync_transfers();
         },
     );
 }
 
-fn post_saved(name: &str, path: &std::path::Path) {
+/// 只是进度变了 → 主线程只刷新进度行，不动整个 ListView 模型。
+fn post_live() {
+    super::actions::enqueue_ui(
+        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
+            qichi.as_mut().sync_transfer_live();
+        },
+    );
+}
+
+fn post_saved(name: &str, path: &std::path::Path, my_epoch: u64) {
     let name = name.to_owned();
     let path = path.display().to_string();
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
+            // 期间退出过登录：记录已清空，不再补通知，也不把旧结果贴回去
+            if my_epoch != epoch().load(Ordering::SeqCst) {
+                return;
+            }
             if qichi.notify_enabled {
                 super::notifications::show(
                     "下载完成",
@@ -253,16 +263,19 @@ fn post_saved(name: &str, path: &std::path::Path) {
                     "folder-download",
                 );
             }
-            qichi.as_mut().sync_download_state();
+            qichi.as_mut().sync_transfers();
         },
     );
 }
 
-fn post_failed(name: &str, reason: &str) {
+fn post_failed(name: &str, reason: &str, my_epoch: u64) {
     let name = name.to_owned();
     let reason = reason.to_owned();
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
+            if my_epoch != epoch().load(Ordering::SeqCst) {
+                return;
+            }
             if qichi.notify_enabled {
                 super::notifications::show(
                     "下载失败",
@@ -273,20 +286,25 @@ fn post_failed(name: &str, reason: &str) {
             qichi
                 .as_mut()
                 .set_message(&format!("下载失败：{name} —— {reason}"), false);
+            qichi.as_mut().sync_transfers();
         },
     );
 }
 
 /// 整批结束：收尾状态、清忙标志、给一条总账。
-fn post_finished(cancelled: bool) {
+///
+/// `my_epoch` 与当前代数不一致时说明期间退出过登录：只清忙标志，
+/// 不往登录页上写「下载已取消」这类属于上一个会话的状态消息。
+fn post_finished(cancelled: bool, my_epoch: u64) {
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
+            // 期间退出过登录：队列状态、忙标志与记录表都已由登出流程重置，
+            // 这里什么都别碰，否则可能把重新登录后的新批次状态清掉
+            if my_epoch != epoch().load(Ordering::SeqCst) {
+                return;
+            }
             let (done, failed) = with_batch(|state| {
                 state.running = false;
-                state.current.clear();
-                state.current_bytes = 0;
-                state.current_total = None;
-                state.remaining = 0;
                 (state.done, state.failed)
             });
             set_busy(false);
@@ -298,25 +316,9 @@ fn post_finished(cancelled: bool) {
                 format!("下载结束：成功 {done} 个，失败 {failed} 个")
             };
             qichi.as_mut().set_message(&message, false);
-            qichi.as_mut().sync_download_state();
+            qichi.as_mut().sync_transfers();
         },
     );
-}
-
-/// 单条目进度文本（同步到属性时用）。
-pub(crate) fn progress_text(current: &str, bytes: u64, total: Option<u64>) -> String {
-    if current.is_empty() {
-        return String::new();
-    }
-    match total {
-        Some(total) if total > 0 => format!(
-            "{current} · {} / {}（{}%）",
-            format_size(bytes),
-            format_size(total),
-            (bytes as f64 / total as f64 * 100.0).clamp(0.0, 100.0) as i32
-        ),
-        _ => format!("{current} · {}", format_size(bytes)),
-    }
 }
 
 #[cfg(test)]
@@ -347,6 +349,7 @@ mod tests {
             id: "1".into(),
             sub_dir: vec!["剧集".into(), "第一季".into()],
             name: "第 1 集.mkv".into(),
+            size: 0,
         };
         assert_eq!(display_path(&nested), "剧集/第一季/第 1 集.mkv");
         let single = Job {
@@ -354,12 +357,5 @@ mod tests {
             ..nested
         };
         assert_eq!(display_path(&single), "第 1 集.mkv");
-    }
-
-    #[test]
-    fn progress_text_shows_percent_only_with_total() {
-        assert_eq!(progress_text("", 0, None), "", "没有当前文件就不显示");
-        assert!(progress_text("a.mkv", 50, Some(100)).contains("50%"));
-        assert!(!progress_text("a.mkv", 50, None).contains('%'));
     }
 }

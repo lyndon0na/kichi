@@ -19,8 +19,8 @@ const QML_FILES: &[&str] = &[
     "qml/FileListDensity.qml",
     "qml/FileRow.qml",
     "qml/TasksPage.qml",
+    "qml/TransfersPage.qml",
     "qml/SettingsPage.qml",
-    "qml/DownloadBar.qml",
     "qml/SettingsAbout.qml",
     "qml/SettingsPlayback.qml",
 ];

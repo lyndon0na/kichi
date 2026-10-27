@@ -62,7 +62,7 @@ Rectangle {
         Label {
             Layout.fillWidth: true
             Layout.leftMargin: 6
-            text: qsTr("云盘与离线任务")
+            text: qsTr("云盘、传输与离线任务")
             elide: Text.ElideRight
             color: bar.mutedColor
             font.pixelSize: 11
@@ -73,6 +73,7 @@ Rectangle {
         Repeater {
             model: [
                 { "label": qsTr("我的文件"), "icon": "folder" },
+                { "label": qsTr("传输任务"), "icon": "transfer" },
                 { "label": qsTr("离线任务"), "icon": "download" },
                 { "label": qsTr("设置"), "icon": "settings" }
             ]
@@ -117,6 +118,29 @@ Rectangle {
                         font.bold: navButton.checked
                         color: palette.windowText
                         elide: Text.ElideRight
+                    }
+
+                    // 传输任务：进行中条数徽标（0 时隐藏）。
+                    // 直接绑定 backend 属性：changed 是它们的统一 NOTIFY 信号
+                    Rectangle {
+                        readonly property int count: navButton.modelData.icon === "transfer"
+                                                    && bar.backend ? bar.backend.downloadActive : 0
+
+                        Layout.alignment: Qt.AlignVCenter
+                        visible: count > 0
+                        implicitWidth: badgeLabel.implicitWidth + 12
+                        implicitHeight: 16
+                        radius: 8
+                        color: palette.highlight
+
+                        Label {
+                            id: badgeLabel
+                            anchors.centerIn: parent
+                            text: parent.count > 99 ? "99+" : String(parent.count)
+                            color: palette.highlightedText
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
                     }
                 }
             }

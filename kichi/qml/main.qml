@@ -219,6 +219,10 @@ ApplicationWindow {
                         backend: backend
                     }
 
+                    TransfersPage {
+                        backend: backend
+                    }
+
                     TasksPage {
                         backend: backend
                     }
@@ -263,8 +267,10 @@ ApplicationWindow {
 
     function pageTitle() {
         if (root.currentPage === 1)
-            return qsTr("离线任务")
+            return qsTr("传输任务")
         if (root.currentPage === 2)
+            return qsTr("离线任务")
+        if (root.currentPage === 3)
             return qsTr("设置")
         return qsTr("我的文件")
     }

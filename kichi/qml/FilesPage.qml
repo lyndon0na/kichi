@@ -243,12 +243,6 @@ Item {
                 }
             }
         }
-
-        // —— 下载进度（有下载在跑时出现；点 × 取消）——
-        DownloadBar {
-            Layout.fillWidth: true
-            backend: page.backend
-        }
     }
 
     // —— 右键菜单与重命名 / 新建 / 删除弹窗（内容在 FilesPageMenu.qml）——

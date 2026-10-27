@@ -68,11 +68,14 @@ pub mod qobject {
         #[qproperty(bool, window_maximized, cxx_name = "windowMaximized", READ, NOTIFY = changed)]
         #[qproperty(QString, settings_path, cxx_name = "settingsPath", READ, NOTIFY = changed)]
         #[qproperty(QString, storage_backend, cxx_name = "storageBackend", READ, NOTIFY = changed)]
-        #[qproperty(QString, download_current, cxx_name = "downloadCurrent", READ, NOTIFY = changed)]
         #[qproperty(bool, download_running, cxx_name = "downloadRunning", READ, NOTIFY = changed)]
-        #[qproperty(i32, download_remaining, cxx_name = "downloadRemaining", READ, NOTIFY = changed)]
-        #[qproperty(i32, download_done, cxx_name = "downloadDone", READ, NOTIFY = changed)]
-        #[qproperty(i32, download_failed, cxx_name = "downloadFailed", READ, NOTIFY = changed)]
+        #[qproperty(QVariantList, transfers, READ, NOTIFY = changed)]
+        /// 传输记录的结构版本号：只有排队 / 开始 / 完成 / 失败 / 取消 / 清空才 +1。
+        /// QML 用它判断该不该重新读取 `transfers`，避免进度节拍把整个
+        /// ListView 模型重灌（会把滚动位置冲回顶部）。
+        #[qproperty(i32, transfer_revision, cxx_name = "transferRevision", READ, NOTIFY = changed)]
+        #[qproperty(QVariantList, transfer_live, cxx_name = "transferLive", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_active, cxx_name = "downloadActive", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
         #[qproperty(bool, search_active, cxx_name = "searchActive", READ, NOTIFY = changed)]
@@ -201,6 +204,11 @@ pub mod qobject {
         #[cxx_name = "cancelDownloads"]
         fn cancel_downloads(self: Pin<&mut Self>);
 
+        /// 清空已结束（完成 / 失败 / 已取消）的传输记录
+        #[qinvokable]
+        #[cxx_name = "clearFinishedTransfers"]
+        fn clear_finished_transfers(self: Pin<&mut Self>);
+
         #[qinvokable]
         #[cxx_name = "openDownloadDir"]
         fn open_download_dir(self: &Self);
@@ -294,6 +302,7 @@ mod queue;
 mod search;
 mod settings;
 mod tasks;
+mod transfers;
 mod tray;
 mod tray_icon;
 
@@ -375,13 +384,16 @@ pub struct KichiRust {
     pub(crate) settings_path: QString,
     /// 令牌存储后端（KWallet / 降级文件），设置页只读展示
     pub(crate) storage_backend: QString,
-    /// 下载进度文本（当前文件 · 已下 / 总量）
-    pub(crate) download_current: QString,
-    /// 是否有一批下载在跑（决定界面显示进度条与取消按钮）
+    /// 传输任务记录（本次运行内；QML 直接当 model 用）
+    pub(crate) transfers: QVariantList,
+    /// 记录结构版本（QML 据此决定要不要重读 `transfers`）
+    pub(crate) transfer_revision: i32,
+    /// 正在下载那一条的实时进度（只有 0/1 个元素：避免为进度重建整个列表）
+    pub(crate) transfer_live: QVariantList,
+    /// 进行中（排队 + 下载中）的传输条数：侧栏徽标
+    pub(crate) download_active: i32,
+    /// 是否有一批下载在跑（右键菜单据此禁用重复下载）
     pub(crate) download_running: bool,
-    pub(crate) download_remaining: i32,
-    pub(crate) download_done: i32,
-    pub(crate) download_failed: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
     /// 有文件操作（改名 / 新建 / 删除）在途，界面上禁用相关入口
@@ -468,11 +480,11 @@ impl Default for KichiRust {
                 crate::settings::default_path().to_string_lossy().as_ref(),
             ),
             storage_backend: QString::default(),
-            download_current: QString::default(),
+            transfers: QVariantList::default(),
+            transfer_revision: 0,
+            transfer_live: QVariantList::default(),
+            download_active: 0,
             download_running: false,
-            download_remaining: 0,
-            download_done: 0,
-            download_failed: 0,
             download_dir: QString::default(),
             file_action_running: false,
             search_active: false,
