@@ -19,6 +19,7 @@ const QML_FILES: &[&str] = &[
     "qml/FileListDensity.qml",
     "qml/FileRow.qml",
     "qml/KScrollBar.qml",
+    "qml/KProgressBar.qml",
     "qml/UiMetrics.qml",
     "qml/TasksPage.qml",
     "qml/TransfersPage.qml",

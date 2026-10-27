@@ -28,6 +28,17 @@ if [[ -n "$raw" ]]; then
     exit 1
 fi
 
+# —— 规则：进度条只有一种做法（docs/pitfalls.md 第 15 条）——
+# breeze 风格的 ProgressBar 在宽度变化时会逐帧刷 TypeError（见 pitfalls 第 15 条），
+# 页面里一律 KProgressBar；下面这段静态检查当场拦住裸写法。
+rawbar="$(grep -rnE '(^|[^A-Za-z])ProgressBar[[:space:]]*\{' \
+        kichi/qml --include='*.qml' | grep -v '/KProgressBar.qml:' || true)"
+if [[ -n "$rawbar" ]]; then
+    echo "qml-lint: 发现裸 ProgressBar，应改用 KProgressBar（见 docs/pitfalls.md 第 15 条）：" >&2
+    printf '%s\n' "$rawbar" >&2
+    exit 1
+fi
+
 # qmllint 常在 /usr/lib64/qt6/bin，该系统目录默认不在 PATH
 LINT="$(command -v qmllint || true)"
 if [[ -z "$LINT" ]]; then

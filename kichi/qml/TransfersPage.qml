@@ -323,7 +323,7 @@ Item {
                             spacing: 10
                             visible: row.running
 
-                            ProgressBar {
+                            KProgressBar {
                                 Layout.fillWidth: true
                                 from: 0
                                 to: 100

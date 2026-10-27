@@ -130,7 +130,7 @@ Item {
                         spacing: 10
                         visible: card.isActive || (card.info && card.info.phase === "error")
 
-                        ProgressBar {
+                        KProgressBar {
                             Layout.fillWidth: true
                             from: 0
                             to: 100
