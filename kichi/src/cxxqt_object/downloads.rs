@@ -18,7 +18,9 @@ use cxx_qt_lib::QString;
 
 use super::qobject;
 use super::queue;
+use super::reveal;
 use super::transfers;
+use super::transfers_actions;
 use crate::session::Failure;
 
 impl qobject::Kichi {
@@ -84,6 +86,46 @@ impl qobject::Kichi {
     pub fn clear_finished_transfers(mut self: Pin<&mut Self>) {
         transfers::clear_finished();
         self.as_mut().sync_transfers();
+    }
+
+    /// 重试一条失败的传输记录：按文件 id 重新入队，落回原批次的下载目录。
+    ///
+    /// 顺序：取目标（记录锁）→ 查重 + 登记（调度锁）→ 成功后才删旧行 →
+    /// 先提示再加入、推进队列（`advance` 的启动失败原因可以覆盖提示）。
+    pub fn retry_transfer(mut self: Pin<&mut Self>, key: QString) {
+        let key = key.to_string();
+        let Some(job) = transfers_actions::retry_target(&key) else {
+            self.as_mut().set_message("这条记录已经不能重试了", false);
+            return;
+        };
+        let name = job.display_name();
+        let source_id = job.id.clone();
+        if queue::reserve_retry(job).is_some() {
+            transfers_actions::remove(&key);
+            self.as_mut()
+                .set_message(&format!("已重新加入下载队列：{name}"), false);
+            // advance 会 sync；线程起不来时它会用失败原因覆盖上面的提示
+            self.as_mut().advance_downloads();
+        } else {
+            // 同一个文件 id 已在排队 / 下载中：旧行不删，带用户去看已有那一行
+            self.as_mut().set_message("这个条目已在下载队列中", false);
+            self.as_mut()
+                .locate_transfer(QString::from(source_id.as_str()));
+        }
+    }
+
+    /// 在文件管理器里显示一条已完成记录的落盘文件。
+    pub fn reveal_transfer(mut self: Pin<&mut Self>, key: QString) {
+        // 路径从 PathBuf 直接交给后台线程，非 UTF-8 文件名不会在往返中失真
+        let Some(path) = transfers_actions::path_for(&key.to_string()) else {
+            self.as_mut()
+                .set_message("这条记录没有可定位的落盘路径", false);
+            return;
+        };
+        if let Err(err) = reveal::spawn(path) {
+            self.as_mut()
+                .set_message(&format!("无法打开文件管理器：{err}"), false);
+        }
     }
 
     /// 推进调度器：空闲且队列非空时起下一批的线程。主线程调用。

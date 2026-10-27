@@ -10,18 +10,18 @@
 //! [`with_records`] 的互斥锁；锁中毒时继续用内部数据，不 panic。
 //! QML 模型由主线程通过 `sync_transfers()` 重建，下载线程只改记录 + 投递同步任务。
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use cxx_qt_lib::QVariant;
+use kichi_core::{EntryKind, FileEntry};
 
-use super::transfers_view::{live_map, notice_map, record_map};
+use super::transfers_view::{build_snapshot, live_map};
 use super::QVariantList;
 
 /// 进程内最多保留的记录数（超出丢最早的已结束记录，进行中的绝不丢）。
 const MAX_RECORDS: usize = 2000;
-/// 一次最多交给 QML 的行数（大文件夹下载时避免整列表反复重建拖慢界面）。
-const MAX_ROWS: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransferState {
@@ -67,21 +67,76 @@ impl TransferState {
     }
 }
 
+/// 传输记录的重试种子：一行要下载什么、写到哪里。
+#[derive(Debug, Clone)]
+pub(crate) struct TransferJob {
+    /// 云端条目 id：文件行 = 文件 id，文件夹总账行 = 文件夹 id
+    pub(crate) id: String,
+    /// 裸名字（不含 sub_dir）
+    pub(crate) name: String,
+    pub(crate) kind: EntryKind,
+    /// 官方标注的大小（0 = 未知）
+    pub(crate) size: u64,
+    /// 列表里的审核标记（详情没下发 audit 时用来跳过无用的 5 秒重试）
+    pub(crate) audit_flagged: bool,
+    /// 相对下载目录的层级；单文件 / 文件夹总账行为空
+    pub(crate) sub_dir: Vec<String>,
+    /// 入队时的下载目录快照
+    pub(crate) dir: PathBuf,
+}
+
+impl TransferJob {
+    /// 从当前目录 / 搜索结果里的条目建种子（普通「下载」入口）。
+    pub(crate) fn from_entry(entry: &FileEntry, dir: PathBuf) -> Self {
+        Self {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            kind: entry.kind,
+            size: entry.size,
+            audit_flagged: entry.audit_flagged,
+            sub_dir: Vec::new(),
+            dir,
+        }
+    }
+
+    /// 界面显示的路径：`剧集/第 1 集.mkv`；单文件就是裸名字。
+    pub(crate) fn display_name(&self) -> String {
+        if self.sub_dir.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}/{}", self.sub_dir.join("/"), self.name)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Transfer {
     /// 批次序号（进程内自增）
     pub(crate) batch: u64,
     /// 批内顺序，决定同批次的显示顺序
     pub(crate) index: usize,
-    /// 显示路径：剧集/第 1 集.mkv
-    pub(crate) name: String,
+    /// 要重下所需的一切（id / 裸名 / 类型 / 大小 / 审核标记 / 子目录 / 目录快照）
+    pub(crate) job: TransferJob,
     /// 来源条目 id：同一批的每一行都一样，QML 据此定位到批次
     pub(crate) source_id: String,
     pub(crate) state: TransferState,
     pub(crate) bytes: u64,
     pub(crate) total: Option<u64>,
-    /// 完成 = 落盘路径；失败 = 原因；取消可带原因
+    /// 失败 / 取消原因（完成行的说明由 path 派生）
     pub(crate) detail: String,
+    /// 成功落盘的最终路径；未完成 / 失败为 None
+    pub(crate) path: Option<PathBuf>,
+}
+
+impl Transfer {
+    pub(crate) fn display_name(&self) -> String {
+        self.job.display_name()
+    }
+}
+
+/// 记录的稳定标识（QML 用它把实时进度贴到对应的行上，逐条动作也按它查）。
+pub(crate) fn record_key(record: &Transfer) -> String {
+    format!("{}:{}", record.batch, record.index)
 }
 
 fn records() -> &'static Mutex<Vec<Transfer>> {
@@ -89,7 +144,8 @@ fn records() -> &'static Mutex<Vec<Transfer>> {
     RECORDS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn with_records<T>(f: impl FnOnce(&mut Vec<Transfer>) -> T) -> T {
+/// 记录表加锁（中毒时继续用内部数据）；`transfers_actions` 的逐条动作也走这里。
+pub(super) fn with_records<T>(f: impl FnOnce(&mut Vec<Transfer>) -> T) -> T {
     let mut guard = records().lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
@@ -101,12 +157,12 @@ pub(crate) fn new_batch() -> u64 {
         .fetch_add(1, Ordering::SeqCst)
 }
 
-/// 整批登记。`jobs` 是（显示路径, 大小）。
+/// 整批登记。真正下载的一行一个 [`TransferJob`]（文件夹总账行只有一条）。
 ///
-/// 排队阶段只登记传给它的行（文件夹批次就一条总账行）；轮到读目录后用
-/// [`expand_folder`] 展开成整批。
-pub(crate) fn start_batch(batch: u64, source_id: &str, jobs: &[(String, u64)]) {
-    with_records(|records| push_batch(records, batch, source_id, jobs));
+/// 排队阶段只登记传给它的行；文件夹批次轮到读目录后用 [`expand_folder`]
+/// 展开成整批。
+pub(crate) fn start_batch(batch: u64, source_id: &str, job: &TransferJob) {
+    with_records(|records| push_job(records, batch, source_id, job));
 }
 
 /// 轮到读目录：把这一批的总账行标成「准备中」。
@@ -118,7 +174,7 @@ pub(crate) fn mark_preparing(batch: u64) {
 ///
 /// 原地替换（不 push 到表尾）是为了保持 (batch, index) 的显示顺序：
 /// 排队中的其他批次会自然地排在它下面。
-pub(crate) fn expand_folder(batch: u64, jobs: &[(String, u64)]) {
+pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob]) {
     with_records(|records| expand_folder_in(records, batch, jobs));
 }
 
@@ -138,7 +194,7 @@ pub(crate) fn progress(batch: u64, index: usize, bytes: u64, total: Option<u64>)
 }
 
 /// 下载成功：记下落盘路径。
-pub(crate) fn finish_ok(batch: u64, index: usize, path: &str) {
+pub(crate) fn finish_ok(batch: u64, index: usize, path: &Path) {
     with_records(|records| finish_ok_in(records, batch, index, path));
 }
 
@@ -198,24 +254,28 @@ fn find(records: &mut [Transfer], batch: u64, index: usize) -> Option<&mut Trans
         .find(|record| record.batch == batch && record.index == index)
 }
 
-fn push_batch(records: &mut Vec<Transfer>, batch: u64, source_id: &str, jobs: &[(String, u64)]) {
-    for (index, (name, size)) in jobs.iter().enumerate() {
-        records.push(Transfer {
-            batch,
-            index,
-            name: name.clone(),
-            source_id: source_id.to_owned(),
-            state: TransferState::Queued,
-            bytes: 0,
-            total: (*size > 0).then_some(*size),
-            detail: String::new(),
-        });
+/// 一条新记录（排队态）。`index` 在文件夹展开时由外层决定。
+pub(super) fn row_from(batch: u64, index: usize, source_id: &str, job: &TransferJob) -> Transfer {
+    Transfer {
+        batch,
+        index,
+        job: job.clone(),
+        source_id: source_id.to_owned(),
+        state: TransferState::Queued,
+        bytes: 0,
+        total: (job.size > 0).then_some(job.size),
+        detail: String::new(),
+        path: None,
     }
+}
+
+fn push_job(records: &mut Vec<Transfer>, batch: u64, source_id: &str, job: &TransferJob) {
+    records.push(row_from(batch, 0, source_id, job));
     trim(records);
 }
 
 /// 把总账行原地换成整批的排队行（位置取总账行的位置）。
-fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[(String, u64)]) {
+fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[TransferJob]) {
     let Some(at) = records
         .iter()
         .position(|record| record.batch == batch && record.index == 0)
@@ -226,16 +286,7 @@ fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[(String, u6
     let rows: Vec<Transfer> = jobs
         .iter()
         .enumerate()
-        .map(|(index, (name, size))| Transfer {
-            batch,
-            index,
-            name: name.clone(),
-            source_id: source_id.clone(),
-            state: TransferState::Queued,
-            bytes: 0,
-            total: (*size > 0).then_some(*size),
-            detail: String::new(),
-        })
+        .map(|(index, job)| row_from(batch, index, &source_id, job))
         .collect();
     // 先把旧行拿掉再插回同一位置：整批原地替换，后面排队的批次不受影响
     records.remove(at);
@@ -277,13 +328,14 @@ fn progress_in(records: &mut [Transfer], batch: u64, index: usize, bytes: u64, t
     }
 }
 
-fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &str) {
+fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &Path) {
     // 用户点取消后，当前文件仍可能刚好下载完整：文件已在磁盘上，照实记成完成
     if let Some(record) = find(records, batch, index) {
         if record.state != TransferState::Done {
             record.state = TransferState::Done;
             record.bytes = record.total.unwrap_or(record.bytes).max(record.bytes);
-            record.detail = format!("保存到 {path}");
+            record.detail.clear();
+            record.path = Some(path.to_path_buf());
         }
     }
 }
@@ -329,39 +381,6 @@ fn trim(records: &mut Vec<Transfer>) {
             None => break,
         }
     }
-}
-
-/// 排序：进行中在前（批次内按顺序），已结束在后（新 → 旧）。
-fn ordered(records: &[Transfer]) -> Vec<&Transfer> {
-    let mut active: Vec<&Transfer> = records
-        .iter()
-        .filter(|record| record.state.is_active())
-        .collect();
-    let mut finished: Vec<&Transfer> = records
-        .iter()
-        .filter(|record| record.state.is_finished())
-        .collect();
-    active.sort_by_key(|record| (record.batch, record.index));
-    finished.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
-    active.extend(finished);
-    active
-}
-
-fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
-    let total = records.len();
-    let active = records
-        .iter()
-        .filter(|record| record.state.is_active())
-        .count();
-    let mut list = QVariantList::default();
-    for record in ordered(records).into_iter().take(MAX_ROWS) {
-        list.append(QVariant::from(&record_map(record)));
-    }
-    if total > MAX_ROWS {
-        list.append(QVariant::from(&notice_map(total - MAX_ROWS)));
-    }
-    let active = i32::try_from(active).unwrap_or(i32::MAX);
-    (list, active)
 }
 
 #[cfg(test)]

@@ -139,7 +139,7 @@ fn download_all(
         match outcome {
             Ok(downloaded) => {
                 add_result(batch, true);
-                transfers::finish_ok(batch, index, &downloaded.path.display().to_string());
+                transfers::finish_ok(batch, index, &downloaded.path);
                 post_saved(&job.name, &downloaded.path, my_epoch);
             }
             Err(_) if cancelled => {
@@ -185,15 +185,6 @@ impl Throttle {
         } else {
             false
         }
-    }
-}
-
-/// 条目 → 界面上显示的路径（`剧集/第 1 集.mkv`）。
-pub(crate) fn display_path(job: &Job) -> String {
-    if job.sub_dir.is_empty() {
-        job.name.clone()
-    } else {
-        format!("{}/{}", job.sub_dir.join("/"), job.name)
     }
 }
 
@@ -298,6 +289,8 @@ pub(crate) struct Start {
     pub(crate) entry: FileEntry,
     pub(crate) dir: PathBuf,
     pub(crate) cancel: Arc<Cancel>,
+    /// 单文件重试时保留的层级（`Job.sub_dir`）
+    pub(crate) sub_dir: Vec<String>,
 }
 
 /// 起这一批的线程：文件夹先读目录，单文件直接进下载循环。
@@ -330,7 +323,7 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
     } else {
         let job = Job {
             id: start.entry.id.clone(),
-            sub_dir: Vec::new(),
+            sub_dir: start.sub_dir.clone(),
             name: start.entry.name.clone(),
             size: start.entry.size,
             audit_flagged: start.entry.audit_flagged,

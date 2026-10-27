@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use kichi_core::{EntryKind, FileEntry};
 
 use super::queue_worker::{run_jobs, spawn_batch, Start};
-use super::transfers;
+use super::transfers::{self, TransferJob};
 use crate::session::download::Cancel;
 use crate::session::Session;
 
@@ -66,6 +66,8 @@ struct Pending {
     state: PendingState,
     done: usize,
     failed: usize,
+    /// 单文件重试时保留的层级；普通下载 / 文件夹批次为空
+    sub_dir: Vec<String>,
 }
 
 impl Pending {
@@ -108,53 +110,89 @@ pub(crate) fn bump_epoch() {
     epoch().fetch_add(1, Ordering::SeqCst);
 }
 
+/// 这个条目是否已有一批在排队 / 准备 / 下载中（`reserve` 与 `reserve_retry` 共用）。
+fn is_taken(scheduler: &Scheduler, source_id: &str) -> bool {
+    let same_id = |pending: &Pending| pending.source_id == source_id;
+    scheduler.current.as_ref().is_some_and(same_id) || scheduler.queue.iter().any(same_id)
+}
+
+/// 把一个待下载条目放进队列（记录登记之后调用）。
+fn enqueue(
+    scheduler: &mut Scheduler,
+    batch: u64,
+    source_id: String,
+    entry: FileEntry,
+    dir: PathBuf,
+    sub_dir: Vec<String>,
+) {
+    scheduler.queue.push_back(Pending {
+        batch,
+        source_id,
+        entry,
+        dir,
+        cancel: Arc::new(Cancel::default()),
+        state: PendingState::Queued,
+        done: 0,
+        failed: 0,
+        sub_dir,
+    });
+}
+
 /// 登记一批下载。同一源条目未结束时返回 `None`（调用方转去定位那一行）。
 ///
 /// **查重与登记在同一把锁里**：连点两次也只会建一个批次。
 pub(crate) fn reserve(entry: FileEntry, dir: PathBuf) -> Option<u64> {
     let source_id = entry.id.clone();
+    let job = TransferJob::from_entry(&entry, dir.clone());
     with_scheduler(|scheduler| {
-        let taken = scheduler
-            .current
-            .as_ref()
-            .is_some_and(|pending| pending.source_id == source_id)
-            || scheduler
-                .queue
-                .iter()
-                .any(|pending| pending.source_id == source_id);
-        if taken {
+        if is_taken(scheduler, &source_id) {
             return None;
         }
         let batch = transfers::new_batch();
         // 排队批次只登记一条总账行：文件夹轮到时才展开成整批，
         // 免得几百个文件排队时把 MAX_RECORDS 挤爆。
-        transfers::start_batch(batch, &source_id, &[(entry.name.clone(), entry.size)]);
-        scheduler.queue.push_back(Pending {
+        transfers::start_batch(batch, &source_id, &job);
+        enqueue(scheduler, batch, source_id, entry, dir, Vec::new());
+        Some(batch)
+    })
+}
+
+/// 重试一条失败记录：与 [`reserve`] 共用同一把锁里的查重 / 登记。
+/// 判重键是 `job.id`；同一文件已在排队 / 下载中时返回 `None`。
+pub(crate) fn reserve_retry(job: TransferJob) -> Option<u64> {
+    let source_id = job.id.clone();
+    with_scheduler(|scheduler| {
+        if is_taken(scheduler, &source_id) {
+            return None;
+        }
+        let batch = transfers::new_batch();
+        transfers::start_batch(batch, &source_id, &job);
+        // 只用到 id / name / kind / size / audit；其余 FileEntry 字段下载路径不读。
+        let entry = FileEntry {
+            id: job.id.clone(),
+            name: job.name.clone(),
+            kind: job.kind,
+            size: job.size,
+            modified_at: None,
+            md5: None,
+            audit_flagged: job.audit_flagged,
+            media: false,
+        };
+        enqueue(
+            scheduler,
             batch,
             source_id,
             entry,
-            dir,
-            cancel: Arc::new(Cancel::default()),
-            state: PendingState::Queued,
-            done: 0,
-            failed: 0,
-        });
+            job.dir.clone(),
+            job.sub_dir.clone(),
+        );
         Some(batch)
     })
 }
 
 /// 这个条目是否已在排队 / 准备 / 下载中（QML 菜单文案用）。
 pub(crate) fn is_pending(source_id: &str) -> bool {
-    with_scheduler(|scheduler| {
-        scheduler
-            .current
-            .as_ref()
-            .is_some_and(|pending| pending.source_id == source_id)
-            || scheduler
-                .queue
-                .iter()
-                .any(|pending| pending.source_id == source_id)
-    })
+    with_scheduler(|scheduler| is_taken(scheduler, source_id))
 }
 
 /// 当前是否有一批在准备或执行，以及排队中的批次数（属性刷新用）。
@@ -217,6 +255,7 @@ fn next_start() -> Option<Start> {
                 entry: pending.entry.clone(),
                 dir: pending.dir.clone(),
                 cancel: pending.cancel.clone(),
+                sub_dir: pending.sub_dir.clone(),
             };
             scheduler.current = Some(pending);
             return Some(start);
@@ -265,9 +304,17 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
         }
     });
 
-    let records: Vec<(String, u64)> = jobs
+    let records: Vec<TransferJob> = jobs
         .iter()
-        .map(|job| (super::queue_worker::display_path(job), job.size))
+        .map(|job| TransferJob {
+            id: job.id.clone(),
+            name: job.name.clone(),
+            kind: EntryKind::File,
+            size: job.size,
+            audit_flagged: job.audit_flagged,
+            sub_dir: job.sub_dir.clone(),
+            dir: dir.clone(),
+        })
         .collect();
     transfers::expand_folder(batch, &records);
 

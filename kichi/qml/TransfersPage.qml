@@ -3,7 +3,6 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 传输任务页：本次运行内的下载记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
-//
 // 数据全部来自 backend.transfers（Rust 侧已排好序：进行中在前，已结束新→旧），
 // 本页只负责显示与三个操作入口。记录不落盘，退出 kichi 即清空。
 Item {
@@ -50,13 +49,9 @@ Item {
 
     Component.onCompleted: syncRows()
 
-    // —— 定位（点已占用的条目时跳过来看）——
-    /// 请求定位到某个来源条目（main.qml 收到 locateTransfer 后调用）。
-    ///
-    /// 用**直接调用**而不是监听属性变化：同一个条目连点两次时属性值不变，
-    /// changed 信号不会再来一次，但用户仍然期望跳过去再看一眼。
-    /// 记录可能刚变（这一下才读到新批次），所以等一帧：
-    /// `Qt.callLater` 在 `syncRows` 之后跑。
+    // —— 定位：点已占用的条目时跳过来看（main.qml 收到 locateTransfer 后调用）——
+    // 用直接调用而非监听属性：同一条目连点两次时属性值不变、changed 不会再来；
+    // 记录可能刚变，等一帧（Qt.callLater 在 syncRows 之后跑）。
     function focusSource(sourceId) {
         if (sourceId.length === 0)
             return
@@ -190,7 +185,8 @@ Item {
             progress: item.progress,
             progressText: item.progressText,
             sizeText: item.sizeText,
-            detail: item.detail
+            detail: item.detail,
+            path: item.path || ""
         }
     }
 
@@ -286,6 +282,7 @@ Item {
                 width: list.width - metrics.scrollBarSlot
                 flash: row.key === page.highlightedKey
                 live: page.liveRow
+                backend: page.backend
             }
 
             Label {

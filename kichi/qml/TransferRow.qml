@@ -24,15 +24,32 @@ ItemDelegate {
     required property string progressText
     required property string sizeText
     required property string detail
+    /// 完成行的落盘路径（未完成 / 失败为空串）
+    required property string path
 
     /// 这一行是否刚被定位（约 1.2 秒后由页面清掉）
     property bool flash: false
     /// 实时进度（下载中那一条由 transferLive 单独刷新）
     property var live: null
+    /// 页面把 Kichi 后端传进来（本组件不直接引 backend 单例）
+    property var backend: null
 
     readonly property bool notice: row.phase === "notice"
     readonly property bool failed: row.phase === "failed"
     readonly property bool preparing: row.phase === "preparing"
+    readonly property bool canReveal: row.phase === "done" && row.path.length > 0
+
+    /// 在文件管理器里选中落盘文件（整段路径与「打开位置」都走这里）
+    function revealFile() {
+        if (row.canReveal && row.backend !== null)
+            row.backend.revealTransfer(row.key)
+    }
+
+    /// 重新入队这一条失败记录（记录表由 Rust 侧处理，本组件只发请求）
+    function retryDownload() {
+        if (row.failed && row.backend !== null)
+            row.backend.retryTransfer(row.key)
+    }
 
     // 行高写死（与文件列表同一做法）：交给控件自己算会让各状态高低不一
     implicitHeight: 60
@@ -143,17 +160,70 @@ ItemDelegate {
                 }
             }
 
-            Label {
+            // 说明行 + 行内动作：整段路径可点（完成）、右端「打开位置」/「重试」。
+            // 不用 Button / ToolButton：Breeze 的 padding 会撑破 20px 槽位。
+            RowLayout {
                 anchors.fill: parent
-                // 准备中单独一条说明：读目录期间没有进度也没有落盘路径
-                readonly property string explanation: row.preparing
-                    ? qsTr("正在读取目录结构…") : row.detail
-                visible: !row.running && explanation.length > 0
-                text: explanation
-                font.pixelSize: 12
-                verticalAlignment: Text.AlignVCenter
-                elide: Text.ElideMiddle
-                color: row.failed ? "#c0392b" : palette.placeholderText
+                spacing: 10
+                visible: !row.running
+
+                Label {
+                    id: detailLabel
+                    objectName: "detailLink"
+                    Layout.fillWidth: true
+                    // 准备中单独一条说明：读目录期间没有进度也没有落盘路径
+                    text: row.preparing ? qsTr("正在读取目录结构…") : row.detail
+                    font.pixelSize: 12
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideMiddle
+                    color: row.failed ? "#c0392b" : palette.placeholderText
+                    font.underline: detailMouse.containsMouse && row.canReveal
+
+                    MouseArea {
+                        id: detailMouse
+                        anchors.fill: parent
+                        enabled: row.canReveal
+                        hoverEnabled: true
+                        cursorShape: row.canReveal ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: row.revealFile()
+                    }
+                }
+
+                Label {
+                    objectName: "revealLink"
+                    visible: row.canReveal
+                    text: qsTr("打开位置")
+                    font.pixelSize: 12
+                    verticalAlignment: Text.AlignVCenter
+                    color: palette.link
+                    font.underline: revealMouse.containsMouse
+
+                    MouseArea {
+                        id: revealMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: row.revealFile()
+                    }
+                }
+
+                Label {
+                    objectName: "retryLink"
+                    visible: row.failed
+                    text: qsTr("重试")
+                    font.pixelSize: 12
+                    verticalAlignment: Text.AlignVCenter
+                    color: palette.link
+                    font.underline: retryMouse.containsMouse
+
+                    MouseArea {
+                        id: retryMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: row.retryDownload()
+                    }
+                }
             }
         }
     }

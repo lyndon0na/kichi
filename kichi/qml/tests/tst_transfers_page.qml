@@ -29,6 +29,13 @@ TestCase {
         property int downloadActive: 0
         property int downloadQueued: 0
         property var transferLive: []
+        /// 逐条动作的记录：断言「点了哪一行、调了几次」
+        property int revealCount: 0
+        property string revealedKey: ""
+        property int retryCount: 0
+        property string retriedKey: ""
+        /// 由具体用例注入：模拟 Rust 在点击处理期间同步换掉整份记录
+        property var onRetry: null
         signal changed()
         function cancelDownloads() {}
         function openDownloadDir() {}
@@ -36,6 +43,16 @@ TestCase {
         function locateTransfer(sourceId) {}
         function isDownloadPending(id) {
             return false
+        }
+        function revealTransfer(key) {
+            revealCount += 1
+            revealedKey = key
+        }
+        function retryTransfer(key) {
+            retryCount += 1
+            retriedKey = key
+            if (onRetry !== null)
+                onRetry(key)
         }
     }
 
@@ -47,6 +64,11 @@ TestCase {
     property var page: null
 
     function init() {
+        backend.revealCount = 0
+        backend.revealedKey = ""
+        backend.retryCount = 0
+        backend.retriedKey = ""
+        backend.onRetry = null
         // 挂在测试窗口下并可见：滚动位置相关的断言需要真实的布局几何
         // （`createObject(null)` 建出来的页面没有窗口，contentHeight 恒为 0）
         page = pageComponent.createObject(parent, {
@@ -79,7 +101,9 @@ TestCase {
             sizeText: "1.0 MB",
             detail: phase === "preparing" ? "正在读取目录结构…"
                   : phase === "failed" ? "下载超时：30 秒没有收到数据（已下载 1.0 MB）"
-                  : ""
+                  : phase === "done" ? "保存到 /home/me/Downloads/" + key + ".mkv"
+                  : "",
+            path: phase === "done" ? "/home/me/Downloads/" + key + ".mkv" : ""
         }
     }
 
@@ -167,6 +191,37 @@ TestCase {
         return null
     }
 
+    /// 第 index 行的 delegate（按 Rust 快照的显示顺序）。
+    function rowAt(index) {
+        var list = findList(page)
+        return list ? list.itemAtIndex(index) : null
+    }
+
+    /// 在 delegate 里按 objectName 找控件（contentItem 不一定在 children 里）。
+    function findByName(item, name) {
+        if (!item)
+            return null
+        if (item.objectName === name)
+            return item
+        var candidates = []
+        if (item.children)
+            candidates = candidates.concat(item.children)
+        if (item.contentItem)
+            candidates.push(item.contentItem)
+        for (var i = 0; i < candidates.length; i++) {
+            var found = findByName(candidates[i], name)
+            if (found)
+                return found
+        }
+        return null
+    }
+
+    /// 行内某个 objectName 的控件。
+    function controlAt(index, name) {
+        var delegate = rowAt(index)
+        return delegate ? findByName(delegate, name) : null
+    }
+
     // 触发过卡死的原始序列：失败记录留着，重新下载。
     function test_restart_after_failure_keeps_working() {
         publish([record("1:0", "failed")])
@@ -228,7 +283,8 @@ TestCase {
                 progress: 0,
                 progressText: "",
                 sizeText: "",
-                detail: ""
+                detail: "",
+                path: ""
             }
         }
         publish([record("1:0", "failed"), notice(5)])
@@ -352,5 +408,89 @@ TestCase {
         compare(rowsModel().get(0).phase, "preparing")
         compare(rowsModel().get(0).sourceId, "src-1:0")
         compare(backend.downloadActive, 2, "准备中也算进行中")
+    }
+
+    // —— 单条动作：完成行「打开位置」/ 失败行「重试」（2026-10-27）——
+
+    // 完成行：整段路径与右端链接调同一个方法，key 必须是这一行。
+    function test_done_row_path_and_link_reveal_the_file() {
+        publish([record("1:0", "done")])
+        wait(50)
+
+        var detail = controlAt(0, "detailLink")
+        verify(detail !== null, "完成行要能找到路径说明")
+        verify(detail.text.indexOf("保存到") === 0, "路径仍是说明文字")
+        mouseClick(detail)
+        compare(backend.revealCount, 1, "点整段路径调一次 reveal")
+        compare(backend.revealedKey, "1:0")
+
+        var link = controlAt(0, "revealLink")
+        verify(link !== null && link.visible, "完成行显示「打开位置」")
+        mouseClick(link)
+        compare(backend.revealCount, 2, "点「打开位置」也调 reveal")
+        compare(backend.revealedKey, "1:0")
+
+        var retry = controlAt(0, "retryLink")
+        verify(retry === null || !retry.visible, "完成行不给重试")
+    }
+
+    // 失败行：只显示「重试」，路径不可点。
+    function test_failed_row_retries() {
+        publish([record("1:0", "failed")])
+        wait(50)
+
+        var reveal = controlAt(0, "revealLink")
+        verify(reveal === null || !reveal.visible, "失败行没有「打开位置」")
+
+        var detail = controlAt(0, "detailLink")
+        verify(detail !== null, "失败原因照常显示")
+        mouseClick(detail)
+        compare(backend.revealCount, 0, "失败行点路径不该去定位文件")
+
+        var retry = controlAt(0, "retryLink")
+        verify(retry !== null && retry.visible, "失败行显示「重试」")
+        mouseClick(retry)
+        compare(backend.retryCount, 1)
+        compare(backend.retriedKey, "1:0", "重试的是这一行")
+    }
+
+    // 排队 / 下载中 / 已取消：两个行内动作都不出现。
+    function test_only_finished_or_failed_rows_have_actions() {
+        publish([
+            record("1:0", "queued"),
+            record("2:0", "running"),
+            record("3:0", "cancelled")
+        ])
+        wait(50)
+        for (var i = 0; i < 3; i++) {
+            var reveal = controlAt(i, "revealLink")
+            var retry = controlAt(i, "retryLink")
+            verify(reveal === null || !reveal.visible,
+                   "第 " + i + " 行不该有「打开位置」")
+            verify(retry === null || !retry.visible, "第 " + i + " 行不该有「重试」")
+        }
+        compare(backend.revealCount, 0)
+        compare(backend.retryCount, 0)
+    }
+
+    // 点击「重试」时 Rust 会同步删掉旧失败行、加入新排队行——被点的 delegate
+    // 当场销毁。必须零 QWARN（qml-lint.sh 把 QWARN 当失败）。
+    function test_retry_click_can_delete_its_own_row() {
+        publish([record("1:0", "failed")])
+        wait(50)
+        backend.onRetry = function (key) {
+            // 与 Rust 一样：删旧行 + 加新排队行，同步发快照
+            publish([record("2:0", "queued")])
+        }
+
+        var retry = controlAt(0, "retryLink")
+        verify(retry !== null && retry.visible)
+        mouseClick(retry)
+
+        compare(backend.retryCount, 1)
+        compare(backend.retriedKey, "1:0")
+        wait(50)
+        compare(dump(), "2:0:queued", "旧失败行消失，新排队行出现")
+        compare(rowsModel().count, 1)
     }
 }

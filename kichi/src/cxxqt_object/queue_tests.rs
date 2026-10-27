@@ -23,6 +23,19 @@ fn reserve_id(id: &str) -> Option<u64> {
     reserve(entry(id, EntryKind::Folder, id), PathBuf::from("/tmp"))
 }
 
+/// 重试种子（单文件 / 文件夹总账行都造得出来）。
+fn retry_job(id: &str, kind: EntryKind, sub_dir: &[&str]) -> TransferJob {
+    TransferJob {
+        id: id.to_owned(),
+        name: format!("{id}.mkv"),
+        kind,
+        size: 123,
+        audit_flagged: false,
+        sub_dir: sub_dir.iter().map(|part| (*part).to_owned()).collect(),
+        dir: PathBuf::from("/tmp/kichi-retry"),
+    }
+}
+
 /// 调度器是进程级单例：测试默认并行跑，必须串起来，否则互相清状态。
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -227,4 +240,94 @@ fn release_unknown_batch_is_a_no_op() {
     reset_for_test();
     assert!(release(999).is_none());
     reset_for_test();
+}
+
+// —— 失败重试（2026-10-27 传输页逐条动作）——
+
+#[test]
+fn retry_single_file_keeps_identity_and_sub_dir() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_retry(retry_job("file-1", EntryKind::File, &["剧集", "第一季"]))
+        .expect("失败的单个文件可以重试");
+
+    let start = next_start().expect("轮到这一批");
+    assert_eq!(start.batch, batch);
+    assert!(!start.folder, "单个文件重试不用读目录");
+    assert_eq!(start.entry.id, "file-1", "重试的是文件 id");
+    assert_eq!(start.sub_dir, vec!["剧集", "第一季"], "保留原批次的子目录");
+    assert_eq!(
+        start.dir,
+        PathBuf::from("/tmp/kichi-retry"),
+        "落回原批次的目录快照"
+    );
+    assert_eq!(start.entry.size, 123, "大小原样带给记录表");
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn retry_keeps_the_audit_flag_for_the_link_probe() {
+    let _guard = lock();
+    reset_for_test();
+    let mut job = retry_job("file-1", EntryKind::File, &[]);
+    job.audit_flagged = true;
+    reserve_retry(job).expect("审核标记的文件也能重试");
+    let start = next_start().expect("轮到这一批");
+    assert!(
+        start.entry.audit_flagged,
+        "审核标记随重试保留，避免再白等 5 秒取链"
+    );
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn retry_folder_ledger_reads_the_folder_again() {
+    let _guard = lock();
+    reset_for_test();
+    reserve_retry(retry_job("folder-1", EntryKind::Folder, &[])).expect("总账行可重试");
+    let start = next_start().expect("轮到这一批");
+    assert!(start.folder, "文件夹总账行重试 = 重下整个文件夹");
+    assert_eq!(start.entry.id, "folder-1");
+    assert!(start.sub_dir.is_empty());
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn retry_is_rejected_while_the_same_file_is_pending() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_retry(retry_job("file-1", EntryKind::File, &[])).expect("第一次重试");
+    assert!(
+        reserve_retry(retry_job("file-1", EntryKind::File, &[])).is_none(),
+        "同一个文件 id 已在队列里，不能再入队"
+    );
+    assert!(is_pending("file-1"));
+    let _ = release(batch);
+    assert!(!is_pending("file-1"));
+    assert!(
+        reserve_retry(retry_job("file-1", EntryKind::File, &[])).is_some(),
+        "释放后可以再重试"
+    );
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn retry_shares_the_duplicate_key_with_a_normal_download() {
+    let _guard = lock();
+    reset_for_test();
+    reserve(
+        entry("file-1", EntryKind::File, "a.mkv"),
+        PathBuf::from("/tmp"),
+    )
+    .expect("普通下载先入队");
+    assert!(
+        reserve_retry(retry_job("file-1", EntryKind::File, &[])).is_none(),
+        "文件页的下载与传输页的重试共用同一个云端条目 id"
+    );
+    transfers::reset();
+    reset();
 }

@@ -249,6 +249,16 @@ pub mod qobject {
         #[cxx_name = "clearFinishedTransfers"]
         fn clear_finished_transfers(self: Pin<&mut Self>);
 
+        /// 重试一条失败的传输记录（文件级，回到原批次下载目录）
+        #[qinvokable]
+        #[cxx_name = "retryTransfer"]
+        fn retry_transfer(self: Pin<&mut Self>, key: QString);
+
+        /// 在文件管理器里显示一条已完成记录的落盘文件
+        #[qinvokable]
+        #[cxx_name = "revealTransfer"]
+        fn reveal_transfer(self: Pin<&mut Self>, key: QString);
+
         #[qinvokable]
         #[cxx_name = "openDownloadDir"]
         fn open_download_dir(self: &Self);
@@ -340,10 +350,12 @@ mod notifications;
 mod play;
 mod queue;
 mod queue_worker;
+mod reveal;
 mod search;
 mod settings;
 mod tasks;
 mod transfers;
+mod transfers_actions;
 mod transfers_view;
 mod tray;
 mod tray_icon;
