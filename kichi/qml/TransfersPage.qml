@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 传输任务页：本次运行内的下载记录（排队 / 下载中 / 完成 / 失败 / 取消）。
+// 传输任务页：本次运行内的下载记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
 //
 // 数据全部来自 backend.transfers（Rust 侧已排好序：进行中在前，已结束新→旧），
 // 本页只负责显示与三个操作入口。记录不落盘，退出 kichi 即清空。
@@ -14,6 +14,12 @@ Item {
     /// 记录的结构版本：Rust 只在结构变化时 +1。
     /// 进度节拍只更新 transferLive（见 below），不碰列表。
     property int revision: -1
+
+    /// 要定位到的来源条目 id（由 main.qml 在下载时写入）。
+    property string focusSourceId: ""
+
+    /// 当前高亮的行 key（约 1.2 秒后淡出）
+    property string highlightedKey: ""
 
     // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
     UiMetrics {
@@ -44,23 +50,76 @@ Item {
 
     Component.onCompleted: syncRows()
 
+    // —— 定位（点已占用的条目时跳过来看）——
+    /// 请求定位到某个来源条目（main.qml 收到 locateTransfer 后调用）。
+    ///
+    /// 用**直接调用**而不是监听属性变化：同一个条目连点两次时属性值不变，
+    /// changed 信号不会再来一次，但用户仍然期望跳过去再看一眼。
+    /// 记录可能刚变（这一下才读到新批次），所以等一帧：
+    /// `Qt.callLater` 在 `syncRows` 之后跑。
+    function focusSource(sourceId) {
+        if (sourceId.length === 0)
+            return
+        page.focusSourceId = sourceId
+        Qt.callLater(page.locate)
+    }
+
+    Timer {
+        id: highlightTimer
+        interval: 1200
+        repeat: false
+        onTriggered: page.highlightedKey = ""
+    }
+
+    /// 滚到 focusSourceId 对应的第一条进行中行并短暂高亮。
+    function locate() {
+        if (page.focusSourceId.length === 0)
+            return
+        page.syncRows()
+        for (var i = 0; i < rows.count; i++) {
+            var row = rows.get(i)
+            if (row.sourceId !== page.focusSourceId)
+                continue
+            if (!page.isActivePhase(row.phase))
+                continue
+            list.positionViewAtIndex(i, ListView.Contain)
+            page.highlightedKey = row.key
+            highlightTimer.restart()
+            return
+        }
+        // 找不到 active 行时退而求其次：已经结束的那条也给用户看一眼
+        for (var done = 0; done < rows.count; done++) {
+            if (rows.get(done).sourceId === page.focusSourceId) {
+                list.positionViewAtIndex(done, ListView.Contain)
+                page.highlightedKey = rows.get(done).key
+                highlightTimer.restart()
+                return
+            }
+        }
+    }
+
+    function isActivePhase(phase) {
+        return phase === "queued" || phase === "preparing" || phase === "running"
+    }
+
     /// 把 Rust 的快照贴到 ListModel 上（只动差异，不整表重灌）。
     ///
-    /// 关键一：一次结构变化只做**最少几次** move，不能逐格挪。逐格把每一行
-    /// 拽到目标位置时，一次完成会产生上百次 move，ListView 的内部位置会被
-    /// 搅乱（`contentY` 与真正渲染的行对不上），随后被强制重排、跳到底部
-    /// （2026-10-27 用户实测：滚到中间，每完成一项跳一次）。
+    /// 关键一：一次结构变化只做**最少几次** move。逐格挪会把 `ListView` 的内部
+    /// 行位置搅乱，随后被强制重排、跳到别处（2026-10-27 用户实测：滚到中间，
+    /// 每完成一项就往下跳一次）。一条记录完成时，它要从「进行中」段挪到
+    /// 「已完成」段——正向扫描会把它一格一格往后推（一次完成 = 几十次 move），
+    /// 所以这里**从尾往前**对齐：位置正确的行一次都不动，一条完成最多一次 move。
     ///
-    /// 关键二：**move 的目标位置必须小于当前 count**，等于 count 也会被 Qt 判
-    /// `move: out of range` 并**直接丢弃**（不是 clamp）。早先的写法在
-    /// 「已有 1 条失败记录、新一批的『下载中』要排到最前面」时，会对
-    /// `move(0, 1, 1)` 空转——`move` 不生效、`index` 不前进 → 死循环，
-    /// 界面卡死并刷屏（2026-10-27 用户实测：超时后再下载就卡）。
+    /// 关键二：**move 的目标位置必须小于当前 count**，等于 count 会被 Qt 判
+    /// `move: out of range` 并直接丢弃（不是 clamp）——游标不前进就是死循环。
+    /// 从尾往前时 `target` 只会小于 count，天然不会踩到。
     ///
     /// 做法（每一步都不会越界）：
     /// 1. 倒序删掉不在快照里的行；
-    /// 2. 从头逐位对：对不上就**往后**找这一行，找到就前移，找不到就插入；
-    /// 3. 多出来的行删掉。
+    /// 2. 快照里有、模型里没有的行先追加到末尾（位置交给第 3 步修正）；
+    /// 3. 从尾往前逐位对：对不上就把这一行从**前面**移过来（后面的位置都已固定，
+    ///    所以它必然在前面）；
+    /// 4. 多出来的行删掉。
     ///
     /// 角色名不能叫 `state`（`Item` 自带同名属性，qmllint 报 property-override，
     /// 运行时也读不到角色值），因此统一映射成 `phase`。
@@ -78,34 +137,44 @@ Item {
                 rows.remove(stale)
         }
 
-        // 2. 逐位对齐：只会「前移」或「插入」，目标下标始终小于 count
-        for (var index = 0; index < wanted.length; index++) {
-            var key = wanted[index].key
-            if (index < rows.count && rows.get(index).key === key)
+        // 2. 缺的行先追加到末尾，保证下一步 count 与快照一致
+        var present = {}
+        for (var p = 0; p < rows.count; p++)
+            present[rows.get(p).key] = true
+        for (var add = 0; add < wanted.length; add++) {
+            if (present[wanted[add].key] === undefined) {
+                rows.append(normalize(wanted[add]))
+                present[wanted[add].key] = true
+            }
+        }
+
+        // 3. 从尾往前对齐：后面的位置已固定，故这一步要的行一定在前面
+        for (var target = wanted.length - 1; target >= 0 && target < rows.count; target--) {
+            var key = wanted[target].key
+            if (rows.get(target).key === key)
                 continue
             var from = -1
-            for (var scan = index + 1; scan < rows.count; scan++) {
+            for (var scan = target - 1; scan >= 0; scan--) {
                 if (rows.get(scan).key === key) {
                     from = scan
                     break
                 }
             }
             if (from >= 0)
-                rows.move(from, index, 1)
-            else
-                rows.insert(index, normalize(wanted[index]))
+                rows.move(from, target, 1)
         }
-        // 3. 快照比现有行少时，尾部多出来的删掉
+
+        // 4. 理论上不会有多出来的行；防御性删掉，避免残留
         while (rows.count > wanted.length)
             rows.remove(rows.count - 1)
 
         // 位置对上了，再补字段差异（状态 / 大小 / 说明）
-        for (var target = 0; target < wanted.length && target < rows.count; target++) {
-            var item = normalize(wanted[target])
-            var current = rows.get(target)
+        for (var at = 0; at < wanted.length && at < rows.count; at++) {
+            var item = normalize(wanted[at])
+            var current = rows.get(at)
             for (var field in item) {
                 if (current[field] !== item[field])
-                    rows.setProperty(target, field, item[field])
+                    rows.setProperty(at, field, item[field])
             }
         }
     }
@@ -114,6 +183,7 @@ Item {
         return {
             key: item.key,
             name: item.name,
+            sourceId: item.sourceId || "",
             phase: item.state,
             stateText: item.stateText,
             running: item.running,
@@ -134,41 +204,13 @@ Item {
         return false
     }
 
-    /// 进行中条数（排队 + 下载中）
+    /// 进行中条数（排队 + 准备中 + 下载中）
     readonly property int activeCount: page.backend ? page.backend.downloadActive : 0
 
     /// 正在下载那一条的实时进度（结构变化时它会并进 transfers 模型）
     readonly property var liveRow: {
         var live = page.backend ? page.backend.transferLive : []
         return live.length > 0 ? live[0] : null
-    }
-
-    /// 某一行当前该显示的进度（实时进度优先）
-    function liveProgress(key, fallback) {
-        return page.liveRow !== null && page.liveRow.key === key
-               ? page.liveRow.progress : fallback
-    }
-
-    function liveProgressText(key, fallback) {
-        return page.liveRow !== null && page.liveRow.key === key
-               ? page.liveRow.progressText : fallback
-    }
-
-    function liveSizeText(key, fallback) {
-        return page.liveRow !== null && page.liveRow.key === key
-               ? page.liveRow.sizeText : fallback
-    }
-
-    /// 按扩展名给行配图标：传输记录只有路径，没有条目类型
-    function iconFor(name) {
-        var lower = String(name || "").toLowerCase()
-        if (/\.(mp4|mkv|avi|mov|webm|ts|m2ts|flv|wmv|rmvb)$/.test(lower))
-            return "🎬"
-        if (/\.(mp3|flac|wav|m4a|ogg|opus|aac|ape)$/.test(lower))
-            return "🎵"
-        if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(lower))
-            return "🖼️"
-        return "📄"
     }
 
     ColumnLayout {
@@ -189,8 +231,14 @@ Item {
 
             Label {
                 Layout.fillWidth: true
-                text: page.activeCount > 0 ? qsTr("%1 个进行中").arg(page.activeCount)
-                                           : qsTr("没有进行中的传输")
+                text: {
+                    if (page.activeCount === 0)
+                        return qsTr("没有进行中的传输")
+                    var queued = page.backend ? page.backend.downloadQueued : 0
+                    return queued > 0
+                        ? qsTr("%1 个进行中 · %2 批排队").arg(page.activeCount).arg(queued)
+                        : qsTr("%1 个进行中").arg(page.activeCount)
+                }
                 color: page.activeCount > 0 ? palette.text : palette.placeholderText
                 font.pixelSize: 12
             }
@@ -233,123 +281,11 @@ Item {
             // 列表铺到窗口右缘，条画在右侧 10px 车道里
             ScrollBar.vertical: KScrollBar {}
 
-            delegate: ItemDelegate {
+            delegate: TransferRow {
                 id: row
-                required property string key
-                required property string name
-                required property string phase
-                required property string stateText
-                required property bool running
-                required property int progress
-                required property string progressText
-                required property string sizeText
-                required property string detail
-
-                readonly property bool notice: row.phase === "notice"
-                readonly property bool failed: row.phase === "failed"
-
-                // 行宽减去滚动条车道：条贴窗口边，文字停在线左边
-                width: ListView.view.width - metrics.scrollBarSlot
-                padding: 8
-                leftPadding: 10
-                rightPadding: 10
-                // 行高写死（与文件列表同一做法，见 docs/pitfalls.md #8）：
-                // 第二行有时是进度条、有时是说明、有时没有内容，交给控件自己算
-                // 会让四种状态高低不一。这里固定「第一行 + 第二行」的总高。
-                implicitHeight: 60
-
-                background: Rectangle {
-                    radius: 4
-                    color: row.hovered ? Qt.rgba(palette.windowText.r, palette.windowText.g,
-                                                 palette.windowText.b, 0.05) : "transparent"
-                }
-
-                contentItem: ColumnLayout {
-                    spacing: 4
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 20
-                        spacing: 10
-
-                        Label {
-                            visible: !row.notice
-                            text: page.iconFor(row.name)
-                            font.pixelSize: 18
-                            Layout.preferredWidth: 22
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: row.name
-                            elide: Text.ElideMiddle
-                            verticalAlignment: Text.AlignVCenter
-                            color: row.notice ? palette.placeholderText : palette.text
-                        }
-
-                        Label {
-                            visible: !row.notice
-                            text: row.stateText
-                            font.pixelSize: 12
-                            verticalAlignment: Text.AlignVCenter
-                            color: row.failed ? "#c0392b"
-                                 : row.phase === "done" ? "#3c9d5a"
-                                 : palette.placeholderText
-                        }
-
-                        Label {
-                            visible: !row.notice
-                            text: page.liveSizeText(row.key, row.sizeText)
-                            font.pixelSize: 12
-                            verticalAlignment: Text.AlignVCenter
-                            color: palette.placeholderText
-                            horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 150
-                        }
-                    }
-
-                    // 第二行：固定高度。下载中放进度条，其余放一行说明
-                    // （落盘路径 / 失败原因），都没有时留同样高的空白。
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 20
-                        // 与第一行的名字对齐（图标 22 + 间距 10）
-                        Layout.leftMargin: 32
-
-                        RowLayout {
-                            anchors.fill: parent
-                            spacing: 10
-                            visible: row.running
-
-                            KProgressBar {
-                                Layout.fillWidth: true
-                                from: 0
-                                to: 100
-                                value: Math.max(page.liveProgress(row.key, row.progress), 0)
-                                indeterminate: page.liveProgress(row.key, row.progress) < 0
-                            }
-
-                            Label {
-                                text: page.liveProgressText(row.key, row.progressText)
-                                font.pixelSize: 12
-                                verticalAlignment: Text.AlignVCenter
-                                color: palette.placeholderText
-                            }
-                        }
-
-                        Label {
-                            anchors.fill: parent
-                            visible: !row.running && row.detail.length > 0
-                            text: row.detail
-                            font.pixelSize: 12
-                            verticalAlignment: Text.AlignVCenter
-                            elide: Text.ElideMiddle
-                            color: row.failed ? "#c0392b" : palette.placeholderText
-                        }
-                    }
-                }
+                width: list.width - metrics.scrollBarSlot
+                flash: row.key === page.highlightedKey
+                live: page.liveRow
             }
 
             Label {

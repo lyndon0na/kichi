@@ -2,11 +2,14 @@
 //!
 //! 拆出来只为守住行数软上限（实现本身约 350 行）。
 
+use cxx_qt_lib::QString;
+
 use super::*;
+use crate::cxxqt_object::transfers_view::{percent_of, record_map, QVariantMap};
 
 fn add_batch(records: &mut Vec<Transfer>, seq: u64, names: &[&str]) {
     let jobs: Vec<(String, u64)> = names.iter().map(|name| ((*name).to_owned(), 0)).collect();
-    push_batch(records, seq, &jobs);
+    push_batch(records, seq, "source", &jobs);
 }
 
 fn set(records: &mut [Transfer], batch: u64, index: usize, state: TransferState) {
@@ -109,6 +112,7 @@ fn trim_drops_oldest_finished_but_keeps_active() {
             batch: 1,
             index,
             name: format!("done-{index}"),
+            source_id: String::new(),
             state: TransferState::Done,
             bytes: 0,
             total: None,
@@ -120,6 +124,7 @@ fn trim_drops_oldest_finished_but_keeps_active() {
             batch: 1,
             index: MAX_RECORDS + index,
             name: format!("active-{index}"),
+            source_id: String::new(),
             state: TransferState::Running,
             bytes: 0,
             total: None,
@@ -140,6 +145,7 @@ fn percent_and_texts() {
         batch: 1,
         index: 0,
         name: "a.mkv".into(),
+        source_id: String::new(),
         state: TransferState::Running,
         bytes: 512,
         total: Some(1024),
@@ -172,6 +178,7 @@ fn percent_and_texts() {
 #[test]
 fn state_names_are_stable_for_qml() {
     assert_eq!(TransferState::Queued.name(), "queued");
+    assert_eq!(TransferState::Preparing.name(), "preparing");
     assert_eq!(TransferState::Running.name(), "running");
     assert_eq!(TransferState::Done.name(), "done");
     assert_eq!(TransferState::Failed.name(), "failed");
@@ -193,6 +200,7 @@ fn every_row_has_a_key_for_the_qml_diff() {
         batch: 1,
         index: 0,
         name: "a.mkv".into(),
+        source_id: "file-1".into(),
         state: TransferState::Done,
         bytes: 0,
         total: None,
@@ -209,4 +217,120 @@ fn every_row_has_a_key_for_the_qml_diff() {
             .is_some_and(|name| name.to_string().contains("未显示")),
         "提示行仍要带说明文字"
     );
+}
+
+// —— 准备中 / 按 id 定位 / 文件夹展开（2026-10-27 下载并发修复）——
+
+#[test]
+fn preparing_counts_as_active() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["big-folder"]);
+    mark_preparing_in(&mut records, 1);
+    assert_eq!(records[0].state, TransferState::Preparing);
+    assert!(
+        records[0].state.is_active(),
+        "准备中要计入进行中（徽标 / 取消）"
+    );
+    assert!(!records[0].state.is_finished());
+
+    let (_, active) = build_snapshot(&records);
+    assert_eq!(active, 1, "进行中条数包含准备中");
+
+    cancel_active_in(&mut records, None, "");
+    assert_eq!(
+        records[0].state,
+        TransferState::Cancelled,
+        "准备中的批次也要能被取消"
+    );
+}
+
+#[test]
+fn preparing_row_shows_explanation_and_unknown_size() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["big-folder"]);
+    mark_preparing_in(&mut records, 1);
+    let map = record_map(&records[0]);
+    let get = |key: &str| {
+        map.get(&QString::from(key))
+            .and_then(|value| value.value::<QString>())
+            .map(|value| value.to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(get("stateText"), "准备中");
+    assert_eq!(get("detail"), "正在读取目录结构…");
+    assert_eq!(get("sizeText"), "—", "还没读目录，大小未知");
+}
+
+#[test]
+fn expand_folder_replaces_placeholder_in_place() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["big-folder"]);
+    add_batch(&mut records, 2, &["later"]);
+    mark_preparing_in(&mut records, 1);
+    let jobs = [
+        ("big-folder/a.mkv".to_owned(), 10),
+        ("big-folder/b.mkv".to_owned(), 20),
+    ];
+    expand_folder_in(&mut records, 1, &jobs);
+
+    let ordered_names: Vec<&str> = ordered(&records).iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        ordered_names,
+        vec!["big-folder/a.mkv", "big-folder/b.mkv", "later"],
+        "整批原地展开，后面排队的批次仍在下面"
+    );
+    assert_eq!(records[0].state, TransferState::Queued);
+    assert_eq!(records[1].index, 1);
+    assert_eq!(records[0].source_id, "source", "展开出来的行也带来源 id");
+}
+
+#[test]
+fn cancel_by_batch_leaves_other_batches_alone() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["a"]);
+    add_batch(&mut records, 2, &["b"]);
+    mark_preparing_in(&mut records, 1);
+    cancel_active_in(&mut records, Some(1), "");
+    assert_eq!(records[0].state, TransferState::Cancelled);
+    assert_eq!(
+        records[1].state,
+        TransferState::Queued,
+        "按批号取消不能动别的批"
+    );
+}
+
+#[test]
+fn fail_batch_marks_whole_batch_failed() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["big-folder"]);
+    add_batch(&mut records, 2, &["later"]);
+    mark_preparing_in(&mut records, 1);
+    fail_batch_in(&mut records, 1, "目录读取失败");
+    assert_eq!(records[0].state, TransferState::Failed);
+    assert_eq!(records[0].detail, "目录读取失败");
+    assert_eq!(
+        records[1].state,
+        TransferState::Queued,
+        "后面的批次照常排队"
+    );
+}
+
+#[test]
+fn record_map_exposes_source_id_for_locating() {
+    let record = Transfer {
+        batch: 7,
+        index: 0,
+        name: "剧集/a.mkv".into(),
+        source_id: "cloud-entry-42".into(),
+        state: TransferState::Running,
+        bytes: 0,
+        total: None,
+        detail: String::new(),
+    };
+    let map = record_map(&record);
+    let source = map
+        .get(&QString::from("sourceId"))
+        .and_then(|value| value.value::<QString>())
+        .map(|value| value.to_string());
+    assert_eq!(source.as_deref(), Some("cloud-entry-42"));
 }

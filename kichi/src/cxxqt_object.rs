@@ -69,6 +69,8 @@ pub mod qobject {
         #[qproperty(QString, settings_path, cxx_name = "settingsPath", READ, NOTIFY = changed)]
         #[qproperty(QString, storage_backend, cxx_name = "storageBackend", READ, NOTIFY = changed)]
         #[qproperty(bool, download_running, cxx_name = "downloadRunning", READ, NOTIFY = changed)]
+        /// 排队中的批次数（不含正在跑的那一批）
+        #[qproperty(i32, download_queued, cxx_name = "downloadQueued", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, transfers, READ, NOTIFY = changed)]
         /// 传输记录的结构版本号：只有排队 / 开始 / 完成 / 失败 / 取消 / 清空才 +1。
         /// QML 用它判断该不该重新读取 `transfers`，避免进度节拍把整个
@@ -96,6 +98,11 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "fileActionDone"]
         fn file_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
+
+        /// 请求界面跳到传输任务页并定位这个条目的那一行（只对已占用的条目发）
+        #[qsignal]
+        #[cxx_name = "locateTransfer"]
+        fn locate_transfer(self: Pin<&mut Self>, source_id: QString);
 
         #[qinvokable]
         #[cxx_name = "login"]
@@ -195,10 +202,15 @@ pub mod qobject {
         #[cxx_name = "saveWindowGeometry"]
         fn save_window_geometry(self: Pin<&mut Self>, width: i32, height: i32, maximized: bool);
 
-        /// 下载一个文件或整个文件夹（文件夹递归排队）
+        /// 下载一个文件或整个文件夹（文件夹轮到时递归读目录；同一条目已有批次时只跳转）
         #[qinvokable]
         #[cxx_name = "downloadEntry"]
         fn download_entry(self: Pin<&mut Self>, id: QString);
+
+        /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）
+        #[qinvokable]
+        #[cxx_name = "isDownloadPending"]
+        fn is_download_pending(self: &Self, id: QString) -> bool;
 
         #[qinvokable]
         #[cxx_name = "cancelDownloads"]
@@ -299,10 +311,12 @@ mod files;
 mod notifications;
 mod play;
 mod queue;
+mod queue_worker;
 mod search;
 mod settings;
 mod tasks;
 mod transfers;
+mod transfers_view;
 mod tray;
 mod tray_icon;
 
@@ -390,10 +404,12 @@ pub struct KichiRust {
     pub(crate) transfer_revision: i32,
     /// 正在下载那一条的实时进度（只有 0/1 个元素：避免为进度重建整个列表）
     pub(crate) transfer_live: QVariantList,
-    /// 进行中（排队 + 下载中）的传输条数：侧栏徽标
+    /// 进行中（排队 + 准备中 + 下载中）的传输条数：侧栏徽标
     pub(crate) download_active: i32,
-    /// 是否有一批下载在跑（右键菜单据此禁用重复下载）
+    /// 有批次在准备（读目录）或执行；QML 不再拿它禁用下载入口
     pub(crate) download_running: bool,
+    /// 排队中的批次数（不含正在跑的那一批）
+    pub(crate) download_queued: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
     /// 有文件操作（改名 / 新建 / 删除）在途，界面上禁用相关入口
@@ -485,6 +501,7 @@ impl Default for KichiRust {
             transfer_live: QVariantList::default(),
             download_active: 0,
             download_running: false,
+            download_queued: 0,
             download_dir: QString::default(),
             file_action_running: false,
             search_active: false,

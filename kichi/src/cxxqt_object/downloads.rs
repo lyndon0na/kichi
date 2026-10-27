@@ -1,31 +1,31 @@
 //! 下载到本地：QML 入口与状态属性。
 //!
 //! 队列节奏与后台细节在 [`super::queue`]：
-//! - **一次只下一个文件**（串行）：并行会互相抢带宽，官方也视为压力；
-//! - 文件夹下载先递归列目录再排队，落盘时保留层级；
+//! - **一次只跑一批、批内串行**：并行的下载会互相抢带宽，官方也视为压力；
+//!   不同条目可以排队，轮到才读目录；
+//! - 判重键是云端条目 id：同一条目在排队 / 准备 / 下载中时点下载 = 跳转定位；
+//! - 文件夹下载轮到时才递归列目录，落盘时保留层级；
 //! - 进度经主线程队列回投（`pump()` 消费），后台线程不碰 Qt 对象；
 //! - 登出时在途下载整体作废。
 //!
-//! 逐条记录在 [`super::transfers`]；本文件只做：入口校验、起线程、
-//! 把记录表刷到 QML 属性。
+//! 逐条记录在 [`super::transfers`]；本文件只做：入口校验、发定位请求、
+//! 调度器推进、把记录表刷到 QML 属性。
 
 use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
-use kichi_core::EntryKind;
 
-use super::actions::run_in_background;
 use super::qobject;
-use super::queue::{
-    self, collect_folder, display_path, is_busy, run_queue, set_busy, with_batch, Job,
-};
+use super::queue;
 use super::transfers;
-use crate::session::download::Cancel;
 use crate::session::Failure;
 
 impl qobject::Kichi {
-    /// 下载一个条目（文件直接下；文件夹递归排队）。界面右键菜单的「下载」走这里。
+    /// 下载一个条目（文件直接下；文件夹轮到时递归读目录）。界面右键菜单的「下载」走这里。
+    ///
+    /// 跳转只在「这次没建新批次」时发生：说明这个条目已经在队列里了，
+    /// 用户想去看看它；第一次下载不打断用户当前所在页面。
     pub fn download_entry(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
@@ -34,42 +34,30 @@ impl qobject::Kichi {
                 .set_message("该条目已不在当前列表中，请刷新后重试", false);
             return;
         };
-        if is_busy() {
-            self.as_mut().set_message(
-                "已有下载在进行，等它结束再试（当前版本一次只下一个）",
-                false,
-            );
-            return;
-        }
         let dir = self.settings.download_dir_path();
-        if entry.kind == EntryKind::Folder {
-            let session = self.backend.session.clone();
-            self.as_mut()
-                .set_message(&format!("正在读取「{}」的目录结构……", entry.name), true);
-            run_in_background(
-                move || collect_folder(&session, &entry),
-                move |mut qichi, result| match result {
-                    Ok(jobs) => qichi.as_mut().start_batch(dir, jobs),
-                    Err(err) => qichi.as_mut().on_download_failure(err),
-                },
-            );
+        let source_id = entry.id.clone();
+        // 登记成功后先推进队列：空闲时这一下就把线程起来了；有批次在跑就只是排队。
+        // `advance_downloads` 里已经 sync 过一次，这里不再重复。
+        if queue::reserve(entry, dir).is_some() {
+            self.as_mut().advance_downloads();
             return;
         }
-        let jobs = vec![Job {
-            id: entry.id.clone(),
-            sub_dir: Vec::new(),
-            name: entry.name.clone(),
-            size: entry.size,
-        }];
-        self.as_mut().start_batch(dir, jobs);
+        // 已经在排队 / 准备 / 下载中：再点一次 = 去传输任务页看它
+        self.as_mut()
+            .locate_transfer(QString::from(source_id.as_str()));
     }
 
-    /// 取消当前下载（整批停掉；已下完的文件保留）。
+    /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）。
+    pub fn is_download_pending(&self, id: QString) -> bool {
+        queue::is_pending(&id.to_string())
+    }
+
+    /// 取消所有未结束的批次（排队中的直接放掉，正在跑的等线程收尾；已下完的文件保留）。
     pub fn cancel_downloads(mut self: Pin<&mut Self>) {
-        with_batch(|state| state.cancel.cancel());
-        // 立刻反映到记录表：正在下的那条与排队的都变「已取消」，
+        queue::cancel_all();
+        // 立刻反映到记录表：正在下的那条与排队中的都变「已取消」，
         // 不用等下载线程读到取消标志（网络卡住时可能要等当前读返回）。
-        // `downloadRunning` 保持到线程真正收尾，避免旧批次还没退就放开重复下载入口
+        // `downloadRunning` 由调度器的收尾推进，不在这里清。
         transfers::cancel_active("");
         self.as_mut().set_message("正在取消下载……", false);
         self.as_mut().sync_transfers();
@@ -98,59 +86,84 @@ impl qobject::Kichi {
         self.as_mut().sync_transfers();
     }
 
-    /// 启动一批下载（主线程调用；队列线程从这里接手）。
-    pub(crate) fn start_batch(mut self: Pin<&mut Self>, dir: std::path::PathBuf, jobs: Vec<Job>) {
-        // 列目录期间退出过登录：这批属于上个会话，直接丢弃
-        if self.auth_state.to_string() != "signedIn" {
-            return;
-        }
-        if jobs.is_empty() {
-            self.as_mut().set_message("这个位置没有可下载的文件", false);
-            return;
-        }
-        let total = jobs.len();
-        let batch = transfers::new_batch();
-        // 先登记整批：线程还没起，页面就能看到排队项
-        let records: Vec<(String, u64)> = jobs
-            .iter()
-            .map(|job| (display_path(job), job.size))
-            .collect();
-        transfers::start_batch(batch, &records);
-
-        with_batch(|state| {
-            *state = queue::Batch {
-                running: true,
-                cancel: std::sync::Arc::new(Cancel::default()),
-                ..queue::Batch::default()
-            };
-        });
-        set_busy(true);
-        self.as_mut()
-            .set_message(&format!("开始下载 {total} 个文件……"), false);
-        self.as_mut().sync_transfers();
-
+    /// 推进调度器：空闲且队列非空时起下一批的线程。主线程调用。
+    pub(crate) fn advance_downloads(mut self: Pin<&mut Self>) {
         let session = self.backend.session.clone();
-        let spawned = std::thread::Builder::new()
-            .name("kichi-dl".into())
-            .spawn(move || run_queue(session, dir, batch, jobs));
-        if let Err(err) = spawned {
-            set_busy(false);
-            with_batch(|state| state.running = false);
-            eprintln!("[kichi] 无法创建下载线程：{err}");
-            transfers::cancel_active("无法创建下载线程，下载未开始");
-            self.as_mut()
-                .set_message("无法创建下载线程，下载未开始", false);
-            self.as_mut().sync_transfers();
+        let failures = queue::advance(&session);
+        if let Some(reason) = failures.last() {
+            self.as_mut().set_message(reason, false);
         }
+        self.as_mut().sync_transfers();
+    }
+
+    /// 文件夹批次读完目录后的收尾（主线程，由下载线程回投）。
+    pub(crate) fn on_folder_collected(
+        mut self: Pin<&mut Self>,
+        batch: u64,
+        result: Result<Vec<queue::Job>, Failure>,
+        cancelled: bool,
+        my_epoch: u64,
+    ) {
+        // 期间退出过登录：记录表与调度器都已整表清空，这一批属于上个会话
+        if my_epoch != queue::current_epoch() {
+            return;
+        }
+        if let Some(jobs) = self.as_mut().settle_collected(batch, result, cancelled) {
+            let total = jobs.len();
+            let session = self.backend.session.clone();
+            match queue::start_download(&session, batch, jobs) {
+                queue::StartOutcome::Started => self
+                    .as_mut()
+                    .set_message(&format!("开始下载 {total} 个文件……"), false),
+                // 线程起不来：`start_download` 已把这一批标失败并释放
+                queue::StartOutcome::Failed(reason) => self.as_mut().set_message(&reason, false),
+                // 这一批已不是当前批次 / 期间被取消：记录已收尾，下面照常推进
+                queue::StartOutcome::NotCurrent | queue::StartOutcome::Cancelled => {}
+            }
+        }
+        // 不管这一批是开跑、失败还是空目录，都要让后面排队的顶上
+        self.as_mut().advance_downloads();
+    }
+
+    /// 收集结果 → 记录表状态。返回要下载的条目；`None` = 这一批到此为止。
+    fn settle_collected(
+        mut self: Pin<&mut Self>,
+        batch: u64,
+        result: Result<Vec<queue::Job>, Failure>,
+        cancelled: bool,
+    ) -> Option<Vec<queue::Job>> {
+        let failure = match result {
+            _ if cancelled => {
+                transfers::cancel_batch(batch, "");
+                queue::release(batch);
+                self.as_mut().sync_transfers();
+                return None;
+            }
+            Ok(jobs) if jobs.is_empty() => {
+                const REASON: &str = "这个位置没有可下载的文件";
+                transfers::fail_batch(batch, REASON);
+                queue::release(batch);
+                self.as_mut().set_message(REASON, false);
+                self.as_mut().sync_transfers();
+                return None;
+            }
+            Ok(jobs) => return Some(jobs),
+            Err(err) => err,
+        };
+        transfers::fail_batch(batch, &failure.to_string());
+        queue::release(batch);
+        self.as_mut().on_download_failure(failure);
+        self.as_mut().sync_transfers();
+        None
     }
 
     /// 把记录表刷到 QML 属性（主线程调用）。
     ///
-    /// 结构变化（排队 / 开始 / 完成 / 失败 / 取消 / 清空）走这里，整个模型重建。
+    /// 结构变化（排队 / 准备 / 开始 / 完成 / 失败 / 取消 / 清空）走这里，整个模型重建。
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
         let (list, active) = transfers::snapshot();
         let live = transfers::live_snapshot();
-        let running = with_batch(|state| state.running);
+        let (running, queued) = queue::counts();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.transfers = list;
@@ -158,6 +171,7 @@ impl qobject::Kichi {
             rust.transfer_live = live;
             rust.download_active = active;
             rust.download_running = running;
+            rust.download_queued = queued;
         }
         self.as_mut().notify();
     }
@@ -183,12 +197,7 @@ impl qobject::Kichi {
 
     /// 登出时作废下载：取消在途任务并清空记录与徽标。
     pub(crate) fn reset_downloads(mut self: Pin<&mut Self>) {
-        queue::bump_epoch();
-        with_batch(|state| {
-            state.cancel.cancel();
-            *state = queue::Batch::default();
-        });
-        set_busy(false);
+        queue::reset();
         transfers::reset();
         self.as_mut().sync_transfers();
     }

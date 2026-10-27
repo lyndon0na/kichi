@@ -5,6 +5,7 @@
 //! 所有阻塞网络调用都经 `run_async` 丢到后台线程，结果回到 Qt 线程。
 
 pub mod download;
+mod download_naming;
 pub mod media;
 mod paths;
 pub mod search;
@@ -339,10 +340,25 @@ impl Session {
     /// `parent_id` 为 `None` 表示根目录。条目顺序保留官方返回顺序，
     /// 排序交给界面层（文件夹优先等属于展示策略）。
     pub fn list_dir(&self, parent_id: Option<&str>) -> Result<Vec<FileEntry>, Failure> {
+        self.list_dir_with_cancel(parent_id, None)
+    }
+
+    /// 同 [`Session::list_dir`]，但每页之间查一次取消信号。
+    ///
+    /// 文件夹下载要先递归读完整棵目录树，大文件夹可能要好几十秒；
+    /// 这期间按「取消下载」必须能尽快停下来（见 `cxxqt_object/queue.rs`）。
+    pub fn list_dir_with_cancel(
+        &self,
+        parent_id: Option<&str>,
+        cancel: Option<&download::Cancel>,
+    ) -> Result<Vec<FileEntry>, Failure> {
         let client = self.drive()?;
         let mut entries = Vec::new();
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_LIST_PAGES {
+            if cancel.is_some_and(download::Cancel::is_cancelled) {
+                return Err(Failure::Other("下载已取消".to_owned()));
+            }
             let (mut page, next) = client
                 .list(parent_id, page_token.as_deref())
                 .map_err(Failure::from)?;

@@ -104,6 +104,14 @@ ApplicationWindow {
                 Qt.quit()
             }
         }
+
+        // 已占用的条目再点一次：切到传输任务页并定位那一行。
+        // 第一次下载不发这个信号——不打断用户正在浏览的目录。
+        // 窗口最小化 / 在托盘时照常切页，但不主动把窗口弹出来（现状）。
+        function onLocateTransfer(sourceId) {
+            root.currentPage = 1
+            transfersPage.focusSource(sourceId)
+        }
     }
 
     property int lastTrayShow: 0
@@ -220,6 +228,7 @@ ApplicationWindow {
                     }
 
                     TransfersPage {
+                        id: transfersPage
                         backend: backend
                     }
 

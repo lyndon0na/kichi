@@ -20,6 +20,8 @@ Item {
     property string targetName: ""
     property bool targetIsFolder: false
     property bool targetPlayable: false
+    // 这个条目是否已在下载队列里（打开菜单时问一次后端；见 openContext）
+    property bool targetPending: false
     // 右键处的位置（**窗口**坐标系）：清晰度菜单从这里弹出
     property point targetPoint: Qt.point(0, 0)
 
@@ -59,11 +61,15 @@ Item {
             }
         }
 
-        // 下载到本地（文件直接下；文件夹递归下，保留层级）
+        // 下载到本地（文件直接下；文件夹递归下，保留层级）。
+        // 同一条目已在队列里时不置灰：文案改成「去查看」，点了由后端跳转定位
+        // （判重键是云端条目 id，不是文件名）。
         MenuItem {
-            text: root.targetIsFolder ? qsTr("下载整个文件夹到本地")
-                                      : qsTr("下载到本地")
-            enabled: root.backend !== null && !root.backend.downloadRunning
+            text: root.targetPending
+                  ? qsTr("已在下载队列中，去查看")
+                  : root.targetIsFolder ? qsTr("下载整个文件夹到本地")
+                                        : qsTr("下载到本地")
+            enabled: root.backend !== null
             onTriggered: {
                 if (root.backend)
                     root.backend.downloadEntry(root.targetId)
@@ -230,6 +236,8 @@ Item {
         targetName = entry.name
         targetIsFolder = entry.kind === "folder"
         targetPlayable = entry.playable === true
+        // 每次打开都重新问一次：条目可能刚下完（已释放）或刚被排上
+        targetPending = root.backend !== null && root.backend.isDownloadPending(entry.id)
         targetPoint = point
         contextMenu.openAt(point)
     }

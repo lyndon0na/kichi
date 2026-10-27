@@ -3,6 +3,9 @@
 //! 只有界面侧需要这些记录（排队顺序、失败原因、落盘路径），因此不进
 //! `kichi-core`，也不落盘：退出 kichi 即清空（见 `docs/adr/0006-transfer-tasks-page.md`）。
 //!
+//! 排队批次只登记一条「总账行」（文件夹名），轮到读目录时才用
+//! [`expand_folder`] 原地展开成整批 —— 几百个文件同时排队时不会把上限挤爆。
+//!
 //! 并发：下载线程直接写记录，主线程（取消 / 清空 / 登出）也写，统一走
 //! [`with_records`] 的互斥锁；锁中毒时继续用内部数据，不 panic。
 //! QML 模型由主线程通过 `sync_transfers()` 重建，下载线程只改记录 + 投递同步任务。
@@ -10,12 +13,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
+use cxx_qt_lib::QVariant;
 
-use super::actions::format_size;
+use super::transfers_view::{live_map, notice_map, record_map};
 use super::QVariantList;
-
-type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 /// 进程内最多保留的记录数（超出丢最早的已结束记录，进行中的绝不丢）。
 const MAX_RECORDS: usize = 2000;
@@ -24,7 +25,10 @@ const MAX_ROWS: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransferState {
+    /// 排队中，还没轮到
     Queued,
+    /// 轮到了、正在读目录结构（只有文件夹批次的首次展开）
+    Preparing,
     Running,
     Done,
     Failed,
@@ -32,17 +36,18 @@ pub(crate) enum TransferState {
 }
 
 impl TransferState {
-    fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Running)
+    pub(crate) fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Preparing | Self::Running)
     }
 
-    fn is_finished(self) -> bool {
+    pub(crate) fn is_finished(self) -> bool {
         matches!(self, Self::Done | Self::Failed | Self::Cancelled)
     }
 
-    fn text(self) -> &'static str {
+    pub(crate) fn text(self) -> &'static str {
         match self {
             Self::Queued => "排队中",
+            Self::Preparing => "准备中",
             Self::Running => "下载中",
             Self::Done => "已完成",
             Self::Failed => "失败",
@@ -50,9 +55,10 @@ impl TransferState {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Queued => "queued",
+            Self::Preparing => "preparing",
             Self::Running => "running",
             Self::Done => "done",
             Self::Failed => "failed",
@@ -69,6 +75,8 @@ pub(crate) struct Transfer {
     pub(crate) index: usize,
     /// 显示路径：剧集/第 1 集.mkv
     pub(crate) name: String,
+    /// 来源条目 id：同一批的每一行都一样，QML 据此定位到批次
+    pub(crate) source_id: String,
     pub(crate) state: TransferState,
     pub(crate) bytes: u64,
     pub(crate) total: Option<u64>,
@@ -93,9 +101,30 @@ pub(crate) fn new_batch() -> u64 {
         .fetch_add(1, Ordering::SeqCst)
 }
 
-/// 整批登记为排队。`jobs` 是（显示路径, 大小）。
-pub(crate) fn start_batch(batch: u64, jobs: &[(String, u64)]) {
-    with_records(|records| push_batch(records, batch, jobs));
+/// 整批登记。`jobs` 是（显示路径, 大小）。
+///
+/// 排队阶段只登记传给它的行（文件夹批次就一条总账行）；轮到读目录后用
+/// [`expand_folder`] 展开成整批。
+pub(crate) fn start_batch(batch: u64, source_id: &str, jobs: &[(String, u64)]) {
+    with_records(|records| push_batch(records, batch, source_id, jobs));
+}
+
+/// 轮到读目录：把这一批的总账行标成「准备中」。
+pub(crate) fn mark_preparing(batch: u64) {
+    with_records(|records| mark_preparing_in(records, batch));
+}
+
+/// 整个文件夹批次读完了：把总账行原地换成整批的排队行。
+///
+/// 原地替换（不 push 到表尾）是为了保持 (batch, index) 的显示顺序：
+/// 排队中的其他批次会自然地排在它下面。
+pub(crate) fn expand_folder(batch: u64, jobs: &[(String, u64)]) {
+    with_records(|records| expand_folder_in(records, batch, jobs));
+}
+
+/// 一批整体没跑起来（收集失败 / 空目录 / 线程起不来）：标失败。
+pub(crate) fn fail_batch(batch: u64, reason: &str) {
+    with_records(|records| fail_batch_in(records, batch, reason));
 }
 
 /// 一条开始下载。
@@ -118,9 +147,10 @@ pub(crate) fn finish_err(batch: u64, index: usize, reason: &str) {
     with_records(|records| finish_err_in(records, batch, index, reason));
 }
 
-/// 把所有进行中的记录标为已取消（同一时刻只有一个批次，故不需要批号）。
+/// 把进行中的记录标为已取消（登出 / 用户点取消时用）。
 ///
 /// 用户点取消时 `reason` 为空（状态文字已说明）；线程起不来时用它附带原因。
+/// 取消的作用范围由调度器决定（`queue::cancel_all`），这里只负责改状态。
 pub(crate) fn cancel_active(reason: &str) {
     with_records(|records| cancel_active_in(records, None, reason));
 }
@@ -168,12 +198,13 @@ fn find(records: &mut [Transfer], batch: u64, index: usize) -> Option<&mut Trans
         .find(|record| record.batch == batch && record.index == index)
 }
 
-fn push_batch(records: &mut Vec<Transfer>, batch: u64, jobs: &[(String, u64)]) {
+fn push_batch(records: &mut Vec<Transfer>, batch: u64, source_id: &str, jobs: &[(String, u64)]) {
     for (index, (name, size)) in jobs.iter().enumerate() {
         records.push(Transfer {
             batch,
             index,
             name: name.clone(),
+            source_id: source_id.to_owned(),
             state: TransferState::Queued,
             bytes: 0,
             total: (*size > 0).then_some(*size),
@@ -183,10 +214,56 @@ fn push_batch(records: &mut Vec<Transfer>, batch: u64, jobs: &[(String, u64)]) {
     trim(records);
 }
 
+/// 把总账行原地换成整批的排队行（位置取总账行的位置）。
+fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[(String, u64)]) {
+    let Some(at) = records
+        .iter()
+        .position(|record| record.batch == batch && record.index == 0)
+    else {
+        return;
+    };
+    let source_id = records[at].source_id.clone();
+    let rows: Vec<Transfer> = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, (name, size))| Transfer {
+            batch,
+            index,
+            name: name.clone(),
+            source_id: source_id.clone(),
+            state: TransferState::Queued,
+            bytes: 0,
+            total: (*size > 0).then_some(*size),
+            detail: String::new(),
+        })
+        .collect();
+    // 先把旧行拿掉再插回同一位置：整批原地替换，后面排队的批次不受影响
+    records.remove(at);
+    records.splice(at..at, rows);
+    trim(records);
+}
+
 fn begin_in(records: &mut [Transfer], batch: u64, index: usize) {
     if let Some(record) = find(records, batch, index) {
         if record.state == TransferState::Queued {
             record.state = TransferState::Running;
+        }
+    }
+}
+
+fn mark_preparing_in(records: &mut [Transfer], batch: u64) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if record.state == TransferState::Queued {
+            record.state = TransferState::Preparing;
+        }
+    }
+}
+
+fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if record.state.is_active() {
+            record.state = TransferState::Failed;
+            record.detail = reason.to_owned();
         }
     }
 }
@@ -285,114 +362,6 @@ fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     }
     let active = i32::try_from(active).unwrap_or(i32::MAX);
     (list, active)
-}
-
-fn percent_of(record: &Transfer) -> Option<i32> {
-    match record.total {
-        Some(total) if total > 0 => {
-            Some(((record.bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as i32)
-        }
-        _ => None,
-    }
-}
-
-fn text(value: &str) -> QVariant {
-    QVariant::from(&QString::from(value))
-}
-
-fn insert(map: &mut QVariantMap, key: &str, value: QVariant) {
-    map.insert_clone(&QString::from(key), &value);
-}
-
-/// 记录的稳定标识（QML 用它把实时进度贴到对应的行上）。
-fn record_key(record: &Transfer) -> String {
-    format!("{}:{}", record.batch, record.index)
-}
-
-fn record_map(record: &Transfer) -> QVariantMap {
-    let percent = percent_of(record);
-    let running = record.state == TransferState::Running;
-    let progress = match record.state {
-        TransferState::Done => 100,
-        TransferState::Running => percent.unwrap_or(-1),
-        TransferState::Failed | TransferState::Cancelled => percent.unwrap_or(0),
-        TransferState::Queued => 0,
-    };
-    let progress_text = if running {
-        percent
-            .map(|value| format!("{value}%"))
-            .unwrap_or_else(|| format_size(record.bytes))
-    } else {
-        String::new()
-    };
-    let size_text = match record.state {
-        TransferState::Running => match record.total {
-            Some(total) => format!("{} / {}", format_size(record.bytes), format_size(total)),
-            None => format_size(record.bytes),
-        },
-        TransferState::Done => format_size(record.total.unwrap_or(record.bytes).max(record.bytes)),
-        _ => record
-            .total
-            .map(format_size)
-            .or_else(|| (record.bytes > 0).then(|| format_size(record.bytes)))
-            .unwrap_or_else(|| "—".to_owned()),
-    };
-
-    let mut map = QVariantMap::default();
-    insert(&mut map, "key", text(&record_key(record)));
-    insert(&mut map, "name", text(&record.name));
-    insert(&mut map, "state", text(record.state.name()));
-    insert(&mut map, "stateText", text(record.state.text()));
-    insert(&mut map, "running", QVariant::from(&running));
-    insert(&mut map, "progress", QVariant::from(&progress));
-    insert(&mut map, "progressText", text(&progress_text));
-    insert(&mut map, "sizeText", text(&size_text));
-    insert(&mut map, "detail", text(&record.detail));
-    map
-}
-
-/// 一条记录 → 进度行的 map（只带下载中要刷新的字段）。
-fn live_map(record: &Transfer) -> QVariantMap {
-    let percent = percent_of(record);
-    let progress_text = percent
-        .map(|value| format!("{value}%"))
-        .unwrap_or_else(|| format_size(record.bytes));
-    let size_text = match record.total {
-        Some(total) => format!("{} / {}", format_size(record.bytes), format_size(total)),
-        None => format_size(record.bytes),
-    };
-
-    let mut map = QVariantMap::default();
-    insert(&mut map, "key", text(&record_key(record)));
-    insert(&mut map, "progress", QVariant::from(&percent.unwrap_or(-1)));
-    insert(&mut map, "progressText", text(&progress_text));
-    insert(&mut map, "sizeText", text(&size_text));
-    map
-}
-
-/// 超过显示上限时追加的提示行（ListView 里最后一行）。
-///
-/// **必须给 `key`**：QML 的差异算法靠它识别行；缺了会让 ListModel 报
-/// `<Unknown File>: key is undefined`（2026-10-27 实测），提示行也会在每次
-/// 刷新时被当成新行重复插入。
-fn notice_map(hidden: usize) -> QVariantMap {
-    let mut map = QVariantMap::default();
-    insert(&mut map, "key", text("notice"));
-    insert(
-        &mut map,
-        "name",
-        text(&format!(
-            "还有 {hidden} 条记录未显示（页面只显示前 500 条）"
-        )),
-    );
-    insert(&mut map, "state", text("notice"));
-    insert(&mut map, "stateText", text(""));
-    insert(&mut map, "running", QVariant::from(&false));
-    insert(&mut map, "progress", QVariant::from(&0));
-    insert(&mut map, "progressText", text(""));
-    insert(&mut map, "sizeText", text(""));
-    insert(&mut map, "detail", text(""));
-    map
 }
 
 #[cfg(test)]

@@ -1,26 +1,32 @@
-//! 下载队列的共享状态与后台执行。
+//! 下载调度：按源条目 id 占用 + 串行批次队列。
 //!
 //! 与 `downloads.rs` 分工：
 //! - `downloads.rs`：QML 能看到的入口（右键菜单的「下载」、取消、打开目录）与属性刷新；
-//! - 本文件：队列状态、文件夹递归、串行下载线程、进度节流与回投；
-//! - `transfers.rs`：本次运行内的逐条记录（排队 / 下载中 / 完成 / 失败 / 取消）。
+//! - 本文件：占用表、串行队列、线程启动与收尾、登出作废；
+//! - `queue_worker.rs`：文件夹递归、下载循环、进度节流与回投；
+//! - `transfers.rs`：本次运行内的逐条记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
 //!
+//! 判重键是**云端条目 id**，不是本地文件名：同一条目在排队 / 准备 / 下载中时
+//! 不能再入队。查重与登记在**同一把锁**里完成——列目录那几秒入口也是通的，
+//! 只在入口查布尔量会漏（2026-10-27 的 P1 并发 bug 就是这么来的）。
+//!
+//! 不同目录可以同时排队，但**一次只有一批在动**：轮到才读目录，读完再进下载循环。
 //! 后台线程绝不碰 Qt 对象：结果一律经 `actions::enqueue_ui` 回主线程。
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 use kichi_core::{EntryKind, FileEntry};
 
+use super::queue_worker::{run_jobs, spawn_batch, Start};
 use super::transfers;
-use crate::session::download::{Cancel, Progress};
-use crate::session::{Failure, Session};
+use crate::session::download::Cancel;
+use crate::session::Session;
 
-/// 进度回投的最小间隔。
-pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 /// 递归文件夹的最大深度（防环形/异常结构把线程拖死）。
-const MAX_DEPTH: usize = 16;
+pub(crate) const MAX_DEPTH: usize = 16;
 
 /// 队列里的一个待下载条目。
 #[derive(Debug, Clone)]
@@ -33,25 +39,54 @@ pub(crate) struct Job {
     pub(crate) size: u64,
 }
 
-/// 一次生效的批量下载状态（单文件也包成一个批量，收尾逻辑统一）。
-#[derive(Debug, Default)]
-pub(crate) struct Batch {
-    pub(crate) running: bool,
-    pub(crate) done: usize,
-    pub(crate) failed: usize,
-    /// 取消信号：整批共用一个，取消即停
-    pub(crate) cancel: Arc<Cancel>,
+/// 一批在调度器里的阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingState {
+    /// 排队中，还没轮到
+    Queued,
+    /// 轮到了、正在读目录结构（只可能是文件夹批次）
+    Preparing,
+    /// 正在下载（单文件批次跳过 Preparing，直接到这里）
+    Running,
 }
 
-/// 全局批量状态（进程内唯一）。
-fn batch() -> &'static Mutex<Batch> {
-    static BATCH: OnceLock<Mutex<Batch>> = OnceLock::new();
-    BATCH.get_or_init(|| Mutex::new(Batch::default()))
+/// 调度器里的一批下载。
+struct Pending {
+    /// 传输记录批号（`transfers::new_batch`）
+    batch: u64,
+    /// 判重键：云端条目 id
+    source_id: String,
+    /// 轮到时才用：文件夹要递归读目录
+    entry: FileEntry,
+    /// 点下时的下载目录快照（之后改设置不影响已排队的批次）
+    dir: PathBuf,
+    cancel: Arc<Cancel>,
+    state: PendingState,
+    done: usize,
+    failed: usize,
 }
 
-/// 在队列状态上加锁（中毒时继续用内部数据：这里只有计数字段）。
-pub(crate) fn with_batch<T>(f: impl FnOnce(&mut Batch) -> T) -> T {
-    let mut guard = batch().lock().unwrap_or_else(|e| e.into_inner());
+impl Pending {
+    fn folder(&self) -> bool {
+        self.entry.kind == EntryKind::Folder
+    }
+}
+
+/// 进程内唯一的调度状态（排队 + 正在跑的那一批）。
+#[derive(Default)]
+struct Scheduler {
+    queue: VecDeque<Pending>,
+    current: Option<Pending>,
+}
+
+fn scheduler() -> &'static Mutex<Scheduler> {
+    static SCHEDULER: OnceLock<Mutex<Scheduler>> = OnceLock::new();
+    SCHEDULER.get_or_init(|| Mutex::new(Scheduler::default()))
+}
+
+/// 在调度状态上加锁（中毒时继续用内部数据：这里只是队列与计数）。
+fn with_scheduler<T>(f: impl FnOnce(&mut Scheduler) -> T) -> T {
+    let mut guard = scheduler().lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
 
@@ -61,301 +96,267 @@ fn epoch() -> &'static AtomicU64 {
     EPOCH.get_or_init(|| AtomicU64::new(0))
 }
 
+/// 当前登出代数（主线程回投时比对）。
+pub(crate) fn current_epoch() -> u64 {
+    epoch().load(Ordering::SeqCst)
+}
+
 /// 登录态变化时作废在途下载。
 pub(crate) fn bump_epoch() {
     epoch().fetch_add(1, Ordering::SeqCst);
 }
 
-/// 是否已有下载在跑（同一时刻只有一条队列线程）。
-fn busy() -> &'static AtomicBool {
-    static BUSY: OnceLock<AtomicBool> = OnceLock::new();
-    BUSY.get_or_init(|| AtomicBool::new(false))
-}
-
-pub(crate) fn is_busy() -> bool {
-    busy().load(Ordering::SeqCst)
-}
-
-pub(crate) fn set_busy(value: bool) {
-    busy().store(value, Ordering::SeqCst);
-}
-
-/// 递归收集文件夹里的文件（保留层级；阻塞）。
-pub(crate) fn collect_folder(
-    session: &Arc<Session>,
-    folder: &FileEntry,
-) -> Result<Vec<Job>, Failure> {
-    let mut jobs = Vec::new();
-    let mut path = vec![folder.name.clone()];
-    walk(session, &folder.id, &mut path, &mut jobs, 0)?;
-    Ok(jobs)
-}
-
-fn walk(
-    session: &Arc<Session>,
-    folder_id: &str,
-    path: &mut Vec<String>,
-    jobs: &mut Vec<Job>,
-    depth: usize,
-) -> Result<(), Failure> {
-    if depth > MAX_DEPTH {
-        return Err(Failure::Other(format!(
-            "目录层级超过 {MAX_DEPTH} 层，为避免异常结构已停止读取"
-        )));
-    }
-    for entry in session.list_dir(Some(folder_id))? {
-        match entry.kind {
-            EntryKind::Folder => {
-                path.push(entry.name.clone());
-                walk(session, &entry.id, path, jobs, depth + 1)?;
-                path.pop();
-            }
-            EntryKind::File => jobs.push(Job {
-                id: entry.id.clone(),
-                sub_dir: path.clone(),
-                name: entry.name.clone(),
-                size: entry.size,
-            }),
+/// 登记一批下载。同一源条目未结束时返回 `None`（调用方转去定位那一行）。
+///
+/// **查重与登记在同一把锁里**：连点两次也只会建一个批次。
+pub(crate) fn reserve(entry: FileEntry, dir: PathBuf) -> Option<u64> {
+    let source_id = entry.id.clone();
+    with_scheduler(|scheduler| {
+        let taken = scheduler
+            .current
+            .as_ref()
+            .is_some_and(|pending| pending.source_id == source_id)
+            || scheduler
+                .queue
+                .iter()
+                .any(|pending| pending.source_id == source_id);
+        if taken {
+            return None;
         }
-    }
-    Ok(())
+        let batch = transfers::new_batch();
+        // 排队批次只登记一条总账行：文件夹轮到时才展开成整批，
+        // 免得几百个文件排队时把 MAX_RECORDS 挤爆。
+        transfers::start_batch(batch, &source_id, &[(entry.name.clone(), entry.size)]);
+        scheduler.queue.push_back(Pending {
+            batch,
+            source_id,
+            entry,
+            dir,
+            cancel: Arc::new(Cancel::default()),
+            state: PendingState::Queued,
+            done: 0,
+            failed: 0,
+        });
+        Some(batch)
+    })
 }
 
-/// 队列线程：逐条下载，结果回投主线程。
-pub(crate) fn run_queue(
-    session: Arc<Session>,
-    dir: std::path::PathBuf,
-    batch: u64,
-    jobs: Vec<Job>,
-) {
-    let my_epoch = epoch().load(Ordering::SeqCst);
-    let cancel = with_batch(|state| state.cancel.clone());
-    for (index, job) in jobs.iter().enumerate() {
-        if my_epoch != epoch().load(Ordering::SeqCst) || cancel.is_cancelled() {
-            break;
-        }
-        transfers::begin(batch, index);
-        post_sync();
+/// 这个条目是否已在排队 / 准备 / 下载中（QML 菜单文案用）。
+pub(crate) fn is_pending(source_id: &str) -> bool {
+    with_scheduler(|scheduler| {
+        scheduler
+            .current
+            .as_ref()
+            .is_some_and(|pending| pending.source_id == source_id)
+            || scheduler
+                .queue
+                .iter()
+                .any(|pending| pending.source_id == source_id)
+    })
+}
 
-        let mut target = dir.clone();
-        for part in &job.sub_dir {
-            target.push(crate::session::download::safe_file_name(part));
-        }
-        let throttle = Throttle::default();
-        let progress = |bytes: u64, total: Option<u64>| {
-            if throttle.should_send(bytes, total) {
-                transfers::progress(batch, index, bytes, total);
-                post_live();
-            }
+/// 当前是否有一批在准备或执行，以及排队中的批次数（属性刷新用）。
+pub(crate) fn counts() -> (bool, i32) {
+    with_scheduler(|scheduler| {
+        // `current` 只会在准备中 / 下载中两种状态下存在
+        let running = scheduler.current.is_some();
+        let queued = i32::try_from(scheduler.queue.len()).unwrap_or(i32::MAX);
+        (running, queued)
+    })
+}
+
+/// 推进队列：没有正在跑的批次时，pop 下一批并起线程。
+///
+/// 返回启动失败的原因（线程起不来这类必须显式收尾，不能像
+/// `run_in_background` 那样只打 stderr）。主线程调用。
+pub(crate) fn advance(session: &Arc<Session>) -> Vec<String> {
+    let mut failures = Vec::new();
+    loop {
+        let Some(start) = next_start() else {
+            return failures;
         };
-        let outcome = session.download_file(
-            &job.id,
-            &job.name,
-            &target,
-            &progress as &Progress<'_>,
-            &cancel,
-        );
-        // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
-        if my_epoch != epoch().load(Ordering::SeqCst) {
-            return;
-        }
-        let cancelled = cancel.is_cancelled();
-        match outcome {
-            Ok(downloaded) => {
-                with_batch(|state| state.done += 1);
-                transfers::finish_ok(batch, index, &downloaded.path.display().to_string());
-                post_saved(&job.name, &downloaded.path, my_epoch);
-            }
-            Err(_) if cancelled => {
-                // 取消不算失败：数量对得上总账，记录由下面的统一收尾标成已取消
-                break;
-            }
-            Err(err) => {
-                with_batch(|state| state.failed += 1);
-                transfers::finish_err(batch, index, &err.to_string());
-                post_failed(&job.name, &err.to_string(), my_epoch);
-            }
+        if let Err(err) = spawn_batch(session, &start) {
+            let reason = format!("无法创建下载线程：{err}");
+            transfers::fail_batch(start.batch, &reason);
+            release(start.batch);
+            failures.push(reason);
         }
     }
-    // 取消 / 登出导致提前退出时，还没轮到的条目也要收尾。
-    // 取消时当前条可能刚好下载成功，也会落在这里。
+}
+
+/// 取下一批，并在同一个锁里标成「准备中 / 下载中」。
+fn next_start() -> Option<Start> {
+    with_scheduler(|scheduler| {
+        if scheduler.current.is_some() {
+            return None;
+        }
+        loop {
+            let mut pending = scheduler.queue.pop_front()?;
+            if pending.cancel.is_cancelled() {
+                // 排队期间整批被取消：不用起线程，释放占用后看下一批
+                transfers::cancel_batch(pending.batch, "");
+                continue;
+            }
+            let folder = pending.folder();
+            pending.state = if folder {
+                PendingState::Preparing
+            } else {
+                PendingState::Running
+            };
+            if folder {
+                transfers::mark_preparing(pending.batch);
+            } else {
+                // 单文件跳过「准备中」，直接 排队中 → 下载中
+                transfers::begin(pending.batch, 0);
+            }
+            let start = Start {
+                batch: pending.batch,
+                folder,
+                entry: pending.entry.clone(),
+                dir: pending.dir.clone(),
+                cancel: pending.cancel.clone(),
+            };
+            scheduler.current = Some(pending);
+            return Some(start);
+        }
+    })
+}
+
+/// 目录收集完成后启动下载的结果。
+pub(crate) enum StartOutcome {
+    /// 下载线程已在跑
+    Started,
+    /// 这一批已经不是当前批次（登出 / 已收尾）
+    NotCurrent,
+    /// 这期间被取消：记录已标「已取消」，占用已释放
+    Cancelled,
+    /// 线程起不来：记录已标失败，占用已释放
+    Failed(String),
+}
+
+/// 目录收集完成：把整批记录展开成排队行并启动下载线程。主线程调用。
+pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>) -> StartOutcome {
+    let found = with_scheduler(|scheduler| {
+        let current = scheduler
+            .current
+            .as_mut()
+            .filter(|pending| pending.batch == batch)?;
+        Some((current.dir.clone(), current.cancel.clone()))
+    });
+    let Some((dir, cancel)) = found else {
+        return StartOutcome::NotCurrent;
+    };
+    // 读目录那几秒里可能刚好按了取消：这时不要再把总账行展开成整批
+    // （否则记录会从「已取消」闪回「排队中」再变回来）
     if cancel.is_cancelled() {
         transfers::cancel_batch(batch, "");
+        release(batch);
+        return StartOutcome::Cancelled;
     }
-    post_finished(cancel.is_cancelled(), my_epoch);
-}
+    with_scheduler(|scheduler| {
+        if let Some(current) = scheduler
+            .current
+            .as_mut()
+            .filter(|pending| pending.batch == batch)
+        {
+            current.state = PendingState::Running;
+        }
+    });
 
-/// 进度节流：250ms 或进 1% 才发。
-///
-/// 只被下载线程使用；用原子量而非 `Cell`，是为了满足进度回调的 `Send` 要求。
-#[derive(Default)]
-struct Throttle {
-    last_sent: Mutex<Option<Instant>>,
-    last_percent: AtomicI32,
-}
+    let records: Vec<(String, u64)> = jobs
+        .iter()
+        .map(|job| (super::queue_worker::display_path(job), job.size))
+        .collect();
+    transfers::expand_folder(batch, &records);
 
-impl Throttle {
-    fn should_send(&self, bytes: u64, total: Option<u64>) -> bool {
-        let percent = match total {
-            Some(total) if total > 0 => (bytes as f64 / total as f64 * 100.0) as i32,
-            _ => -1,
-        };
-        let now = Instant::now();
-        let mut last = self.last_sent.lock().unwrap_or_else(|e| e.into_inner());
-        let first = last.is_none();
-        let due = match *last {
-            Some(previous) => now.duration_since(previous) >= PROGRESS_INTERVAL,
-            None => false,
-        };
-        let previous_percent = self.last_percent.load(Ordering::Relaxed);
-        if first || due || percent != previous_percent {
-            *last = Some(now);
-            self.last_percent.store(percent, Ordering::Relaxed);
-            true
-        } else {
-            false
+    let my_epoch = current_epoch();
+    let session = session.clone();
+    let spawned = std::thread::Builder::new()
+        .name("kichi-dl".into())
+        .spawn(move || run_jobs(session, dir, batch, jobs, cancel, my_epoch));
+    match spawned {
+        Ok(_) => StartOutcome::Started,
+        Err(err) => {
+            let reason = format!("无法创建下载线程：{err}");
+            transfers::fail_batch(batch, &reason);
+            release(batch);
+            StartOutcome::Failed(reason)
         }
     }
 }
 
-/// 条目 → 界面上显示的路径（`剧集/第 1 集.mkv`）。
-pub(crate) fn display_path(job: &Job) -> String {
-    if job.sub_dir.is_empty() {
-        job.name.clone()
-    } else {
-        format!("{}/{}", job.sub_dir.join("/"), job.name)
-    }
-}
-
-// —— 后台线程 → 主线程（不碰 Qt 对象，只入队）——
-
-/// 记录变了（开始 / 完成 / 失败 / 取消）→ 主线程重建模型。
-fn post_sync() {
-    super::actions::enqueue_ui(
-        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            qichi.as_mut().sync_transfers();
-        },
-    );
-}
-
-/// 只是进度变了 → 主线程只刷新进度行，不动整个 ListView 模型。
-fn post_live() {
-    super::actions::enqueue_ui(
-        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            qichi.as_mut().sync_transfer_live();
-        },
-    );
-}
-
-fn post_saved(name: &str, path: &std::path::Path, my_epoch: u64) {
-    let name = name.to_owned();
-    let path = path.display().to_string();
-    super::actions::enqueue_ui(
-        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            // 期间退出过登录：记录已清空，不再补通知，也不把旧结果贴回去
-            if my_epoch != epoch().load(Ordering::SeqCst) {
-                return;
-            }
-            if qichi.notify_enabled {
-                super::notifications::show(
-                    "下载完成",
-                    &format!("{name}\n保存到 {path}"),
-                    "folder-download",
-                );
-            }
-            qichi.as_mut().sync_transfers();
-        },
-    );
-}
-
-fn post_failed(name: &str, reason: &str, my_epoch: u64) {
-    let name = name.to_owned();
-    let reason = reason.to_owned();
-    super::actions::enqueue_ui(
-        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            if my_epoch != epoch().load(Ordering::SeqCst) {
-                return;
-            }
-            if qichi.notify_enabled {
-                super::notifications::show(
-                    "下载失败",
-                    &format!("{name}\n{reason}"),
-                    "dialog-error",
-                );
-            }
-            qichi
-                .as_mut()
-                .set_message(&format!("下载失败：{name} —— {reason}"), false);
-            qichi.as_mut().sync_transfers();
-        },
-    );
-}
-
-/// 整批结束：收尾状态、清忙标志、给一条总账。
+/// 跳过一批（收集失败 / 空目录 / 读完目录前被取消）。主线程调用。
 ///
-/// `my_epoch` 与当前代数不一致时说明期间退出过登录：只清忙标志，
-/// 不往登录页上写「下载已取消」这类属于上一个会话的状态消息。
-fn post_finished(cancelled: bool, my_epoch: u64) {
-    super::actions::enqueue_ui(
-        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            // 期间退出过登录：队列状态、忙标志与记录表都已由登出流程重置，
-            // 这里什么都别碰，否则可能把重新登录后的新批次状态清掉
-            if my_epoch != epoch().load(Ordering::SeqCst) {
-                return;
-            }
-            let (done, failed) = with_batch(|state| {
-                state.running = false;
-                (state.done, state.failed)
-            });
-            set_busy(false);
-            let message = if cancelled {
-                format!("下载已取消（已完成 {done} 个，失败 {failed} 个）")
-            } else if failed == 0 {
-                format!("下载完成：{done} 个文件")
+/// 只释放这一批；后面排队的批次由随后的 [`advance`] 接手。
+pub(crate) fn release(batch: u64) -> Option<(usize, usize)> {
+    with_scheduler(|scheduler| {
+        if scheduler
+            .current
+            .as_ref()
+            .is_some_and(|pending| pending.batch == batch)
+        {
+            return scheduler
+                .current
+                .take()
+                .map(|done| (done.done, done.failed));
+        }
+        // 测试里会直接释放还没轮到、也没起线程的批次
+        let index = scheduler
+            .queue
+            .iter()
+            .position(|pending| pending.batch == batch)?;
+        scheduler
+            .queue
+            .remove(index)
+            .map(|pending| (pending.done, pending.failed))
+    })
+}
+
+/// 记一条文件的结果（下载线程调用；只影响收尾文案）。
+pub(crate) fn add_result(batch: u64, ok: bool) {
+    with_scheduler(|scheduler| {
+        if let Some(pending) = scheduler
+            .current
+            .as_mut()
+            .filter(|pending| pending.batch == batch)
+        {
+            if ok {
+                pending.done += 1;
             } else {
-                format!("下载结束：成功 {done} 个，失败 {failed} 个")
-            };
-            qichi.as_mut().set_message(&message, false);
-            qichi.as_mut().sync_transfers();
-        },
-    );
+                pending.failed += 1;
+            }
+        }
+    });
+}
+
+/// 取消所有未结束的批次。
+///
+/// 排队中的还没起线程，直接放掉占用（记录由调用方统一标「已取消」）；
+/// 正在跑的那一批只置取消标志，等线程自己收尾后释放。
+pub(crate) fn cancel_all() {
+    with_scheduler(|scheduler| {
+        if let Some(current) = scheduler.current.as_mut() {
+            current.cancel.cancel();
+        }
+        for pending in scheduler.queue.drain(..) {
+            pending.cancel.cancel();
+        }
+    });
+}
+
+/// 登出：清空调度器并作废在途结果。
+pub(crate) fn reset() {
+    bump_epoch();
+    with_scheduler(|scheduler| {
+        if let Some(current) = scheduler.current.take() {
+            current.cancel.cancel();
+        }
+        for pending in scheduler.queue.drain(..) {
+            pending.cancel.cancel();
+        }
+    });
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn throttle_sends_first_then_waits_within_same_percent() {
-        let throttle = Throttle::default();
-        assert!(throttle.should_send(0, Some(10_000)), "第一次一定发");
-        assert!(
-            !throttle.should_send(50, Some(10_000)),
-            "仍是 0%、未到 250ms：不发"
-        );
-        assert!(throttle.should_send(500, Some(10_000)), "进到 5% 就发");
-    }
-
-    #[test]
-    fn throttle_without_total_uses_time_only() {
-        let throttle = Throttle::default();
-        assert!(throttle.should_send(1, None));
-        assert!(!throttle.should_send(2, None), "没有总大小时按时间节流");
-    }
-
-    #[test]
-    fn display_path_keeps_folder_hierarchy() {
-        let nested = Job {
-            id: "1".into(),
-            sub_dir: vec!["剧集".into(), "第一季".into()],
-            name: "第 1 集.mkv".into(),
-            size: 0,
-        };
-        assert_eq!(display_path(&nested), "剧集/第一季/第 1 集.mkv");
-        let single = Job {
-            sub_dir: Vec::new(),
-            ..nested
-        };
-        assert_eq!(display_path(&single), "第 1 集.mkv");
-    }
-}
+#[path = "queue_tests.rs"]
+mod tests;

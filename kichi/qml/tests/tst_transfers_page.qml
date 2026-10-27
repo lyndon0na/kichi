@@ -27,11 +27,16 @@ TestCase {
         property var transfers: []
         property int transferRevision: 0
         property int downloadActive: 0
+        property int downloadQueued: 0
         property var transferLive: []
         signal changed()
         function cancelDownloads() {}
         function openDownloadDir() {}
         function clearFinishedTransfers() {}
+        function locateTransfer(sourceId) {}
+        function isDownloadPending(id) {
+            return false
+        }
     }
 
     Component {
@@ -42,9 +47,12 @@ TestCase {
     property var page: null
 
     function init() {
-        page = pageComponent.createObject(null, {
+        // 挂在测试窗口下并可见：滚动位置相关的断言需要真实的布局几何
+        // （`createObject(null)` 建出来的页面没有窗口，contentHeight 恒为 0）
+        page = pageComponent.createObject(parent, {
             width: 900,
             height: 600,
+            visible: true,
             backend: backend
         })
         verify(page !== null, "TransfersPage 创建失败")
@@ -62,24 +70,60 @@ TestCase {
         return {
             key: key,
             name: key + ".mkv",
+            sourceId: "src-" + key,
             state: phase,
             stateText: phase,
             running: running,
             progress: running ? 10 : 0,
             progressText: running ? "10%" : "",
             sizeText: "1.0 MB",
-            detail: phase === "failed" ? "下载超时：30 秒没有收到数据（已下载 1.0 MB）" : ""
+            detail: phase === "preparing" ? "正在读取目录结构…"
+                  : phase === "failed" ? "下载超时：30 秒没有收到数据（已下载 1.0 MB）"
+                  : ""
         }
     }
 
     /// 模拟一次 Rust 侧的结构变化（属性 + revision + changed 信号）。
+    ///
+    /// ⚠ 必须按 Rust `transfers::ordered()` 的规则排序后再发布：进行中在前
+    /// （批号、序号升序），已结束在后（新 → 旧）。少了这一步，一条记录完成时
+    /// 在快照里的位置压根不变，就测不出「完成一行导致整段搬移」这类问题。
     function publish(records) {
-        backend.transfers = records
+        backend.transfers = ordered(records)
         backend.transferRevision += 1
         backend.downloadActive = records.filter(function (item) {
             return item.state === "running" || item.state === "queued"
+                   || item.state === "preparing"
         }).length
         backend.changed()
+    }
+
+    function isActivePhase(phase) {
+        return phase === "queued" || phase === "preparing" || phase === "running"
+    }
+
+    /// 与 Rust `transfers::ordered()` 同规则。
+    function ordered(records) {
+        function pair(key) {
+            var parts = key.split(":")
+            return [Number(parts[0]), Number(parts[1])]
+        }
+        var active = [], finished = []
+        for (var i = 0; i < records.length; i++) {
+            if (isActivePhase(records[i].state))
+                active.push(records[i])
+            else
+                finished.push(records[i])
+        }
+        active.sort(function (a, b) {
+            var ka = pair(a.key), kb = pair(b.key)
+            return (ka[0] - kb[0]) || (ka[1] - kb[1])
+        })
+        finished.sort(function (a, b) {
+            var ka = pair(a.key), kb = pair(b.key)
+            return (kb[0] - ka[0]) || (kb[1] - ka[1])
+        })
+        return active.concat(finished)
     }
 
     /// 找到页面里 ListView 的 ListModel（组件没有把 id 导出）。
@@ -106,6 +150,21 @@ TestCase {
         for (var i = 0; i < model.count; i++)
             out.push(model.get(i).key + ":" + model.get(i).phase)
         return out.join(",")
+    }
+
+    /// 找到页面里的 ListView 本体（测滚动位置用）。
+    function findList(item) {
+        if (!item)
+            return null
+        if (item.contentY !== undefined && item.positionViewAtIndex !== undefined && item.model)
+            return item
+        var children = item.children || []
+        for (var i = 0; i < children.length; i++) {
+            var found = findList(children[i])
+            if (found)
+                return found
+        }
+        return null
     }
 
     // 触发过卡死的原始序列：失败记录留着，重新下载。
@@ -192,5 +251,106 @@ TestCase {
         publish([record("2:0", "running")])
         wait(20)
         compare(dump(), "2:0:running")
+    }
+
+    // 2026-10-27 用户实测：滚到「看不到正在下载那条」的位置（已完成段中间），
+    // 每下完一个文件列表就往下跳一次。根因是 syncRows 正向对齐：一条记录完成时
+    // 要从「进行中」段挪到「已完成」段，正向扫描会把它一格一格往后推，
+    // 一次完成 = 几十次 move，ListView 内部位置被打乱后被强制重排。
+    function test_completion_while_scrolled_away_keeps_scroll() {
+        var records = []
+        for (var b = 0; b < 30; b++)
+            records.push(record("1:" + b, b === 0 ? "running" : "queued"))
+        for (var i = 0; i < 5; i++)
+            records.push(record("0:" + i, "done"))
+        publish(records)
+        wait(100)
+
+        var list = findList(page)
+        verify(list !== null, "找不到 ListView")
+        list.contentY = 700
+        wait(50)
+        var before = list.contentY
+        verify(before > 0, "先真的滚下去（contentY=" + before + "）")
+
+        // 逐个完成：每次都要停在原位
+        for (var n = 0; n < 30; n++) {
+            records[n] = record("1:" + n, "done")
+            if (n + 1 < 30)
+                records[n + 1] = record("1:" + (n + 1), "running")
+            publish(records)
+            wait(40)
+            if (Math.abs(list.contentY - before) > 1) {
+                fail("下完第 " + n + " 个后列表跳了：contentY " + before + " → " + list.contentY)
+                return
+            }
+        }
+        compare(rowsModel().count, 35)
+    }
+
+    // 定位到某一行仍然要滚过去（这是主动行为，不能被上一条的「别乱滚」误伤）。
+    function test_focus_still_scrolls_to_the_row() {
+        var records = []
+        for (var i = 0; i < 40; i++)
+            records.push(record("0:" + i, "done"))
+        records.unshift(record("1:0", "queued"))
+        publish(records)
+        wait(80)
+        var list = findList(page)
+        list.contentY = 0
+        wait(30)
+
+        page.focusSource("src-1:0")
+        wait(80)
+        compare(page.highlightedKey, "1:0")
+        verify(list.contentY < 200, "不该滚到底部，实际 contentY=" + list.contentY)
+    }
+
+    // 点已占用的条目：按 sourceId 定位到那一行并高亮。
+    function test_focus_source_id_lights_the_right_row() {        publish([record("2:0", "running"), record("1:0", "queued")])
+        wait(20)
+
+        page.focusSource("src-1:0")
+        wait(60)
+        // 定位到的是 1:0 那一行，高亮的也必须是它
+        var model = rowsModel()
+        var expectedKey = null
+        for (var i = 0; i < model.count; i++) {
+            if (model.get(i).sourceId === "src-1:0")
+                expectedKey = model.get(i).key
+        }
+        compare(expectedKey, "1:0")
+        compare(page.highlightedKey, "1:0", "高亮的是定位到的那一行")
+
+        // 同一 id 再点一次也要重新定位（不能因为属性值没变就不触发）
+        page.highlightedKey = ""
+        page.focusSourceId = ""
+        page.focusSource("src-1:0")
+        wait(60)
+        compare(page.highlightedKey, "1:0")
+    }
+
+    // 高亮约 1.2 秒后自动淡出。
+    function test_highlight_fades_out() {
+        publish([record("1:0", "running")])
+        wait(20)
+        page.focusSource("src-1:0")
+        wait(60)
+        compare(page.highlightedKey, "1:0")
+        wait(1400)
+        compare(page.highlightedKey, "", "高亮必须自己消失")
+    }
+
+    // 准备中的行渲染不报 QWARN（那也直接判测试失败），并显示说明文案。
+    function test_preparing_row_renders() {
+        var row = record("1:0", "preparing")
+        row.name = "大文件夹"
+        row.sizeText = "—"
+        publish([row, record("2:0", "queued")])
+        wait(60)
+        compare(rowsModel().count, 2)
+        compare(rowsModel().get(0).phase, "preparing")
+        compare(rowsModel().get(0).sourceId, "src-1:0")
+        compare(backend.downloadActive, 2, "准备中也算进行中")
     }
 }

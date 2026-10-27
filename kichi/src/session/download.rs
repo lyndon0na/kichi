@@ -2,28 +2,25 @@
 //!
 //! 职责边界（守「会话状态只放 session」的纪律）：
 //! - 本模块只做「一个文件的一次下载」，不排队、不弹通知、不碰界面；
-//! - 队列、进度汇总、通知属于界面侧调度，放 `cxxqt_object::downloads`；
+//! - 队列、进度汇总、通知属于界面侧调度，放 `cxxqt_object::queue`；
 //! - 全部函数阻塞，调用方负责丢到后台线程。
 //!
-//! 落盘约定：
-//! - 先写 `<名>.kichi-part`，**下载完整成功后才 rename** 成正式文件名；
-//!   中途取消/断网只删掉临时文件，绝不留下半个文件冒充成品；
-//! - 同名冲突自动改名 `name (1).ext`，**绝不覆盖**已有文件
-//!   （安全纪律：不破坏用户本地数据）。
+//! 落盘约定见 [`download_naming`]：先写 `<名>.kichi-part`，**下载完整成功后才
+//! rename** 成正式文件名；中途取消/断网只删掉临时文件，绝不留下半个文件冒充成品。
 
-use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use super::download_naming::claim_part;
+// 文件名策略在 `download_naming`（那里有单测），这里转出去给队列层用。
+pub use super::download_naming::safe_file_name;
 use super::media::file_info;
 use super::{Failure, Session};
 use crate::format::size as readable_size;
 
 /// 每次读的块大小（64 KiB：够大够快，进度回调也不至于太密）。
 const CHUNK: usize = 64 * 1024;
-/// 临时文件后缀。
-const PART_SUFFIX: &str = ".kichi-part";
 /// 可取消等待的检查间隔（最坏多等这么久就发现取消）。
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 
@@ -102,13 +99,11 @@ impl Session {
 
         std::fs::create_dir_all(target_dir)
             .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
-        let final_path = unique_path(target_dir, &name);
-        let part_path = part_path_for(&final_path);
+        // 选名 + 原子占位一步做完：两个任务同时选中同名时，只有一个能抢到
+        let (mut file, part_path, final_path) = claim_part(target_dir, &name)?;
 
         let mut source = stream;
         let total = source.total_bytes();
-        let mut file = File::create(&part_path)
-            .map_err(|err| Failure::Other(format!("无法创建下载文件：{err}")))?;
 
         let mut written: u64 = 0;
         let mut buffer = vec![0u8; CHUNK];
@@ -176,128 +171,9 @@ impl Session {
     }
 }
 
-/// 临时文件名：`<正式名>.kichi-part`。
-fn part_path_for(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(PART_SUFFIX);
-    path.with_file_name(name)
-}
-
-/// 不覆盖已有文件：`a.mkv` 已存在 → `a (1).mkv`，依此类推。
-///
-/// 临时文件也算「已存在」：另一个任务正在下同一个名字时，不能两个线程写同一份。
-pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if !exists(&candidate) {
-        return candidate;
-    }
-    let (stem, ext) = split_ext(name);
-    for index in 1..10_000 {
-        let candidate = dir.join(format!("{stem} ({index}){ext}"));
-        if !exists(&candidate) {
-            return candidate;
-        }
-    }
-    // 一万个同名文件还撞上：加时间戳兜底，总比覆盖强
-    dir.join(format!("{stem}-{}{ext}", std::process::id()))
-}
-
-fn exists(path: &Path) -> bool {
-    path.exists() || part_path_for(path).exists()
-}
-
-/// 拆成（不含扩展名的主体，含点的扩展名）。
-fn split_ext(name: &str) -> (String, String) {
-    match name.rsplit_once('.') {
-        // 以点开头的隐藏文件（`.bashrc`）没有扩展名
-        Some((stem, ext)) if !stem.is_empty() => (stem.to_owned(), format!(".{ext}")),
-        _ => (name.to_owned(), String::new()),
-    }
-}
-
-/// 把官方文件名收敛成安全的本地文件名。
-///
-/// 官方允许 `/`、`\` 等字符出现在名字里（在它那边是合法文件名），
-/// 落到本地可能被当成路径分隔符写到别的目录去——一律替换掉。
-pub fn safe_file_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | '\0' => '_',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .collect();
-    // 去掉末尾的点（Windows/部分挂载点会吃掉它，留着容易变成隐藏或空名）
-    let trimmed = cleaned.trim().trim_end_matches('.').to_owned();
-    if trimmed.is_empty() || trimmed.chars().all(|c| c == '.') {
-        "未命名文件".to_owned()
-    } else {
-        // 以点开头会被当成隐藏文件；官方名字很少这样，加个下划线前缀保住可见性
-        if trimmed.starts_with('.') {
-            format!("_{trimmed}")
-        } else {
-            trimmed
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kichi-dl-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
-    }
-
-    #[test]
-    fn same_name_never_overwrites() {
-        let dir = temp_dir("unique");
-        let first = unique_path(&dir, "ep1.mkv");
-        assert_eq!(first, dir.join("ep1.mkv"));
-        std::fs::write(&first, b"x").expect("写文件");
-        assert_eq!(unique_path(&dir, "ep1.mkv"), dir.join("ep1 (1).mkv"));
-        std::fs::write(dir.join("ep1 (1).mkv"), b"x").expect("写文件");
-        assert_eq!(unique_path(&dir, "ep1.mkv"), dir.join("ep1 (2).mkv"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn pending_part_file_counts_as_taken() {
-        // 另一个任务正在下同一个名字：不能选同一个路径
-        let dir = temp_dir("part");
-        std::fs::write(part_path_for(&dir.join("a.bin")), b"x").expect("写临时文件");
-        assert_eq!(unique_path(&dir, "a.bin"), dir.join("a (1).bin"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn extension_split_handles_hidden_and_dotted() {
-        assert_eq!(split_ext("a.mkv"), ("a".into(), ".mkv".into()));
-        assert_eq!(
-            split_ext("archive.tar.gz"),
-            ("archive.tar".into(), ".gz".into())
-        );
-        assert_eq!(split_ext(".bashrc"), (".bashrc".into(), "".into()));
-        assert_eq!(split_ext("noext"), ("noext".into(), "".into()));
-    }
-
-    #[test]
-    fn file_names_cannot_escape_the_target_dir() {
-        assert_eq!(
-            safe_file_name("../../etc/passwd"),
-            "_.._.._etc_passwd",
-            "路径分隔符必须替掉，开头点加下划线保可见"
-        );
-        assert_eq!(safe_file_name("a\\b"), "a_b");
-        assert_eq!(safe_file_name("   "), "未命名文件");
-        assert_eq!(safe_file_name("正常 名字.mkv"), "正常 名字.mkv");
-        assert_eq!(safe_file_name(".."), "未命名文件", "纯点会变空名");
-        assert_eq!(safe_file_name("truncated."), "truncated");
-    }
 
     #[test]
     fn cancel_is_shared_across_threads() {
