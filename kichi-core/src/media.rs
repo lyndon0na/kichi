@@ -10,6 +10,7 @@
 //!
 //! 直链是带签名的临时 URL：不缓存、不打印（最多打到域名）。
 
+use std::io;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -23,6 +24,27 @@ use crate::Error;
 pub const REASON_HIDDEN: &str = "hidden";
 pub const REASON_QUOTA: &str = "quota";
 pub const REASON_NOT_READY: &str = "not_ready";
+
+/// 下载空闲读超时：连续这么久没收到任何字节就判失败。
+///
+/// 必须建在**下载 client** 上（响应头 + 每次读各算一次），
+/// 不能用 request 级 `.timeout()`——那会变成整个文件的总时限。
+pub const DEFAULT_DOWNLOAD_IDLE: Duration = Duration::from_secs(30);
+
+/// 覆盖空闲读超时的环境变量（秒）。
+pub const DOWNLOAD_IDLE_ENV: &str = "KICHI_DOWNLOAD_IDLE_TIMEOUT";
+
+/// 当前生效的空闲读超时。
+///
+/// 空串、非法数字、`0` 一律回默认值：0 会让每次读立即超时，不可能是本意。
+pub fn download_idle() -> Duration {
+    std::env::var(DOWNLOAD_IDLE_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_DOWNLOAD_IDLE)
+}
 
 /// 文件详情里与播放相关的部分。
 #[derive(Debug, Clone, Default)]
@@ -180,26 +202,41 @@ impl DriveClient {
     /// 打开一个文件的下载流（已跟随重定向，`Read` 即文件字节）。
     ///
     /// 直链是带签名的临时 URL，**只发这一次 GET**，不复用 [`crate::http::HttpClient`]
-    /// ——那边的 30 秒总超时会把大文件拦腰砍断；这里连接超时短、读超时由调用方
-    /// 在逐块读取时自行计。
+    /// ——那边的 30 秒总超时会把大文件拦腰砍断；这里的超时建在下载 client 上：
+    /// 等响应头最多 [`download_idle`]，之后每次读最多 [`download_idle`]，
+    /// 没有整个文件的总时限。
     ///
     /// 空文件与「官方没有下发链接」都会在真正发请求前就返回错误，省一次往返。
     pub fn open_download(&self, info: &FileInfo) -> Result<DownloadStream, Error> {
+        self.open_download_with(info, download_idle())
+    }
+
+    /// 同 [`DriveClient::open_download`]，但可指定空闲读超时（测试注入短超时用）。
+    pub fn open_download_with(
+        &self,
+        info: &FileInfo,
+        idle: Duration,
+    ) -> Result<DownloadStream, Error> {
         let Some(url) = info.download_url() else {
             return Err(Error::Other(
                 "官方没有下发这个文件的下载链接（可能是违规或受限文件）".to_owned(),
             ));
         };
         // 先取流再写盘：这样「下载 0 字节就成功」不会变成一个没有内容的空文件
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(&self.config().user_agent)
-            .connect_timeout(Duration::from_secs(20))
-            .build()
-            .map_err(|e| Error::Network(format!("无法创建下载客户端：{e}")))?;
-        let response = client
-            .get(&url)
-            .send()
-            .map_err(|e| Error::Network(network_reason(&e)))?;
+        let client = self.download_client(idle)?;
+        let response = client.get(&url).send().map_err(|e| {
+            // 连接阶段先失败时说「连不上」，别说成「服务器没响应」
+            if e.is_timeout() && !e.is_connect() {
+                // 等响应头也吃同一个 idle。走 Other 而不是 Network：Network 的
+                // Display 会再加「网络错误：」，和「下载超时」叠成两层前缀。
+                Error::Other(format!(
+                    "下载超时：{} 秒内没有收到下载服务器的响应",
+                    idle.as_secs()
+                ))
+            } else {
+                Error::Network(network_reason(&e))
+            }
+        })?;
         let status = response.status();
         if !status.is_success() {
             // CDN 的错误页不是官方 JSON；带上状态码即可，别把整页 HTML 塞进界面
@@ -213,7 +250,22 @@ impl DriveClient {
         Ok(DownloadStream {
             response,
             total_bytes: total,
+            idle,
         })
+    }
+
+    /// 下载专用 client。
+    ///
+    /// **必须**用 client 级 `.timeout()`：blocking 版的语义是「等响应头 ≤ D +
+    /// 每次 `read` ≤ D」，没有整体时长上限。request 级 `.timeout()` 会被写进
+    /// async 层变成总时限，大文件会被拦腰砍断（见 `docs/pitfalls.md`）。
+    fn download_client(&self, idle: Duration) -> Result<reqwest::blocking::Client, Error> {
+        reqwest::blocking::Client::builder()
+            .user_agent(&self.config().user_agent)
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(idle)
+            .build()
+            .map_err(|e| Error::Network(format!("无法创建下载客户端：{e}")))
     }
 }
 
@@ -221,6 +273,8 @@ impl DriveClient {
 pub struct DownloadStream {
     response: reqwest::blocking::Response,
     total_bytes: Option<u64>,
+    /// 每次读最多等这么久（连续没收到字节就判失败）
+    idle: Duration,
 }
 
 impl DownloadStream {
@@ -232,16 +286,33 @@ impl DownloadStream {
 
 impl std::io::Read for DownloadStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.response.read(buf)
+        match self.response.read(buf) {
+            // blocking 的 Response 把等待超时包成 io::ErrorKind::Other + reqwest::Error；
+            // 这里翻成标准 TimedOut，session 层据此给「多久没收到数据」的文案。
+            Err(err) if is_timeout(&err) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{} 秒没有收到数据", self.idle.as_secs()),
+            )),
+            other => other,
+        }
     }
+}
+
+/// 这个 io 错误是不是等待超时（reqwest 的包装或标准 TimedOut）。
+fn is_timeout(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::TimedOut
+        || err
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<reqwest::Error>())
+            .is_some_and(reqwest::Error::is_timeout)
 }
 
 /// 网络错误文本（不含凭据；直链本身绝不打印）。
 fn network_reason(err: &reqwest::Error) -> String {
-    if err.is_timeout() {
-        "下载超时".to_owned()
-    } else if err.is_connect() {
+    if err.is_connect() {
         "无法连接下载服务器".to_owned()
+    } else if err.is_timeout() {
+        "下载超时".to_owned()
     } else {
         format!("下载中断：{err}")
     }
@@ -643,5 +714,120 @@ mod tests {
         option.url = "https://cdn.invalid/v".into();
         assert!(option.is_expired(Some(past)));
         assert!(!option.is_expired(None), "时间未知时不当作过期");
+    }
+
+    // —— 下载空闲读超时（本地假服务器，不碰外网）——
+
+    /// 环境变量测试全局锁（避免并行测试互相踩踏，照 `config.rs` 的写法）。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 本地假服务器：先读完请求头再回 `body`，之后挂住不发也不关连接，
+    /// 模拟 CDN 半死。
+    fn stalled_server(body: &'static [u8]) -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("监听本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        std::thread::spawn(move || {
+            let Ok((mut socket, _)) = listener.accept() else {
+                return;
+            };
+            // 必须先收完请求：hyper 对「还没收请求就回包」的连接会直接判错，
+            // 那样测到的是连接错误，不是空闲读超时
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match socket.read(&mut chunk) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+            let _ = socket.write_all(body);
+            // 保持连接：测试要等的是客户端自己的空闲超时，不是 EOF
+            std::thread::sleep(Duration::from_secs(10));
+            drop(socket);
+        });
+        format!("http://{addr}/file")
+    }
+
+    /// 指向本地假服务器的下载详情。
+    fn local_info(url: &str) -> FileInfo {
+        FileInfo {
+            id: "f1".into(),
+            name: "movie.mkv".into(),
+            octet_stream: url.to_owned(),
+            ..FileInfo::default()
+        }
+    }
+
+    fn test_client() -> DriveClient {
+        let device_id = "0".repeat(32);
+        DriveClient::new(&crate::Config::default(), &device_id, "t", "u")
+            .expect("构造客户端（无 I/O）")
+    }
+
+    #[test]
+    fn no_response_headers_times_out_instead_of_hanging() {
+        let info = local_info(&stalled_server(b""));
+        let started = std::time::Instant::now();
+        let result = test_client().open_download_with(&info, Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        let err = result.err().expect("服务器不发响应头，必须报错");
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "应在超时附近返回，实际等了 {elapsed:?}"
+        );
+        assert!(err.to_string().contains("下载超时"), "{err}");
+    }
+
+    #[test]
+    fn stalled_body_read_reports_timed_out_and_keeps_received_bytes() {
+        use std::io::Read as _;
+
+        let info = local_info(&stalled_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n0123456789",
+        ));
+        let mut stream = test_client()
+            .open_download_with(&info, Duration::from_secs(1))
+            .unwrap_or_else(|err| panic!("响应头正常，应能打开流：{err:?}"));
+        assert_eq!(stream.total_bytes(), Some(1048576));
+
+        let mut buffer = [0u8; 64];
+        let mut received = 0;
+        while received < 10 {
+            let read = stream.read(&mut buffer).expect("停发前的读应成功");
+            assert!(read > 0, "还没到 10 字节就 EOF 了");
+            received += read;
+        }
+        assert_eq!(received, 10, "只发出了 10 字节");
+
+        let started = std::time::Instant::now();
+        let err = stream
+            .read(&mut buffer)
+            .expect_err("服务器停发后必须超时，不能永久阻塞");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "应在超时附近返回"
+        );
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("没有收到数据"), "{err}");
+    }
+
+    #[test]
+    fn idle_timeout_env_parses_with_fallbacks() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cases = [
+            ("7", Duration::from_secs(7)),
+            (" 12 ", Duration::from_secs(12)),
+            ("abc", DEFAULT_DOWNLOAD_IDLE),
+            ("", DEFAULT_DOWNLOAD_IDLE),
+            ("0", DEFAULT_DOWNLOAD_IDLE),
+            ("-3", DEFAULT_DOWNLOAD_IDLE),
+        ];
+        for (raw, expected) in cases {
+            std::env::set_var(DOWNLOAD_IDLE_ENV, raw);
+            assert_eq!(download_idle(), expected, "输入 {raw:?}");
+        }
+        std::env::remove_var(DOWNLOAD_IDLE_ENV);
+        assert_eq!(download_idle(), DEFAULT_DOWNLOAD_IDLE);
     }
 }

@@ -12,16 +12,20 @@
 //!   （安全纪律：不破坏用户本地数据）。
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use super::media::file_info;
 use super::{Failure, Session};
+use crate::format::size as readable_size;
 
 /// 每次读的块大小（64 KiB：够大够快，进度回调也不至于太密）。
 const CHUNK: usize = 64 * 1024;
 /// 临时文件后缀。
 const PART_SUFFIX: &str = ".kichi-part";
+/// 可取消等待的检查间隔（最坏多等这么久就发现取消）。
+const CANCEL_POLL: Duration = Duration::from_millis(50);
 
 /// 一次下载的结果。
 #[derive(Debug, Clone)]
@@ -52,6 +56,24 @@ impl Cancel {
     }
 }
 
+/// 可被取消打断的等待：等到 `total` 或期间被取消。`false` = 被取消。
+///
+/// 按 50 ms 切片查标志，取消最坏多等一个切片；不用条件变量是因为
+/// `Cancel` 只是个原子标志，调用方（界面线程）不该为此持有锁。
+pub fn sleep_cancellable(cancel: &Cancel, total: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let remaining = total.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return true;
+        }
+        std::thread::sleep(remaining.min(CANCEL_POLL));
+    }
+}
+
 impl Session {
     /// 下载一个文件到 `target_dir`（目录不存在会自动创建）。阻塞。
     ///
@@ -66,12 +88,16 @@ impl Session {
         cancel: &Cancel,
     ) -> Result<Downloaded, Failure> {
         let client = self.drive()?;
-        let info = file_info(self, file_id)?;
+        let info = file_info(self, file_id, Some(cancel))?;
         let name = safe_file_name(if name_hint.trim().is_empty() {
             &info.name
         } else {
             name_hint
         });
+        // 取消后不再建连接：这一步可能白等响应头
+        if cancel.is_cancelled() {
+            return Err(Failure::Other("下载已取消".to_owned()));
+        }
         let stream = client.open_download(&info).map_err(Failure::from)?;
 
         std::fs::create_dir_all(target_dir)
@@ -98,6 +124,17 @@ impl Session {
                 Err(err) => {
                     drop(file);
                     let _ = std::fs::remove_file(&part_path);
+                    // 卡在读超时的那几十秒里按的取消仍然算「已取消」，
+                    // 不能因为网络先返回超时就被记成失败
+                    if cancel.is_cancelled() {
+                        return Err(Failure::Other("下载已取消".to_owned()));
+                    }
+                    if err.kind() == io::ErrorKind::TimedOut {
+                        return Err(Failure::Other(format!(
+                            "下载超时：{err}（已下载 {}）",
+                            readable_size(written)
+                        )));
+                    }
                     return Err(Failure::Other(format!("下载中断：{err}")));
                 }
             };
@@ -269,5 +306,33 @@ mod tests {
         let handle = std::thread::spawn(move || clone.cancel());
         handle.join().expect("线程正常结束");
         assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn cancellable_sleep_returns_early_when_cancelled() {
+        let cancel = std::sync::Arc::new(Cancel::default());
+        let clone = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            clone.cancel();
+        });
+        let started = Instant::now();
+        assert!(
+            !sleep_cancellable(&cancel, Duration::from_secs(5)),
+            "期间被取消要返回 false"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "不能等满 5 秒：{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn cancellable_sleep_finishes_normally_without_cancel() {
+        let cancel = Cancel::default();
+        let started = Instant::now();
+        assert!(sleep_cancellable(&cancel, Duration::from_millis(80)));
+        assert!(started.elapsed() >= Duration::from_millis(80));
     }
 }

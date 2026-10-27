@@ -321,22 +321,8 @@ where
     enqueue(Box::new(task));
 }
 
-/// 字节数转人类可读（GB 保留一位小数）。
-pub(crate) fn format_size(bytes: u64) -> String {
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    const KB: f64 = 1024.0;
-    let size = bytes as f64;
-    if size >= GB {
-        format!("{:.1} GB", size / GB)
-    } else if size >= MB {
-        format!("{:.1} MB", size / MB)
-    } else if size >= KB {
-        format!("{:.0} KB", size / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
+/// 字节数转人类可读（实现在 [`crate::format::size`]，会话层也要用同一套格式）。
+pub(crate) use crate::format::size as format_size;
 
 /// 会话状态 → QML 用的字符串。
 pub(crate) fn state_name(state: State) -> &'static str {

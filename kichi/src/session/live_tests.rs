@@ -245,7 +245,7 @@ fn live_play_options_for_a_media_file() {
         panic!("没找到媒体文件（video/audio），请先往网盘里放一个视频再跑");
     };
     println!("选中媒体文件：{}（id={}）", file.name, file.id);
-    let info = media::file_info(&session, &file.id).expect("取文件详情失败");
+    let info = media::file_info(&session, &file.id, None).expect("取文件详情失败");
     println!(
         "详情：{} 个 medias，links 全空={}",
         info.medias.len(),
@@ -397,7 +397,7 @@ fn live_probe_play_options_shapes() {
 }
 
 fn report_tiers(session: &Session, entry: &kichi_core::FileEntry) {
-    let Ok(info) = media::file_info(session, &entry.id) else {
+    let Ok(info) = media::file_info(session, &entry.id, None) else {
         println!("{}: 取详情失败", entry.name);
         return;
     };
