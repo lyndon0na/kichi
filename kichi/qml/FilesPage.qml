@@ -24,6 +24,11 @@ Item {
         id: density
     }
 
+    // 页面尺寸常量（滚动条车道 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
+    UiMetrics {
+        id: metrics
+    }
+
     function crumbCount() {
         return page.backend ? page.backend.breadcrumb.length : 0
     }
@@ -168,13 +173,13 @@ Item {
                     visible: !page.searching
                     model: page.backend ? page.backend.files : []
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: ScrollBar {
-                        policy: ScrollBar.AsNeeded
-                    }
+                    // 列表铺满到页面右缘，条画在右侧 10px 车道里；
+                    // 委托宽度减去车道，文字永远停在条左边
+                    ScrollBar.vertical: KScrollBar {}
 
                     delegate: FileRow {
                         id: row
-                        width: ListView.view.width
+                        width: ListView.view.width - metrics.scrollBarSlot
                         entry: modelData
                         backend: page.backend
                         iconColumnWidth: density.iconColumnWidth

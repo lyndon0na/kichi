@@ -22,6 +22,11 @@ Item {
     property int sizeColumnWidth: 110
     property int modifiedColumnWidth: 150
 
+    // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    UiMetrics {
+        id: metrics
+    }
+
     // 右键：条目本身 + 结果行内的位置（页面换算到菜单坐标系）
     signal contextMenu(var entry, point position)
     // 双击媒体文件：条目 id + 本视图内的锚点（页面再换算到页面坐标系）
@@ -86,17 +91,18 @@ Item {
 
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.margins: 8
+            // 右缘留给滚动条：列表铺到窗口右缘，条画在那 10px 车道里
+            Layout.topMargin: 8
+            Layout.leftMargin: 8
+            Layout.bottomMargin: 8
             clip: true
             model: root.backend ? root.backend.searchResults : []
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {
-                policy: ScrollBar.AsNeeded
-            }
+            ScrollBar.vertical: KScrollBar {}
 
             delegate: ItemDelegate {
                 id: row
-                width: results.width
+                width: results.width - metrics.scrollBarSlot
                 // 两行：名字一行、所在文件夹一行。ItemDelegate 的内容区
                 // 默认有上下留白，固定高度会把第二行挤到外面重叠
                 height: Math.max(root.rowHeight, contentItem.implicitHeight + 18)

@@ -22,6 +22,12 @@ Item {
     property int headerRowHeight: 36
     property int headerPixelSize: 13
 
+    // 表头本身铺满整个列表区（含滚动条车道）：行宽已减去车道，
+    // 右侧再补一个车道宽度，列才会和行对齐
+    UiMetrics {
+        id: metrics
+    }
+
     // 表头行 + 底部 1px 分隔线
     implicitHeight: header.headerRowHeight + 1
 
@@ -54,7 +60,9 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: header.contentPadding
-            Layout.rightMargin: header.contentPadding
+            // 行宽比表头窄一个滚动条车道：右内边距同步 +10，
+            // 否则「修改时间」列头和行里的时间差 10px
+            Layout.rightMargin: header.contentPadding + metrics.scrollBarSlot
             Layout.preferredHeight: header.headerRowHeight
             spacing: header.columnSpacing
 

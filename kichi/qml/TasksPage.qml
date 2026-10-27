@@ -11,6 +11,11 @@ Item {
     property string pendingDeleteId: ""
     property string pendingDeleteName: ""
 
+    // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    UiMetrics {
+        id: metrics
+    }
+
     readonly property int activeCount: {
         var tasks = page.backend ? page.backend.tasks : []
         var n = 0
@@ -23,11 +28,16 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 12
+        // 右边不留：列表铺到窗口右缘，滚动条贴边；
+        // 输入行和状态行自己补右边距
+        anchors.leftMargin: metrics.pageMargin
+        anchors.topMargin: metrics.pageMargin
+        anchors.bottomMargin: metrics.pageMargin
         spacing: 8
 
         RowLayout {
             Layout.fillWidth: true
+            Layout.rightMargin: metrics.pageMargin
             spacing: 8
 
             TextField {
@@ -54,6 +64,7 @@ Item {
 
         Label {
             visible: page.activeCount > 0
+            Layout.rightMargin: metrics.pageMargin
             text: qsTr("%1 条任务进行中，列表每 10 秒自动刷新").arg(page.activeCount)
             color: palette.placeholderText
             font.pixelSize: 12
@@ -67,11 +78,13 @@ Item {
             spacing: 8
             model: page.backend ? page.backend.tasks : []
 
-            ScrollBar.vertical: ScrollBar {}
+            // 列表铺到窗口右缘，条画在右侧 10px 车道里
+            ScrollBar.vertical: KScrollBar {}
 
             delegate: Frame {
                 id: card
-                width: list.width
+                // 卡片宽度减去滚动条车道，右边不会压到条
+                width: list.width - metrics.scrollBarSlot
                 padding: 12
 
                 readonly property var info: modelData

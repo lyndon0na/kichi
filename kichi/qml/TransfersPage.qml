@@ -15,6 +15,11 @@ Item {
     /// 进度节拍只更新 transferLive（见 below），不碰列表。
     property int revision: -1
 
+    // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    UiMetrics {
+        id: metrics
+    }
+
     // —— 列表模型 ——
     // ⚠ 不能用「每次拿一个新数组赋给 ListView.model」：那会让 ListView 整表
     // 重灌，滚动位置被冲回顶部；即便事后把位置放回去，中间也会闪一帧列表顶部
@@ -155,12 +160,18 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 12
+        // 右边不留：列表要铺到窗口右缘，让滚动条贴边；
+        // 工具条 / 分隔线自己补右边距，列表内容宽度减去车道
+        anchors.leftMargin: metrics.pageMargin
+        anchors.topMargin: metrics.pageMargin
+        anchors.bottomMargin: metrics.pageMargin
         spacing: 8
 
         // —— 工具条：进行中条数 + 三个操作 ——
         RowLayout {
             Layout.fillWidth: true
+            // 工具条不吃滚动条车道，右缘留普通页边距（视觉位置与以前一致）
+            Layout.rightMargin: metrics.pageMargin
             spacing: 8
 
             Label {
@@ -192,6 +203,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 1
+            Layout.rightMargin: metrics.pageMargin
             color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.10)
         }
 
@@ -205,9 +217,8 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             cacheBuffer: 400
 
-            ScrollBar.vertical: ScrollBar {
-                policy: ScrollBar.AsNeeded
-            }
+            // 列表铺到窗口右缘，条画在右侧 10px 车道里
+            ScrollBar.vertical: KScrollBar {}
 
             delegate: ItemDelegate {
                 id: row
@@ -224,7 +235,8 @@ Item {
                 readonly property bool notice: row.phase === "notice"
                 readonly property bool failed: row.phase === "failed"
 
-                width: ListView.view.width
+                // 行宽减去滚动条车道：条贴窗口边，文字停在线左边
+                width: ListView.view.width - metrics.scrollBarSlot
                 padding: 8
                 leftPadding: 10
                 rightPadding: 10

@@ -13,18 +13,30 @@ Item {
     // 下载目录输入框在编辑中时不要被 backend 的刷新覆盖（否则打字会被打断）
     property bool downloadDirty: false
 
+    // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    UiMetrics {
+        id: metrics
+    }
+
     Flickable {
         id: scroller
         anchors.fill: parent
-        anchors.margins: 12
+        // 右边不留：视图铺到窗口右缘，滚动条贴边；内容列自己让出车道
+        anchors.leftMargin: metrics.pageMargin
+        anchors.topMargin: metrics.pageMargin
+        anchors.bottomMargin: metrics.pageMargin
         clip: true
         contentWidth: width
         contentHeight: body.implicitHeight
         boundsBehavior: Flickable.StopAtBounds
 
+        // 设置页以前完全没挂滚动条（滚轮能滚，但看不出能滚、也拖不动）
+        ScrollBar.vertical: KScrollBar {}
+
         ColumnLayout {
             id: body
-            width: scroller.width
+            // 内容宽度减去滚动条车道：文字停在条左边
+            width: scroller.width - metrics.scrollBarSlot
             spacing: 16
 
             // ── 播放（内容在 SettingsPlayback.qml） ────────────

@@ -17,6 +17,17 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
+# —— 规则：滚动条只有一种做法（docs/pitfalls.md 第 13 条）——
+# 裸 ScrollBar 自带默认宽度、浮动在内容之上，各页外观会各不相同。
+# 页面里一律 `ScrollBar.vertical: KScrollBar {}`；下面的静态检查当场拦住新写法。
+raw="$(grep -rnE '(^|[^A-Za-z])ScrollBar[[:space:]]*\{|ScrollBar\.vertical:[[:space:]]*ScrollBar' \
+        kichi/qml --include='*.qml' | grep -v '/KScrollBar.qml:' || true)"
+if [[ -n "$raw" ]]; then
+    echo "qml-lint: 发现裸 ScrollBar，应改用 KScrollBar（见 docs/pitfalls.md 第 13 条）：" >&2
+    printf '%s\n' "$raw" >&2
+    exit 1
+fi
+
 # qmllint 常在 /usr/lib64/qt6/bin，该系统目录默认不在 PATH
 LINT="$(command -v qmllint || true)"
 if [[ -z "$LINT" ]]; then
