@@ -3,7 +3,8 @@
 //! 每个请求都带 `x-captcha-token`；官方以 `captcha_invalid` 拒绝时，
 //! 作废并重取一次再试（rclone 同款兜底）。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer};
@@ -28,6 +29,14 @@ pub struct DriveClient {
     captcha: CaptchaSource,
     access_token: Arc<str>,
     user_id: String,
+    /// 下载 client：按空闲读超时缓存（`.timeout` 是「响应头 ≤ D + 每次 read ≤ D」，
+    /// 没有总时限，复用不会砍断大文件——见 `docs/pitfalls.md` 第 14 条）。
+    ///
+    /// reqwest 的连接池与 TLS session 都在 client 里，每个文件重建一次等于
+    /// 每文件重做握手 + 再起一条专属运行时线程（`docs/pitfalls.md` 第 17 条）。
+    ///
+    /// `pub(crate)`：`media.rs` 的 `impl DriveClient` 在另一个模块里取它。
+    pub(crate) download: Mutex<Option<(Duration, Arc<reqwest::blocking::Client>)>>,
 }
 
 /// 当前用户摘要。
@@ -102,6 +111,7 @@ impl DriveClient {
             captcha,
             access_token,
             user_id: user_id.to_owned(),
+            download: Mutex::new(None),
         }
     }
 

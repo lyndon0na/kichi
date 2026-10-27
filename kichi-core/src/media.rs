@@ -11,6 +11,7 @@
 //! 直链是带签名的临时 URL：不缓存、不打印（最多打到域名）。
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -254,18 +255,35 @@ impl DriveClient {
         })
     }
 
-    /// 下载专用 client。
+    /// 下载专用 client（每个 `DriveClient` 只建一个，按空闲读超时缓存）。
     ///
     /// **必须**用 client 级 `.timeout()`：blocking 版的语义是「等响应头 ≤ D +
     /// 每次 `read` ≤ D」，没有整体时长上限。request 级 `.timeout()` 会被写进
     /// async 层变成总时限，大文件会被拦腰砍断（见 `docs/pitfalls.md`）。
-    fn download_client(&self, idle: Duration) -> Result<reqwest::blocking::Client, Error> {
-        reqwest::blocking::Client::builder()
-            .user_agent(&self.config().user_agent)
-            .connect_timeout(Duration::from_secs(20))
-            .timeout(idle)
-            .build()
-            .map_err(|e| Error::Network(format!("无法创建下载客户端：{e}")))
+    ///
+    /// 缓存键是 `idle`：正常路径永远是 [`download_idle`]，只有测试注入短超时
+    /// （以及同进程内改 `KICHI_DOWNLOAD_IDLE_TIMEOUT`）才会换一把。
+    fn download_client(&self, idle: Duration) -> Result<Arc<reqwest::blocking::Client>, Error> {
+        {
+            let cached = self.download.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((cached_idle, client)) = cached.as_ref() {
+                if *cached_idle == idle {
+                    return Ok(Arc::clone(client));
+                }
+            }
+        }
+        // 锁外构建：build 会起一条专属运行时线程，不在锁里做
+        let built = Arc::new(
+            reqwest::blocking::Client::builder()
+                .user_agent(&self.config().user_agent)
+                .connect_timeout(Duration::from_secs(20))
+                .timeout(idle)
+                .build()
+                .map_err(|e| Error::Network(format!("无法创建下载客户端：{e}")))?,
+        );
+        let mut cached = self.download.lock().unwrap_or_else(|e| e.into_inner());
+        *cached = Some((idle, Arc::clone(&built)));
+        Ok(built)
     }
 }
 
@@ -829,5 +847,57 @@ mod tests {
         }
         std::env::remove_var(DOWNLOAD_IDLE_ENV);
         assert_eq!(download_idle(), DEFAULT_DOWNLOAD_IDLE);
+    }
+
+    // —— 下载 client 复用（本地假服务器，不碰外网）——
+
+    #[test]
+    fn download_client_is_reused_for_the_same_idle() {
+        let client = test_client();
+        let idle = Duration::from_secs(7);
+        let first = client.download_client(idle).expect("建下载 client 失败");
+        let second = client.download_client(idle).expect("取缓存失败");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "同一个空闲超时必须复用同一个连接池"
+        );
+    }
+
+    #[test]
+    fn download_client_rebuilds_when_idle_changes() {
+        let client = test_client();
+        let first = client
+            .download_client(Duration::from_secs(7))
+            .expect("建下载 client 失败");
+        let second = client
+            .download_client(Duration::from_secs(9))
+            .expect("换空闲超时后应能重建");
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "空闲超时变了必须换 client（超时值存在 client 里）"
+        );
+        // 换完之后再取新值仍然是同一个
+        let third = client
+            .download_client(Duration::from_secs(9))
+            .expect("取缓存失败");
+        assert!(Arc::ptr_eq(&second, &third));
+    }
+
+    #[test]
+    fn cached_download_client_keeps_its_idle_timeout() {
+        // 复用不能改超时语义：缓存过的 client 仍然按它自己那个 idle 报超时
+        let info = local_info(&stalled_server(b""));
+        let client = test_client();
+        let started = std::time::Instant::now();
+        // 先建一次（模拟上一个文件已经下过，client 已在缓存里）
+        let _ = client.download_client(Duration::from_secs(1));
+        let result = client.open_download_with(&info, Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        let err = result.err().expect("缓存命中也必须按 1 秒超时");
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "应在超时附近返回，实际等了 {elapsed:?}"
+        );
+        assert!(err.to_string().contains("下载超时"), "{err}");
     }
 }
