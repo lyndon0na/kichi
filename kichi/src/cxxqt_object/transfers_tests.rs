@@ -1,6 +1,7 @@
-//! `transfers.rs` 的单元测试：记录表的状态迁移、排序、上限与显示字段。
+//! `transfers.rs` 的单元测试：记录表的状态迁移、父行聚合、排序、上限与显示字段。
 //!
-//! 拆出来只为守住行数软上限（实现本身约 350 行）。
+//! 拆出来只为守住行数软上限（实现本身约 350 行）。文件夹批次在主列表
+//! 只占一条总账行，子行的字段与详情快照也在这里覆盖。
 
 use std::path::{Path, PathBuf};
 
@@ -9,8 +10,10 @@ use kichi_core::EntryKind;
 
 use super::*;
 use crate::cxxqt_object::transfers_view::{
-    build_snapshot, notice_map, ordered, percent_of, record_map, QVariantMap,
+    batch_stats, build_detail_snapshot, build_snapshot, live_map, notice_map, ordered,
+    parent_live_map, percent_of, record_map, QVariantMap, MAX_ROWS,
 };
+use crate::cxxqt_object::QVariantList;
 
 /// 一条记录的种子（名字就是裸名字，单文件层级）。
 fn job(name: &str) -> TransferJob {
@@ -25,20 +28,61 @@ fn job(name: &str) -> TransferJob {
     }
 }
 
+fn folder_job(name: &str) -> TransferJob {
+    TransferJob {
+        kind: EntryKind::Folder,
+        ..job(name)
+    }
+}
+
 fn add_batch(records: &mut Vec<Transfer>, seq: u64, names: &[&str]) {
     for (index, name) in names.iter().enumerate() {
         records.push(row_from(seq, index, "source", &job(name)));
     }
 }
 
+/// 一个文件夹批次：父行 + 读目录后挂上的子行。
+fn folder_batch(records: &mut Vec<Transfer>, batch: u64, name: &str, children: &[(&str, u64)]) {
+    records.push(row_from(batch, 0, "source", &folder_job(name)));
+    mark_preparing_in(records, batch);
+    let base = job("seed");
+    let seeds: Vec<TransferJob> = children
+        .iter()
+        .map(|(child, size)| TransferJob {
+            id: format!("{name}-{child}"),
+            name: (*child).to_owned(),
+            sub_dir: vec![name.to_owned()],
+            size: *size,
+            ..base.clone()
+        })
+        .collect();
+    expand_folder_in(records, batch, &seeds);
+}
+
+fn child_at(records: &[Transfer], batch: u64, index: usize) -> usize {
+    records
+        .iter()
+        .position(|record| record.batch == batch && record.child && record.index == index)
+        .expect("子行存在")
+}
+
+fn child_mut(records: &mut [Transfer], batch: u64, index: usize) -> &mut Transfer {
+    let at = records
+        .iter()
+        .position(|record| record.batch == batch && record.child && record.index == index)
+        .expect("子行存在");
+    &mut records[at]
+}
+
 fn set(records: &mut [Transfer], batch: u64, index: usize, state: TransferState) {
-    if let Some(record) = find(records, batch, index) {
+    if let Some(record) = find_file(records, batch, index) {
         record.state = state;
     }
 }
 
-fn names(records: &[Transfer]) -> Vec<String> {
-    records.iter().map(Transfer::display_name).collect()
+fn set_child(records: &mut [Transfer], batch: u64, index: usize, state: TransferState) {
+    let at = child_at(records, batch, index);
+    records[at].state = state;
 }
 
 fn text_of(map: &QVariantMap, key: &str) -> String {
@@ -46,6 +90,24 @@ fn text_of(map: &QVariantMap, key: &str) -> String {
         .and_then(|value| value.value::<QString>())
         .map(|value| value.to_string())
         .unwrap_or_default()
+}
+
+fn int_of(map: &QVariantMap, key: &str) -> i32 {
+    map.get(&QString::from(key))
+        .and_then(|value| value.value::<i32>())
+        .unwrap_or_default()
+}
+
+fn bool_of(map: &QVariantMap, key: &str) -> bool {
+    map.get(&QString::from(key))
+        .and_then(|value| value.value::<bool>())
+        .unwrap_or_default()
+}
+
+fn map_at(list: &QVariantList, index: usize) -> QVariantMap {
+    list.at(index)
+        .and_then(|value| value.value::<QVariantMap>())
+        .expect("快照的每一行都是 map")
 }
 
 #[test]
@@ -145,34 +207,63 @@ fn cancel_marks_every_active_row() {
 }
 
 #[test]
-fn clear_finished_keeps_active() {
+fn clear_finished_only_drops_finished_batches() {
     let mut records = Vec::new();
-    add_batch(&mut records, 1, &["a", "b"]);
+    add_batch(&mut records, 1, &["done-a"]);
     set(&mut records, 1, 0, TransferState::Done);
+    add_batch(&mut records, 2, &["active"]);
     clear_finished_in(&mut records);
-    assert_eq!(names(&records), vec!["b"]);
+    assert_eq!(records.len(), 1);
     assert_eq!(records[0].state, TransferState::Queued);
+    assert_eq!(records[0].batch, 2, "只清整批都结束的组");
 }
 
 #[test]
-fn trim_drops_oldest_finished_but_keeps_active() {
+fn clear_finished_keeps_active_folder_with_done_children() {
     let mut records = Vec::new();
-    for index in 0..MAX_RECORDS {
-        let mut record = row_from(1, index, "", &job(&format!("done-{index}")));
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    set_child(&mut records, 1, 0, TransferState::Done);
+    begin_in(&mut records, 1, 1);
+    clear_finished_in(&mut records);
+    assert_eq!(records.len(), 3, "正在下载的文件夹与已完成的子行都保留");
+    assert_eq!(records[0].state, TransferState::Running);
+}
+
+#[test]
+fn trim_evicts_whole_oldest_finished_batches() {
+    let mut records = Vec::new();
+    for batch in 1..=MAX_RECORDS as u64 {
+        let mut record = row_from(batch, 0, "", &job(&format!("done-{batch}")));
         record.state = TransferState::Done;
         records.push(record);
     }
-    for index in 0..2 {
-        let mut record = row_from(1, MAX_RECORDS + index, "", &job(&format!("active-{index}")));
+    for batch in MAX_RECORDS as u64 + 1..=MAX_RECORDS as u64 + 2 {
+        let mut record = row_from(batch, 0, "", &job(&format!("active-{batch}")));
         record.state = TransferState::Running;
         records.push(record);
     }
     trim(&mut records);
 
     assert_eq!(records.len(), MAX_RECORDS);
-    assert_eq!(records[0].job.name, "done-2", "最老的两条已结束记录被丢掉");
+    assert_eq!(records[0].batch, 3, "最老的两批已结束记录被整批丢掉");
     let active = records.iter().filter(|r| r.state.is_active()).count();
     assert_eq!(active, 2, "进行中的绝不丢");
+}
+
+#[test]
+fn trim_keeps_newest_finished_batch_even_over_limit() {
+    let mut records = Vec::new();
+    records.push(row_from(1, 0, "", &folder_job("超大文件夹")));
+    records[0].state = TransferState::Done;
+    for index in 0..MAX_RECORDS + 100 {
+        let mut child = row_from(1, index, "", &job(&format!("f{index}")));
+        child.child = true;
+        child.state = TransferState::Done;
+        records.push(child);
+    }
+    let total = records.len();
+    trim(&mut records);
+    assert_eq!(records.len(), total, "只剩最新一个已结束批次时保留它");
 }
 
 #[test]
@@ -182,22 +273,19 @@ fn percent_and_texts() {
     record.bytes = 512;
     record.total = Some(1024);
     assert_eq!(percent_of(&record), Some(50));
-    let map = record_map(&record);
+    let map = record_map(&record, &[]);
     assert_eq!(text_of(&map, "stateText"), "下载中");
     assert_eq!(text_of(&map, "progressText"), "50%");
     assert_eq!(text_of(&map, "sizeText"), "512 B / 1 KB");
     assert_eq!(text_of(&map, "path"), "", "未完成的行没有落盘路径");
+    assert!(!bool_of(&map, "folder"));
+    assert_eq!(int_of(&map, "childCount"), 0);
 
     record.total = None;
     record.bytes = 2048;
     assert_eq!(percent_of(&record), None);
-    let map = record_map(&record);
-    assert_eq!(
-        map.get(&QString::from("progress"))
-            .and_then(|value| value.value::<i32>()),
-        Some(-1),
-        "总大小未知时进度用 -1，QML 显示不确定态"
-    );
+    let map = record_map(&record, &[]);
+    assert_eq!(int_of(&map, "progress"), -1, "总大小未知时进度用 -1");
 }
 
 #[test]
@@ -216,10 +304,16 @@ fn every_row_has_a_key_for_the_qml_diff() {
     // `<Unknown File>: key is undefined`，提示行还会被反复重复插入（2026-10-27）。
     let mut record = row_from(1, 0, "file-1", &job("a.mkv"));
     record.state = TransferState::Done;
+    assert_eq!(text_of(&record_map(&record, &[]), "key"), "1:0");
+
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10)]);
+    let parent = record_map(&records[0], &records);
+    assert_eq!(text_of(&parent, "key"), "1:folder", "父行固定 batch:folder");
     assert_eq!(
-        text_of(&record_map(&record), "key"),
+        text_of(&map_at(&build_detail_snapshot(&records, 1), 0), "key"),
         "1:0",
-        "普通记录的 key"
+        "子行仍然是 batch:index"
     );
 
     let notice = notice_map(5);
@@ -228,25 +322,20 @@ fn every_row_has_a_key_for_the_qml_diff() {
         text_of(&notice, "name").contains("未显示"),
         "提示行仍要带说明文字"
     );
-    assert_eq!(
-        text_of(&notice, "path"),
-        "",
-        "提示行也要给 required property path 一个空串"
-    );
+    assert_eq!(text_of(&notice, "path"), "", "提示行也要给 path 空串");
+    assert!(!bool_of(&notice, "folder"));
+    assert_eq!(int_of(&notice, "childCount"), 0);
 }
 
-// —— 准备中 / 按 id 定位 / 文件夹展开（2026-10-27 下载并发修复）——
+// —— 准备中 / 文件夹展开 / 父行聚合（2026-10-27 文件夹详情页）——
 
 #[test]
 fn preparing_counts_as_active() {
     let mut records = Vec::new();
-    add_batch(&mut records, 1, &["big-folder"]);
+    records.push(row_from(1, 0, "src", &folder_job("big-folder")));
     mark_preparing_in(&mut records, 1);
     assert_eq!(records[0].state, TransferState::Preparing);
-    assert!(
-        records[0].state.is_active(),
-        "准备中要计入进行中（徽标 / 取消）"
-    );
+    assert!(records[0].state.is_active(), "准备中要计入进行中");
     assert!(!records[0].state.is_finished());
 
     let (_, active) = build_snapshot(&records);
@@ -263,89 +352,369 @@ fn preparing_counts_as_active() {
 #[test]
 fn preparing_row_shows_explanation_and_unknown_size() {
     let mut records = Vec::new();
-    add_batch(&mut records, 1, &["big-folder"]);
+    records.push(row_from(1, 0, "src", &folder_job("big-folder")));
     mark_preparing_in(&mut records, 1);
-    let map = record_map(&records[0]);
+    let map = record_map(&records[0], &records);
     assert_eq!(text_of(&map, "stateText"), "准备中");
     assert_eq!(text_of(&map, "detail"), "正在读取目录结构…");
     assert_eq!(text_of(&map, "sizeText"), "—", "还没读目录，大小未知");
+    assert!(bool_of(&map, "folder"));
+    assert_eq!(int_of(&map, "childCount"), 0);
 }
 
 #[test]
-fn expand_folder_replaces_placeholder_in_place() {
+fn folder_expansion_keeps_ledger_row_and_children() {
     let mut records = Vec::new();
-    add_batch(&mut records, 1, &["big-folder"]);
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("第 1 集.mkv", 10), ("第 2 集.mkv", 20)],
+    );
     add_batch(&mut records, 2, &["later"]);
-    mark_preparing_in(&mut records, 1);
-    let outer = job("第 1 集.mkv");
+
+    assert_eq!(records.len(), 4, "父行 + 2 个子行 + 后面排队的批次");
+    assert!(is_folder_ledger(&records[0]), "父行留在原位");
+    assert_eq!(records[0].state, TransferState::Preparing);
+    assert_eq!(records[1].index, 0);
+    assert!(records[1].child && records[2].child);
+    assert_eq!(records[3].job.name, "later", "后面排队的批次不受影响");
+    assert_eq!(records[1].source_id, "source", "子行也带来源 id");
+    assert_eq!(records[1].job.sub_dir, vec!["剧集"], "子行保留子目录");
+
+    let (list, active) = build_snapshot(&records);
+    assert_eq!(active, 2, "文件夹批次只算一个进行中");
+    assert_eq!(list.len(), 2, "主列表只有父行 + 单文件批次");
+    assert_eq!(text_of(&map_at(&list, 0), "key"), "1:folder");
+    assert_eq!(text_of(&map_at(&list, 1), "key"), "2:0");
+
+    let detail = build_detail_snapshot(&records, 1);
+    assert_eq!(detail.len(), 2);
+    assert_eq!(text_of(&map_at(&detail, 0), "name"), "第 1 集.mkv");
+    assert_eq!(text_of(&map_at(&detail, 1), "name"), "第 2 集.mkv");
+}
+
+#[test]
+fn find_file_never_confuses_parent_and_first_child() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 7, "剧集", &[("第 1 集.mkv", 10)]);
+    assert_eq!(record_key(&records[0]), "7:folder");
+    assert_eq!(record_key(&records[1]), "7:0");
+
+    let found = find_file(&mut records, 7, 0).expect("能找到第一个子行");
+    assert!(found.child, "按 (batch, 0) 查文件必须拿到子行，而不是父行");
+
+    // 进度只落到子行上；父行自己的 bytes / total 不被写
+    begin_in(&mut records, 7, 0);
+    progress_in(&mut records, 7, 0, 5, Some(10));
+    assert_eq!(records[1].bytes, 5);
+    assert_eq!(records[0].bytes, 0);
+}
+
+#[test]
+fn parent_state_follows_children() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    assert_eq!(
+        records[0].state,
+        TransferState::Preparing,
+        "子行入表时仍准备中"
+    );
+
+    begin_in(&mut records, 1, 0);
+    assert_eq!(records[0].state, TransferState::Running, "有子行开始下载");
+
+    finish_ok_in(&mut records, 1, 0, Path::new("/tmp/a.mkv"));
+    assert_eq!(records[0].state, TransferState::Running, "还有子行排队");
+
+    finish_ok_in(&mut records, 1, 1, Path::new("/tmp/b.mkv"));
+    assert_eq!(records[0].state, TransferState::Done, "全部完成");
+
+    let mut failed = Vec::new();
+    folder_batch(&mut failed, 2, "坏文件夹", &[("a.mkv", 10), ("b.mkv", 10)]);
+    begin_in(&mut failed, 2, 0);
+    finish_err_in(&mut failed, 2, 0, "坏链");
+    finish_err_in(&mut failed, 2, 1, "坏链");
+    assert_eq!(failed[0].state, TransferState::Failed, "全部失败");
+    assert_eq!(
+        text_of(&record_map(&failed[0], &failed), "stateText"),
+        "失败",
+        "一个都没成功时不叫部分失败"
+    );
+}
+
+#[test]
+fn cancel_is_not_revived_by_late_completion() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    begin_in(&mut records, 1, 0);
+    cancel_active_in(&mut records, None, "");
+    assert_eq!(records[0].state, TransferState::Cancelled);
+
+    // 取消瞬间当前文件刚好下载完整：子行记完成，父行不能被改回 Running / Done
+    finish_ok_in(&mut records, 1, 0, Path::new("/tmp/a.mkv"));
+    assert_eq!(records[0].state, TransferState::Cancelled);
+    assert_eq!(records[1].state, TransferState::Done);
+}
+
+#[test]
+fn folder_row_aggregates_progress_and_counts() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("a.mkv", 10), ("b.mkv", 20), ("c.mkv", 30)],
+    );
+    set_child(&mut records, 1, 0, TransferState::Done);
+    child_mut(&mut records, 1, 0).bytes = 10;
+    begin_in(&mut records, 1, 1);
+    progress_in(&mut records, 1, 1, 5, Some(20));
+
+    let stats = batch_stats(&records, 1);
+    assert_eq!(stats.total, 3);
+    assert_eq!(stats.done, 1);
+    assert_eq!(stats.progress_bytes, 15);
+    assert_eq!(stats.total_bytes, Some(60));
+    assert_eq!(stats.running_position, Some(2));
+    assert_eq!(stats.running_name, "b.mkv");
+
+    let map = record_map(&records[0], &records);
+    assert_eq!(text_of(&map, "stateText"), "下载中");
+    assert_eq!(int_of(&map, "progress"), 25);
+    assert_eq!(text_of(&map, "progressText"), "25% · 2/3");
+    assert_eq!(text_of(&map, "sizeText"), "15 B / 60 B");
+    assert_eq!(int_of(&map, "childCount"), 3);
+    assert_eq!(int_of(&map, "failedCount"), 0);
+    assert!(bool_of(&map, "folder"));
+
+    finish_err_in(&mut records, 1, 1, "坏链");
+    finish_err_in(&mut records, 1, 2, "坏链");
+    assert_eq!(records[0].state, TransferState::Failed);
+    let map = record_map(&records[0], &records);
+    assert_eq!(text_of(&map, "stateText"), "部分失败");
+    assert_eq!(text_of(&map, "detail"), "成功 1 个 · 失败 2 个");
+    assert_eq!(text_of(&map, "sizeText"), "60 B");
+    assert_eq!(int_of(&map, "failedCount"), 2);
+}
+
+#[test]
+fn folder_row_keeps_unknown_total_indeterminate() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 0), ("b.mkv", 20)]);
+    begin_in(&mut records, 1, 1);
+    progress_in(&mut records, 1, 1, 5, Some(20));
+
+    let stats = batch_stats(&records, 1);
+    assert_eq!(stats.total_bytes, None, "有一个子行大小未知");
+    let map = record_map(&records[0], &records);
+    assert_eq!(int_of(&map, "progress"), -1);
+    assert_eq!(
+        text_of(&map, "progressText"),
+        "2/2",
+        "总量未知时至少给当前位置"
+    );
+    assert_eq!(text_of(&map, "sizeText"), "5 B");
+}
+
+#[test]
+fn zero_byte_children_do_not_make_total_unknown() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("empty.txt", 0), ("a.mkv", 10)]);
+    set_child(&mut records, 1, 0, TransferState::Done);
+    child_mut(&mut records, 1, 0).total = Some(0);
+    set_child(&mut records, 1, 1, TransferState::Done);
+    records[0].state = TransferState::Done;
+
+    let stats = batch_stats(&records, 1);
+    assert_eq!(stats.total_bytes, Some(10), "0 字节按 0 处理，不算未知");
+    assert_eq!(stats.done, 2);
+    assert_eq!(int_of(&record_map(&records[0], &records), "progress"), 100);
+}
+
+#[test]
+fn folder_cancelled_row_text() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    set_child(&mut records, 1, 0, TransferState::Done);
+    set_child(&mut records, 1, 1, TransferState::Cancelled);
+    records[0].state = TransferState::Cancelled;
+
+    let map = record_map(&records[0], &records);
+    assert_eq!(text_of(&map, "stateText"), "已取消");
+    assert_eq!(text_of(&map, "detail"), "已完成 1 个 · 已取消");
+}
+
+#[test]
+fn main_snapshot_counts_a_folder_as_one_row() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    add_batch(&mut records, 2, &["single.mkv"]);
+    begin_in(&mut records, 2, 0);
+    // 父行也随子行进入进行中
+    begin_in(&mut records, 1, 0);
+
+    let (list, active) = build_snapshot(&records);
+    assert_eq!(list.len(), 2, "子行不出现在主列表");
+    assert_eq!(active, 2, "进行中按批次算：文件夹算 1");
+    assert_eq!(text_of(&map_at(&list, 0), "key"), "1:folder");
+    assert_eq!(text_of(&map_at(&list, 1), "key"), "2:0");
+}
+
+#[test]
+fn main_snapshot_caps_at_500_batches_and_adds_notice() {
+    let mut records = Vec::new();
+    for batch in 1..=MAX_ROWS as u64 + 1 {
+        let mut record = row_from(batch, 0, "", &job(&format!("f{batch}")));
+        record.state = TransferState::Done;
+        records.push(record);
+    }
+    let (list, active) = build_snapshot(&records);
+    assert_eq!(list.len(), MAX_ROWS + 1, "500 行 + 1 条提示");
+    assert_eq!(active, 0);
+    assert_eq!(text_of(&map_at(&list, MAX_ROWS), "key"), "notice");
+    assert!(
+        text_of(&map_at(&list, MAX_ROWS), "name").contains("1 条记录未显示"),
+        "提示剩下的批次数量"
+    );
+}
+
+#[test]
+fn detail_snapshot_caps_at_500_files_and_adds_notice() {
+    let mut records = Vec::new();
+    records.push(row_from(1, 0, "", &folder_job("超大文件夹")));
+    for index in 0..MAX_ROWS + 1 {
+        let mut child = row_from(1, index, "", &job(&format!("f{index}")));
+        child.child = true;
+        records.push(child);
+    }
+    let detail = build_detail_snapshot(&records, 1);
+    assert_eq!(detail.len(), MAX_ROWS + 1, "500 个文件 + 1 条提示");
+    assert_eq!(text_of(&map_at(&detail, MAX_ROWS), "key"), "notice");
+    assert!(
+        text_of(&map_at(&detail, MAX_ROWS), "name").contains("1 个文件未显示"),
+        "提示剩下的文件数量"
+    );
+}
+
+#[test]
+fn detail_snapshot_keeps_download_order() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        5,
+        "剧集",
+        &[
+            ("第 1 集.mkv", 10),
+            ("第 2 集.mkv", 10),
+            ("第 3 集.mkv", 10),
+        ],
+    );
+    set_child(&mut records, 5, 0, TransferState::Done);
+    set_child(&mut records, 5, 1, TransferState::Failed);
+    begin_in(&mut records, 5, 2);
+
+    let keys = |records: &[Transfer]| -> Vec<String> {
+        let detail = build_detail_snapshot(records, 5);
+        (0..detail.len())
+            .map(|index| text_of(&map_at(&detail, index), "key"))
+            .collect()
+    };
+    assert_eq!(
+        keys(&records)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["5:0", "5:1", "5:2"],
+        "固定下载顺序"
+    );
+
+    // 第一个子行完成后仍然留在第一位（详情页不按状态重排）
+    set_child(&mut records, 5, 0, TransferState::Done);
+    assert_eq!(
+        keys(&records)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["5:0", "5:1", "5:2"]
+    );
+}
+
+#[test]
+fn detail_snapshot_names_are_relative_to_folder() {
+    let mut records = Vec::new();
+    records.push(row_from(5, 0, "src", &folder_job("剧集")));
+    let base = job("第 01 集.mkv");
     let seeds = vec![
         TransferJob {
-            id: "file-a".into(),
-            sub_dir: vec!["big-folder".into()],
+            id: "nested".into(),
+            sub_dir: vec!["剧集".into(), "第一季".into()],
             size: 10,
-            ..outer.clone()
+            ..base.clone()
         },
         TransferJob {
-            id: "file-b".into(),
-            name: "第 2 集.mkv".into(),
-            sub_dir: vec!["big-folder".into()],
-            size: 20,
-            ..outer
+            id: "flat".into(),
+            sub_dir: vec!["剧集".into()],
+            size: 10,
+            ..base
         },
     ];
-    expand_folder_in(&mut records, 1, &seeds);
+    expand_folder_in(&mut records, 5, &seeds);
 
-    let ordered_names: Vec<String> = ordered(&records)
-        .iter()
-        .map(|record| record.display_name())
-        .collect();
-    assert_eq!(
-        ordered_names,
-        vec!["big-folder/第 1 集.mkv", "big-folder/第 2 集.mkv", "later"],
-        "整批原地展开，后面排队的批次仍在下面"
-    );
-    assert_eq!(records[0].state, TransferState::Queued);
-    assert_eq!(records[1].index, 1);
-    assert_eq!(records[0].source_id, "source", "展开出来的行也带来源 id");
-    assert_eq!(records[0].job.id, "file-a", "行内保留文件 id 供重试");
-    assert_eq!(records[0].job.sub_dir, vec!["big-folder"], "行内保留子目录");
+    let detail = build_detail_snapshot(&records, 5);
+    assert_eq!(text_of(&map_at(&detail, 0), "name"), "第一季/第 01 集.mkv");
+    assert_eq!(text_of(&map_at(&detail, 1), "name"), "第 01 集.mkv");
 }
 
 #[test]
-fn cancel_by_batch_leaves_other_batches_alone() {
+fn parent_path_requires_a_done_child() {
     let mut records = Vec::new();
-    add_batch(&mut records, 1, &["a"]);
-    add_batch(&mut records, 2, &["b"]);
-    mark_preparing_in(&mut records, 1);
-    cancel_active_in(&mut records, Some(1), "");
-    assert_eq!(records[0].state, TransferState::Cancelled);
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10)]);
     assert_eq!(
-        records[1].state,
-        TransferState::Queued,
-        "按批号取消不能动别的批"
+        text_of(&record_map(&records[0], &records), "path"),
+        "",
+        "还没有子文件落盘时父行不可定位"
+    );
+
+    set_child(&mut records, 1, 0, TransferState::Done);
+    child_mut(&mut records, 1, 0).path = Some(PathBuf::from("/tmp/剧集/a.mkv"));
+    records[0].state = TransferState::Done;
+    let expected = PathBuf::from("/tmp").join("剧集");
+    assert_eq!(
+        text_of(&record_map(&records[0], &records), "path"),
+        expected.display().to_string(),
+        "至少一个子文件完成后给文件夹路径"
+    );
+    assert_eq!(
+        text_of(&record_map(&records[0], &records), "detail"),
+        format!("1 个文件 · 保存到 {}", expected.display())
     );
 }
 
 #[test]
-fn fail_batch_marks_whole_batch_failed() {
+fn live_maps_carry_file_and_parent_progress() {
     let mut records = Vec::new();
-    add_batch(&mut records, 1, &["big-folder"]);
-    add_batch(&mut records, 2, &["later"]);
-    mark_preparing_in(&mut records, 1);
-    fail_batch_in(&mut records, 1, "目录读取失败");
-    assert_eq!(records[0].state, TransferState::Failed);
-    assert_eq!(records[0].detail, "目录读取失败");
-    assert_eq!(
-        records[1].state,
-        TransferState::Queued,
-        "后面的批次照常排队"
-    );
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 20)]);
+    set_child(&mut records, 1, 0, TransferState::Done);
+    child_mut(&mut records, 1, 0).bytes = 10;
+    begin_in(&mut records, 1, 1);
+    progress_in(&mut records, 1, 1, 5, Some(20));
+
+    let child = live_map(&records[child_at(&records, 1, 1)]);
+    assert_eq!(text_of(&child, "key"), "1:1");
+    assert_eq!(int_of(&child, "progress"), 25);
+
+    let parent = parent_live_map(&records[0], &records);
+    assert_eq!(text_of(&parent, "key"), "1:folder");
+    assert_eq!(int_of(&parent, "progress"), 50, "15 / 30");
+    assert_eq!(text_of(&parent, "progressText"), "50% · 2/2");
+    assert_eq!(text_of(&parent, "sizeText"), "15 B / 30 B");
 }
 
 #[test]
 fn record_map_exposes_source_id_for_locating() {
     let record = row_from(7, 0, "cloud-entry-42", &job("a.mkv"));
-    let map = record_map(&record);
+    let map = record_map(&record, &[]);
     assert_eq!(text_of(&map, "sourceId"), "cloud-entry-42");
 }
 
@@ -356,7 +725,7 @@ fn done_row_detail_comes_from_path() {
     record.state = TransferState::Done;
     record.detail = "旧字符串".into();
 
-    let map = record_map(&record);
+    let map = record_map(&record, &[]);
     assert_eq!(text_of(&map, "detail"), "保存到 /home/me/Downloads/a.mkv");
     assert_eq!(
         text_of(&map, "path"),
@@ -376,9 +745,9 @@ fn display_name_keeps_folder_hierarchy() {
     let mut record = row_from(1, 0, "file-1", &nested);
     assert_eq!(record.display_name(), "剧集/第一季/第 1 集.mkv");
     assert_eq!(
-        text_of(&record_map(&record), "name"),
+        text_of(&record_map(&record, &[]), "name"),
         "剧集/第一季/第 1 集.mkv",
-        "QML 的 name 角色仍是显示路径"
+        "主列表的单文件行仍用完整显示路径"
     );
 
     let single = TransferJob {

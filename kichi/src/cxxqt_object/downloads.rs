@@ -21,6 +21,7 @@ use super::queue;
 use super::reveal;
 use super::transfers;
 use super::transfers_actions;
+use super::transfers_detail;
 use crate::session::Failure;
 
 impl qobject::Kichi {
@@ -120,6 +121,22 @@ impl qobject::Kichi {
             self.as_mut().set_message("这个条目已在下载队列中", false);
             self.as_mut()
                 .locate_transfer(QString::from(source_id.as_str()));
+        }
+    }
+
+    /// 打开某个文件夹批次的详情页：只有「已有子文件」的文件夹行有效。
+    ///
+    /// 无效 key（排队中 / 准备中 / 空目录失败的文件夹）不会激活详情，
+    /// QML 侧看到 `transferDetailActive` 仍为 false 就留在主列表。
+    pub fn open_transfer_folder(mut self: Pin<&mut Self>, key: QString) {
+        transfers_detail::select_folder(&key.to_string());
+        self.as_mut().sync_transfers();
+    }
+
+    /// 关闭文件夹详情页，回到传输任务主列表。
+    pub fn close_transfer_folder(mut self: Pin<&mut Self>) {
+        if transfers_detail::clear_selection() {
+            self.as_mut().sync_transfers();
         }
     }
 
@@ -231,12 +248,15 @@ impl qobject::Kichi {
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
         let (list, active) = transfers::snapshot();
         let live = transfers::live_snapshot();
+        let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.transfers = list;
             rust.transfer_revision = rust.transfer_revision.wrapping_add(1);
             rust.transfer_live = live;
+            rust.transfer_detail = detail;
+            rust.transfer_detail_active = detail_active;
             rust.download_active = active;
             rust.download_running = running;
             rust.download_queued = queued;

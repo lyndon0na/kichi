@@ -177,7 +177,7 @@ pub(crate) fn reserve(entry: FileEntry, dir: PathBuf) -> Option<u64> {
             return None;
         }
         let batch = transfers::new_batch();
-        // 排队批次只登记一条总账行：文件夹轮到时才展开成整批，
+        // 排队批次只登记一条总账行：文件夹轮到时才在它后面挂上子行，
         // 免得几百个文件排队时把 MAX_RECORDS 挤爆。
         transfers::start_batch(batch, &source_id, &job);
         enqueue(scheduler, batch, source_id, entry, dir, Vec::new());
@@ -307,7 +307,7 @@ pub(crate) enum StartOutcome {
     Failed(BatchFailure),
 }
 
-/// 目录收集完成：把整批记录展开成排队行并启动下载线程。主线程调用。
+/// 目录收集完成：把整批子行挂到总账行后面并启动下载线程。主线程调用。
 pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>) -> StartOutcome {
     let found = with_scheduler(|scheduler| {
         let current = scheduler
@@ -324,7 +324,7 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
     let Some((dir, cancel, name, folder)) = found else {
         return StartOutcome::NotCurrent;
     };
-    // 读目录那几秒里可能刚好按了取消：这时不要再把总账行展开成整批
+    // 读目录那几秒里可能刚好按了取消：这时不要再给总账行挂子行
     // （否则记录会从「已取消」闪回「排队中」再变回来）
     if cancel.is_cancelled() {
         transfers::cancel_batch(batch, "");

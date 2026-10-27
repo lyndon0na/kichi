@@ -85,6 +85,10 @@ pub mod qobject {
         /// ListView 模型重灌（会把滚动位置冲回顶部）。
         #[qproperty(i32, transfer_revision, cxx_name = "transferRevision", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, transfer_live, cxx_name = "transferLive", READ, NOTIFY = changed)]
+        /// 选中的文件夹批次的子文件列表（详情页专用）
+        #[qproperty(QVariantList, transfer_detail, cxx_name = "transferDetail", READ, NOTIFY = changed)]
+        /// 文件夹详情是否打开（false 时主列表可见）
+        #[qproperty(bool, transfer_detail_active, cxx_name = "transferDetailActive", READ, NOTIFY = changed)]
         #[qproperty(i32, download_active, cxx_name = "downloadActive", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
@@ -264,6 +268,16 @@ pub mod qobject {
         #[cxx_name = "revealTransfer"]
         fn reveal_transfer(self: Pin<&mut Self>, key: QString);
 
+        /// 打开某个文件夹批次的详情页（key 无效 / 没有子文件时不会激活）
+        #[qinvokable]
+        #[cxx_name = "openTransferFolder"]
+        fn open_transfer_folder(self: Pin<&mut Self>, key: QString);
+
+        /// 关闭文件夹详情页，回到传输任务主列表
+        #[qinvokable]
+        #[cxx_name = "closeTransferFolder"]
+        fn close_transfer_folder(self: Pin<&mut Self>);
+
         #[qinvokable]
         #[cxx_name = "openDownloadDir"]
         fn open_download_dir(self: &Self);
@@ -344,6 +358,19 @@ impl QVariantList {
     pub(crate) fn is_empty(&self) -> bool {
         self.0.len() == 0
     }
+
+    /// 列表长度（测试与内部断言用；QList 的 len 是 isize）。
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        usize::try_from(self.0.len()).unwrap_or(0)
+    }
+
+    /// 按下标取元素（测试断言用）。
+    #[cfg(test)]
+    pub(crate) fn at(&self, index: usize) -> Option<&QVariant> {
+        let index = isize::try_from(index).ok()?;
+        self.0.get(index)
+    }
 }
 
 mod actions;
@@ -361,6 +388,7 @@ mod settings;
 mod tasks;
 mod transfers;
 mod transfers_actions;
+mod transfers_detail;
 mod transfers_view;
 mod tray;
 mod tray_icon;
@@ -460,8 +488,12 @@ pub struct KichiRust {
     pub(crate) transfers: QVariantList,
     /// 记录结构版本（QML 据此决定要不要重读 `transfers`）
     pub(crate) transfer_revision: i32,
-    /// 正在下载那一条的实时进度（只有 0/1 个元素：避免为进度重建整个列表）
+    /// 正在下载那一条的实时进度（当前文件行 + 文件夹父行聚合，0~2 条：避免为进度重建整个列表）
     pub(crate) transfer_live: QVariantList,
+    /// 选中文件夹批次的子文件列表（详情页专用）
+    pub(crate) transfer_detail: QVariantList,
+    /// 文件夹详情是否打开
+    pub(crate) transfer_detail_active: bool,
     /// 进行中（排队 + 准备中 + 下载中）的传输条数：侧栏徽标
     pub(crate) download_active: i32,
     /// 有批次在准备（读目录）或执行；QML 不再拿它禁用下载入口
@@ -562,6 +594,8 @@ impl Default for KichiRust {
             transfers: QVariantList::default(),
             transfer_revision: 0,
             transfer_live: QVariantList::default(),
+            transfer_detail: QVariantList::default(),
+            transfer_detail_active: false,
             download_active: 0,
             download_running: false,
             download_queued: 0,

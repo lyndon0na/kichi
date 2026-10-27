@@ -1,4 +1,4 @@
-//! 在系统文件管理器里定位一个本地文件。
+//! 在系统文件管理器里定位一个本地文件，或打开一个下载文件夹。
 //!
 //! `xdg-open` 只能打开目录；要选中文件走 `org.freedesktop.FileManager1`：
 //! `ShowItems([file://…], "")`。Dolphin / Nautilus / Thunar 等实现该接口。
@@ -31,8 +31,16 @@ pub(crate) fn spawn(path: PathBuf) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-/// 判定顺序：文件还在 → 选中；选中失败退回父目录；文件不在 → 提示 + 父目录。
+/// 判定顺序：目录 → 直接打开；文件还在 → 选中；选中失败退回父目录；
+/// 文件不在 → 提示 + 父目录。
 fn reveal(path: &Path) -> Outcome {
+    // 文件夹父行的「打开位置」给的是整个文件夹，直接打开它
+    if path.is_dir() {
+        if open_dir(path) {
+            return Outcome::Done;
+        }
+        return Outcome::Message(format!("无法打开文件夹：{}", path.display()));
+    }
     let parent = path.parent().filter(|parent| parent.is_dir());
     if path.is_file() {
         if show_items(path).is_ok() {

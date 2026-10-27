@@ -4,7 +4,8 @@
 //! `kichi-core`，也不落盘：退出 kichi 即清空（见 `docs/adr/0006-transfer-tasks-page.md`）。
 //!
 //! 排队批次只登记一条「总账行」（文件夹名），轮到读目录时才用
-//! [`expand_folder`] 原地展开成整批 —— 几百个文件同时排队时不会把上限挤爆。
+//! [`expand_folder`] 在它后面挂上子行 —— 主列表始终一个文件夹批次一行，
+//! 几百个文件同时排队时不会把上限挤爆；子行只出现在文件夹详情页。
 //!
 //! 并发：下载线程直接写记录，主线程（取消 / 清空 / 登出）也写，统一走
 //! [`with_records`] 的互斥锁；锁中毒时继续用内部数据，不 panic。
@@ -115,6 +116,8 @@ pub(crate) struct Transfer {
     pub(crate) batch: u64,
     /// 批内顺序，决定同批次的显示顺序
     pub(crate) index: usize,
+    /// 文件夹批次展开出来的子文件行（只出现在详情页，不进主列表）
+    pub(crate) child: bool,
     /// 要重下所需的一切（id / 裸名 / 类型 / 大小 / 审核标记 / 子目录 / 目录快照）
     pub(crate) job: TransferJob,
     /// 来源条目 id：同一批的每一行都一样，QML 据此定位到批次
@@ -134,9 +137,23 @@ impl Transfer {
     }
 }
 
+/// 文件夹批次的总账行：主列表里的唯一一行，key 为 `batch:folder`。
+///
+/// 子行与单文件行都是 `EntryKind::File`；父行和第一个子行都可能是
+/// `(batch, index = 0)`，所以按 `(batch, index)` 查文件时必须再过滤类型。
+pub(crate) fn is_folder_ledger(record: &Transfer) -> bool {
+    !record.child && record.job.kind == EntryKind::Folder
+}
+
 /// 记录的稳定标识（QML 用它把实时进度贴到对应的行上，逐条动作也按它查）。
+///
+/// 文件夹总账行固定为 `batch:folder`，文件行 / 子行是 `batch:index`。
 pub(crate) fn record_key(record: &Transfer) -> String {
-    format!("{}:{}", record.batch, record.index)
+    if is_folder_ledger(record) {
+        format!("{}:folder", record.batch)
+    } else {
+        format!("{}:{}", record.batch, record.index)
+    }
 }
 
 fn records() -> &'static Mutex<Vec<Transfer>> {
@@ -170,9 +187,9 @@ pub(crate) fn mark_preparing(batch: u64) {
     with_records(|records| mark_preparing_in(records, batch));
 }
 
-/// 整个文件夹批次读完了：把总账行原地换成整批的排队行。
+/// 整个文件夹批次读完了：在总账行后面挂上整批的子文件行。
 ///
-/// 原地替换（不 push 到表尾）是为了保持 (batch, index) 的显示顺序：
+/// 父行留在原位置（主列表一个文件夹只占一行）；子行从它后面依次插入，
 /// 排队中的其他批次会自然地排在它下面。
 pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob]) {
     with_records(|records| expand_folder_in(records, batch, jobs));
@@ -226,9 +243,12 @@ pub(crate) fn clear_finished() {
     with_records(clear_finished_in);
 }
 
-/// 登出时全清。
+/// 登出时全清（记录与文件夹详情选中都清掉）。
 pub(crate) fn reset() {
-    with_records(Vec::clear);
+    with_records(|records| {
+        records.clear();
+        super::transfers_detail::clear_selection();
+    });
 }
 
 /// 记录表 → QML 模型 + 进行中条数（排队 + 下载中）。
@@ -236,27 +256,41 @@ pub(crate) fn snapshot() -> (QVariantList, i32) {
     with_records(|records| build_snapshot(records.as_slice()))
 }
 
-/// 正在下载那一条的实时进度（0 或 1 个元素的列表）。
+/// 正在下载那一条的实时进度（当前文件行 + 文件夹父行聚合）。
 ///
 /// 单独成一路属性：进度每 250ms 变一次，若跟着整个模型重建，`ListView`
 /// 会整列表重灌、滚动位置回到顶部（2026-10-27 实测），下载期间就没法翻看了。
+/// QML 按 key 取对应行，父行与当前文件行都在这一份里。
 pub(crate) fn live_snapshot() -> QVariantList {
     with_records(|records| {
         let mut list = QVariantList::default();
-        if let Some(record) = records
-            .iter()
-            .find(|record| record.state == TransferState::Running)
-        {
-            list.append(QVariant::from(&live_map(record)));
+        let Some(running) = records.iter().find(|record| {
+            record.state == TransferState::Running && record.job.kind == EntryKind::File
+        }) else {
+            return list;
+        };
+        list.append(QVariant::from(&live_map(running)));
+        if running.child {
+            if let Some(parent) = records
+                .iter()
+                .find(|record| record.batch == running.batch && is_folder_ledger(record))
+            {
+                list.append(QVariant::from(&super::transfers_view::parent_live_map(
+                    parent, records,
+                )));
+            }
         }
         list
     })
 }
 
-fn find(records: &mut [Transfer], batch: u64, index: usize) -> Option<&mut Transfer> {
-    records
-        .iter_mut()
-        .find(|record| record.batch == batch && record.index == index)
+/// 按 `(batch, index)` 找文件行：必须过滤掉文件夹总账行。
+///
+/// 父行与第一个子行都可能是 `(batch, 0)`；只看坐标会误把父行当文件。
+fn find_file(records: &mut [Transfer], batch: u64, index: usize) -> Option<&mut Transfer> {
+    records.iter_mut().find(|record| {
+        record.job.kind == EntryKind::File && record.batch == batch && record.index == index
+    })
 }
 
 /// 一条新记录（排队态）。`index` 在文件夹展开时由外层决定。
@@ -264,6 +298,7 @@ pub(super) fn row_from(batch: u64, index: usize, source_id: &str, job: &Transfer
     Transfer {
         batch,
         index,
+        child: false,
         job: job.clone(),
         source_id: source_id.to_owned(),
         state: TransferState::Queued,
@@ -279,11 +314,14 @@ fn push_job(records: &mut Vec<Transfer>, batch: u64, source_id: &str, job: &Tran
     trim(records);
 }
 
-/// 把总账行原地换成整批的排队行（位置取总账行的位置）。
+/// 把整批子行挂到文件夹总账行后面（总账行留在原位，状态仍是「准备中」）。
+///
+/// 不删父行：主列表永远只有一条文件夹批次行；子行只在详情页展示。
+/// 子行从父行后面依次插入，后面排队的批次位置不受影响。
 fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[TransferJob]) {
     let Some(at) = records
         .iter()
-        .position(|record| record.batch == batch && record.index == 0)
+        .position(|record| record.batch == batch && is_folder_ledger(record))
     else {
         return;
     };
@@ -291,24 +329,106 @@ fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[TransferJob
     let rows: Vec<Transfer> = jobs
         .iter()
         .enumerate()
-        .map(|(index, job)| row_from(batch, index, &source_id, job))
+        .map(|(index, job)| {
+            let mut row = row_from(batch, index, &source_id, job);
+            row.child = true;
+            row
+        })
         .collect();
-    // 先把旧行拿掉再插回同一位置：整批原地替换，后面排队的批次不受影响
-    records.remove(at);
-    records.splice(at..at, rows);
+    records.splice(at + 1..at + 1, rows);
     trim(records);
 }
 
 fn begin_in(records: &mut [Transfer], batch: u64, index: usize) {
-    if let Some(record) = find(records, batch, index) {
+    let changed = if let Some(record) = find_file(records, batch, index) {
         if record.state == TransferState::Queued {
             record.state = TransferState::Running;
+            true
+        } else {
+            false
         }
+    } else {
+        false
+    };
+    if changed {
+        refresh_parent_state(records, batch);
     }
 }
 
+/// 文件夹批次的总账行状态由子行聚合而来。
+///
+/// 取消后不再被后续完成事件改回（取消的优先级最高）；没有子行时不动父行。
+pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
+    let Some(parent) = records
+        .iter()
+        .position(|record| record.batch == batch && is_folder_ledger(record))
+    else {
+        return;
+    };
+    if records[parent].state == TransferState::Cancelled {
+        return;
+    }
+
+    let mut children = 0usize;
+    let mut active = false;
+    let mut running = false;
+    let mut failed = false;
+    let mut cancelled = false;
+    let mut all_done = true;
+    for child in records
+        .iter()
+        .filter(|record| record.batch == batch && record.child)
+    {
+        children += 1;
+        match child.state {
+            TransferState::Queued | TransferState::Preparing => {
+                active = true;
+                all_done = false;
+            }
+            TransferState::Running => {
+                active = true;
+                running = true;
+                all_done = false;
+            }
+            TransferState::Done => {}
+            TransferState::Failed => {
+                failed = true;
+                all_done = false;
+            }
+            TransferState::Cancelled => {
+                cancelled = true;
+                all_done = false;
+            }
+        }
+    }
+    if children == 0 {
+        return;
+    }
+
+    records[parent].state = if active {
+        // 读目录刚结束、子行还没开始时保持「准备中」
+        if running || records[parent].state != TransferState::Preparing {
+            TransferState::Running
+        } else {
+            TransferState::Preparing
+        }
+    } else if failed {
+        TransferState::Failed
+    } else if all_done {
+        TransferState::Done
+    } else if cancelled {
+        TransferState::Cancelled
+    } else {
+        TransferState::Done
+    };
+}
+
 fn mark_preparing_in(records: &mut [Transfer], batch: u64) {
-    for record in records.iter_mut().filter(|record| record.batch == batch) {
+    // 只有文件夹总账行需要「准备中」；单文件批次直接 排队中 → 下载中
+    for record in records
+        .iter_mut()
+        .filter(|record| record.batch == batch && is_folder_ledger(record))
+    {
         if record.state == TransferState::Queued {
             record.state = TransferState::Preparing;
         }
@@ -325,7 +445,7 @@ fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
 }
 
 fn progress_in(records: &mut [Transfer], batch: u64, index: usize, bytes: u64, total: Option<u64>) {
-    if let Some(record) = find(records, batch, index) {
+    if let Some(record) = find_file(records, batch, index) {
         if record.state == TransferState::Running {
             record.bytes = bytes;
             record.total = total.or(record.total);
@@ -334,7 +454,7 @@ fn progress_in(records: &mut [Transfer], batch: u64, index: usize, bytes: u64, t
 }
 
 fn note_in(records: &mut [Transfer], batch: u64, index: usize, text: &str) {
-    if let Some(record) = find(records, batch, index) {
+    if let Some(record) = find_file(records, batch, index) {
         if record.state == TransferState::Running {
             record.detail = text.to_owned();
         }
@@ -343,22 +463,38 @@ fn note_in(records: &mut [Transfer], batch: u64, index: usize, text: &str) {
 
 fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &Path) {
     // 用户点取消后，当前文件仍可能刚好下载完整：文件已在磁盘上，照实记成完成
-    if let Some(record) = find(records, batch, index) {
+    let changed = if let Some(record) = find_file(records, batch, index) {
         if record.state != TransferState::Done {
             record.state = TransferState::Done;
             record.bytes = record.total.unwrap_or(record.bytes).max(record.bytes);
             record.detail.clear();
             record.path = Some(path.to_path_buf());
+            true
+        } else {
+            false
         }
+    } else {
+        false
+    };
+    if changed {
+        refresh_parent_state(records, batch);
     }
 }
 
 fn finish_err_in(records: &mut [Transfer], batch: u64, index: usize, reason: &str) {
-    if let Some(record) = find(records, batch, index) {
+    let changed = if let Some(record) = find_file(records, batch, index) {
         if record.state.is_active() {
             record.state = TransferState::Failed;
             record.detail = reason.to_owned();
+            true
+        } else {
+            false
         }
+    } else {
+        false
+    };
+    if changed {
+        refresh_parent_state(records, batch);
     }
 }
 
@@ -374,25 +510,58 @@ fn cancel_active_in(records: &mut [Transfer], batch: Option<u64>, reason: &str) 
     }
 }
 
-fn clear_finished_in(records: &mut Vec<Transfer>) {
-    records.retain(|record| !record.state.is_finished());
+/// 文件夹总账行对应的落盘文件夹：下载目录 + 安全化后的文件夹名。
+pub(crate) fn folder_download_path(record: &Transfer) -> Option<PathBuf> {
+    is_folder_ledger(record).then(|| {
+        record
+            .job
+            .dir
+            .join(crate::session::download::safe_file_name(&record.job.name))
+    })
 }
 
-/// 超过上限时丢最早的已结束记录；全是进行中的就保持原样（绝不丢）。
+/// 这个批次是否已经有子文件落盘（父行的「打开位置」只在此时可用）。
+pub(crate) fn has_done_child(records: &[Transfer], batch: u64) -> bool {
+    records
+        .iter()
+        .any(|record| record.batch == batch && record.child && record.state == TransferState::Done)
+}
+
+/// 所有记录都已结束的批次号（升序）。
+fn finished_batches(records: &[Transfer]) -> Vec<u64> {
+    let mut batches: Vec<u64> = records.iter().map(|record| record.batch).collect();
+    batches.sort_unstable();
+    batches.dedup();
+    batches.retain(|batch| {
+        records
+            .iter()
+            .filter(|record| record.batch == *batch)
+            .all(|record| record.state.is_finished())
+    });
+    batches
+}
+
+/// 清空已结束的**整批**：正在下载的文件夹即使有已完成子行也完整保留。
+fn clear_finished_in(records: &mut Vec<Transfer>) {
+    let removable = finished_batches(records);
+    if removable.is_empty() {
+        return;
+    }
+    records.retain(|record| !removable.contains(&record.batch));
+}
+
+/// 超过上限时按整批淘汰最早的已结束批次；进行中的批次绝不删。
+///
+/// 只剩最新一个已结束批次时保留它：一个超大文件夹刚下完，
+/// 不能因为记录数超限就整条从界面上消失。
 fn trim(records: &mut Vec<Transfer>) {
     while records.len() > MAX_RECORDS {
-        let oldest = records
-            .iter()
-            .enumerate()
-            .filter(|(_, record)| record.state.is_finished())
-            .min_by_key(|(_, record)| (record.batch, record.index))
-            .map(|(index, _)| index);
-        match oldest {
-            Some(index) => {
-                records.remove(index);
-            }
-            None => break,
+        let finished = finished_batches(records);
+        if finished.len() < 2 {
+            break;
         }
+        let oldest = finished[0];
+        records.retain(|record| record.batch != oldest);
     }
 }
 

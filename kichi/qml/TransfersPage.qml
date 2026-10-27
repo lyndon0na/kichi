@@ -3,8 +3,13 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 传输任务页：本次运行内的下载记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
+//
+// 主列表一个下载批次一行：文件夹批次是文件夹名，单文件批次是文件名。
+// 点有子文件的文件夹行进入 TransferFolderPage（独立详情页），返回时主列表
+// 保持原滚动位置——所以两个页面都常驻在 StackLayout 里，绝不用 Loader 重建。
+//
 // 数据全部来自 backend.transfers（Rust 侧已排好序：进行中在前，已结束新→旧），
-// 本页只负责显示与三个操作入口。记录不落盘，退出 kichi 即清空。
+// 本页只负责显示与操作入口。记录不落盘，退出 kichi 即清空。
 Item {
     id: page
 
@@ -19,6 +24,14 @@ Item {
 
     /// 当前高亮的行 key（约 1.2 秒后淡出）
     property string highlightedKey: ""
+
+    /// 文件夹详情是否打开（Rust 侧选中状态）
+    readonly property bool detailActive: page.backend !== null
+                                           && page.backend.transferDetailActive
+
+    /// 当前详情页对应的文件夹行 key / 复制过来的行对象
+    property string detailKey: ""
+    property var detailFolder: null
 
     // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
     UiMetrics {
@@ -40,6 +53,11 @@ Item {
         function onChanged() {
             if (!page.backend)
                 return
+            // 记录被清空 / 淘汰 / 登出 / 子行全部被重试：Rust 已清掉选中
+            if (!page.backend.transferDetailActive && page.detailKey.length > 0) {
+                page.detailKey = ""
+                page.detailFolder = null
+            }
             if (page.backend.transferRevision !== page.revision) {
                 page.revision = page.backend.transferRevision
                 page.syncRows()
@@ -49,12 +67,72 @@ Item {
 
     Component.onCompleted: syncRows()
 
+    // —— 文件夹详情：下钻与返回 ——
+
+    function openFolder(key) {
+        if (!page.backend || !key || key.length === 0)
+            return
+        page.detailKey = key
+        page.backend.openTransferFolder(key)
+        page.refreshDetailFolder()
+        // 无效 key（排队中 / 空目录失败）不会激活详情，清掉避免残留
+        if (!page.backend.transferDetailActive) {
+            page.detailKey = ""
+            page.detailFolder = null
+        }
+    }
+
+    function closeFolder() {
+        page.detailKey = ""
+        page.detailFolder = null
+        if (page.backend)
+            page.backend.closeTransferFolder()
+    }
+
+    /// 从主列表复制当前文件夹行给详情页头部（每次结构变化后刷新）。
+    function refreshDetailFolder() {
+        if (!page.backend || page.detailKey.length === 0) {
+            page.detailFolder = null
+            return
+        }
+        for (var i = 0; i < rows.count; i++) {
+            var candidate = rows.get(i)
+            if (candidate.key === page.detailKey) {
+                page.detailFolder = page.folderSnapshot(candidate)
+                return
+            }
+        }
+        page.detailFolder = null
+    }
+
+    function folderSnapshot(row) {
+        return {
+            key: row.key,
+            name: row.name,
+            sourceId: row.sourceId,
+            phase: row.phase,
+            stateText: row.stateText,
+            running: row.running,
+            progress: row.progress,
+            progressText: row.progressText,
+            sizeText: row.sizeText,
+            detail: row.detail,
+            path: row.path,
+            folder: row.folder,
+            childCount: row.childCount,
+            failedCount: row.failedCount
+        }
+    }
+
     // —— 定位：点已占用的条目时跳过来看（main.qml 收到 locateTransfer 后调用）——
     // 用直接调用而非监听属性：同一条目连点两次时属性值不变、changed 不会再来；
     // 记录可能刚变，等一帧（Qt.callLater 在 syncRows 之后跑）。
     function focusSource(sourceId) {
         if (sourceId.length === 0)
             return
+        // 详情页开着时先回主列表，否则定位会把用户留在详情页
+        if (page.detailActive)
+            page.closeFolder()
         page.focusSourceId = sourceId
         Qt.callLater(page.locate)
     }
@@ -172,6 +250,9 @@ Item {
                     rows.setProperty(at, field, item[field])
             }
         }
+
+        if (page.detailActive)
+            page.refreshDetailFolder()
     }
 
     function normalize(item) {
@@ -186,7 +267,10 @@ Item {
             progressText: item.progressText,
             sizeText: item.sizeText,
             detail: item.detail,
-            path: item.path || ""
+            path: item.path || "",
+            folder: item.folder === true,
+            childCount: item.childCount || 0,
+            failedCount: item.failedCount || 0
         }
     }
 
@@ -200,13 +284,19 @@ Item {
         return false
     }
 
-    /// 进行中条数（排队 + 准备中 + 下载中）
+    /// 进行中条数（排队 + 准备中 + 下载中；一个文件夹算 1）
     readonly property int activeCount: page.backend ? page.backend.downloadActive : 0
 
-    /// 正在下载那一条的实时进度（结构变化时它会并进 transfers 模型）
-    readonly property var liveRow: {
-        var live = page.backend ? page.backend.transferLive : []
-        return live.length > 0 ? live[0] : null
+    /// 实时进度按 key 索引：主列表的文件夹父行与详情页的子行都从这里取。
+    /// 结构变化时它也会并进 transfers / transferDetail 模型。
+    readonly property var liveByKey: page.liveMapOf(
+        page.backend ? page.backend.transferLive : [])
+
+    function liveMapOf(list) {
+        var map = {}
+        for (var i = 0; i < list.length; i++)
+            map[list[i].key] = list[i]
+        return map
     }
 
     ColumnLayout {
@@ -264,33 +354,55 @@ Item {
             color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.10)
         }
 
-        ListView {
-            id: list
+        // 主列表与详情页都常驻：返回时主列表 contentY 不受影响。
+        StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            spacing: 2
-            model: rows
-            boundsBehavior: Flickable.StopAtBounds
-            cacheBuffer: 400
+            currentIndex: page.detailActive ? 1 : 0
 
-            // 列表铺到窗口右缘，条画在右侧 10px 车道里
-            ScrollBar.vertical: KScrollBar {}
+            Item {
+                ListView {
+                    id: list
+                    objectName: "transferList"
+                    anchors.fill: parent
+                    clip: true
+                    spacing: 2
+                    model: rows
+                    boundsBehavior: Flickable.StopAtBounds
+                    cacheBuffer: 400
 
-            delegate: TransferRow {
-                id: row
-                width: list.width - metrics.scrollBarSlot
-                flash: row.key === page.highlightedKey
-                live: page.liveRow
-                backend: page.backend
+                    // 列表铺到窗口右缘，条画在右侧 10px 车道里
+                    ScrollBar.vertical: KScrollBar {}
+
+                    delegate: TransferRow {
+                        id: row
+                        width: list.width - metrics.scrollBarSlot
+                        flash: row.key === page.highlightedKey
+                        live: page.liveByKey
+                        backend: page.backend
+                        onOpenDetailsRequested: function(key) {
+                            page.openFolder(key)
+                        }
+                    }
+
+                    Label {
+                        anchors.centerIn: parent
+                        visible: list.count === 0
+                        text: qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
+                        horizontalAlignment: Text.AlignHCenter
+                        color: palette.placeholderText
+                    }
+                }
             }
 
-            Label {
-                anchors.centerIn: parent
-                visible: list.count === 0
-                text: qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
-                horizontalAlignment: Text.AlignHCenter
-                color: palette.placeholderText
+            TransferFolderPage {
+                backend: page.backend
+                folderKey: page.detailKey
+                folder: page.detailFolder
+                live: page.liveByKey
+                active: page.detailActive
+                normalizeRow: page.normalize
+                onBackRequested: page.closeFolder()
             }
         }
     }
