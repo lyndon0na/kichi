@@ -27,6 +27,7 @@ const QML_FILES: &[&str] = &[
     "qml/SettingsPage.qml",
     "qml/SettingsAbout.qml",
     "qml/SettingsPlayback.qml",
+    "qml/PlayToast.qml",
 ];
 
 fn main() {

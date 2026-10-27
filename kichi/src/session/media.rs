@@ -15,16 +15,39 @@ use super::{Failure, Session};
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
 /// 取一个文件的可播放档位。阻塞。
-pub fn play_options(session: &Session, file_id: &str) -> Result<Vec<PlayOption>, Failure> {
-    // 播放路径没有取消入口：保持原来的「一定等满 5 秒」
-    let info = file_info(session, file_id, None)?;
+///
+/// `cancel` 有值时，链接全空的 5 秒重试可被取消打断（播放提示条的「取消」走这里）；
+/// 被取消返回「下载已取消」，调用方应据取消标志静默收尾，不显示这条错误。
+pub fn play_options(
+    session: &Session,
+    file_id: &str,
+    cancel: Option<&Cancel>,
+) -> Result<Vec<PlayOption>, Failure> {
+    let info = file_info(session, file_id, cancel)?;
     Ok(info.play_options())
+}
+
+/// 链接还没生成好时的等待：有取消信号就切成可打断的等待（播放提示条的
+/// 「取消」靠它提前返回），没有就照旧睡满。
+///
+/// 抽出来是为了能单测「取消后不睡满 5 秒」而不必搭假服务器。
+fn wait_before_retry(cancel: Option<&Cancel>) -> Result<(), Failure> {
+    match cancel {
+        Some(cancel) if !sleep_cancellable(cancel, RETRY_DELAY) => {
+            Err(Failure::Other("下载已取消".to_owned()))
+        }
+        Some(_) => Ok(()),
+        None => {
+            std::thread::sleep(RETRY_DELAY);
+            Ok(())
+        }
+    }
 }
 
 /// 同 [`play_options`]，但返回完整详情（需要链接过期时间等）。
 ///
 /// `cancel` 有值时，5 秒重试等待可被取消打断；被取消就返回「下载已取消」，
-/// 让下载线程立刻收尾（播放路径传 `None`，行为与以前一致）。
+/// 让调用方立刻收尾（下载线程与播放提示条共用这条路）。
 pub fn file_info(
     session: &Session,
     file_id: &str,
@@ -36,13 +59,7 @@ pub fn file_info(
         return Ok(first);
     }
     // 链接还没生成好，等一会儿再问一次；仍为空就如实报错，不给假档位。
-    if let Some(cancel) = cancel {
-        if !sleep_cancellable(cancel, RETRY_DELAY) {
-            return Err(Failure::Other("下载已取消".to_owned()));
-        }
-    } else {
-        std::thread::sleep(RETRY_DELAY);
-    }
+    wait_before_retry(cancel)?;
     let client = session.drive()?;
     let retry = client.file_detail(file_id).map_err(Failure::from)?;
     if retry.all_links_empty {
@@ -51,4 +68,37 @@ pub fn file_info(
         ));
     }
     Ok(retry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn cancelled_play_retry_does_not_wait_the_full_five_seconds() {
+        let cancel = std::sync::Arc::new(Cancel::default());
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            flag.cancel();
+        });
+        let started = Instant::now();
+        let result = wait_before_retry(Some(&cancel));
+        assert!(result.is_err(), "取消后要返回错误，交给调用方静默收尾");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "播放路径的 5 秒等待也必须能被取消打断：{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn already_cancelled_returns_at_once() {
+        let cancel = Cancel::default();
+        cancel.cancel();
+        let started = Instant::now();
+        assert!(wait_before_retry(Some(&cancel)).is_err());
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
 }

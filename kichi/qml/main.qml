@@ -63,6 +63,7 @@ ApplicationWindow {
         //  「点了退出图标还在、窗口也点不回来」——2026-10-26 用户实测）
         if (root.reallyQuitting) {
             backend.shutdownTray()
+            backend.shutdownPlayers()
             return
         }
         if (backend.closeToTray && backend.trayAvailable) {
@@ -75,8 +76,10 @@ ApplicationWindow {
             root.hiddenToTray = true
             root.hide()
         } else {
-            // 真退出：注销托盘，否则 KDE 面板留下点不动的僵尸图标
+            // 真退出：注销托盘，否则 KDE 面板留下点不动的僵尸图标；
+            // 连同正在播放的 mpv 一起关（缩托盘时不关，见 ADR 0007）
             backend.shutdownTray()
+            backend.shutdownPlayers()
         }
     }
 
@@ -242,6 +245,14 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    // 播放加载 / 错误提示条：底部居中浮动，只占自身尺寸（踩坑第 6 / 18 条）。
+    // ApplicationWindow 的 contentItem 已经把 footer 的高度扣掉，
+    // 所以贴 parent.bottom 就已经在底栏之上。
+    PlayToast {
+        id: playToast
+        backend: backend
     }
 
     // 状态消息（错误 / 进度 / 提示）

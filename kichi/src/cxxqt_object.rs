@@ -51,6 +51,14 @@ pub mod qobject {
         #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
+        /// 取链或等 mpv 窗口出现：底部浮动提示条据此显示「正在加载…」
+        #[qproperty(bool, play_loading, cxx_name = "playLoading", READ, NOTIFY = changed)]
+        /// 提示条里的文件名
+        #[qproperty(QString, play_loading_name, cxx_name = "playLoadingName", READ, NOTIFY = changed)]
+        /// 非空 = 提示条显示错误态（播放失败），[关闭] 清空
+        #[qproperty(QString, play_error, cxx_name = "playError", READ, NOTIFY = changed)]
+        /// 非空 = 提示条短提示（档位回退说明），几秒后由界面自动收起
+        #[qproperty(QString, play_notice, cxx_name = "playNotice", READ, NOTIFY = changed)]
         #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
         #[qproperty(QString, player_command, cxx_name = "playerCommand", READ, NOTIFY = changed)]
         #[qproperty(QString, player_args, cxx_name = "playerArgs", READ, NOTIFY = changed)]
@@ -168,6 +176,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "cancelPlay"]
         fn cancel_play(self: Pin<&mut Self>);
+
+        /// 提示条上的「取消」：中止取链请求，或关掉还没出窗口的 mpv
+        #[qinvokable]
+        #[cxx_name = "cancelPlayLoading"]
+        fn cancel_play_loading(self: Pin<&mut Self>);
+
+        /// 提示条上的「关闭」：清掉错误态
+        #[qinvokable]
+        #[cxx_name = "dismissPlayError"]
+        fn dismiss_play_error(self: Pin<&mut Self>);
+
+        /// 提示条自己收起回退提示时调用（清掉那一份文案，下次回退才能再弹）
+        #[qinvokable]
+        #[cxx_name = "dismissPlayNotice"]
+        fn dismiss_play_notice(self: Pin<&mut Self>);
+
+        /// 真退出前调用：关闭所有还在播的 mpv（缩托盘不调）
+        #[qinvokable]
+        #[cxx_name = "shutdownPlayers"]
+        fn shutdown_players(self: &Self);
 
         /// 退出前调用：注销托盘 D-Bus 名字，避免面板留下点不动的僵尸图标
         #[qinvokable]
@@ -368,6 +396,19 @@ pub struct KichiRust {
     pub(crate) play_id: String,
     /// 已选中档位、正在取直链（此时菜单关闭**不是**取消播放）
     pub(crate) play_pending: bool,
+    /// 取链或等 mpv 窗口出现：提示条显示「正在加载「xxx」…」
+    pub(crate) play_loading: bool,
+    /// 提示条里的文件名
+    pub(crate) play_loading_name: QString,
+    /// 非空 = 提示条显示错误态（播放失败）
+    pub(crate) play_error: QString,
+    /// 非空 = 提示条短提示（档位回退说明），界面几秒后自动收起
+    pub(crate) play_notice: QString,
+    /// 本次加载的取消信号（取链 + 等窗口共用；取消即中止）
+    ///
+    /// 不额外记「窗口是否已经出现」：监控线程自己知道，`Cancel` 置真即中止，
+    /// 界面侧只需要 `play_loading` 一个布尔量。
+    pub(crate) play_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
     /// 播放请求代数：退出登录 / 重登后旧结果作废
     pub(crate) play_epoch: u64,
     /// 持久化设置（启动时读一次，改动即落盘）
@@ -474,6 +515,11 @@ impl Default for KichiRust {
             play_title: QString::default(),
             play_id: String::new(),
             play_pending: false,
+            play_loading: false,
+            play_loading_name: QString::default(),
+            play_error: QString::default(),
+            play_notice: QString::default(),
+            play_cancel: None,
             play_epoch: 0,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),

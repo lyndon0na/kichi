@@ -5,18 +5,25 @@
 //!
 //! 直链只活在 Rust 侧的局部变量里，QML 拿到的菜单里**没有 URL**，
 //! 也就没有把签名链接写进界面日志或剪贴板的机会。
+//!
+//! 等待过程有提示条（`qml/PlayToast.qml`）：取链 + 等 mpv 窗口出现期间
+//! `playLoading` 为真，提示条上的「取消」调 `cancelPlayLoading`；
+//! 出窗口 / 失败 / 取消时收起。
+//! 底栏（`statusMessage`）不参与加载提示——它只留给其它后台任务。
 
 use std::pin::Pin;
+use std::sync::Arc;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 use kichi_core::types::Tier;
 use kichi_core::PlayOption;
 
-use super::actions::run_in_background;
+use super::actions::{enqueue_ui, run_in_background};
 use super::qobject;
 use super::QVariantList;
-use crate::player::{self, mask_url, PlayerConfig};
+use crate::player::{self, mask_url, PlayerConfig, StartEvent};
+use crate::session::download::Cancel;
 use crate::session::media;
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
@@ -44,6 +51,9 @@ impl qobject::Kichi {
                 .set_message("该文件已不在当前列表中，请刷新后重试", false);
             return;
         };
+        // 新的播放取消上一次「还在加载」的那次（已在播放的 mpv 不受影响）：
+        // 否则它被 epoch 作废后，提示条会永远停在「正在加载…」
+        self.as_mut().cancel_play_loading();
         // 设置里指定了档位：等同用户在菜单里点了那一项，不弹菜单
         if let Some(tier) = fixed_tier_of(self.settings.preferred_quality) {
             self.as_mut().prepare_play(&id, &name);
@@ -98,45 +108,82 @@ impl qobject::Kichi {
 
     /// 发请求取档位，回来后按用户要的那一档开播。
     fn fetch_and_play(mut self: Pin<&mut Self>, tier: Tier, name: &str) {
+        // 新的播放取消上一次「还在加载」的播放：已在播放的 mpv 不受影响
+        // （提示条消失后那条会话已从登记表里移出，这里置标志不会波及它）
+        self.as_mut().cancel_pending_play();
         // 菜单已经选完，先收起（这里不清 play_id，回包回来还要用它）
+        let cancel = Arc::new(Cancel::default());
         {
             let mut rust = self.as_mut().rust_mut();
             rust.play_menu = QVariantList::default();
             rust.play_pending = true;
+            rust.play_loading = true;
+            rust.play_loading_name = QString::from(name);
+            rust.play_error = QString::default();
+            rust.play_notice = QString::default();
+            rust.play_cancel = Some(cancel.clone());
+            // 加载态走提示条：底栏立即清空（别的后台任务仍可写它）
+            rust.status_message = QString::default();
+            rust.busy = false;
         }
+        self.as_mut().notify();
+
         let Some(id) = self.as_ref().rust().play_target() else {
             self.as_mut()
-                .set_message("播放选项已过期，请重新点播放", false);
+                .fail_play_loading("播放选项已过期，请重新点播放");
             return;
         };
         let name = name.to_owned();
         let session = self.backend.session.clone();
         let epoch = self.as_ref().rust().play_epoch;
-        self.as_mut()
-            .set_message(&format!("正在获取「{name}」的播放链接……"), true);
 
         run_in_background(
-            move || media::play_options(&session, &id),
+            {
+                let cancel = cancel.clone();
+                move || media::play_options(&session, &id, Some(&cancel))
+            },
             move |mut qichi, result| {
                 if qichi.as_ref().rust().play_epoch != epoch {
                     return;
                 }
+                // 取消导致的「下载已取消」不显示：静默收尾即可
+                if cancel.is_cancelled() {
+                    return;
+                }
                 match result {
-                    Ok(options) => {
-                        qichi.as_mut().start_tier(&options, tier, &name);
-                    }
-                    Err(err) => qichi.as_mut().on_failure(err),
+                    Ok(options) => qichi.as_mut().start_tier(&options, tier, &name, epoch),
+                    Err(err) => match err {
+                        // 登录失效 / 人机验证 / 限速必须全局可见：走统一出口，
+                        // 但如果因此切走了登录页，提示条不该继续挂着
+                        far @ (crate::session::Failure::Auth(_)
+                        | crate::session::Failure::Captcha { .. }
+                        | crate::session::Failure::RateLimited { .. }) => {
+                            qichi.as_mut().hide_play_loading();
+                            qichi.as_mut().finish_play();
+                            qichi.as_mut().on_failure(far);
+                        }
+                        other => {
+                            let text = other.to_string();
+                            qichi.as_mut().fail_play_loading(&text);
+                        }
+                    },
                 }
             },
         );
     }
 
-    /// 拿到档位后按用户点的档位挑一个开始播放（没有就回退，见 [`resolve`]）。
-    fn start_tier(mut self: Pin<&mut Self>, all: &[PlayOption], tier: Tier, name: &str) {
+    /// 拿到档位后按用户点的档位挑一个开始播放（没有就回退，见
+    /// `kichi_core::types::resolve`）。
+    fn start_tier(
+        mut self: Pin<&mut Self>,
+        all: &[PlayOption],
+        tier: Tier,
+        name: &str,
+        epoch: u64,
+    ) {
         if all.is_empty() {
             self.as_mut()
-                .set_message(&format!("「{name}」没有可播放的链接"), false);
-            self.as_mut().finish_play();
+                .fail_play_loading(&format!("「{name}」没有可播放的链接"));
             return;
         }
         let Some((option, note)) = kichi_core::types::resolve(all, tier) else {
@@ -146,28 +193,29 @@ impl qobject::Kichi {
                 .collect::<Vec<_>>()
                 .join("；");
             self.as_mut()
-                .set_message(&format!("「{name}」暂时不能播放（{reasons}）"), false);
-            self.as_mut().finish_play();
+                .fail_play_loading(&format!("「{name}」暂时不能播放（{reasons}）"));
             return;
         };
         let title = player::title_for(&option, name);
-        self.as_mut().start_player(&option, &title);
-        self.as_mut().finish_play();
-        // 回退过就说清楚实际播的是哪一档，别让用户以为自己看到的是选的那档
-        // （放在 finish_play 之后：它只清播放目标，不动状态栏）
-        if let Some(note) = note {
-            self.as_mut().set_message(
-                &format!("「{name}」没有{note}，已播放{}", option.label),
-                false,
-            );
-        }
+        // 回退过就在提示条里说清楚实际播的是哪一档，别让用户以为自己看到的是那档
+        // （ADR 0003：不静默替换；底栏始终为空）
+        let notice = note.map(|note| format!("「{name}」没有{note}，已播放{}", option.label));
+        self.as_mut().start_player(&option, &title, epoch, notice);
     }
 
     /// 启动外部播放器（URL 过期时先重取一次）。
-    fn start_player(mut self: Pin<&mut Self>, option: &PlayOption, title: &str) {
+    ///
+    /// 成功后**保持** `playLoading`，等 `player::start` 回投「窗口已出现」。
+    fn start_player(
+        mut self: Pin<&mut Self>,
+        option: &PlayOption,
+        title: &str,
+        epoch: u64,
+        notice: Option<String>,
+    ) {
         if option.is_expired(None) {
             self.as_mut()
-                .set_message("播放链接已过期，请重新点播放", false);
+                .fail_play_loading("播放链接已过期，请重新点播放");
             return;
         }
         let settings = self.settings.clone();
@@ -175,28 +223,140 @@ impl qobject::Kichi {
             settings.player_command_override(),
             settings.player_args_override(),
         );
-        match player::launch(&config, &option.url, title) {
-            Ok(()) => self.as_mut().set_message(
-                &format!(
-                    "已用 {} 播放「{title}」（{}）",
-                    config.program(),
-                    option.label
-                ),
-                false,
-            ),
-            Err(err) => self.as_mut().set_message(&err, false),
+        let cancel = self.as_ref().rust().play_cancel.clone();
+        // 期间按了取消 / 换了片子：加载态已经被清掉，这条回投不能再启动播放器
+        let Some(cancel) = cancel else {
+            return;
+        };
+        if cancel.is_cancelled() || self.as_ref().rust().play_epoch != epoch {
+            return;
         }
+        let started = player::start(&config, &option.url, title, cancel, move |event| {
+            enqueue_ui(move |mut qichi| {
+                // 过期的回投：期间已经取消 / 换了另一个视频
+                if qichi.as_ref().rust().play_epoch != epoch {
+                    return;
+                }
+                qichi.as_mut().on_play_event(event, notice);
+            });
+        });
         eprintln!(
             "[kichi] 播放「{title}」{} → {}",
             option.label,
             mask_url(&option.url)
         );
+        if let Err(err) = started {
+            self.as_mut().fail_play_loading(&err);
+        }
+    }
+
+    /// 一次播放的结果（后台线程回投）。
+    fn on_play_event(mut self: Pin<&mut Self>, event: StartEvent, notice: Option<String>) {
+        match event {
+            StartEvent::Ready => {
+                let notice = notice.unwrap_or_default();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.play_loading = false;
+                    rust.play_loading_name = QString::default();
+                    rust.play_cancel = None;
+                    rust.play_error = QString::default();
+                    rust.play_notice = QString::from(notice.as_str());
+                    // 成功后清空底栏：不常驻「已用 … 播放…」
+                    rust.status_message = QString::default();
+                    rust.busy = false;
+                }
+                self.finish_play();
+            }
+            StartEvent::Failed(reason) => {
+                // `reason` 已经带了上下文（mpv 未能播放「title」：…），直接显示
+                self.as_mut().fail_play_loading(&reason);
+            }
+            StartEvent::Cancelled => {
+                // 取消后不给任何文字反馈
+                self.as_mut().hide_play_loading();
+                self.finish_play();
+            }
+        }
+    }
+
+    /// 提示条上的「取消」：中止取链、关掉还没出窗口的 mpv，静默收尾。
+    pub fn cancel_play_loading(mut self: Pin<&mut Self>) {
+        self.as_mut().cancel_pending_play();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_loading = false;
+            rust.play_loading_name = QString::default();
+            rust.play_error = QString::default();
+            rust.play_notice = QString::default();
+            // 不回写 status_message：底栏内容不归播放管
+        }
+        self.as_mut().finish_play();
+    }
+
+    /// 作废「还在加载」的那次播放（取链 + 等窗口），不动状态属性。
+    ///
+    /// 取链线程靠 `Cancel` 提前返回；等窗口的 mpv 靠监控线程收到取消后 `quit`。
+    fn cancel_pending_play(mut self: Pin<&mut Self>) {
+        let mut rust = self.as_mut().rust_mut();
+        if let Some(cancel) = rust.play_cancel.take() {
+            cancel.cancel();
+        }
+        rust.play_epoch = rust.play_epoch.wrapping_add(1);
+    }
+
+    /// 提示条上的「关闭」（错误态）：只清掉错误，不动别的。
+    pub fn dismiss_play_error(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_error = QString::default();
+        }
+        self.as_mut().notify();
+    }
+
+    /// 提示条自己收起回退提示时调用：清掉文案，下次回退才能再弹一次。
+    pub fn dismiss_play_notice(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_notice = QString::default();
+        }
+        self.as_mut().notify();
+    }
+
+    /// 真退出 kichi：连同正在播放的 mpv 一起关掉（缩托盘不调）。
+    pub fn shutdown_players(&self) {
+        player::shutdown_all();
+    }
+
+    /// 只收起加载态（错误 / 取消的分支共用），不动底栏。
+    fn hide_play_loading(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_loading = false;
+            rust.play_loading_name = QString::default();
+            rust.play_cancel = None;
+        }
+        self.as_mut().notify();
+    }
+
+    /// 加载失败：收起加载态，错误进提示条，不碰底栏。
+    fn fail_play_loading(mut self: Pin<&mut Self>, text: &str) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_loading = false;
+            rust.play_loading_name = QString::default();
+            rust.play_cancel = None;
+            rust.play_notice = QString::default();
+            rust.play_error = QString::from(text);
+        }
+        self.as_mut().finish_play();
     }
 
     /// 用户关掉菜单：丢掉文件与状态，什么都不请求。
     ///
     /// 选中某一项后菜单会自动关闭，那次关闭**不能**取消刚发起的请求
-    /// （`play_pending` 为真时直接忽略）。
+    /// （`play_pending` 为真时直接忽略）。加载中的播放由提示条自己的
+    /// [`cancel_play_loading`](Self::cancel_play_loading) 取消，这里不碰它。
     pub fn cancel_play(mut self: Pin<&mut Self>) {
         if self.play_pending {
             return;
@@ -231,15 +391,22 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 退出登录时清干净（连同在途请求作废）。
+    /// 退出登录时清干净（连同在途请求作废）。已经在播的 mpv 不动。
     pub(crate) fn reset_play(mut self: Pin<&mut Self>) {
         {
             let mut rust = self.as_mut().rust_mut();
+            if let Some(cancel) = rust.play_cancel.take() {
+                cancel.cancel();
+            }
             rust.play_epoch = rust.play_epoch.wrapping_add(1);
             rust.play_menu = QVariantList::default();
             rust.play_title = QString::default();
             rust.play_id.clear();
             rust.play_pending = false;
+            rust.play_loading = false;
+            rust.play_loading_name = QString::default();
+            rust.play_error = QString::default();
+            rust.play_notice = QString::default();
         }
     }
 }
