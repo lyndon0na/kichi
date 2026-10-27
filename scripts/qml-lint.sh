@@ -85,3 +85,31 @@ if [[ -n "$bad" ]]; then
 fi
 
 echo "qml-lint: 通过（无基线之外的问题）"
+
+# —— 运行期逻辑测试（QtQuick Test）——
+# 静态检查看不出 ListModel 的越界 move、差异算法死循环这类问题。
+RUNNER="$(command -v qmltestrunner || true)"
+if [[ -z "$RUNNER" ]]; then
+    for cand in /usr/lib64/qt6/bin/qmltestrunner /usr/lib/qt6/bin/qmltestrunner; do
+        [[ -x "$cand" ]] && RUNNER="$cand" && break
+    done
+fi
+if [[ -z "$RUNNER" ]]; then
+    echo "qml-lint: 找不到 qmltestrunner（Fedora：qt6-qtdeclarative-devel）" >&2
+    exit 1
+fi
+
+# 警告即失败：`QML ListModel: move: out of range` 这类问题只以 QWARN 出现，
+# 进程照跑、测试照过，只有盯着输出才看得见（2026-10-27 传输页卡死就是这样漏的）。
+# 还要加超时：差异算法一旦死循环，界面线程原地空转，测试进程不会自己退出。
+for test_file in kichi/qml/tests/tst_*.qml; do
+    [[ -f "$test_file" ]] || continue
+    test_out="$(QT_QPA_PLATFORM=offscreen timeout 120 "$RUNNER" -input "$test_file" 2>&1)"
+    status=$?
+    if [[ $status -ne 0 ]] || grep -qE '^(FAIL!|QWARN|WARNING)' <<<"$test_out"; then
+        echo "qml-lint: 运行期测试失败：$test_file（退出码 $status）" >&2
+        printf '%s\n' "$test_out" >&2
+        exit 1
+    fi
+    echo "qml-lint: $test_file 通过"
+done

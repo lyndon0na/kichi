@@ -46,13 +46,21 @@ Item {
 
     /// 把 Rust 的快照贴到 ListModel 上（只动差异，不整表重灌）。
     ///
-    /// 关键：一次结构变化只做**最少几次** move，不能逐格挪。逐格把每一行
+    /// 关键一：一次结构变化只做**最少几次** move，不能逐格挪。逐格把每一行
     /// 拽到目标位置时，一次完成会产生上百次 move，ListView 的内部位置会被
     /// 搅乱（`contentY` 与真正渲染的行对不上），随后被强制重排、跳到底部
     /// （2026-10-27 用户实测：滚到中间，每完成一项跳一次）。
     ///
-    /// 做法：从头扫一遍，站错位置的那一行直接 move 到它的最终位置；
-    /// 不在快照里的删掉；扫完把缺的补到末尾。
+    /// 关键二：**move 的目标位置必须小于当前 count**，等于 count 也会被 Qt 判
+    /// `move: out of range` 并**直接丢弃**（不是 clamp）。早先的写法在
+    /// 「已有 1 条失败记录、新一批的『下载中』要排到最前面」时，会对
+    /// `move(0, 1, 1)` 空转——`move` 不生效、`index` 不前进 → 死循环，
+    /// 界面卡死并刷屏（2026-10-27 用户实测：超时后再下载就卡）。
+    ///
+    /// 做法（每一步都不会越界）：
+    /// 1. 倒序删掉不在快照里的行；
+    /// 2. 从头逐位对：对不上就**往后**找这一行，找到就前移，找不到就插入；
+    /// 3. 多出来的行删掉。
     ///
     /// 角色名不能叫 `state`（`Item` 自带同名属性，qmllint 报 property-override，
     /// 运行时也读不到角色值），因此统一映射成 `phase`。
@@ -60,29 +68,34 @@ Item {
         if (!page.backend)
             return
         var wanted = page.backend.transfers
-        var wantedIndex = {}
+        var wantedKeys = {}
         for (var i = 0; i < wanted.length; i++)
-            wantedIndex[wanted[i].key] = i
+            wantedKeys[wanted[i].key] = true
 
-        var index = 0
-        while (index < wanted.length) {
-            if (index < rows.count && rows.get(index).key === wanted[index].key) {
-                index++
-                continue
-            }
-            if (index < rows.count) {
-                var rowKey = rows.get(index).key
-                if (wantedIndex[rowKey] === undefined) {
-                    rows.remove(index)
-                    continue
-                }
-                // 这一行属于快照但站错了位置：直接放到它该在的地方
-                rows.move(index, wantedIndex[rowKey], 1)
-                continue
-            }
-            rows.insert(index, normalize(wanted[index]))
-            index++
+        // 1. 倒序删：边删边倒着走，下标才不会错位
+        for (var stale = rows.count - 1; stale >= 0; stale--) {
+            if (wantedKeys[rows.get(stale).key] === undefined)
+                rows.remove(stale)
         }
+
+        // 2. 逐位对齐：只会「前移」或「插入」，目标下标始终小于 count
+        for (var index = 0; index < wanted.length; index++) {
+            var key = wanted[index].key
+            if (index < rows.count && rows.get(index).key === key)
+                continue
+            var from = -1
+            for (var scan = index + 1; scan < rows.count; scan++) {
+                if (rows.get(scan).key === key) {
+                    from = scan
+                    break
+                }
+            }
+            if (from >= 0)
+                rows.move(from, index, 1)
+            else
+                rows.insert(index, normalize(wanted[index]))
+        }
+        // 3. 快照比现有行少时，尾部多出来的删掉
         while (rows.count > wanted.length)
             rows.remove(rows.count - 1)
 

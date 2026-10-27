@@ -177,3 +177,36 @@ fn state_names_are_stable_for_qml() {
     assert_eq!(TransferState::Failed.name(), "failed");
     assert_eq!(TransferState::Cancelled.name(), "cancelled");
 }
+
+#[test]
+fn every_row_has_a_key_for_the_qml_diff() {
+    // QML 的 ListModel 差异算法靠 key 识别行；任何一行缺 key 都会在插入时报
+    // `<Unknown File>: key is undefined`，提示行还会被反复重复插入（2026-10-27）。
+    fn key_of(map: &QVariantMap) -> String {
+        map.get(&QString::from("key"))
+            .and_then(|value| value.value::<QString>())
+            .map(|value| value.to_string())
+            .unwrap_or_default()
+    }
+
+    let record = Transfer {
+        batch: 1,
+        index: 0,
+        name: "a.mkv".into(),
+        state: TransferState::Done,
+        bytes: 0,
+        total: None,
+        detail: String::new(),
+    };
+    assert_eq!(key_of(&record_map(&record)), "1:0", "普通记录的 key");
+
+    let notice = notice_map(5);
+    assert_eq!(key_of(&notice), "notice", "提示行也必须有 key");
+    assert!(
+        notice
+            .get(&QString::from("name"))
+            .and_then(|value| value.value::<QString>())
+            .is_some_and(|name| name.to_string().contains("未显示")),
+        "提示行仍要带说明文字"
+    );
+}

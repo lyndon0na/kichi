@@ -371,8 +371,13 @@ fn live_map(record: &Transfer) -> QVariantMap {
 }
 
 /// 超过显示上限时追加的提示行（ListView 里最后一行）。
+///
+/// **必须给 `key`**：QML 的差异算法靠它识别行；缺了会让 ListModel 报
+/// `<Unknown File>: key is undefined`（2026-10-27 实测），提示行也会在每次
+/// 刷新时被当成新行重复插入。
 fn notice_map(hidden: usize) -> QVariantMap {
     let mut map = QVariantMap::default();
+    insert(&mut map, "key", text("notice"));
     insert(
         &mut map,
         "name",
