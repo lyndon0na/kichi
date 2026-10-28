@@ -9,9 +9,13 @@ ApplicationWindow {
     id: root
 
     title: "kichi"
-    // 上次关窗时的尺寸（0 = 没存过，用默认）
-    width: backend.windowWidth > 0 ? backend.windowWidth : 1000
-    height: backend.windowHeight > 0 ? backend.windowHeight : 640
+    // 上次关窗时的尺寸在 Component.onCompleted 里赋一次（见下），这里只放默认值。
+    // ⚠ 绝不能写成绑定读 backend.windowWidth：cxx-qt 所有属性共用一个 NOTIFY 信号，
+    //   任何一次 notify()（包括最大化后 0.5 s 的防抖存盘自己）都会让绑定重新求值，
+    //   把已经最大化的窗口按旧尺寸 resize 回去——现象是点最大化后放大一下又缩回
+    //   原尺寸、落到屏幕左上角（2026-10-28 用户实机 + kdotool 0.4 s 内复现）。
+    width: 1000
+    height: 640
     visible: true
     color: palette.window
 
@@ -29,6 +33,12 @@ ApplicationWindow {
     property bool reallyQuitting: false
 
     Component.onCompleted: {
+        // 记忆的尺寸只在这里赋一次：赋值会替换声明处的默认值，之后 backend 再怎么
+        // notify 也不会带着窗口尺寸跑（原因见 title 上方注释）
+        if (backend.windowWidth > 0)
+            root.width = backend.windowWidth
+        if (backend.windowHeight > 0)
+            root.height = backend.windowHeight
         backend.warmUp()
         if (backend.windowMaximized)
             showMaximized()
