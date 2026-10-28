@@ -106,7 +106,10 @@ impl Session {
             scanned += entries.len();
 
             let mut hits = Vec::new();
-            for hit in entries {
+            // 页内每条都要有自己的顺序号：同页共用一个值会让排序落到 HashMap 的
+            // 随机遍历上，同一页的结果顺序每次都不太一样（known-issues §4.1）。
+            let page_start = scanned - entries.len();
+            for (index, hit) in entries.into_iter().enumerate() {
                 if !matches(&hit.entry.name, query) {
                     continue;
                 }
@@ -115,7 +118,7 @@ impl Session {
                     entry: hit.entry,
                     folder_id,
                     folder_path,
-                    order: scanned - 1,
+                    order: page_start + index,
                 });
             }
             on_batch(ScanBatch { scanned, hits });
