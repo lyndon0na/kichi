@@ -3,6 +3,9 @@
 //! 从 `download.rs` 拆出来守行数上限：那边管「一次下载」的入口与取消语义，
 //! 这里管「从哪个字节继续、写到哪里、失败了怎么重试」。纯函数（`plan_resume`）
 //! 与索引在 `partials.rs`，HTTP Range 语义在 `kichi-core/src/dl.rs`。
+//!
+//! 中止分流见 [`Part::abort`]：用户取消删 part；登出（abandon）保留 part +
+//! 索引，且任何「已下完只差 rename」的分支都要在提交锁内再查一次登出。
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -12,7 +15,7 @@ use std::time::Duration;
 use kichi_core::dl::DownloadStream;
 use kichi_core::Error as CoreError;
 
-use super::download::{Cancel, Downloaded, Progress};
+use super::download::{commit_lock, Cancel, Downloaded, Progress};
 use super::download_naming::{claim_part, finalize_part};
 use super::partials::{self, plan_resume, PartialEntry};
 use super::Failure;
@@ -35,7 +38,15 @@ pub(super) const RETRIES_ENV: &str = "KICHI_DOWNLOAD_RETRIES";
 ///
 /// 仍然走 `claim_part` 的「不覆盖 + `.kichi-part` 原子占位」，
 /// 完成（`sync_all` + rename）后才算成功，和普通下载的落盘约定一致。
-pub(super) fn save_empty_file(target_dir: &Path, name: &str) -> Result<Downloaded, Failure> {
+/// 登出命中时删掉 0 字节 part，不保留无意义的断点。
+pub(super) fn save_empty_file(
+    target_dir: &Path,
+    name: &str,
+    cancel: &Cancel,
+) -> Result<Downloaded, Failure> {
+    if cancel.is_cancelled() {
+        return Err(Failure::Other("下载已取消".to_owned()));
+    }
     std::fs::create_dir_all(target_dir)
         .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
     let (file, part_path, final_path) = claim_part(target_dir, name)?;
@@ -44,8 +55,17 @@ pub(super) fn save_empty_file(target_dir: &Path, name: &str) -> Result<Downloade
         let _ = std::fs::remove_file(&part_path);
         return Err(Failure::Other(format!("写入本地文件失败：{err}")));
     }
+    let commit = commit_lock();
+    if cancel.is_abandoned() {
+        drop(commit);
+        drop(file);
+        let _ = std::fs::remove_file(&part_path);
+        return Err(Failure::Other("下载已取消".to_owned()));
+    }
     drop(file);
-    std::fs::rename(&part_path, &final_path).map_err(|err| {
+    let renamed = std::fs::rename(&part_path, &final_path);
+    drop(commit);
+    renamed.map_err(|err| {
         let _ = std::fs::remove_file(&part_path);
         Failure::Other(format!("保存下载文件失败：{err}"))
     })?;
@@ -107,6 +127,19 @@ impl Part {
         }
         partials::forget(file_id);
     }
+
+    /// 取消 / 登出导致本次中止。
+    ///
+    /// - 登出（abandon）：刷新索引并保留 part，下次登录续传；
+    /// - 用户取消：删 part + 忘索引（ADR 0011 不变）。
+    pub(super) fn abort(self, file_id: &str, cancel: &Cancel) -> Failure {
+        if cancel.is_abandoned() {
+            self.remember(file_id);
+        } else {
+            self.cleanup(file_id);
+        }
+        Failure::Other("下载已取消".to_owned())
+    }
 }
 
 /// 选断点 / 建 part / 打开写句柄。已经完整时直接改名并返回成功。
@@ -115,7 +148,11 @@ pub(super) fn prepare_part(
     name: &str,
     target_dir: &Path,
     remote_size: Option<u64>,
+    cancel: &Cancel,
 ) -> Result<Prepared, Failure> {
+    if cancel.is_cancelled() {
+        return Err(Failure::Other("下载已取消".to_owned()));
+    }
     let entry = partials::lookup(file_id, target_dir);
     let part_len = entry
         .as_ref()
@@ -139,7 +176,15 @@ pub(super) fn prepare_part(
                 return Err(local_write_failure(err));
             }
             drop(file);
-            let path = finalize_part(&part_path, &final_path)?;
+            // sync 后与登出作废互斥：命中就原样保留 part + 索引，下次登录直接改名
+            let commit = commit_lock();
+            if cancel.is_abandoned() {
+                drop(commit);
+                return Err(Failure::Other("下载已取消".to_owned()));
+            }
+            let renamed = finalize_part(&part_path, &final_path);
+            drop(commit);
+            let path = renamed?;
             partials::forget(file_id);
             return Ok(Prepared::Complete(Downloaded {
                 path,

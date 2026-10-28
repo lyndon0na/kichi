@@ -1,5 +1,7 @@
 //! `partials.rs` 的单元测试：plan_resume 矩阵与断点索引读写。
 
+use super::super::download::Cancel;
+use super::super::download_resume::{prepare_part, Part, Prepared};
 use super::*;
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -7,6 +9,32 @@ fn temp_dir(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建临时目录");
     dir
+}
+
+/// `KICHI_PARTIALS_FILE` 是进程级环境变量：用到它的用例必须串行。
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// 造一个已经写了若干字节的 part（绕过真实下载循环）。
+fn make_part(dir: &Path, id: &str, body: &[u8]) -> Part {
+    use std::io::Write;
+    let part_path = dir.join(format!("{id}.kichi-part"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&part_path)
+        .expect("建 part");
+    file.write_all(body).expect("写 part");
+    Part {
+        file,
+        part_path,
+        final_path: dir.join(format!("{id}.mkv")),
+        offset: body.len() as u64,
+        total: Some(body.len() as u64),
+    }
 }
 
 fn entry_in(dir: &Path, id: &str, total: Option<u64>) -> (PartialEntry, PathBuf) {
@@ -152,9 +180,64 @@ fn saved_index_is_private() {
 }
 
 #[test]
+fn part_abort_keeps_on_abandon_but_deletes_on_cancel() {
+    let _guard = env_lock();
+    let dir = temp_dir("abort-split");
+    let index = dir.join("partials.json");
+    std::env::set_var("KICHI_PARTIALS_FILE", &index);
+
+    let abandon = Cancel::default();
+    abandon.abandon();
+    let part = make_part(&dir, "f1", b"abc");
+    assert_eq!(part.abort("f1", &abandon).to_string(), "下载已取消");
+    assert!(
+        dir.join("f1.kichi-part").is_file(),
+        "登出要保留 part 等下次续传"
+    );
+    assert!(lookup("f1", &dir).is_some(), "登出要保留断点索引");
+
+    let cancel = Cancel::default();
+    cancel.cancel();
+    let part = make_part(&dir, "f1", b"abc");
+    assert_eq!(part.abort("f1", &cancel).to_string(), "下载已取消");
+    assert!(!dir.join("f1.kichi-part").exists(), "用户取消仍删 part");
+    assert!(lookup("f1", &dir).is_none(), "用户取消仍忘索引");
+
+    std::env::remove_var("KICHI_PARTIALS_FILE");
+}
+
+#[test]
+fn prepare_part_complete_abandoned_does_not_rename() {
+    let _guard = env_lock();
+    let dir = temp_dir("prepare-abandon");
+    let index = dir.join("partials.json");
+    std::env::set_var("KICHI_PARTIALS_FILE", &index);
+
+    let part = dir.join("f2.kichi-part");
+    std::fs::write(&part, vec![0u8; 10]).expect("写 part");
+    let entry = PartialEntry::new("f2", &part, &dir.join("f2.mkv"), Some(10));
+    save(&index, std::slice::from_ref(&entry)).expect("保存索引");
+
+    let cancel = Cancel::default();
+    cancel.abandon();
+    let result = prepare_part("f2", "f2.mkv", &dir, Some(10), &cancel);
+    assert!(result.is_err(), "登出命中时即使数据已齐也不能 rename");
+    assert!(part.is_file(), "part 原样保留");
+    assert!(!dir.join("f2.mkv").exists(), "不能出现正式文件");
+
+    // 对照：没有登出时，完整 part 直接改名完成
+    let result =
+        prepare_part("f2", "f2.mkv", &dir, Some(10), &Cancel::default()).expect("直接完成");
+    assert!(matches!(result, Prepared::Complete(_)));
+    assert!(dir.join("f2.mkv").is_file(), "正常路径仍能落成品");
+    assert!(!part.exists(), "完成后 part 已改名");
+
+    std::env::remove_var("KICHI_PARTIALS_FILE");
+}
+
+#[test]
 fn path_override_is_used() {
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = env_lock();
     let dir = temp_dir("index-env");
     let path = dir.join("custom-partials.json");
     std::env::set_var("KICHI_PARTIALS_FILE", &path);

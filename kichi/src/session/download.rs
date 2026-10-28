@@ -6,10 +6,13 @@
 //! - 全部函数阻塞，调用方负责丢到后台线程。
 //!
 //! 落盘约定见 [`download_naming`]：先写 `<名>.kichi-part`，**下载完整成功后才
-//! rename** 成正式文件名；中途取消/断网只删掉临时文件，绝不留下半个文件冒充成品。
+//! rename** 成正式文件名。中途取消删除临时文件；网络失败 / 登出 / 退出保留
+//! part + 索引，下次续传；**登出后绝不再 rename 出成品**。
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use kichi_core::dl::download_idle;
@@ -39,19 +42,46 @@ pub struct Downloaded {
 /// 取消信号：下载线程每块检查一次。
 #[derive(Debug, Default)]
 pub struct Cancel {
-    flag: std::sync::atomic::AtomicBool,
+    flag: AtomicBool,
+    /// 手动登出：停止 + 保留 part（与用户取消的「删 part」相反）
+    abandon: AtomicBool,
 }
 
 impl Cancel {
     /// 是否已请求取消。
     pub fn is_cancelled(&self) -> bool {
-        self.flag.load(std::sync::atomic::Ordering::Relaxed)
+        self.flag.load(Ordering::Acquire)
     }
 
-    /// 请求取消（任意线程可调）。
-    pub fn cancel(&self) {
-        self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    /// 是否因登出而中止（命中时保留断点，绝不 rename 成品）。
+    pub fn is_abandoned(&self) -> bool {
+        self.abandon.load(Ordering::Relaxed)
     }
+
+    /// 请求取消（任意线程可调）。只停止，不改变「是否保留 part」。
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+    }
+
+    /// 登出：停止并保留断点。
+    ///
+    /// 先写 `abandon` 再写停止标志（Release）：任何看到「已停止」的线程
+    /// 都能看到登出标记，提交点的最后检查不会漏。
+    pub fn abandon(&self) {
+        self.abandon.store(true, Ordering::Relaxed);
+        self.flag.store(true, Ordering::Release);
+    }
+}
+
+/// 「最后检查登出 + rename」与「登出置 abandon」互斥。
+///
+/// 保证：要么文件在登出开始前已经完整 rename；要么登出开始后一定不 rename。
+/// 锁序固定为 `commit_lock → scheduler`，绝不反向。
+pub(crate) fn commit_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 可被取消打断的等待：等到 `total` 或期间被取消。`false` = 被取消。
@@ -85,8 +115,9 @@ impl Session {
     /// （对齐 rclone 的 `Open`）。
     ///
     /// 断点续传（`docs/adr/0011-resumable-downloads.md`）：
-    /// - 失败 / 退出时保留 `.kichi-part` 与索引，下次同一个云端 id 从断点继续；
-    /// - 取消 / 本地写盘失败删除临时文件；
+    /// - 失败 / 登出 / 退出时保留 `.kichi-part` 与索引，下次同一个云端 id 从断点继续；
+    /// - 登出后即使数据已经读完也不 rename 成品；
+    /// - 用户取消 / 本地写盘失败删除临时文件；
     /// - 网络类错误自动重试（默认 3 次，1s / 3s / 8s），403/410 重取一次详情换链接。
     pub fn download_file(
         &self,
@@ -113,7 +144,7 @@ impl Session {
         // 不调用 progress(0, Some(0))：传输页进行中行会显示「0 B / 0 B」，
         // 不调用时完成行直接显示「0 B」。
         if info.is_zero_byte() {
-            return save_empty_file(target_dir, &name);
+            return save_empty_file(target_dir, &name, cancel);
         }
         // 没有可用的下载链接：先报错，别留下一个空的 .kichi-part 和索引
         if info.download_url().is_none() {
@@ -125,7 +156,7 @@ impl Session {
             .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
         // `file_info` 里已经 `drive()` 过：这里按令牌命中会话缓存，不新建连接池。
         let mut client = self.drive()?;
-        let prepared = prepare_part(file_id, &name, target_dir, info.size)?;
+        let prepared = prepare_part(file_id, &name, target_dir, info.size, cancel)?;
         let mut part = match prepared {
             Prepared::Complete(downloaded) => return Ok(downloaded),
             Prepared::Streaming(part) => part,
@@ -138,8 +169,7 @@ impl Session {
 
         loop {
             if cancel.is_cancelled() {
-                part.cleanup(file_id);
-                return Err(Failure::Other("下载已取消".to_owned()));
+                return Err(part.abort(file_id, cancel));
             }
             let offset = match part.disk_len() {
                 Ok(offset) => offset,
@@ -163,8 +193,7 @@ impl Session {
                 Err(err) => {
                     // 卡在读超时的那几十秒里按的取消仍然算「已取消」
                     if cancel.is_cancelled() {
-                        part.cleanup(file_id);
-                        return Err(Failure::Other("下载已取消".to_owned()));
+                        return Err(part.abort(file_id, cancel));
                     }
                     match classify_open_error(&err, offset) {
                         OpenAction::RestartFromZero => {
@@ -195,8 +224,7 @@ impl Session {
                                 max_retries
                             ));
                             if !sleep_cancellable(cancel, delay) {
-                                part.cleanup(file_id);
-                                return Err(Failure::Other("下载已取消".to_owned()));
+                                return Err(part.abort(file_id, cancel));
                             }
                             if refresh {
                                 match file_info(self, file_id, Some(cancel), list_audit_flagged) {
@@ -217,8 +245,7 @@ impl Session {
                                     }
                                     Err(err) => {
                                         if cancel.is_cancelled() {
-                                            part.cleanup(file_id);
-                                            return Err(Failure::Other("下载已取消".to_owned()));
+                                            return Err(part.abort(file_id, cancel));
                                         }
                                         if matches!(
                                             err,
@@ -273,23 +300,33 @@ impl Session {
 
             match read_into_part(&mut stream, &mut part, progress, cancel) {
                 ReadOutcome::Complete => {
+                    // 数据已齐：登出也只能保留 part，绝不 rename
+                    if cancel.is_abandoned() {
+                        return Err(part.abort(file_id, cancel));
+                    }
+                    // flush + sync 都成功才算落盘，再改名
+                    if let Err(err) = part.file.flush().and_then(|()| part.file.sync_all()) {
+                        part.cleanup(file_id);
+                        return Err(local_write_failure(err));
+                    }
+                    // sync 可能耗时几秒；与登出作废互斥后再决定是否 rename
+                    let commit = commit_lock();
+                    if cancel.is_abandoned() {
+                        drop(commit);
+                        return Err(part.abort(file_id, cancel));
+                    }
                     let total = part.total;
                     let Part {
-                        mut file,
+                        file,
                         part_path,
                         final_path,
                         offset,
                         ..
                     } = part;
-                    // flush + sync 都成功才算落盘，再改名
-                    if let Err(err) = file.flush().and_then(|()| file.sync_all()) {
-                        drop(file);
-                        let _ = std::fs::remove_file(&part_path);
-                        partials::forget(file_id);
-                        return Err(local_write_failure(err));
-                    }
                     drop(file);
-                    match finalize_part(&part_path, &final_path) {
+                    let result = finalize_part(&part_path, &final_path);
+                    drop(commit);
+                    match result {
                         Ok(path) => {
                             partials::forget(file_id);
                             return Ok(Downloaded {
@@ -310,8 +347,7 @@ impl Session {
                     }
                 }
                 ReadOutcome::Cancelled => {
-                    part.cleanup(file_id);
-                    return Err(Failure::Other("下载已取消".to_owned()));
+                    return Err(part.abort(file_id, cancel));
                 }
                 ReadOutcome::Local(reason) => {
                     // 本地写盘错误（磁盘满等）：可能有半块写坏，删 part 并忘掉索引
@@ -333,8 +369,7 @@ impl Session {
                         max_retries
                     ));
                     if !sleep_cancellable(cancel, delay) {
-                        part.cleanup(file_id);
-                        return Err(Failure::Other("下载已取消".to_owned()));
+                        return Err(part.abort(file_id, cancel));
                     }
                 }
             }

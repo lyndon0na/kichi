@@ -54,9 +54,23 @@ fn cancellable_sleep_finishes_normally_without_cancel() {
 }
 
 #[test]
+fn abandon_sets_stop_and_keep() {
+    let cancel = Cancel::default();
+    cancel.abandon();
+    assert!(cancel.is_cancelled(), "登出也要立刻停止下载");
+    assert!(cancel.is_abandoned(), "登出要保留断点");
+
+    let plain = Cancel::default();
+    plain.cancel();
+    assert!(plain.is_cancelled());
+    assert!(!plain.is_abandoned(), "普通取消不保留断点");
+}
+
+#[test]
 fn empty_file_is_saved_without_part_leftover() {
     let dir = temp_dir("empty");
-    let downloaded = save_empty_file(&dir.join("nested"), "empty.mkv").expect("落空文件");
+    let downloaded =
+        save_empty_file(&dir.join("nested"), "empty.mkv", &Cancel::default()).expect("落空文件");
     assert_eq!(downloaded.bytes, 0);
     assert_eq!(downloaded.path, dir.join("nested").join("empty.mkv"));
     assert_eq!(
@@ -76,11 +90,27 @@ fn empty_file_is_saved_without_part_leftover() {
 #[test]
 fn empty_file_never_overwrites_an_existing_one() {
     let dir = temp_dir("empty-twice");
-    let first = save_empty_file(&dir, "same.mkv").expect("第一次");
-    let second = save_empty_file(&dir, "same.mkv").expect("第二次");
+    let cancel = Cancel::default();
+    let first = save_empty_file(&dir, "same.mkv", &cancel).expect("第一次");
+    let second = save_empty_file(&dir, "same.mkv", &cancel).expect("第二次");
     assert_eq!(first.path, dir.join("same.mkv"));
     assert_eq!(second.path, dir.join("same (1).mkv"), "同名要加序号");
     assert_eq!(second.bytes, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn empty_file_abandoned_leaves_nothing() {
+    let dir = temp_dir("empty-abandoned");
+    let cancel = Cancel::default();
+    cancel.abandon();
+    let result = save_empty_file(&dir, "empty.mkv", &cancel);
+    assert!(result.is_err(), "登出命中时不能创建成品");
+    assert!(!dir.join("empty.mkv").exists(), "登出绝不能落正式文件");
+    assert!(
+        !dir.join("empty.mkv.kichi-part").exists(),
+        "0 字节 part 没有续传价值，直接删掉"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

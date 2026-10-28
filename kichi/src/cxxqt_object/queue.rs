@@ -2,7 +2,7 @@
 //!
 //! 与 `downloads.rs` 分工：
 //! - `downloads.rs`：QML 能看到的入口（右键菜单的「下载」、取消、打开目录）与属性刷新；
-//! - 本文件：占用表、串行队列、线程启动与收尾、登出收尾（保留调度槽）；
+//! - 本文件：占用表、串行队列、线程启动与收尾、登出收尾（保留断点与调度槽）；
 //! - `queue_collect.rs`：目录遍历与跳过分类（过深 / 读失败 / 防环）；
 //! - `queue_worker.rs`：下载循环、进度节流与回投；
 //! - `transfers.rs`：本次运行内的逐条记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
@@ -513,16 +513,18 @@ pub(crate) fn cancel_all() {
     });
 }
 
-/// 登出：作废在途结果并清空排队。
+/// 登出：作废在途结果、保留断点，并清空排队。
 ///
 /// 已经起过线程的 `current` **不能直接丢掉**：它可能还卡在 `read` 里（最长一个
-/// 空闲读超时），醒来后仍会碰同一个 `.kichi-part`。这里只置取消标志并保留
+/// 空闲读超时），醒来后仍会碰同一个 `.kichi-part`。这里只置 `abandon` 并保留
 /// 调度槽，等线程自己的收尾回调 `release` 后才允许新批次开始（期间显示「排队中」）。
 pub(crate) fn reset() {
+    // 与下载线程「最后检查 abandon + rename」互斥：登出返回后绝不会再冒出成品文件。
+    let _commit = crate::session::download::commit_lock();
     bump_epoch();
     with_scheduler(|scheduler| {
         if let Some(mut current) = scheduler.current.take() {
-            current.cancel.cancel();
+            current.cancel.abandon();
             if current.started {
                 current.abandoned = true;
                 scheduler.current = Some(current);

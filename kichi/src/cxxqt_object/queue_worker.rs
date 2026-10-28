@@ -5,8 +5,8 @@
 //! [`super::queue`]；本文件只在后台跑，不碰 Qt 对象，
 //! 所有界面更新都经 `actions::enqueue_ui` 回主线程。
 //!
-//! 登出后旧线程只做收尾：`post_finished` 即使 epoch 已变也必须还回调度槽，
-//! 让新会话排队的批次在旧线程退出后开始。
+//! 登出后旧线程只做收尾：`download_file` 保留断点、绝不 rename；`post_finished`
+//! 即使 epoch 已变也必须还回调度槽，让新会话排队的批次在旧线程退出后开始。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
