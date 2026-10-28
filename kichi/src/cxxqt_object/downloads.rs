@@ -8,7 +8,7 @@
 //! - **空文件夹算成功**：建出目录即完成，不弹通知；读不到的子目录按跳过处理
 //!   （边界见 `docs/adr/0012-folder-download-boundaries.md`）；
 //! - 进度经主线程队列回投（`pump()` 消费），后台线程不碰 Qt 对象；
-//! - 登出时在途下载整体作废。
+//! - 登出时在途下载整体作废；旧线程退出前新批次只排队。
 //!
 //! 逐条记录在 [`super::transfers`]；本文件只做：入口校验、发定位请求、
 //! 调度器推进、把记录表刷到 QML 属性。
@@ -197,8 +197,11 @@ impl qobject::Kichi {
         cancelled: bool,
         my_epoch: u64,
     ) {
-        // 期间退出过登录：记录表与调度器都已整表清空，这一批属于上个会话
+        // 期间退出过登录：记录表已清空，这一批属于上个会话，只还调度槽、不碰记录。
+        // 旧线程真正退出后，重新登录排队的批次才能开始。
         if my_epoch != queue::current_epoch() {
+            let _ = queue::release(batch);
+            self.as_mut().advance_downloads();
             return;
         }
         if let Some(collected) = self.as_mut().settle_collected(batch, result, cancelled) {
@@ -348,6 +351,9 @@ impl qobject::Kichi {
     }
 
     /// 登出时作废下载：取消在途任务并清空记录与徽标。
+    ///
+    /// 调度槽留到线程自己收尾；重新登录后同一文件可以入队，
+    /// 但旧线程退出前只显示「排队中」。
     pub(crate) fn reset_downloads(mut self: Pin<&mut Self>) {
         queue::reset();
         transfers::reset();

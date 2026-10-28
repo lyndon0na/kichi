@@ -46,6 +46,12 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// 测试共用一个进程级调度器：每条用例结束都要清干净，否则互相污染。
 fn reset_for_test() {
+    // 新语义下 reset 会保留「已起线程」的 current；测试残留必须先 release。
+    let residual =
+        with_scheduler(|scheduler| scheduler.current.as_ref().map(|pending| pending.batch));
+    if let Some(batch) = residual {
+        let _ = release(batch);
+    }
     reset();
     transfers::reset();
 }
@@ -157,6 +163,54 @@ fn reset_clears_queue_and_bumps_epoch() {
     let (running, queued) = counts();
     assert!(!running && queued == 0);
     assert!(reserve_id("a").is_some(), "reset 之后同名可以重新入队");
+    reset_for_test();
+}
+
+#[test]
+fn reset_keeps_started_batch_until_worker_finishes() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("folder-a").expect("登记");
+    let start = next_start().expect("轮到这一批");
+    assert_eq!(start.batch, batch);
+    mark_started(batch);
+    reset();
+
+    assert!(
+        !is_pending("folder-a"),
+        "abandoned 只是等旧线程退出，不再参与判重"
+    );
+    let (running, queued) = counts();
+    assert!(running, "旧线程未退出前调度槽不能被提前放开");
+    assert_eq!(queued, 0);
+    assert!(
+        reserve_id("folder-a").is_some(),
+        "重新登录后同一文件可以再入队"
+    );
+    assert!(next_start().is_none(), "旧线程未退出，新批次只能排队");
+
+    assert!(release(batch).is_some(), "旧线程收尾释放槽位");
+    let next = next_start().expect("旧线程退出后新批次自动开跑");
+    assert_eq!(next.entry.id, "folder-a");
+    transfers::reset();
+    reset_for_test();
+}
+
+#[test]
+fn reset_drops_batch_without_live_worker() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("folder-b").expect("登记");
+    let start = next_start().expect("取成 current");
+    assert_eq!(start.batch, batch);
+    // 不 mark_started：模拟线程根本没起来（测试里的假批次）
+    reset();
+
+    let (running, queued) = counts();
+    assert!(!running && queued == 0, "没起线程的批次直接丢掉");
+    assert!(next_start().is_none(), "队列已空");
+    assert!(reserve_id("folder-b").is_some(), "同一 id 可以重新入队");
+    transfers::reset();
     reset_for_test();
 }
 

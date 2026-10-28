@@ -4,6 +4,9 @@
 //! 见 `docs/adr/0012-folder-download-boundaries.md`）；调度与占用表在
 //! [`super::queue`]；本文件只在后台跑，不碰 Qt 对象，
 //! 所有界面更新都经 `actions::enqueue_ui` 回主线程。
+//!
+//! 登出后旧线程只做收尾：`post_finished` 即使 epoch 已变也必须还回调度槽，
+//! 让新会话排队的批次在旧线程退出后开始。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -260,12 +263,15 @@ enum BatchEnd {
 /// 整批结束：释放占用、最多发一条通知、给状态栏收尾，然后推进下一批。
 ///
 /// 通知开关在这里（主线程）读，用户中途改也能生效。`my_epoch` 与当前代数
-/// 不一致时说明期间退出过登录：这里什么都别碰，否则可能把重新登录后的
-/// 新批次状态清掉。
+/// 不一致时说明期间退出过登录：不碰记录 / 通知 / 状态栏（那些已属于上个会话），
+/// 但**必须还回调度槽**——旧线程真正退出后，新会话排队的批次才能开始。
 fn post_finished(batch: u64, end: BatchEnd, my_epoch: u64) {
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
             if my_epoch != current_epoch() {
+                // 登出后旧线程收尾：把调度槽还回来，新会话排队的批次才能开始
+                let _ = super::queue::release(batch);
+                qichi.as_mut().advance_downloads();
                 return;
             }
             let Some(report) = super::queue::release(batch) else {
@@ -364,21 +370,23 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
     let builder = std::thread::Builder::new().name("kichi-dl".into());
     if start.folder {
         let folder = start.entry.clone();
-        builder
-            .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    queue_collect::collect_folder(&session, &folder, &cancel)
-                }))
-                .unwrap_or_else(|_| Err(Failure::Other("读取目录时后台任务异常中断".to_owned())));
-                let cancelled = cancel.is_cancelled();
-                // 读完目录回主线程：展开记录、进下载循环，或者标掉这一批
-                super::actions::enqueue_ui(move |mut qichi| {
-                    qichi
-                        .as_mut()
-                        .on_folder_collected(batch, result, cancelled, my_epoch);
-                });
-            })
-            .map(|_| ())
+        let spawned = builder.spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                queue_collect::collect_folder(&session, &folder, &cancel)
+            }))
+            .unwrap_or_else(|_| Err(Failure::Other("读取目录时后台任务异常中断".to_owned())));
+            let cancelled = cancel.is_cancelled();
+            // 读完目录回主线程：展开记录、进下载循环，或者标掉这一批
+            super::actions::enqueue_ui(move |mut qichi| {
+                qichi
+                    .as_mut()
+                    .on_folder_collected(batch, result, cancelled, my_epoch);
+            });
+        });
+        if spawned.is_ok() {
+            super::queue::mark_started(batch);
+        }
+        spawned.map(|_| ())
     } else {
         let job = Job {
             id: start.entry.id.clone(),
@@ -394,8 +402,11 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
             dirs: Vec::new(),
             skipped: 0,
         };
-        builder
-            .spawn(move || run_jobs(session, dir, batch, collected, cancel, my_epoch))
-            .map(|_| ())
+        let spawned =
+            builder.spawn(move || run_jobs(session, dir, batch, collected, cancel, my_epoch));
+        if spawned.is_ok() {
+            super::queue::mark_started(batch);
+        }
+        spawned.map(|_| ())
     }
 }
