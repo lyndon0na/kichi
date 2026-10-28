@@ -36,10 +36,15 @@ fn poll_running() -> &'static AtomicBool {
     FLAG.get_or_init(|| AtomicBool::new(false))
 }
 
-/// 轮询是否已启动（避免重复起线程）。
-fn poll_started() -> &'static AtomicBool {
-    static FLAG: OnceLock<AtomicBool> = OnceLock::new();
-    FLAG.get_or_init(|| AtomicBool::new(false))
+/// 轮询线程的代际：每次启动 / 停止都前进一格，旧线程醒来看到代际变了就退出。
+///
+/// 不能只记「启动过没有」：登出时旧线程要睡满一个 [`TICK`] 才会发现该退出，
+/// 这期间又登录的话新的一次启动会被那个标志挡住；旧线程随后退出，结果再也没人
+/// 轮询（任务页要手动刷新到重启为止）。代际让每次登录都起一条属于自己代际的
+/// 线程，旧的自己退出。
+fn poll_generation() -> &'static AtomicU64 {
+    static GENERATION: OnceLock<AtomicU64> = OnceLock::new();
+    GENERATION.get_or_init(|| AtomicU64::new(0))
 }
 
 /// 登出代数：后台线程与在途结果都用它判断自己是否已过时。
@@ -143,25 +148,29 @@ impl qobject::Kichi {
         );
     }
 
-    /// 登录成功后启动轮询线程（幂等）。
+    /// 登录成功后启动轮询线程。
+    ///
+    /// 每次调用都起一条新代际的线程，上一条（如果还睡着）醒来看到代际变了就退出。
     pub(crate) fn start_task_polling(&self) {
-        if poll_started().swap(true, Ordering::SeqCst) {
-            poll_running().store(true, Ordering::SeqCst);
-            return;
-        }
+        let generation = poll_generation().fetch_add(1, Ordering::SeqCst) + 1;
         poll_running().store(true, Ordering::SeqCst);
+        // 新一轮从活动间隔起步：别沿用上个会话退避出来的 5 分钟，登录后要尽快出数据
+        poll_wait().store(POLL_ACTIVE.as_secs(), Ordering::SeqCst);
         let session = self.backend.session.clone();
         let spawned = std::thread::Builder::new()
             .name("kichi-poll".into())
-            .spawn(move || poll_loop(session));
+            .spawn(move || poll_loop(session, generation));
         if let Err(err) = spawned {
-            poll_started().store(false, Ordering::SeqCst);
+            // 起不来就别让开关停在 true：下一次登录还会再试
+            poll_running().store(false, Ordering::SeqCst);
             eprintln!("[kichi] 无法创建任务轮询线程：{err}");
         }
     }
 
     /// 退出登录：让轮询线程歇下来，并作废所有在途结果。
     pub(crate) fn stop_task_polling(mut self: Pin<&mut Self>) {
+        // 代际前进一步：旧线程最多等一个 TICK 就发现自己作废、退出
+        poll_generation().fetch_add(1, Ordering::SeqCst);
         poll_running().store(false, Ordering::SeqCst);
         self.as_mut().reset_tasks();
     }
@@ -270,10 +279,10 @@ impl qobject::Kichi {
 ///
 /// 间隔由「上一轮结果」决定，因此写在一个只被本线程读写的局部变量里；
 /// 每 TICK 醒来一次检查是否该退出（登出）。
-fn poll_loop(session: Arc<Session>) {
+fn poll_loop(session: Arc<Session>, generation: u64) {
     loop {
         let interval = poll_wait().load(Ordering::SeqCst);
-        if !sleep_interruptible(Duration::from_secs(interval)) {
+        if !sleep_interruptible(Duration::from_secs(interval), generation) {
             return;
         }
         let my_epoch = epoch().load(Ordering::SeqCst);
@@ -308,17 +317,22 @@ fn poll_wait() -> &'static AtomicU64 {
 }
 
 /// 睡 `total`，期间每 [`TICK`] 检查一次是否该停；返回 `false` 表示要退出。
-fn sleep_interruptible(total: Duration) -> bool {
+fn sleep_interruptible(total: Duration, generation: u64) -> bool {
     let mut slept = Duration::ZERO;
     while slept < total {
-        if !poll_running().load(Ordering::SeqCst) {
+        if !still_polling(generation) {
             return false;
         }
         let step = TICK.min(total - slept);
         std::thread::sleep(step);
         slept += step;
     }
-    poll_running().load(Ordering::SeqCst)
+    still_polling(generation)
+}
+
+/// 这条轮询线程还算数吗：开关还开着，而且没被新一代顶掉。
+fn still_polling(generation: u64) -> bool {
+    poll_running().load(Ordering::SeqCst) && poll_generation().load(Ordering::SeqCst) == generation
 }
 
 /// 桌面通知（走 XDG 门户，不依赖额外守护进程）。
@@ -416,6 +430,27 @@ mod tests {
             file_id: None,
             file_size: 0,
         }
+    }
+
+    #[test]
+    fn a_stale_generation_stops_polling() {
+        poll_running().store(true, Ordering::SeqCst);
+        let first = poll_generation().fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(still_polling(first), "刚启动的代际有效");
+
+        // 登出再登录：代际前进，旧的线程应当立刻醒来退出，不会睡满一个间隔
+        let second = poll_generation().fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(!still_polling(first), "被新一代顶掉的线程要退出");
+        assert!(still_polling(second), "新登录的线程继续轮询");
+        assert!(
+            !sleep_interruptible(Duration::from_secs(5), first),
+            "旧代际不睡满"
+        );
+
+        // 登出：开关关掉，谁都不再算数
+        poll_running().store(false, Ordering::SeqCst);
+        assert!(!still_polling(second));
+        poll_running().store(true, Ordering::SeqCst);
     }
 
     #[test]
