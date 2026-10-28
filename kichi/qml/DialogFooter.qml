@@ -4,7 +4,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 弹窗页脚：左「取消」、右「确定」（重命名 / 新建文件夹共用）。
+// 弹窗页脚：左「确定」、右「取消」（异步操作的弹窗共用；顺序与系统标准按钮一致，
+// 两套页脚的「最右一个」都是取消，同一个位置做的事相同）。
 //
 // 为什么不用 `standardButtons`：QQC2 的 Dialog 点在 Ok（AcceptRole）上会自己
 // `close()`，而这两个操作都是异步请求——失败原因回来时对话框已经不可见，
@@ -48,18 +49,20 @@ Item {
             Layout.fillWidth: true
         }
 
-        Button {
-            objectName: "dialogFooterCancel"
-            text: qsTr("取消")
-            enabled: footer.cancelEnabled
-            onClicked: footer.cancelClicked()
-        }
-
+        // 顺序跟系统标准按钮一致：确定在左、取消在右（KDE 默认）。
+        // 两套页脚的「最右一个」都是取消，避免同一个位置在两类弹窗里做不同的事。
         Button {
             objectName: "dialogFooterOk"
             text: footer.okText
             enabled: footer.okEnabled
             onClicked: footer.okClicked()
+        }
+
+        Button {
+            objectName: "dialogFooterCancel"
+            text: qsTr("取消")
+            enabled: footer.cancelEnabled
+            onClicked: footer.cancelClicked()
         }
     }
 }

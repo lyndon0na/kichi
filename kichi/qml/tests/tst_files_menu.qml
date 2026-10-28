@@ -86,6 +86,20 @@ TestCase {
         return dialog
     }
 
+    function test_footer_button_order_matches_system() {
+        // 两套页脚（DialogFooter / StandardDialogFooter）的「最右一个」都必须是取消，
+        // 否则同一个位置在两类弹窗里做不同的事，容易误点。
+        var dialog = startRename()
+        var footer = dialog.footer
+        var ok = findChild(footer, "dialogFooterOk")
+        var cancel = findChild(footer, "dialogFooterCancel")
+        verify(ok !== null && cancel !== null, "页脚有两个按钮")
+        var okX = ok.mapToItem(footer, 0, 0).x
+        var cancelX = cancel.mapToItem(footer, 0, 0).x
+        verify(okX < cancelX,
+               "确定应在左、取消在右（实际 ok.x=" + okX + " cancel.x=" + cancelX + "）")
+    }
+
     function test_failed_rename_stays_open_with_the_reason() {
         var dialog = startRename()
         findChild(dialog, "renameNameField").text = "新名字.mkv"
