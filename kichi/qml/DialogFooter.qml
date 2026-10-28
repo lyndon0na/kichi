@@ -15,6 +15,8 @@ RowLayout {
 
     /// 「确定」能不能点（请求进行中时置灰，防连点）
     property bool okEnabled: true
+    /// 「取消」能不能点（请求进行中时也禁用，避免界面说「已取消」但请求还在跑）
+    property bool cancelEnabled: true
     /// 「确定」的文案
     property string okText: qsTr("确定")
 
@@ -30,6 +32,7 @@ RowLayout {
     Button {
         objectName: "dialogFooterCancel"
         text: qsTr("取消")
+        enabled: footer.cancelEnabled
         onClicked: footer.cancelClicked()
     }
 

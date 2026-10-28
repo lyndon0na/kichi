@@ -1,7 +1,7 @@
-//! 网盘侧写操作：重命名 / 新建文件夹 / 移入回收站。
+//! 网盘侧写操作：重命名 / 新建文件夹 / 移动 / 复制 / 移入回收站。
 //!
 //! 读操作在 `drive.rs`，这里只放会改云端数据的部分。
-//! 单独成文件：一是职责清晰，二是将来加「彻底删除」「移动」「复制」时好扩展。
+//! 单独成文件：一是职责清晰，二是将来越界操作（彻底删除等）好扩展。
 //!
 //! **删除语义**：PikPak 的删除是「移入回收站」（`batchTrash`），官方回收站
 //! 有保留期，空间不会立刻归还，但可以恢复。不可恢复的 `batchDelete`
@@ -16,6 +16,10 @@ use crate::{Config, Error};
 const MAX_NAME_BYTES: usize = 255;
 /// 一次性最多操作多少个条目（官方批量接口的实际上限附近）。
 const MAX_BATCH: usize = 100;
+
+/// 批量移动 / 复制的动作名，拼在 files URL 后面（`…/files:batchMove`）。
+const ACTION_MOVE: &str = "batchMove";
+const ACTION_COPY: &str = "batchCopy";
 
 impl DriveClient {
     /// 给文件或文件夹改名。
@@ -49,6 +53,30 @@ impl DriveClient {
         )
     }
 
+    /// 把条目移到 `parent_id` 下。空串表示根目录。
+    ///
+    /// 目标不能是条目当前所在目录，也不能是条目自己的子目录——官方会返回
+    /// `file_move_or_copy_to_cur`（code 9），这里只负责发请求，判断交给调用方
+    /// （客户端先挡一次，服务端再兜底）。
+    pub fn move_to(&self, ids: &[&str], parent_id: &str) -> Result<(), Error> {
+        self.batch_to(ACTION_MOVE, ids, parent_id)
+    }
+
+    /// 把条目复制到 `parent_id` 下。空串表示根目录。
+    pub fn copy_to(&self, ids: &[&str], parent_id: &str) -> Result<(), Error> {
+        self.batch_to(ACTION_COPY, ids, parent_id)
+    }
+
+    fn batch_to(&self, action: &str, ids: &[&str], parent_id: &str) -> Result<(), Error> {
+        let body = batch_body(ids, parent_id)?;
+        self.request_no_response_body(
+            reqwest::Method::POST,
+            &Config::file_action_url(self.config(), action),
+            &[],
+            &body,
+        )
+    }
+
     /// 把条目移入回收站（可恢复）。重复 id 会被去重；空列表视为非法调用。
     pub fn trash(&self, ids: &[&str]) -> Result<(), Error> {
         let ids = normalize_ids(ids)?;
@@ -70,6 +98,18 @@ impl DriveClient {
             &body,
         )
     }
+}
+
+/// 批量移动 / 复制的请求体。
+///
+/// 形状由 rclone（MIT）的实践确认：`{"ids":[…],"to":{"parent_id":"目标 id"}}`，
+/// 根目录传空串。单独抽成纯函数，便于不经过网络断言参数。
+fn batch_body(ids: &[&str], parent_id: &str) -> Result<serde_json::Value, Error> {
+    let ids = normalize_ids(ids)?;
+    Ok(serde_json::json!({
+        "ids": ids,
+        "to": { "parent_id": parent_id.trim() },
+    }))
 }
 
 /// 校验并规范化重命名 / 新建时给的名字。
@@ -166,5 +206,29 @@ mod tests {
     fn empty_id_is_rejected() {
         assert!(require_id(" ").is_err());
         assert_eq!(require_id(" abc ").ok(), Some("abc"));
+    }
+
+    #[test]
+    fn batch_body_nests_target_parent() {
+        let body = batch_body(&[" b ", "a", "b"], " dest ").expect("应合法");
+        assert_eq!(
+            body,
+            serde_json::json!({"ids": ["a", "b"], "to": {"parent_id": "dest"}})
+        );
+    }
+
+    #[test]
+    fn batch_root_target_is_empty_string() {
+        let body = batch_body(&["a"], "").expect("根目录合法");
+        assert_eq!(body["to"]["parent_id"], "");
+        assert_eq!(body["ids"], serde_json::json!(["a"]));
+    }
+
+    #[test]
+    fn batch_body_requires_ids_and_obeys_cap() {
+        assert!(batch_body(&[], "x").is_err());
+        let ids: Vec<String> = (0..101).map(|i| format!("id{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert!(batch_body(&refs, "x").is_err(), "超过 100 个要挡");
     }
 }

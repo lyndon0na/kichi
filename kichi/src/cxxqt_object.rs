@@ -46,6 +46,10 @@ pub mod qobject {
         #[qproperty(bool, quota_vip, cxx_name = "quotaVip", READ, NOTIFY = changed)]
         #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
+        /// 当前目录 id（根为空串）：界面按它记忆 / 恢复滚动位置
+        #[qproperty(QString, current_dir_id, cxx_name = "currentDirId", READ, NOTIFY = changed)]
+        /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
+        #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
@@ -97,6 +101,12 @@ pub mod qobject {
         #[qproperty(bool, transfer_has_finished, cxx_name = "transferHasFinished", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
+        /// 移动 / 复制选择器当前层的文件夹（QML 当 model 用）
+        #[qproperty(QVariantList, move_targets, cxx_name = "moveTargets", READ, NOTIFY = changed)]
+        #[qproperty(bool, move_targets_loading, cxx_name = "moveTargetsLoading", READ, NOTIFY = changed)]
+        #[qproperty(QString, move_targets_error, cxx_name = "moveTargetsError", READ, NOTIFY = changed)]
+        /// 文件夹列表真正被替换时才 +1：无关的 `changed` 不该重置选择器滚动位置
+        #[qproperty(i32, move_targets_revision, cxx_name = "moveTargetsRevision", READ, NOTIFY = changed)]
         #[qproperty(bool, search_active, cxx_name = "searchActive", READ, NOTIFY = changed)]
         #[qproperty(QString, search_query, cxx_name = "searchQuery", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, search_results, cxx_name = "searchResults", READ, NOTIFY = changed)]
@@ -320,10 +330,45 @@ pub mod qobject {
         #[cxx_name = "createFolder"]
         fn create_folder(self: Pin<&mut Self>, name: QString);
 
-        /// 把条目移入回收站（可恢复，界面上要二次确认）
+        /// 把条目移入回收站（可恢复，界面上要二次确认）。支持多选批量。
         #[qinvokable]
-        #[cxx_name = "trashEntry"]
-        fn trash_entry(self: Pin<&mut Self>, id: QString);
+        #[cxx_name = "trashEntries"]
+        fn trash_entries(self: Pin<&mut Self>, ids: QStringList);
+
+        /// 把条目移动到目标文件夹（空 id = 根目录）
+        #[qinvokable]
+        #[cxx_name = "moveEntries"]
+        fn move_entries(
+            self: Pin<&mut Self>,
+            ids: QStringList,
+            target_id: QString,
+            target_name: QString,
+        );
+
+        /// 把条目复制到目标文件夹（空 id = 根目录）
+        #[qinvokable]
+        #[cxx_name = "copyEntries"]
+        fn copy_entries(
+            self: Pin<&mut Self>,
+            ids: QStringList,
+            target_id: QString,
+            target_name: QString,
+        );
+
+        /// 当前目录栈（根 → 当前）：`[{ id, name }]`，选择器据此确定起点
+        #[qinvokable]
+        #[cxx_name = "currentPath"]
+        fn current_path(self: &Self) -> QVariantList;
+
+        /// 读取目标选择器某一层的子文件夹（独立状态，不干扰主列表）
+        #[qinvokable]
+        #[cxx_name = "loadMoveTargets"]
+        fn load_move_targets(self: Pin<&mut Self>, parent_id: QString);
+
+        /// 关闭选择器：丢弃在途结果
+        #[qinvokable]
+        #[cxx_name = "cancelMoveTargets"]
+        fn cancel_move_targets(self: Pin<&mut Self>);
 
         /// 搜索：先在当前目录已加载的条目里本地筛（0 请求）
         #[qinvokable]
@@ -401,6 +446,7 @@ mod actions;
 mod backend;
 mod downloads;
 mod file_actions;
+mod file_targets;
 mod files;
 mod notifications;
 mod play;
@@ -437,6 +483,10 @@ pub struct KichiRust {
     pub(crate) quota_vip: bool,
     /// 当前目录的列表项（QML 直接当 model 用）
     pub(crate) files: QVariantList,
+    /// 当前目录 id（根为空串）：滚动记忆按它做 key
+    pub(crate) current_dir_id: QString,
+    /// 每次成功列目录 +1：界面据此做一次性滚动恢复
+    pub(crate) files_revision: i32,
     /// 面包屑显示名（根 → 当前）
     pub(crate) breadcrumb: QStringList,
     /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
@@ -447,6 +497,8 @@ pub struct KichiRust {
     pub(crate) crumb_backup: Option<Vec<Crumb>>,
     /// 有目录列表请求在途（防止重复点击）
     pub(crate) listing: bool,
+    /// 列表在途时又收到刷新请求：本次完成后再补一次，不能静默丢掉
+    pub(crate) refresh_pending: bool,
     /// 目录请求代数：退出登录 / 重登后旧结果作废
     pub(crate) list_epoch: u64,
     /// 当前离线任务（QML 直接当 model 用）
@@ -538,8 +590,16 @@ pub struct KichiRust {
     pub(crate) download_queued: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
-    /// 有文件操作（改名 / 新建 / 删除）在途，界面上禁用相关入口
+    /// 有文件操作（改名 / 新建 / 删除 / 移动 / 复制）在途，界面上禁用相关入口
     pub(crate) file_action_running: bool,
+    /// 移动 / 复制选择器当前层的文件夹
+    pub(crate) move_targets: QVariantList,
+    pub(crate) move_targets_loading: bool,
+    pub(crate) move_targets_error: QString,
+    /// 文件夹列表真正替换时才 +1
+    pub(crate) move_targets_revision: i32,
+    /// 选择器请求代数：快速进出目录时旧结果作废
+    pub(crate) move_targets_epoch: u64,
     /// 搜索视图是否打开（打开时文件页显示结果而不是当前目录）
     pub(crate) search_active: bool,
     /// 当前搜索关键词（QML 输入框双向绑定的那一份）
@@ -584,11 +644,14 @@ impl Default for KichiRust {
             quota_ratio: -1.0,
             quota_vip: false,
             files: QVariantList::default(),
+            current_dir_id: QString::default(),
+            files_revision: 0,
             breadcrumb,
             entries: Vec::new(),
             crumbs: vec![Crumb::root()],
             crumb_backup: None,
             listing: false,
+            refresh_pending: false,
             list_epoch: 0,
             tasks: QVariantList::default(),
             task_list: Vec::new(),
@@ -641,6 +704,11 @@ impl Default for KichiRust {
             download_queued: 0,
             download_dir: QString::default(),
             file_action_running: false,
+            move_targets: QVariantList::default(),
+            move_targets_loading: false,
+            move_targets_error: QString::default(),
+            move_targets_revision: 0,
+            move_targets_epoch: 0,
             search_active: false,
             search_query: QString::default(),
             search_results: QVariantList::default(),

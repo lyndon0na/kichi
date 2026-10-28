@@ -1,0 +1,191 @@
+import QtQuick
+
+// 文件页的交互逻辑：滚动位置记忆、导航、键盘快捷键、文件操作完成后的收尾。
+//
+// 从 FilesPage.qml 拆出来（页面已超行数软上限）。这里不画任何东西，
+// 只持有状态并调用 backend；页面负责把 fileList / menu / selection 接进来。
+QtObject {
+    id: ctl
+
+    property var backend: null
+    property var selection: null
+    property var fileList: null
+    property var menu: null
+    property bool searching: false
+
+    // —— 滚动位置记忆（目录 id → contentY）——
+    // 进目录 / 返回 / 刷新 / 移动完成后都不跳回顶部。
+    property var scrollByDir: ({})
+    property bool restoreScrollPending: false
+    property real pendingScrollY: -1
+    property int seenFilesRevision: -1
+
+    function entryForId(id) {
+        const entries = ctl.backend ? ctl.backend.files : []
+        for (let i = 0; i < entries.length; i++) {
+            if (entries[i] && entries[i].id === id)
+                return entries[i]
+        }
+        return null
+    }
+
+    /// 选择里哪些是文件夹（选择器据此禁止「移进自己」）
+    function folderIdsFor(ids) {
+        const folders = []
+        if (!ctl.backend || !ids)
+            return folders
+        const wanted = ({})
+        for (let i = 0; i < ids.length; i++)
+            wanted[ids[i]] = true
+        const entries = ctl.backend.files
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i]
+            if (entry && wanted[entry.id] && entry.kind === "folder")
+                folders.push(entry.id)
+        }
+        return folders
+    }
+
+    // —— 滚动位置 ——
+
+    function rememberScroll() {
+        if (!ctl.backend || !ctl.fileList)
+            return
+        const next = ({})
+        const keys = Object.keys(scrollByDir)
+        for (let i = 0; i < keys.length; i++)
+            next[keys[i]] = scrollByDir[keys[i]]
+        next[ctl.backend.currentDirId] = ctl.fileList.contentY
+        scrollByDir = next
+    }
+
+    function restoreScrollNow() {
+        if (pendingScrollY < 0)
+            return
+        // 空目录或尚未布局：清掉待恢复值，别留到下一次无关刷新再跳
+        if (!ctl.backend || ctl.backend.files.length === 0) {
+            pendingScrollY = -1
+            return
+        }
+        if (ctl.fileList.contentHeight <= 0)
+            return
+        const maxY = Math.max(0, ctl.fileList.contentHeight - ctl.fileList.height)
+        ctl.fileList.contentY = Math.max(0, Math.min(pendingScrollY, maxY))
+        pendingScrollY = -1
+    }
+
+    function noteFilesRevision() {
+        if (!ctl.backend)
+            return
+        const revision = ctl.backend.filesRevision
+        if (revision === seenFilesRevision)
+            return
+        seenFilesRevision = revision
+        if (ctl.selection)
+            ctl.selection.prune(ctl.backend.files)
+        if (restoreScrollPending) {
+            restoreScrollPending = false
+            const saved = scrollByDir[ctl.backend.currentDirId]
+            pendingScrollY = saved !== undefined ? saved : 0
+            // 列表布局在模型更新之后才完成；contentHeight 变化时会再试一次
+            Qt.callLater(ctl.restoreScrollNow)
+        }
+    }
+
+    // —— 导航（都先记滚动位置）——
+
+    function navigateToDir(id) {
+        if (!ctl.backend)
+            return
+        rememberScroll()
+        restoreScrollPending = true
+        ctl.backend.openDir(id)
+    }
+
+    function goParent() {
+        if (!ctl.backend)
+            return
+        rememberScroll()
+        restoreScrollPending = true
+        ctl.backend.openParent()
+    }
+
+    function goCrumb(index) {
+        if (!ctl.backend)
+            return
+        rememberScroll()
+        restoreScrollPending = true
+        ctl.backend.openCrumb(index)
+    }
+
+    function refreshFiles() {
+        if (!ctl.backend)
+            return
+        rememberScroll()
+        restoreScrollPending = true
+        ctl.backend.refreshFiles()
+    }
+
+    /// 文件操作结果回到界面：需要刷新的动作先记住滚动位置，移走/删掉的清空选择。
+    function handleFileActionDone(action, ok) {
+        if (!ok)
+            return
+        if (action === "trash" || action === "move")
+            ctl.selection.clear()
+        if (action === "trash" || action === "move"
+                || action === "rename" || action === "folder") {
+            rememberScroll()
+            restoreScrollPending = true
+        }
+    }
+
+    // —— 键盘快捷键（挂在列表控件上，避开 Wayland 下窗口级 Keys 不可靠）——
+
+    function handleKey(event) {
+        if (!ctl.backend || ctl.searching)
+            return
+        const ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+        if (ctrl && event.key === Qt.Key_A) {
+            ctl.selection.selectAll(ctl.backend.files)
+            event.accepted = true
+            return
+        }
+        if (event.key === Qt.Key_Delete) {
+            const ids = ctl.selection.idList()
+            if (ids.length === 0)
+                return
+            const entry = ctl.entryForId(ids[0])
+            if (entry) {
+                ctl.menu.openTrashFor(entry, ids)
+                event.accepted = true
+            }
+            return
+        }
+        if (event.key === Qt.Key_F2) {
+            const id = ctl.selection.singleId()
+            const entry = id ? ctl.entryForId(id) : null
+            if (entry) {
+                ctl.menu.openRenameFor(entry, [id])
+                event.accepted = true
+            }
+            return
+        }
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            const id = ctl.selection.singleId()
+            const entry = id ? ctl.entryForId(id) : null
+            // 只对文件夹生效：回车不应误触发播放 / 下载
+            if (entry && entry.kind === "folder") {
+                ctl.navigateToDir(entry.id)
+                event.accepted = true
+            }
+            return
+        }
+        if (event.key === Qt.Key_Backspace) {
+            const count = ctl.backend.breadcrumb.length
+            if (count > 1) {
+                ctl.goParent()
+                event.accepted = true
+            }
+        }
+    }
+}

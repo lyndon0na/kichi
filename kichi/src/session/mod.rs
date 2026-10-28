@@ -426,6 +426,22 @@ impl Session {
         let client = self.drive()?;
         client.trash(ids).map_err(Failure::from)
     }
+
+    /// 把条目移动到目标文件夹（阻塞）。`None` / 空串表示根目录。
+    pub fn move_entries(&self, ids: &[&str], parent_id: Option<&str>) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client
+            .move_to(ids, parent_id.unwrap_or(""))
+            .map_err(Failure::from)
+    }
+
+    /// 把条目复制到目标文件夹（阻塞）。`None` / 空串表示根目录。
+    pub fn copy_entries(&self, ids: &[&str], parent_id: Option<&str>) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client
+            .copy_to(ids, parent_id.unwrap_or(""))
+            .map_err(Failure::from)
+    }
 }
 
 /// 启动恢复的结果。

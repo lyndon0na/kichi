@@ -12,11 +12,23 @@ Item {
     id: page
 
     property var backend: null
-    // 当前目录列表里选中的条目 id（空串 = 没有选中）
-    property string selectedId: ""
+    // 多选状态（纯逻辑在 FileSelection.qml）
+    FileSelection {
+        id: selection
+    }
 
     // 搜索视图开着：列表区换成结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
+
+    // 滚动位置记忆 / 导航 / 快捷键 / 操作完成后的收尾（纯逻辑在 FilePageInteraction.qml）
+    FilePageInteraction {
+        id: interaction
+        backend: page.backend
+        selection: selection
+        fileList: fileList
+        menu: menu
+        searching: page.searching
+    }
 
     // 列表密度（行高 / 字号 / 图标 / 列宽）都在 FileListDensity 里，
     // 表头、行、搜索结果共用同一份数值
@@ -37,19 +49,6 @@ Item {
         return index === page.crumbCount() - 1
     }
 
-    function iconFor(item) {
-        if (item.kind === "folder")
-            return "📁"
-        const name = item.name.toLowerCase()
-        if (/\.(mp4|mkv|avi|mov|webm|ts|m2ts|flv|wmv|rmvb)$/.test(name))
-            return "🎬"
-        if (/\.(mp3|flac|wav|m4a|ogg|opus|aac|ape)$/.test(name))
-            return "🎵"
-        if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(name))
-            return "🖼️"
-        return "📄"
-    }
-
     // —— 搜索入口 ——
     //
     // 搜索框本身在标题行（FilesPageSearchBar.qml）：输入只筛本目录，
@@ -60,18 +59,30 @@ Item {
         menu.openNewFolder()
     }
 
+    // 标题行的刷新按钮（main.qml）调这里：先记滚动位置，回来不跳顶部
+    function refreshFiles() {
+        interaction.refreshFiles()
+    }
+
     // 搜索结果里的播放 / 下载也在右键菜单里，锚点用右键位置
     function openResultContext(entry, point) {
         // 搜索结果给的是本视图坐标：换算成窗口坐标再交给右键菜单（绝对定位）
         var windowPoint = searchResults.mapToItem(null, point.x, point.y)
-        menu.openContext(entry, windowPoint)
+        menu.openContext(entry, windowPoint, [entry.id], true)
     }
 
     // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
     // （搜索框里的字由 FilesPageSearchBar 自己跟着 searchActive 清）
     onVisibleChanged: {
-        if (!page.visible && page.searching && page.backend)
-            page.backend.exitSearch()
+        if (!page.visible) {
+            if (page.searching && page.backend)
+                page.backend.exitSearch()
+            return
+        }
+        // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
+        // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
+        if (fileList && !page.searching)
+            fileList.forceActiveFocus()
     }
 
     ColumnLayout {
@@ -89,7 +100,7 @@ Item {
                 enabled: page.backend !== null && !page.backend.busy && page.crumbCount() > 1
                 ToolTip.visible: hovered
                 ToolTip.text: qsTr("上一级（回到上级目录）")
-                onClicked: page.backend.openParent()
+                onClicked: interaction.goParent()
             }
 
             RowLayout {
@@ -119,7 +130,7 @@ Item {
                                 anchors.fill: parent
                                 enabled: !page.isCurrentCrumb(index)
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: page.backend.openCrumb(index)
+                                onClicked: interaction.goCrumb(index)
                             }
                         }
 
@@ -177,11 +188,46 @@ Item {
                     // 委托宽度减去车道，文字永远停在条左边
                     ScrollBar.vertical: KScrollBar {}
 
+                    // 快捷键要有焦点才收得到（KDE Wayland 下窗口级 Keys 不可靠）。
+                    //
+                    // ⚠ 只在 Component.onCompleted 抢一次焦点是不够的：本页在登录页
+                    // 之后才可见，创建时拿不到 activeFocus，登录进来后 Qt 也不会自动
+                    // 把焦点交回来（表现就是所有快捷键都没反应）。所以「变成可见」
+                    // 时也要抢一次；从搜索视图切回来同样走这里。
+                    focus: true
+                    Component.onCompleted: forceActiveFocus()
+                    onVisibleChanged: {
+                        if (visible)
+                            forceActiveFocus()
+                    }
+                    Keys.onPressed: function (event) {
+                        interaction.handleKey(event)
+                    }
+
+                    // 布局完成后再恢复滚动位置（模型更新时 contentHeight 是逐步算出来的）
+                    onContentHeightChanged: interaction.restoreScrollNow()
+
+                    // 空白处右键：行自己用 MouseArea 处理右键，这里只接住没命中行的位置。
+                    // 坐标要换成内容坐标（加上 contentY）才能用 indexAt。
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: function (point) {
+                            if (!page.backend)
+                                return
+                            const x = point.position.x
+                            const y = point.position.y
+                            if (fileList.indexAt(x, y + fileList.contentY) >= 0)
+                                return
+                            menu.openBlankAt(fileList.mapToItem(null, x, y))
+                        }
+                    }
+
                     delegate: FileRow {
                         id: row
                         width: ListView.view.width - metrics.scrollBarSlot
                         entry: modelData
                         backend: page.backend
+                        rowIndex: index
                         iconColumnWidth: density.iconColumnWidth
                         sizeColumnWidth: density.sizeColumnWidth
                         modifiedColumnWidth: density.modifiedColumnWidth
@@ -189,10 +235,19 @@ Item {
                         rowHeight: density.rowHeight
                         textPixelSize: density.namePixelSize
                         iconPixelSize: density.iconPixelSize
-                        // 单击选中；id 绑定而不是 index，刷新 / 排序后仍指向同一条目
-                        highlighted: page.selectedId.length > 0
-                                     && !!entry && page.selectedId === entry.id
-                        onClicked: page.selectedId = entry.id
+                        // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
+                        highlighted: !!entry && selection.isSelected(entry.id)
+                        // 单击：把修饰键交给 FileSelection 处理（Ctrl 切换 / Shift 区间）
+                        onSelectRequested: function (modifiers, index) {
+                            const entries = page.backend ? page.backend.files : []
+                            if (index < 0 || index >= entries.length)
+                                return
+                            selection.click(entries[index].id, index, modifiers, entries)
+                        }
+                        // 双击文件夹：交给页面先记滚动位置再进目录
+                        onFolderOpenRequested: function (id) {
+                            interaction.navigateToDir(id)
+                        }
                         // 双击媒体文件：把行内的点换算成窗口坐标交给清晰度菜单。
                         // ⚠ 必须用赋值，不能在上面写 anchorPoint: page.playAnchor 的绑定：
                         // 给有绑定的属性赋值会永久断掉绑定，菜单就永远停在第一次的位置
@@ -201,11 +256,13 @@ Item {
                             if (page.backend)
                                 page.backend.requestPlay(id)
                         }
-                        // FileRow 给的是行内坐标：换算成窗口坐标再交给右键菜单
+                        // FileRow 给的是行内坐标：换算成窗口坐标再交给右键菜单。
+                        // 右键未选中的行时先收窄成这一条（文件管理器的惯例）
                         onContextMenu: function (point) {
-                            page.selectedId = entry.id
+                            selection.ensureSelected(entry)
+                            fileList.forceActiveFocus()
                             var windowPoint = row.mapToItem(null, point.x, point.y)
-                            menu.openContext(entry, windowPoint)
+                            menu.openContext(entry, windowPoint, selection.idList(), false)
                         }
                     }
                 }
@@ -250,7 +307,7 @@ Item {
         }
     }
 
-    // —— 右键菜单与重命名 / 新建 / 删除弹窗（内容在 FilesPageMenu.qml）——
+    // —— 右键菜单与写操作弹窗（内容在 FilesPageMenu.qml / FileActionDialogs.qml）——
     FilesPageMenu {
         id: menu
         anchors.fill: parent
@@ -258,6 +315,32 @@ Item {
         onPlayRequested: function (anchor) {
             // 右键菜单给的已经是窗口坐标，直接当清晰度菜单的锚点
             playMenu.anchorPoint = anchor
+        }
+        onMoveRequested: function (entry, ids) {
+            movePicker.openForMove(entry, ids, interaction.folderIdsFor(ids))
+        }
+        onCopyRequested: function (entry, ids) {
+            movePicker.openForCopy(entry, ids, interaction.folderIdsFor(ids))
+        }
+        onRefreshRequested: interaction.refreshFiles()
+    }
+
+    // —— 移动 / 复制目标选择器 ——
+    MovePickerDialog {
+        id: movePicker
+        backend: page.backend
+    }
+
+    // —— 列表刷新 / 文件操作完成：恢复滚动、清理选择 ——
+    Connections {
+        target: page.backend
+
+        function onChanged() {
+            interaction.noteFilesRevision()
+        }
+
+        function onFileActionDone(action, ok) {
+            interaction.handleFileActionDone(action, ok)
         }
     }
 

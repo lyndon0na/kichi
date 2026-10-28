@@ -12,6 +12,12 @@ ItemDelegate {
 
     property var entry: null
     property var backend: null
+    // 列表视图本身。⚠ 只能取在委托根上：`ListView.view` 附加属性只在委托根
+    // 有效，写在下层 MouseArea 里永远是 null（子项拿不到），
+    // 表现为「点了行，快捷键还是没焦点」。
+    readonly property var listView: ListView.view
+    /// 在列表里的下标（Shift 区间选择用）
+    property int rowIndex: -1
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
     property int iconColumnWidth: 30
     property int sizeColumnWidth: 126
@@ -35,6 +41,10 @@ ItemDelegate {
     signal contextMenu(point position)
     // 双击媒体文件：把条目 id 和行内锚点交给页面（清晰度菜单从这里弹出）
     signal playRequested(string id, point position)
+    // 单击：把修饰键（Ctrl / Shift）与行下标交给页面做多选
+    signal selectRequested(int modifiers, int index)
+    // 双击文件夹：交给页面先记滚动位置再进目录
+    signal folderOpenRequested(string id)
 
     // 图标按扩展名猜（📁 🎬 🎵 🖼️ 📄）。
     // 不用 `import "...js"`：外部脚本不进 qrc（实测打包后 404），
@@ -60,34 +70,55 @@ ItemDelegate {
     icon.height: 0
     icon.color: "transparent"
 
-    // 整行双击：文件夹进入；媒体文件播放；其余文件下载到本地。
-    // 用 Control 自己的 onDoubleClicked（Item 里没有这个信号，
-    // 写 TapHandler 反而会和右键手势抢）。
-    // 单击只选中、不触发动作（单击进目录太容易手滑）。
-    onDoubleClicked: row.activate()
+    // 整行手势。
+    //
+    // 为什么不用 ItemDelegate 自带的 onClicked / onDoubleClicked：它们拿不到
+    // 键盘修饰键，而 Ctrl / Shift 多选必须读 `mouse.modifiers`。TapHandler 的
+    // eventPoint 也不带修饰键，所以整行铺一个 MouseArea。
+    //
+    // 注意：MouseArea 会吃掉按下的鼠标事件，Flickable 不再能用鼠标拖动滚动；
+    // 滚轮不受影响（原本 ItemDelegate 也会吃掉按下，行为没有退化）。
+    MouseArea {
+        id: mouseArea
 
-    // 双击的实际动作；单击选中由页面绑定，不在这里做。
-    function activate() {
+        anchors.fill: parent
+        // 盖在 contentItem 之上，保证整行都可点
+        z: 1
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        cursorShape: row.entry && row.entry.kind === "folder"
+                     ? Qt.PointingHandCursor : Qt.ArrowCursor
+
+        onClicked: function (mouse) {
+            if (row.listView)
+                row.listView.forceActiveFocus()
+            if (mouse.button === Qt.RightButton) {
+                if (row.entry)
+                    row.contextMenu(Qt.point(mouse.x, mouse.y))
+                return
+            }
+            row.selectRequested(mouse.modifiers, row.rowIndex)
+        }
+
+        onDoubleClicked: function (mouse) {
+            if (mouse.button === Qt.LeftButton)
+                row.activate(Qt.point(mouse.x, mouse.y))
+        }
+    }
+
+    // 双击的实际动作；单击选中由页面处理，不在这里做。
+    function activate(point) {
         if (!row.backend || !row.entry)
             return
         if (row.entry.kind === "folder") {
-            row.backend.openDir(row.entry.id)
+            row.folderOpenRequested(row.entry.id)
             return
         }
         if (row.entry.playable === true) {
-            // 用鼠标真实位置：onDoubleClicked 不带坐标，只能自己记（见下方的
-            // HoverHandler）。没有悬停（触屏）时退回行底中点
-            row.playRequested(row.entry.id, row.pointerPos)
+            row.playRequested(row.entry.id, point)
             return
         }
         row.backend.downloadEntry(row.entry.id)
     }
-
-    // 指针在本行内的位置：双击菜单从鼠标处弹出，和右键菜单一致。
-    // 鼠标一离开就用行底中点（触屏没有 hover 事件）
-    property point pointerPos: cursorHint.hovered
-                              ? cursorHint.point.position
-                              : Qt.point(width / 2, height)
 
     // 选中态用主题高亮色；未选中时透明，让列表背景透出来。
     // 不用 ItemDelegate 默认 background：Basic 风格的 highlighted 只画一圈边框，
@@ -95,19 +126,8 @@ ItemDelegate {
     background: Rectangle {
         radius: 4
         color: row.highlighted ? palette.highlight
-             : row.down ? palette.mid
+             : mouseArea.pressed ? palette.mid
              : "transparent"
-    }
-
-    TapHandler {
-        acceptedButtons: Qt.RightButton
-        onTapped: function (eventPoint) {
-            if (!row.entry)
-                return
-            // 只上报行内坐标。菜单的坐标系由页面负责换算，
-            // 这里先转成窗口坐标会被 popup 再偏移一次。
-            row.contextMenu(eventPoint.position)
-        }
     }
 
     contentItem: RowLayout {
@@ -161,11 +181,5 @@ ItemDelegate {
             horizontalAlignment: Text.AlignRight
             Layout.preferredWidth: row.modifiedColumnWidth
         }
-    }
-
-    HoverHandler {
-        id: cursorHint
-        cursorShape: row.entry && row.entry.kind === "folder"
-                     ? Qt.PointingHandCursor : Qt.ArrowCursor
     }
 }

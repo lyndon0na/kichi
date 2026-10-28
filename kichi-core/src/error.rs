@@ -89,6 +89,10 @@ impl Error {
             "file_not_found" => {
                 Error::InvalidInput("这个条目已不存在（可能在其它设备上被删除或移动了）".into())
             }
+            // 移动 / 复制到当前目录或自己的子目录（9）
+            "file_move_or_copy_to_cur" => Error::InvalidInput(
+                "不能移动/复制到它当前所在的文件夹，也不能移进自己的子文件夹".into(),
+            ),
             _ => Error::Api {
                 code,
                 reason: reason.to_owned(),
@@ -162,5 +166,13 @@ mod tests {
         let err = Error::from_api(1, "file_not_found", "");
         assert!(matches!(err, Error::InvalidInput(_)));
         assert!(err.to_string().contains("已不存在"));
+    }
+
+    #[test]
+    fn same_folder_move_reads_as_plain_chinese() {
+        let err = Error::from_api(9, "file_move_or_copy_to_cur", "");
+        assert!(matches!(err, Error::InvalidInput(_)));
+        let text = err.to_string();
+        assert!(text.contains("当前所在的文件夹"), "要说明目标非法：{text}");
     }
 }

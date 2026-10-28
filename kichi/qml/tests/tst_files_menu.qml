@@ -2,18 +2,18 @@ import QtQuick
 import QtTest
 import ".."
 
-// 文件右键菜单里的「重命名 / 新建文件夹」弹窗（2026-10-28）。
+// 文件页写操作弹窗（重命名 / 新建文件夹 / 批量回收站）。
 //
 // 为什么要有：QQC2 的 Dialog 配 `standardButtons` 时，点 Ok（AcceptRole）会
-// 当场 close()；而改名 / 新建都是异步请求，失败原因回来时对话框已经不可见，
-// 用户只看到「点了确定就消失了」。这里锁住改后的规则：
+// 当场 close()；而这些都是异步请求，失败原因回来时对话框已经不可见，
+// 用户只看到「点了确定就消失了」。这里锁住规则：
 // 点确定不关、失败原因留在原地、成功才收起、请求进行中不能再点。
 //
 // 运行：
 //   QT_QPA_PLATFORM=offscreen /usr/lib64/qt6/bin/qmltestrunner \
 //       -input kichi/qml/tests/tst_files_menu.qml
 TestCase {
-    name: "FilesPageMenuDialogs"
+    name: "FileActionDialogs"
     when: windowShown
     width: 900
     height: 600
@@ -22,13 +22,11 @@ TestCase {
     QtObject {
         id: backend
         property bool fileActionRunning: false
-        // 右键菜单的几个绑定会读这两个属性（菜单不开也会求值）
-        property bool busy: false
-        property var playMenu: []
         property int renameCount: 0
         property string renamedName: ""
         property int folderCount: 0
         property string createdName: ""
+        property var lastTrashIds: []
 
         signal fileActionDone(string action, bool ok, string message)
 
@@ -42,6 +40,10 @@ TestCase {
             createdName = name
             fileActionRunning = true
         }
+        function trashEntries(ids) {
+            lastTrashIds = ids.slice()
+            fileActionRunning = true
+        }
         /// 模拟 Rust 收尾：先清「进行中」，再发结果
         function finish(action, ok, message) {
             fileActionRunning = false
@@ -51,7 +53,7 @@ TestCase {
 
     Component {
         id: menuComponent
-        FilesPageMenu {}
+        FileActionDialogs {}
     }
 
     property var menu: null
@@ -62,10 +64,11 @@ TestCase {
         backend.renamedName = ""
         backend.folderCount = 0
         backend.createdName = ""
+        backend.lastTrashIds = []
         menu = menuComponent.createObject(parent, {
             width: 600, height: 400, visible: true, backend: backend
         })
-        verify(menu !== null, "FilesPageMenu 创建失败")
+        verify(menu !== null, "FileActionDialogs 创建失败")
     }
 
     function cleanup() {
@@ -74,12 +77,9 @@ TestCase {
         menu = null
     }
 
-    /// 打开重命名弹窗（target 由页面在右键时写入，这里直接给）
+    /// 打开重命名弹窗
     function startRename() {
-        menu.targetId = "id-1"
-        menu.targetName = "旧名字.mkv"
-        menu.targetIsFolder = false
-        menu.openRename()
+        menu.openRename({ id: "id-1", name: "旧名字.mkv", kind: "file" })
         wait(60)
         var dialog = findChild(menu, "renameDialog")
         verify(dialog !== null && dialog.opened, "重命名对话框打开了")
@@ -151,5 +151,45 @@ TestCase {
         wait(40)
         compare(backend.renameCount, 0, "名字没变不发请求")
         verify(dialog.opened, "对话框也不关，用户可以接着改")
+    }
+
+    function test_dialog_is_centered_in_the_window() {
+        // 宿主 Item 只有 600×400：弹窗必须按**窗口**居中，不能跟着宿主大小走。
+        // 回归：拆组件后宿主成了 0×0，`anchors.centerIn: parent` 让弹窗
+        // 跑到了窗口左上角（2026-10-28 实机）。
+        menu.openNewFolder()
+        wait(60)
+        var dialog = findChild(menu, "folderDialog")
+        verify(dialog !== null && dialog.opened, "新建文件夹对话框打开了")
+        var dialogCenterX = dialog.x + dialog.width / 2
+        verify(Math.abs(dialogCenterX - width / 2) <= 4,
+               "水平居中于窗口（实际 " + dialogCenterX + "，期望 " + (width / 2) + "）")
+        var dialogCenterY = dialog.y + dialog.height / 2
+        verify(Math.abs(dialogCenterY - height / 2) <= 4,
+               "垂直居中于窗口（实际 " + dialogCenterY + "，期望 " + (height / 2) + "）")
+    }
+
+    function test_batch_trash_shows_count_and_keeps_reason() {
+        menu.openTrash({ id: "id-1", name: "a.mkv", kind: "file" },
+                       ["id-1", "id-2"])
+        wait(60)
+        var dialog = findChild(menu, "trashDialog")
+        verify(dialog !== null && dialog.opened, "回收站确认框打开了")
+        verify(findChild(dialog, "trashMessage").text.indexOf("2 项") >= 0,
+               "多选要显示条数")
+
+        mouseClick(findChild(dialog, "dialogFooterOk"))
+        wait(40)
+        compare(backend.lastTrashIds.length, 2, "批量 id 一次交给后端")
+        verify(dialog.opened, "请求还没回来：对话框不关")
+
+        backend.finish("trash", false, "部分条目失败")
+        wait(40)
+        verify(dialog.opened, "失败后留在原地")
+        compare(findChild(dialog, "trashError").text, "部分条目失败")
+
+        backend.finish("trash", true, "已移入回收站")
+        wait(40)
+        verify(!dialog.opened, "成功后收起")
     }
 }

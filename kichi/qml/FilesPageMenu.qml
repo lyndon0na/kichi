@@ -1,14 +1,16 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 文件条目的右键菜单 + 重命名 / 新建文件夹 / 删除确认三个弹窗。
+// 文件条目的右键菜单 + 空白处右键菜单。
 //
-// 从 FilesPage.qml 拆出来：页面本体已接近行数软上限，而这些弹窗
-// 都是「操作入口」，和列表渲染无关。
+// 弹窗（重命名 / 新建 / 回收站）在 FileActionDialogs.qml：
+// 菜单只管「点哪一项」，结果怎么显示由那边负责。
 //
-// 用法：放一个实例，调 openAt(point) 弹出右键菜单；
-// 调 openRename(entry) / openNewFolder() 打开对应弹窗。
+// 用法：放一个实例，调 openContext(entry, point, ids, fromSearch) 弹条目菜单；
+// 调 openBlankAt(point) 弹空白菜单。
 Item {
     id: root
 
@@ -26,11 +28,25 @@ Item {
     property bool targetHasPartial: false
     // 右键处的位置（**窗口**坐标系）：清晰度菜单从这里弹出
     property point targetPoint: Qt.point(0, 0)
+    // 右键时的整个选择（多选批量操作据此计数）
+    property var targetIds: []
+    readonly property int targetCount: targetIds.length
+    // 搜索结果里的条目没有「源目录」上下文，暂不提供移动 / 复制
+    property bool fromSearch: false
 
     // 菜单里点「播放」：页面把位置交给清晰度菜单，再让后端取档位
     signal playRequested(point anchor)
+    signal moveRequested(var entry, var ids)
+    signal copyRequested(var entry, var ids)
+    // 空白菜单的「刷新」交给页面：页面要先记住滚动位置
+    signal refreshRequested()
 
-    // —— 右键菜单 ——
+    FileActionDialogs {
+        id: dialogs
+        backend: root.backend
+    }
+
+    // —— 条目右键菜单 ——
     Menu {
         id: contextMenu
 
@@ -40,7 +56,7 @@ Item {
 
         // 宽度只在这里定，子项跟着撑满：
         // 每个 MenuItem 各自设 width 会比菜单容器还宽，高亮条就溢出去了
-        width: 200
+        width: 210
 
         // 在窗口坐标系里 point 处弹出（左上角对准鼠标），和系统右键菜单一样。
         // 用 popup(Qt.point) 绝对定位，不用 x / y：那套坐标是相对本菜单父项的
@@ -49,10 +65,10 @@ Item {
             popup(Qt.point(point.x, point.y))
         }
 
-        // 只有视频/音频才有播放入口
+        // 只有视频/音频才有播放入口；多选时只对单条开放
         MenuItem {
             text: qsTr("播放（mpv）")
-            visible: root.targetPlayable
+            visible: root.targetPlayable && root.targetCount === 1
             enabled: root.backend !== null && !root.backend.busy
                      && root.backend.playMenu.length === 0
             onTriggered: {
@@ -64,14 +80,14 @@ Item {
         }
 
         // 下载到本地（文件直接下；文件夹递归下，保留层级）。
-        // 同一条目已在队列里时不置灰：文案改成「去查看」，点了由后端跳转定位
-        // （判重键是云端条目 id，不是文件名）。
+        // 多选下载没有可靠语义：只对单条显示，避免用户误以为会批量排队。
         MenuItem {
             text: root.targetPending
                   ? qsTr("已在下载队列中，去查看")
                   : root.targetHasPartial ? qsTr("继续下载")
                   : root.targetIsFolder ? qsTr("下载整个文件夹到本地")
                                         : qsTr("下载到本地")
+            visible: root.targetCount === 1
             enabled: root.backend !== null
             onTriggered: {
                 if (root.backend)
@@ -79,168 +95,68 @@ Item {
             }
         }
 
+        MenuSeparator {
+            visible: !root.fromSearch
+        }
+
+        MenuItem {
+            text: root.targetCount > 1
+                  ? qsTr("移动到…（%1 项）").arg(root.targetCount)
+                  : qsTr("移动到…")
+            visible: !root.fromSearch
+            enabled: root.backend !== null && !root.backend.fileActionRunning
+            onTriggered: root.moveRequested(root.target, root.targetIds)
+        }
+
+        MenuItem {
+            text: root.targetCount > 1
+                  ? qsTr("复制到…（%1 项）").arg(root.targetCount)
+                  : qsTr("复制到…")
+            visible: !root.fromSearch
+            enabled: root.backend !== null && !root.backend.fileActionRunning
+            onTriggered: root.copyRequested(root.target, root.targetIds)
+        }
+
         MenuSeparator {}
 
         MenuItem {
             text: qsTr("重命名…")
             enabled: root.backend !== null && !root.backend.fileActionRunning
-            onTriggered: root.openRename()
+                     && root.targetCount === 1
+            onTriggered: dialogs.openRename(root.target)
         }
 
         MenuItem {
-            text: qsTr("移至回收站…")
+            text: root.targetCount > 1
+                  ? qsTr("移至回收站…（%1 项）").arg(root.targetCount)
+                  : qsTr("移至回收站…")
             enabled: root.backend !== null && !root.backend.fileActionRunning
-            onTriggered: trashDialog.open()
+            onTriggered: dialogs.openTrash(root.target, root.targetIds)
         }
     }
 
-    // 三个弹窗统一的内容宽度。
-    // 宽度只在这一处定：子项用 fillWidth 撑满，别再各自写死，
-    // 否则漏写一处（如 TextField 的父布局没设宽度）就会溢出到弹窗外。
-    readonly property int dialogWidth: 380
+    // —— 空白处右键菜单（列表没有条目时也能新建 / 刷新）——
+    Menu {
+        id: blankMenu
+        parent: Overlay.overlay
+        width: 180
 
-    // —— 重命名 ——
-    Dialog {
-        id: renameDialog
-        objectName: "renameDialog"
-
-        title: qsTr("重命名")
-        modal: true
-        anchors.centerIn: parent
-        width: root.dialogWidth + leftPadding + rightPadding
-
-        // 不用 standardButtons：点在 Ok 上 Dialog 会自己关，而请求是异步的，
-        // 失败原因回来时窗口已经没了。改由页脚按钮提交，结果回来才关（见 onFileActionDone）。
-        footer: DialogFooter {
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
-            onOkClicked: root.submitRename(nameField.text)
-            onCancelClicked: renameDialog.close()
+        MenuItem {
+            text: qsTr("新建文件夹…")
+            enabled: root.backend !== null && !root.backend.fileActionRunning
+            onTriggered: dialogs.openNewFolder()
         }
 
-        property string errorText: ""
-
-        onOpened: {
-            errorText = ""
-            nameField.text = root.targetName
-            // 选中主名、留出扩展名：改名时最常改的是前半段
-            const dot = root.targetIsFolder ? -1 : root.targetName.lastIndexOf(".")
-            if (dot > 0)
-                nameField.select(0, dot)
-            else
-                nameField.selectAll()
-            nameField.forceActiveFocus()
-        }
-
-        ColumnLayout {
-            width: root.dialogWidth
-            spacing: 8
-
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("原名称：%1").arg(root.targetName)
-                color: palette.placeholderText
-                elide: Text.ElideMiddle
-            }
-
-            TextField {
-                id: nameField
-                objectName: "renameNameField"
-                Layout.fillWidth: true
-                selectByMouse: true
-                onAccepted: root.submitRename(text)
-            }
-
-            Label {
-                objectName: "renameError"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                color: "#d9534f"
-                visible: text.length > 0
-                text: renameDialog.errorText
-            }
-        }
-    }
-
-    // —— 新建文件夹 ——
-    Dialog {
-        id: folderDialog
-        objectName: "folderDialog"
-
-        title: qsTr("新建文件夹")
-        modal: true
-        anchors.centerIn: parent
-        width: root.dialogWidth + leftPadding + rightPadding
-
-        // 与重命名同一个理由：失败原因要能停在对话框里，见上面的说明
-        footer: DialogFooter {
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
-            onOkClicked: root.submitNewFolder(folderField.text)
-            onCancelClicked: folderDialog.close()
-        }
-
-        property string errorText: ""
-
-        onOpened: {
-            errorText = ""
-            folderField.text = ""
-            folderField.forceActiveFocus()
-        }
-
-        ColumnLayout {
-            width: root.dialogWidth
-            spacing: 8
-
-            TextField {
-                id: folderField
-                objectName: "folderNameField"
-                Layout.fillWidth: true
-                selectByMouse: true
-                placeholderText: qsTr("文件夹名称")
-                onAccepted: root.submitNewFolder(text)
-            }
-
-            Label {
-                objectName: "folderError"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                color: "#d9534f"
-                visible: text.length > 0
-                text: folderDialog.errorText
-            }
-        }
-    }
-
-    // —— 删除确认（移到回收站，可恢复）——
-    Dialog {
-        id: trashDialog
-
-        title: qsTr("移至回收站")
-        modal: true
-        anchors.centerIn: parent
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        width: root.dialogWidth + leftPadding + rightPadding
-
-        onAccepted: {
-            if (root.backend && root.targetId.length > 0)
-                root.backend.trashEntry(root.targetId)
-        }
-
-        Label {
-            width: root.dialogWidth
-            wrapMode: Text.Wrap
-            text: root.targetIsFolder
-                ? qsTr("确定把文件夹「%1」移入回收站吗？\n里面的所有文件和子文件夹都会一起移走。可以在 PikPak 官方客户端里恢复。")
-                    .arg(root.targetName)
-                : qsTr("确定把「%1」移入回收站吗？\n可以在 PikPak 官方客户端里恢复。")
-                    .arg(root.targetName)
+        MenuItem {
+            text: qsTr("刷新")
+            enabled: root.backend !== null && !root.backend.busy
+            onTriggered: root.refreshRequested()
         }
     }
 
     // —— 入口 ——
 
-    function openContext(entry, point) {
+    function openContext(entry, point, ids, fromSearch) {
         if (!entry)
             return
         target = entry
@@ -254,59 +170,42 @@ Item {
         targetHasPartial = !targetIsFolder && root.backend !== null
                            && root.backend.hasPartialDownload(entry.id)
         targetPoint = point
+        targetIds = ids && ids.length > 0 ? ids.slice() : [entry.id]
+        root.fromSearch = fromSearch === true
         contextMenu.openAt(point)
     }
 
-    function openRename() {
-        if (!root.backend || root.targetId.length === 0)
+    function openBlankAt(point) {
+        if (!root.backend)
             return
-        renameDialog.open()
+        blankMenu.popup(Qt.point(point.x, point.y))
+    }
+
+    /// 快捷键 F2：直接打开改名弹窗（不经过右键菜单）
+    function openRenameFor(entry, ids) {
+        if (!entry)
+            return
+        target = entry
+        targetId = entry.id
+        targetName = entry.name
+        targetIsFolder = entry.kind === "folder"
+        targetIds = ids && ids.length > 0 ? ids.slice() : [entry.id]
+        dialogs.openRename(entry)
+    }
+
+    /// 快捷键 Delete：直接打开回收站确认（可多选）
+    function openTrashFor(entry, ids) {
+        if (!entry)
+            return
+        target = entry
+        targetId = entry.id
+        targetName = entry.name
+        targetIsFolder = entry.kind === "folder"
+        targetIds = ids && ids.length > 0 ? ids.slice() : [entry.id]
+        dialogs.openTrash(entry, root.targetIds)
     }
 
     function openNewFolder() {
-        folderDialog.open()
-    }
-
-    // 提交改名；名字没变就当作取消，不发请求
-    function submitRename(text) {
-        const trimmed = String(text || "").trim()
-        if (trimmed.length === 0 || !root.backend)
-            return
-        if (trimmed === root.targetName)
-            return
-        // 重新提交时先清掉上一次的失败原因（结果回来会再填）
-        renameDialog.errorText = ""
-        root.backend.renameEntry(root.targetId, trimmed)
-    }
-
-    // 提交新建文件夹；空名字不发请求
-    function submitNewFolder(text) {
-        const trimmed = String(text || "").trim()
-        if (trimmed.length === 0 || !root.backend)
-            return
-        folderDialog.errorText = ""
-        root.backend.createFolder(trimmed)
-    }
-
-    // 结果留在各自的对话框里：失败原地显示原因，成功才收起
-    Connections {
-        target: root.backend
-
-        function onFileActionDone(action, ok, message) {
-            if (action === "rename" && renameDialog.visible) {
-                if (ok) {
-                    renameDialog.errorText = ""
-                    renameDialog.close()
-                } else {
-                    renameDialog.errorText = message
-                }
-            } else if (action === "folder" && folderDialog.visible) {
-                if (ok) {
-                    folderDialog.close()
-                } else {
-                    folderDialog.errorText = message
-                }
-            }
-        }
+        dialogs.openNewFolder()
     }
 }

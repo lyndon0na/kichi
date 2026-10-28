@@ -38,6 +38,9 @@ impl qobject::Kichi {
     /// 重新读取当前目录（登录完成、刷新按钮、进出目录都走这里）。
     pub fn refresh_files(mut self: Pin<&mut Self>) {
         if self.listing {
+            // 列表在途时又有人要刷新（例如移动完成）：记下来，本次读完再补一次。
+            // 直接 return 会让源目录停留在旧数据上。
+            self.as_mut().rust_mut().refresh_pending = true;
             return;
         }
         let Some(current) = self.crumbs.last().cloned() else {
@@ -73,6 +76,16 @@ impl qobject::Kichi {
                         qichi.as_mut().restore_crumbs_on_failure();
                         qichi.as_mut().on_failure(err);
                     }
+                }
+                // 在途期间被丢弃的刷新请求，现在补上（只补一次）
+                let again = {
+                    let mut rust = qichi.as_mut().rust_mut();
+                    let pending = rust.refresh_pending;
+                    rust.refresh_pending = false;
+                    pending
+                };
+                if again {
+                    qichi.as_mut().refresh_files();
                 }
             },
         );
@@ -150,10 +163,18 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.list_epoch = rust.list_epoch.wrapping_add(1);
             rust.listing = false;
+            rust.refresh_pending = false;
             rust.entries.clear();
             rust.files = QVariantList::default();
+            rust.files_revision = rust.files_revision.wrapping_add(1);
             rust.crumbs = vec![Crumb::root()];
             rust.crumb_backup = None;
+            // 选择器也一并清空：旧账号的目录不能留在界面上
+            rust.move_targets_epoch = rust.move_targets_epoch.wrapping_add(1);
+            rust.move_targets = QVariantList::default();
+            rust.move_targets_loading = false;
+            rust.move_targets_error = QString::default();
+            rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
         }
         self.as_mut().sync_breadcrumb();
     }
@@ -193,6 +214,8 @@ impl qobject::Kichi {
             rust.entries = entries;
             rust.listing = false;
             rust.busy = false;
+            // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
+            rust.files_revision = rust.files_revision.wrapping_add(1);
             rust.status_message = QString::from(format!("「{folder}」共 {count} 项"));
         }
         self.as_mut().notify();
@@ -227,19 +250,31 @@ impl qobject::Kichi {
 
     /// 目录栈 → 面包屑属性（显示名，顺序从根到当前）。
     pub(crate) fn sync_breadcrumb(mut self: Pin<&mut Self>) {
-        let crumb_names = {
+        let (crumb_names, current_id) = {
             let this = self.as_ref();
-            this.rust()
+            let names = this
+                .rust()
                 .crumbs
                 .iter()
                 .map(|crumb| crumb.name.clone())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let id = this
+                .rust()
+                .crumbs
+                .last()
+                .map(|crumb| crumb.id.clone())
+                .unwrap_or_default();
+            (names, id)
         };
         let mut names = QStringList::default();
         for name in crumb_names {
             names.append(QString::from(name.as_str()));
         }
-        self.as_mut().rust_mut().breadcrumb = names;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.breadcrumb = names;
+            rust.current_dir_id = QString::from(current_id);
+        }
         self.as_mut().notify();
     }
 }

@@ -208,7 +208,7 @@ ApplicationWindow {
                         ToolButton {
                             text: qsTr("刷新")
                             enabled: !filesPage.searching && !backend.busy
-                            onClicked: backend.refreshFiles()
+                            onClicked: filesPage.refreshFiles()
                         }
 
                         ToolButton {
