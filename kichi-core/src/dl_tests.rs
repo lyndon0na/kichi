@@ -446,6 +446,44 @@ fn stalled_body_read_reports_timed_out_and_keeps_received_bytes() {
 }
 
 #[test]
+fn body_cut_off_error_text_never_contains_the_url() {
+    // 发不满 Content-Length 就断开：读失败原因会进传输记录并落盘，
+    // 里面绝不能出现带签名的直链（docs/known-issues.md §4.2）
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("监听本地端口");
+    let addr = listener.local_addr().expect("取本地地址");
+    std::thread::spawn(move || {
+        let Ok((mut socket, _)) = listener.accept() else {
+            return;
+        };
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match socket.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => request.extend_from_slice(&chunk[..read]),
+            }
+        }
+        let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n0123456789");
+        // 直接 drop：连接提前关闭
+    });
+    let info = local_info(&format!("http://{addr}/signed-secret"));
+    let mut stream = test_client()
+        .open_download_with(&info, Duration::from_secs(2))
+        .unwrap_or_else(|err| panic!("响应头正常，应能打开流：{err:?}"));
+    let mut buffer = [0u8; 64];
+    let err = loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => panic!("连接提前断开应报错，而不是当成正常 EOF"),
+            Ok(_) => continue,
+            Err(err) => break err,
+        }
+    };
+    let text = err.to_string();
+    assert!(!text.contains("signed-secret"), "失败原因泄露直链：{text}");
+    assert!(!text.contains("http"), "失败原因不该带 URL：{text}");
+}
+
+#[test]
 fn download_client_is_reused_for_the_same_idle() {
     let client = test_client();
     let idle = Duration::from_secs(7);

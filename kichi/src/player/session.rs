@@ -88,8 +88,7 @@ pub fn start(
         return Ok(0);
     }
 
-    let dir = super::play_dir();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建播放临时目录失败：{err}"))?;
+    super::ensure_play_dir()?;
     let socket = ipc::socket_path();
     // 上一次异常退出可能留下同名文件（计数器已保证不重复，防御性删除）
     let _ = std::fs::remove_file(&socket);

@@ -307,8 +307,41 @@ impl std::io::Read for DownloadStream {
                 io::ErrorKind::TimedOut,
                 format!("{} 秒没有收到数据", self.idle.as_secs()),
             )),
-            other => other,
+            // 其它读失败也重新包一层：上层会把 `{err}` 拼进失败原因并落盘，
+            // 不能带出 reqwest 的 Display（可能含签名直链，见 stream_error_text）
+            Err(err) => {
+                let kind = err.kind();
+                Err(io::Error::new(kind, stream_error_text(&err)))
+            }
+            Ok(read) => Ok(read),
         }
+    }
+}
+
+/// 把 reqwest 包进 `io::Error` 的读失败翻成一句不含 URL 的中文说明。
+///
+/// `reqwest::Error` 的 `Display` 在带 url 的错误上会追加 `for url (...)`，
+/// 而这里的 URL 是带签名的下载直链；读失败原因会进传输记录并落到
+/// `transfers.json`，所以只按错误类别给话，绝不拼 `Display`。
+fn stream_error_text(err: &io::Error) -> String {
+    let Some(req) = err
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<reqwest::Error>())
+    else {
+        return "连接中断".to_owned();
+    };
+    if req.is_connect() {
+        "无法连接下载服务器".to_owned()
+    } else if req.is_body() {
+        "响应体读取失败".to_owned()
+    } else if req.is_decode() {
+        "响应内容异常".to_owned()
+    } else if req.is_redirect() {
+        "重定向次数过多".to_owned()
+    } else if req.is_request() {
+        "下载请求失败".to_owned()
+    } else {
+        "连接中断".to_owned()
     }
 }
 
@@ -366,13 +399,25 @@ fn is_timeout(err: &io::Error) -> bool {
 }
 
 /// 网络错误文本（不含凭据；直链本身绝不打印）。
+///
+/// 不用 `reqwest::Error` 的 `Display`：带 url 的错误会在末尾追加
+/// `for url (...)`，而那正是带签名的下载直链，这段文本还会落进
+/// `transfers.json`（`docs/known-issues.md` §4.2）。
 fn network_reason(err: &reqwest::Error) -> String {
     if err.is_connect() {
         "无法连接下载服务器".to_owned()
     } else if err.is_timeout() {
         "下载超时".to_owned()
+    } else if let Some(status) = err.status() {
+        format!("下载中断：服务器返回 {status}")
+    } else if err.is_body() {
+        "下载中断：响应体读取失败".to_owned()
+    } else if err.is_redirect() {
+        "下载中断：重定向次数过多".to_owned()
+    } else if err.is_decode() {
+        "下载中断：响应内容异常".to_owned()
     } else {
-        format!("下载中断：{err}")
+        "下载中断：网络错误".to_owned()
     }
 }
 

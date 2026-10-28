@@ -131,6 +131,14 @@ fn save_file(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     let mut file = options
         .open(path)
         .map_err(|e| StoreError::Io(e.to_string()))?;
+    // `mode` 只在新建时生效：旧版本按 umask 留下的 0644 文件不会自动收紧，
+    // 这里补一次，保证每次写入后都是 0600。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+    }
     file.write_all(bytes)
         .map_err(|e| StoreError::Io(e.to_string()))?;
     Ok(())
@@ -181,6 +189,15 @@ mod tests {
     fn file_fallback_is_private() {
         let dir = std::env::temp_dir().join(format!("kichi-store-{}", std::process::id()));
         let path = dir.join("session.token");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // 模拟旧版本按 umask 留下的宽松文件：写入时必须收紧到 0600
+            fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+            fs::write(&path, b"old").unwrap_or_else(|e| panic!("{e}"));
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
         save_file(&path, b"secret").unwrap_or_else(|e| panic!("{e}"));
         #[cfg(unix)]
         {

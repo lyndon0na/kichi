@@ -87,6 +87,24 @@ pub(crate) fn play_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("kichi-play")
 }
 
+/// 建好播放临时目录，并保证权限是 0700。
+///
+/// `create_dir_all` 按 umask 建（本机 022 ⇒ `drwxr-xr-x`），同机其他用户
+/// 能列出目录、看到播放清单与 socket 的文件名。清单本身是 0600，socket
+/// 也只能由本用户连接，但文件名一样会漏；这里每次启动都把目录收紧，
+/// 旧版本留下的 0755 目录也一并纠正。
+pub(crate) fn ensure_play_dir() -> Result<std::path::PathBuf, String> {
+    let dir = play_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| format!("创建播放临时目录失败：{err}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| format!("收紧播放临时目录权限失败：{err}"))?;
+    }
+    Ok(dir)
+}
+
 /// 日志用的脱敏地址：只留主机名。
 pub fn mask_url(url: &str) -> String {
     let host = url
@@ -234,5 +252,20 @@ mod tests {
         assert_eq!(masked, "dl-a1.pikpakcdn.com/…");
         assert!(!masked.contains("SECRET"));
         assert_eq!(mask_url("not a url"), "（无效链接）");
+    }
+
+    #[test]
+    fn play_dir_is_private() {
+        let dir = ensure_play_dir().unwrap_or_else(|e| panic!("{e}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir)
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0);
+            assert_eq!(mode, 0o700, "播放临时目录不能让同机其他用户列出");
+        }
+        #[cfg(not(unix))]
+        assert!(dir.exists());
     }
 }

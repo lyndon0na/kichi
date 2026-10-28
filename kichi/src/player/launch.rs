@@ -37,8 +37,7 @@ pub fn spawn(config: &PlayerConfig, url: &str, title: &str) -> Result<(), String
     if url.trim().is_empty() {
         return Err("播放链接为空".to_owned());
     }
-    let dir = super::play_dir();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建播放临时目录失败：{err}"))?;
+    let dir = super::ensure_play_dir()?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
