@@ -258,6 +258,11 @@ pub mod qobject {
         #[cxx_name = "downloadEntry"]
         fn download_entry(self: Pin<&mut Self>, id: QString);
 
+        /// 批量下载：每个条目各自一批，按顺序排队（多选右键菜单走这里）
+        #[qinvokable]
+        #[cxx_name = "downloadEntries"]
+        fn download_entries(self: Pin<&mut Self>, ids: QStringList);
+
         /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）
         #[qinvokable]
         #[cxx_name = "isDownloadPending"]

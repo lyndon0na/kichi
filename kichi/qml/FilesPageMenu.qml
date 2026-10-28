@@ -80,17 +80,26 @@ Item {
         }
 
         // 下载到本地（文件直接下；文件夹递归下，保留层级）。
-        // 多选下载没有可靠语义：只对单条显示，避免用户误以为会批量排队。
+        // 多选时每个条目各自一批、按顺序排队（一次仍只跑一批）；跨批次不合并通知
+        // （docs/adr/0010）。已经在队列里的条目由后端跳过，不重复登记。
         MenuItem {
-            text: root.targetPending
-                  ? qsTr("已在下载队列中，去查看")
-                  : root.targetHasPartial ? qsTr("继续下载")
-                  : root.targetIsFolder ? qsTr("下载整个文件夹到本地")
-                                        : qsTr("下载到本地")
-            visible: root.targetCount === 1
+            objectName: "downloadItem"
+            text: {
+                if (root.targetCount > 1)
+                    return qsTr("下载到本地（%1 项）").arg(root.targetCount)
+                if (root.targetPending)
+                    return qsTr("已在下载队列中，去查看")
+                if (root.targetHasPartial)
+                    return qsTr("继续下载")
+                return root.targetIsFolder ? qsTr("下载整个文件夹到本地") : qsTr("下载到本地")
+            }
             enabled: root.backend !== null
             onTriggered: {
-                if (root.backend)
+                if (!root.backend)
+                    return
+                if (root.targetCount > 1)
+                    root.backend.downloadEntries(root.targetIds)
+                else
                     root.backend.downloadEntry(root.targetId)
             }
         }

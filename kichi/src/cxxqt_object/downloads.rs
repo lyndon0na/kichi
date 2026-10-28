@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::QString;
+use cxx_qt_lib::{QString, QStringList};
 
 use super::qobject;
 use super::queue;
@@ -121,6 +121,39 @@ impl qobject::Kichi {
         // 已经在排队 / 准备 / 下载中：再点一次 = 去传输任务页看它
         self.as_mut()
             .locate_transfer(QString::from(source_id.as_str()));
+    }
+
+    /// 批量下载（多选后右键「下载到本地」）。每个条目各自一批，按传入顺序排队，
+    /// 仍然一次只跑一批；跨批次不合并通知（`docs/adr/0010`）。
+    ///
+    /// 已经在排队 / 下载中的条目直接跳过：多选时不像单条那样跳去传输页——
+    /// 那会打断用户正在看的目录。结果用状态栏一句话说清楚。
+    pub fn download_entries(mut self: Pin<&mut Self>, ids: QStringList) {
+        let dir = self.settings.download_dir_path();
+        let (mut added, mut already, mut missing) = (0u32, 0u32, 0u32);
+        for raw in ids.iter() {
+            let id = raw.to_string();
+            let id = id.trim();
+            if id.is_empty() {
+                continue;
+            }
+            // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
+            let Some(entry) = self.as_ref().rust().find_entry(id) else {
+                missing += 1;
+                continue;
+            };
+            if queue::reserve(entry, dir.clone()).is_some() {
+                added += 1;
+            } else {
+                already += 1;
+            }
+        }
+        // 同一把锁里逐条登记完再推进：第一批发车，其余排着
+        if added > 0 {
+            self.as_mut().advance_downloads();
+        }
+        let message = batch_message(added, already, missing);
+        self.as_mut().set_message(&message, false);
     }
 
     /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）。
@@ -496,5 +529,48 @@ impl qobject::Kichi {
         // 文件夹详情页的选中不跨会话；记录与「打开位置」都保留
         transfers_detail::clear_selection();
         self.as_mut().sync_transfers();
+    }
+}
+
+/// 批量下载之后状态栏那句话。
+///
+/// 四种情况分开说，免得「已加入 3 项」掩盖「另外 2 项本来就在队列里」。
+fn batch_message(added: u32, already: u32, missing: u32) -> String {
+    match (added, already) {
+        (0, 0) => format!("选中的 {missing} 项已不在当前列表中，请刷新后重试"),
+        (0, _) => "这些条目已在下载队列中".to_owned(),
+        (_, 0) => format!("已加入下载队列：{added} 项"),
+        (_, _) => format!("已加入下载队列：{added} 项（{already} 项已在队列中）"),
+    }
+}
+
+#[cfg(test)]
+mod batch_message_tests {
+    use super::batch_message;
+
+    #[test]
+    fn all_added_counts_only_new_batches() {
+        assert_eq!(batch_message(3, 0, 0), "已加入下载队列：3 项");
+    }
+
+    #[test]
+    fn partially_queued_says_both_numbers() {
+        assert_eq!(
+            batch_message(2, 1, 0),
+            "已加入下载队列：2 项（1 项已在队列中）"
+        );
+    }
+
+    #[test]
+    fn nothing_new_points_at_the_existing_queue() {
+        assert_eq!(batch_message(0, 2, 0), "这些条目已在下载队列中");
+    }
+
+    #[test]
+    fn everything_missing_asks_for_a_refresh() {
+        assert_eq!(
+            batch_message(0, 0, 2),
+            "选中的 2 项已不在当前列表中，请刷新后重试"
+        );
     }
 }
