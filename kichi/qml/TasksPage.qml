@@ -16,6 +16,24 @@ Item {
         id: metrics
     }
 
+    // —— 列表模型 ——
+    // ⚠ 不能把 `backend.tasks` 直接当 ListView.model：每次轮询都是一个新数组，
+    // ListView 会整表重灌，用户滚到哪都会被甩回顶部（2026-10-28）。
+    // 这里用 ListModel 就地做差异：只有增删 / 重排才动行，字段变化只打补丁。
+    ListModel {
+        id: taskRows
+    }
+
+    Connections {
+        target: page.backend
+
+        function onChanged() {
+            page.syncRows()
+        }
+    }
+
+    Component.onCompleted: syncRows()
+
     readonly property int activeCount: {
         var tasks = page.backend ? page.backend.tasks : []
         var n = 0
@@ -72,11 +90,12 @@ Item {
 
         ListView {
             id: list
+            objectName: "tasksList"
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
             spacing: 8
-            model: page.backend ? page.backend.tasks : []
+            model: taskRows
 
             // 列表铺到窗口右缘，条画在右侧 10px 车道里
             ScrollBar.vertical: KScrollBar {}
@@ -87,8 +106,7 @@ Item {
                 width: list.width - metrics.scrollBarSlot
                 padding: 12
 
-                readonly property var info: modelData
-                readonly property bool isActive: info ? !info.settled : false
+                readonly property bool isActive: !model.settled
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -100,16 +118,15 @@ Item {
 
                         Label {
                             Layout.fillWidth: true
-                            text: card.info ? card.info.name : ""
+                            text: model.name
                             elide: Text.ElideMiddle
                             font.bold: true
                         }
 
                         Label {
-                            readonly property string phase: card.info ? card.info.phase : ""
-                            text: card.info ? card.info.phaseText : ""
-                            color: phase === "error" ? "#d9534f"
-                                 : phase === "completed" ? "#3c9d5a"
+                            text: model.phaseText
+                            color: model.phase === "error" ? "#d9534f"
+                                 : model.phase === "completed" ? "#3c9d5a"
                                  : palette.text
                             font.pixelSize: 12
                         }
@@ -118,8 +135,8 @@ Item {
                             text: qsTr("删除")
                             flat: true
                             onClicked: {
-                                page.pendingDeleteId = card.info ? card.info.id : ""
-                                page.pendingDeleteName = card.info ? card.info.name : ""
+                                page.pendingDeleteId = model.key
+                                page.pendingDeleteName = model.name
                                 deleteDialog.open()
                             }
                         }
@@ -128,18 +145,18 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 10
-                        visible: card.isActive || (card.info && card.info.phase === "error")
+                        visible: card.isActive || model.phase === "error"
 
                         KProgressBar {
                             Layout.fillWidth: true
                             from: 0
                             to: 100
-                            value: card.info ? card.info.progress : 0
-                            indeterminate: card.info && card.info.phase === "pending"
+                            value: model.progress
+                            indeterminate: model.phase === "pending"
                         }
 
                         Label {
-                            text: card.info ? card.info.progressText : ""
+                            text: model.progressText
                             font.pixelSize: 12
                             color: palette.placeholderText
                         }
@@ -150,23 +167,23 @@ Item {
                         spacing: 12
 
                         Label {
-                            text: card.info ? card.info.sizeText : ""
+                            text: model.sizeText
                             font.pixelSize: 12
                             color: palette.placeholderText
                         }
 
                         Label {
-                            text: card.info ? card.info.createdText : ""
+                            text: model.createdText
                             font.pixelSize: 12
                             color: palette.placeholderText
                         }
 
                         Label {
                             Layout.fillWidth: true
-                            text: card.info ? card.info.detail : ""
+                            text: model.detail
                             font.pixelSize: 12
                             elide: Text.ElideRight
-                            color: card.info && card.info.phase === "error"
+                            color: model.phase === "error"
                                    ? "#d9534f" : palette.placeholderText
                         }
                     }
@@ -188,6 +205,78 @@ Item {
         if (url.length === 0)
             return
         page.backend.addTask(url)
+    }
+
+    /// 把 Rust 推来的任务列表同步进 ListModel：增删 / 移位 / 改字段都就地做，
+    /// 列表本身不重建（重建会把滚动位置冲回顶部）。
+    function syncRows() {
+        var wanted = page.backend && page.backend.tasks ? page.backend.tasks : []
+        var wantedIds = {}
+        for (var i = 0; i < wanted.length; i++)
+            wantedIds[wanted[i].id] = true
+
+        // 1. 倒序删掉已经不在列表里的任务
+        for (var stale = taskRows.count - 1; stale >= 0; stale--) {
+            if (wantedIds[taskRows.get(stale).key] === undefined)
+                taskRows.remove(stale)
+        }
+
+        // 2. 缺的先追加到末尾，保证下一步行数与目标一致
+        var present = {}
+        for (var p = 0; p < taskRows.count; p++)
+            present[taskRows.get(p).key] = true
+        for (var add = 0; add < wanted.length; add++) {
+            if (present[wanted[add].id] === undefined) {
+                taskRows.append(normalize(wanted[add]))
+                present[wanted[add].id] = true
+            }
+        }
+
+        // 3. 从尾往前对齐顺序：后面的位置已经固定，要的行一定在前面
+        for (var target = wanted.length - 1; target >= 0 && target < taskRows.count; target--) {
+            var id = wanted[target].id
+            if (taskRows.get(target).key === id)
+                continue
+            var from = -1
+            for (var scan = target - 1; scan >= 0; scan--) {
+                if (taskRows.get(scan).key === id) {
+                    from = scan
+                    break
+                }
+            }
+            if (from >= 0)
+                taskRows.move(from, target, 1)
+        }
+
+        // 4. 理论上不会多出行；防御性删掉，避免残留
+        while (taskRows.count > wanted.length)
+            taskRows.remove(taskRows.count - 1)
+
+        // 位置对上后，再补字段差异（进度 / 状态 / 说明）
+        for (var at = 0; at < wanted.length && at < taskRows.count; at++) {
+            var item = normalize(wanted[at])
+            var current = taskRows.get(at)
+            for (var field in item) {
+                if (current[field] !== item[field])
+                    taskRows.setProperty(at, field, item[field])
+            }
+        }
+    }
+
+    /// 只留列表需要的字段（`id` 换个名字，免得和 QML 的 id 概念混在一起）。
+    function normalize(task) {
+        return {
+            key: task.id,
+            name: task.name,
+            phase: task.phase,
+            phaseText: task.phaseText,
+            progress: task.progress,
+            progressText: task.progressText,
+            sizeText: task.sizeText,
+            createdText: task.createdText,
+            detail: task.detail,
+            settled: task.settled
+        }
     }
 
     Dialog {
