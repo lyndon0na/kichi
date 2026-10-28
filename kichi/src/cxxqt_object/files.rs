@@ -63,8 +63,16 @@ impl qobject::Kichi {
                 }
                 qichi.as_mut().rust_mut().listing = false;
                 match result {
-                    Ok(entries) => qichi.as_mut().show_entries(entries),
-                    Err(err) => qichi.as_mut().on_failure(err),
+                    Ok(entries) => {
+                        // 读到了：这一跳算成功，不再需要回滚快照
+                        qichi.as_mut().rust_mut().crumb_backup = None;
+                        qichi.as_mut().show_entries(entries);
+                    }
+                    Err(err) => {
+                        // 读失败：把面包屑退回跳转前，别让路径指着一个没读到的目录
+                        qichi.as_mut().restore_crumbs_on_failure();
+                        qichi.as_mut().on_failure(err);
+                    }
                 }
             },
         );
@@ -88,6 +96,7 @@ impl qobject::Kichi {
         };
         {
             let mut rust = self.as_mut().rust_mut();
+            rust.crumb_backup = Some(rust.crumbs.clone());
             rust.crumbs.push(Crumb { id, name });
         }
         self.as_mut().sync_breadcrumb();
@@ -102,6 +111,7 @@ impl qobject::Kichi {
         let moved = {
             let mut rust = self.as_mut().rust_mut();
             if rust.crumbs.len() > 1 {
+                rust.crumb_backup = Some(rust.crumbs.clone());
                 rust.crumbs.pop();
                 true
             } else {
@@ -127,6 +137,7 @@ impl qobject::Kichi {
         }
         {
             let mut rust = self.as_mut().rust_mut();
+            rust.crumb_backup = Some(rust.crumbs.clone());
             rust.crumbs.truncate(target + 1);
         }
         self.as_mut().sync_breadcrumb();
@@ -142,6 +153,23 @@ impl qobject::Kichi {
             rust.entries.clear();
             rust.files = QVariantList::default();
             rust.crumbs = vec![Crumb::root()];
+            rust.crumb_backup = None;
+        }
+        self.as_mut().sync_breadcrumb();
+    }
+
+    /// 目录读失败：面包屑退回跳转前，别让路径停在一个根本没读到的目录。
+    fn restore_crumbs_on_failure(mut self: Pin<&mut Self>) {
+        let restored = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.crumb_backup.take()
+        };
+        let Some(crumbs) = restored else {
+            return;
+        };
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.crumbs = crumbs;
         }
         self.as_mut().sync_breadcrumb();
     }

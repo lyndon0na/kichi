@@ -262,6 +262,8 @@ impl qobject::Kichi {
             rust.search_status = QString::default();
             rust.search_index.clear();
             rust.search_truncated = false;
+            // 读失败时把面包屑退回跳转前（别指着一个没读到的目录）
+            rust.crumb_backup = Some(rust.crumbs.clone());
             // 根目录：id 为空，目录栈回到只有根那一级
             if folder.entry.id.is_empty() {
                 rust.crumbs = vec![super::files::Crumb::root()];

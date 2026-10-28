@@ -436,6 +436,8 @@ pub struct KichiRust {
     pub(crate) entries: Vec<kichi_core::FileEntry>,
     /// 目录栈；根目录 id 为空串
     pub(crate) crumbs: Vec<Crumb>,
+    /// 进 / 退目录前的目录栈快照：列表失败就回滚，面包屑别指着一个没读到的目录
+    pub(crate) crumb_backup: Option<Vec<Crumb>>,
     /// 有目录列表请求在途（防止重复点击）
     pub(crate) listing: bool,
     /// 目录请求代数：退出登录 / 重登后旧结果作废
@@ -574,6 +576,7 @@ impl Default for KichiRust {
             breadcrumb,
             entries: Vec::new(),
             crumbs: vec![Crumb::root()],
+            crumb_backup: None,
             listing: false,
             list_epoch: 0,
             tasks: QVariantList::default(),
