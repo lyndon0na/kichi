@@ -315,13 +315,17 @@ pub(crate) fn live_snapshot() -> QVariantList {
 pub(crate) fn live_snapshot_at(now: Instant) -> QVariantList {
     with_records(|records| {
         let mut list = QVariantList::default();
-        let Some(running) = records.iter().find(|record| {
+        // 2026-10-28 批内并发后可能同时有多条「下载中」：每一条都要下发自己的
+        // 实时进度，否则除第一条外的行进度条永远停在开始时的值。
+        let mut parent_batches = Vec::new();
+        for running in records.iter().filter(|record| {
             record.state == TransferState::Running && record.job.kind == EntryKind::File
-        }) else {
-            return list;
-        };
-        list.append(QVariant::from(&live_map_at(running, now)));
-        if running.child {
+        }) {
+            list.append(QVariant::from(&live_map_at(running, now)));
+            if !running.child || parent_batches.contains(&running.batch) {
+                continue;
+            }
+            parent_batches.push(running.batch);
             if let Some(parent) = records
                 .iter()
                 .find(|record| record.batch == running.batch && is_folder_ledger(record))

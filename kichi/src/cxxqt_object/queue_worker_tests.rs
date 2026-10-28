@@ -229,3 +229,76 @@ fn create_dirs_stops_on_cancel() {
     assert!(!local_dir(&root, &dirs[0]).exists(), "取消后不再建目录");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// —— 批内并发游标（2026-10-28 下载提速）——
+
+#[test]
+fn parallel_cursor_visits_each_job_exactly_once() {
+    let items: Vec<usize> = (0..64).collect();
+    let hits: Vec<AtomicUsize> = (0..64).map(|_| AtomicUsize::new(0)).collect();
+    let interrupted = run_parallel(
+        &items,
+        4,
+        |index, item| {
+            assert_eq!(index, *item, "游标下标必须与任务一一对应");
+            hits[index].fetch_add(1, Ordering::SeqCst);
+        },
+        || false,
+    );
+    assert!(!interrupted, "没有 panic / 取消时不算中断");
+    assert!(
+        hits.iter().all(|hit| hit.load(Ordering::SeqCst) == 1),
+        "每个 job 必须恰好被处理一次（不重不漏）"
+    );
+}
+
+#[test]
+fn parallel_panic_waits_for_every_worker_before_returning() {
+    struct Active<'a>(&'a AtomicUsize);
+    impl Drop for Active<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    let active = AtomicUsize::new(0);
+    let items: Vec<usize> = (0..32).collect();
+    let interrupted = run_parallel(
+        &items,
+        4,
+        |_index, item| {
+            active.fetch_add(1, Ordering::SeqCst);
+            let _guard = Active(&active);
+            std::thread::sleep(Duration::from_millis(20));
+            assert_ne!(*item, 0, "第一条任务模拟 panic，收尾必须等所有线程退出");
+        },
+        || false,
+    );
+    assert!(interrupted, "有线程 panic 时批次要按中断收尾");
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        0,
+        "函数返回时所有 worker 必须已经结束，不能再往记录表里写"
+    );
+}
+
+#[test]
+fn parallel_env_defaults_and_serial_rollback() {
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let cases = [
+        ("1", 1),
+        (" 4 ", 4),
+        ("0", DEFAULT_PARALLEL),
+        ("", DEFAULT_PARALLEL),
+        ("abc", DEFAULT_PARALLEL),
+        ("-2", DEFAULT_PARALLEL),
+        ("999", MAX_PARALLEL),
+    ];
+    for (raw, expected) in cases {
+        std::env::set_var(PARALLEL_ENV, raw);
+        assert_eq!(download_parallel(), expected, "输入 {raw:?}");
+    }
+    std::env::remove_var(PARALLEL_ENV);
+    assert_eq!(download_parallel(), DEFAULT_PARALLEL);
+}

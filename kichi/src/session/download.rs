@@ -24,7 +24,7 @@ use super::download_resume::{
     classify_open_error, download_retries, local_write_failure, prepare_part, read_into_part,
     resume_failure, retry_delay, save_empty_file, OpenAction, Part, Prepared, ReadOutcome,
 };
-use super::media::file_info;
+use super::media::{file_info, file_info_for_download, KnownHint};
 use super::partials::{self, PartialEntry};
 use super::{Failure, Session};
 use crate::format::size as readable_size;
@@ -108,8 +108,9 @@ impl Session {
     /// `name_hint` 是列表里的文件名；官方详情里也可能给名字，优先用列表的
     /// （列表是用户眼前看到的那个）。`progress` 每读一块调一次。
     ///
-    /// `list_audit_flagged` 来自文件列表：详情没下发 audit 时，用它判断
-    /// 「违规 / 受限」并跳过没用的 5 秒重试。
+    /// `hint` 来自文件列表 / 下载队列：详情没下发 `size` 时用它补总大小，
+    /// `audit_flagged` 则用来判断「违规 / 受限」并跳过没用的 5 秒重试。
+    /// 详情明确 `size == 0` 时 hint 不生效。
     ///
     /// 详情明确 `size == 0` 时不取链接，直接落一个 0 字节文件并算成功
     /// （对齐 rclone 的 `Open`）。
@@ -123,14 +124,16 @@ impl Session {
         &self,
         file_id: &str,
         name_hint: &str,
-        list_audit_flagged: bool,
+        hint: KnownHint,
         target_dir: &Path,
         callbacks: DownloadCallbacks<'_>,
         cancel: &Cancel,
     ) -> Result<Downloaded, Failure> {
         let progress = callbacks.progress;
         let note = callbacks.note;
-        let info = file_info(self, file_id, Some(cancel), list_audit_flagged)?;
+        // 官方没有「只取链接」的轻量接口：这次详情请求省不掉（直链只在详情里）。
+        // 列表已知大小只用来补总大小，0 字节 / 违规判定仍看详情。
+        let info = file_info_for_download(self, file_id, hint, Some(cancel))?;
         let name = safe_file_name(if name_hint.trim().is_empty() {
             &info.name
         } else {
@@ -154,8 +157,12 @@ impl Session {
         }
         std::fs::create_dir_all(target_dir)
             .map_err(|err| Failure::Other(format!("创建下载目录失败：{err}")))?;
-        // `file_info` 里已经 `drive()` 过：这里按令牌命中会话缓存，不新建连接池。
-        let mut client = self.drive()?;
+        // 大文件先试多分片；不分片 / 服务器不支持时返回 None，走下面的单连接。
+        if let Some(result) = super::shards::download(
+            self, &info, hint, file_id, &name, target_dir, callbacks, cancel,
+        ) {
+            return result;
+        }
         let prepared = prepare_part(file_id, &name, target_dir, info.size, cancel)?;
         let mut part = match prepared {
             Prepared::Complete(downloaded) => return Ok(downloaded),
@@ -187,7 +194,10 @@ impl Session {
             }
             progress(offset, part.total);
 
-            let opened = client.open_download_from_with(&info, offset, download_idle());
+            // 每次按令牌命中会话缓存，不新建连接池（真正的建池在 `drive()` 里）。
+            let opened = self
+                .drive()?
+                .open_download_from_with(&info, offset, download_idle());
             let mut stream = match opened {
                 Ok(stream) => stream,
                 Err(err) => {
@@ -227,10 +237,9 @@ impl Session {
                                 return Err(part.abort(file_id, cancel));
                             }
                             if refresh {
-                                match file_info(self, file_id, Some(cancel), list_audit_flagged) {
+                                match file_info(self, file_id, Some(cancel), hint.audit_flagged) {
                                     Ok(refreshed) => {
                                         info = refreshed;
-                                        client = self.drive()?;
                                         // 换链接期间云端文件可能被替换：大小变了就丢弃旧 part
                                         if let (Some(old), Some(new)) = (part.total, info.size) {
                                             if old != new {
@@ -377,11 +386,11 @@ impl Session {
     }
 }
 
-/// 下载进度回调（在下载线程里调用，调用方自己保证线程安全）。
-pub type Progress<'a> = dyn Fn(u64, Option<u64>) + Send + 'a;
+/// 下载进度回调（下载线程 / 分片线程都会调用，实现必须线程安全）。
+pub type Progress<'a> = dyn Fn(u64, Option<u64>) + Send + Sync + 'a;
 
 /// 状态 / 重试提示回调（传输行 detail；与进度同风格）。
-pub type Note<'a> = dyn Fn(&str) + Send + 'a;
+pub type Note<'a> = dyn Fn(&str) + Send + Sync + 'a;
 
 /// 下载过程中的两条回投路径（下载线程调用）。
 ///

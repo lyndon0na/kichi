@@ -61,8 +61,10 @@ fn content_range_parses_normal_wildcard_and_bad_input() {
 /// 本地假服务器应答模式。
 #[derive(Debug, Clone, Copy)]
 enum Mode {
-    /// 正常处理 Range
+    /// 正常处理 Range（有界请求也忽略 end，回 start 到文件末尾）
     Range,
+    /// 严格按 `bytes=start-end` 回 206 分片
+    BoundedRange,
     /// 无论有没有 Range 都回 200 全量
     IgnoreRange,
     /// 有 Range 时回 206，但故意不带 Content-Range
@@ -101,29 +103,27 @@ fn server(body: &'static [u8], requests: usize, mode: Mode) -> (String, Arc<Mute
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(head.clone());
-            let start = head.lines().find_map(|line| {
+            let range = head.lines().find_map(|line| {
                 let (name, value) = line.split_once(':')?;
                 if !name.trim().eq_ignore_ascii_case("range") {
                     return None;
                 }
-                value
-                    .trim()
-                    .strip_prefix("bytes=")?
-                    .split_once('-')?
-                    .0
-                    .parse::<u64>()
-                    .ok()
+                let (start, end) = value.trim().strip_prefix("bytes=")?.split_once('-')?;
+                let start = start.parse::<u64>().ok()?;
+                let end = end.parse::<u64>().ok();
+                Some((start, end))
             });
-            let response = match (mode, start) {
-                    (Mode::Stall, _) => {
+            let start = range.map(|(start, _)| start);
+            let response = match (mode, start, range.and_then(|(_, end)| end)) {
+                    (Mode::Stall, _, _) => {
                         std::thread::sleep(Duration::from_secs(10));
                         continue;
                     }
-                    (Mode::Unsatisfiable, Some(_)) => format!(
+                    (Mode::Unsatisfiable, Some(_), _) => format!(
                         "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                         body.len()
                     ),
-                    (Mode::IgnoreRange, _) | (_, None) => {
+                    (Mode::IgnoreRange, _, _) | (_, None, _) => {
                         let mut response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             body.len()
@@ -133,7 +133,30 @@ fn server(body: &'static [u8], requests: usize, mode: Mode) -> (String, Arc<Mute
                         let _ = socket.write_all(&response);
                         continue;
                     }
-                    (Mode::Range, Some(start)) | (Mode::MissingContentRange, Some(start)) => {
+                    (Mode::BoundedRange, Some(start), requested_end) => {
+                        if start >= body.len() as u64 {
+                            format!(
+                                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                        } else {
+                            let last = requested_end
+                                .unwrap_or(body.len() as u64 - 1)
+                                .min(body.len() as u64 - 1);
+                            let segment = &body[start as usize..=last as usize];
+                            let mut response = format!(
+                                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{last}/{total}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n",
+                                total = body.len(),
+                                length = segment.len()
+                            )
+                            .into_bytes();
+                            response.extend_from_slice(segment);
+                            let _ = socket.write_all(&response);
+                            continue;
+                        }
+                    }
+                    (Mode::Range, Some(start), _)
+                    | (Mode::MissingContentRange, Some(start), _) => {
                         if start >= body.len() as u64 {
                             format!(
                                 "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -161,7 +184,7 @@ fn server(body: &'static [u8], requests: usize, mode: Mode) -> (String, Arc<Mute
                             continue;
                         }
                     }
-                    (Mode::MismatchedStart, Some(start)) => {
+                    (Mode::MismatchedStart, Some(start), _) => {
                         let remaining = &body[start.saturating_add(1).min(body.len() as u64) as usize..];
                         let mut response = format!(
                             "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -230,6 +253,79 @@ fn range_response_reports_full_total_and_starts_at_offset() {
     assert_eq!(read_all(&mut stream), b"6789", "读到的首字节必须是偏移 6");
     let request = seen.lock().unwrap_or_else(|e| e.into_inner())[0].to_ascii_lowercase();
     assert!(request.contains("\r\nrange: bytes=6-"), "{request}");
+}
+
+#[test]
+fn bounded_range_requests_exact_segment_and_reports_full_total() {
+    let (url, seen) = server(b"0123456789", 1, Mode::BoundedRange);
+    let mut stream = test_client()
+        .open_download_range_with(&local_info(&url), 2, 5, Duration::from_secs(1))
+        .expect("有界 206 应能打开");
+    assert_eq!(stream.start_offset(), 2);
+    assert_eq!(
+        stream.total_bytes(),
+        Some(10),
+        "总大小取 Content-Range 的 total，不是这一片的长度"
+    );
+    assert_eq!(read_all(&mut stream), b"2345", "只能读请求的闭区间");
+    let request = seen.lock().unwrap_or_else(|e| e.into_inner())[0].to_ascii_lowercase();
+    assert!(request.contains("\r\nrange: bytes=2-5"), "{request}");
+}
+
+#[test]
+fn bounded_range_ignored_by_server_is_rejected() {
+    let (url, _) = server(b"0123456789", 1, Mode::IgnoreRange);
+    let err = test_client()
+        .open_download_range_with(&local_info(&url), 2, 5, Duration::from_secs(1))
+        .err()
+        .expect("200 全量不能当分片写");
+    assert!(
+        matches!(err, Error::RangeNotSatisfiable { .. }),
+        "应让会话层退回单连接：{err:?}"
+    );
+}
+
+#[test]
+fn bounded_range_without_content_range_is_rejected() {
+    let (url, _) = server(b"0123456789", 1, Mode::MissingContentRange);
+    let err = test_client()
+        .open_download_range_with(&local_info(&url), 2, 5, Duration::from_secs(1))
+        .err()
+        .expect("缺 Content-Range 无法确认分片起点");
+    assert!(matches!(err, Error::RangeNotSatisfiable { .. }));
+}
+
+#[test]
+fn bounded_range_start_mismatch_is_rejected() {
+    let (url, _) = server(b"0123456789", 1, Mode::MismatchedStart);
+    let err = test_client()
+        .open_download_range_with(&local_info(&url), 2, 5, Duration::from_secs(1))
+        .err()
+        .expect("分片起点对不上必须报错");
+    assert!(matches!(err, Error::RangeNotSatisfiable { .. }));
+}
+
+#[test]
+fn bounded_range_beyond_the_file_reports_total() {
+    let (url, _) = server(b"0123456789", 1, Mode::Unsatisfiable);
+    match test_client()
+        .open_download_range_with(&local_info(&url), 99, 100, Duration::from_secs(1))
+        .err()
+        .expect("416 必须报错")
+    {
+        Error::RangeNotSatisfiable { total } => assert_eq!(total, Some(10)),
+        other => panic!("应是 RangeNotSatisfiable，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn bounded_range_rejects_an_inverted_interval() {
+    let (url, _) = server(b"0123456789", 1, Mode::BoundedRange);
+    let err = test_client()
+        .open_download_range_with(&local_info(&url), 5, 2, Duration::from_secs(1))
+        .err()
+        .expect("start > end 是调用方错误");
+    assert!(matches!(err, Error::InvalidInput(_)), "{err:?}");
 }
 
 #[test]

@@ -22,6 +22,30 @@ pub const LINK_NOT_READY: &str = "官方还没生成这个文件的链接，请�
 /// 0 字节文件没有可播放的内容。
 pub const ZERO_BYTE_PLAY: &str = "这个文件是 0 字节，没有可播放的内容";
 
+/// 列表里已经知道的字段，下载时带进详情流程。
+///
+/// 列表条目总有 `size`（0 = 官方没给）与 `audit_flagged`；详情接口没有更轻的
+/// 「只取链接」变体，下载仍然要打一次详情拿 `download_url`。这里能省的是
+/// 详情没下发 `size` 时不再把总大小显示成未知，以及避免 `download_file` 开头
+/// 一次只为建连接池的 `drive()`。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnownHint {
+    /// 列表里的大小；0 表示未知，不能当 0 字节
+    pub size: Option<u64>,
+    /// 列表里的审核标记（详情没下发 audit 时用来跳过无用的 5 秒重试）
+    pub audit_flagged: bool,
+}
+
+impl KnownHint {
+    /// 从列表 / 队列的 `size`（0 = 未知）与审核标记构造。
+    pub fn from_list(size: u64, audit_flagged: bool) -> Self {
+        Self {
+            size: (size > 0).then_some(size),
+            audit_flagged,
+        }
+    }
+}
+
 /// 一次详情请求的链接状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinkState {
@@ -138,6 +162,29 @@ pub fn file_info(
     )
 }
 
+/// 下载用的详情：规则与 [`file_info`] 完全一致，只是列表里已知的大小时补进
+/// 详情缺失的 `size`，让下载第一块之前就有总大小。
+///
+/// **任何不确定都退回原路径**：详情明确 `size=0` 时 hint 不生效（0 字节 / 违规
+/// 判定仍以详情为准）；列表 0 表示未知，也不会写成 0。
+pub fn file_info_for_download(
+    session: &Session,
+    file_id: &str,
+    hint: KnownHint,
+    cancel: Option<&Cancel>,
+) -> Result<FileInfo, Failure> {
+    let info = file_info(session, file_id, cancel, hint.audit_flagged)?;
+    Ok(apply_known_size(info, hint.size))
+}
+
+/// 详情没给大小、列表给了正数时补上；其余情况原样返回。
+fn apply_known_size(mut info: FileInfo, known: Option<u64>) -> FileInfo {
+    if info.size.is_none() {
+        info.size = known.filter(|size| *size > 0);
+    }
+    info
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +223,38 @@ mod tests {
             "详情明确 OK 时以详情为准，列表旧标记不作数"
         );
         assert_eq!(link_state(&info(None, None, ""), false), Waiting);
+    }
+
+    #[test]
+    fn known_list_size_only_fills_missing_detail_size() {
+        // 详情没下发大小：用列表里的正数，避免下载第一块前显示「大小未知」
+        assert_eq!(
+            apply_known_size(info(None, None, ""), Some(100)).size,
+            Some(100)
+        );
+        // 详情明确 0 字节：以详情为准，列表大小不能把它「救活」
+        assert_eq!(
+            apply_known_size(info(Some(0), None, ""), Some(100)).size,
+            Some(0),
+            "0 字节判定必须靠详情"
+        );
+        // 详情自己给了大小：列表旧值不覆盖
+        assert_eq!(
+            apply_known_size(info(Some(50), None, ""), Some(100)).size,
+            Some(50)
+        );
+        // 列表 0 = 未知，绝不能写成 0
+        assert_eq!(apply_known_size(info(None, None, ""), Some(0)).size, None);
+    }
+
+    #[test]
+    fn known_hint_treats_zero_as_unknown_but_keeps_audit_flag() {
+        let unknown = KnownHint::from_list(0, true);
+        assert_eq!(unknown.size, None);
+        assert!(unknown.audit_flagged);
+        let known = KnownHint::from_list(123, false);
+        assert_eq!(known.size, Some(123));
+        assert!(!known.audit_flagged);
     }
 
     #[test]

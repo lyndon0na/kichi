@@ -12,8 +12,9 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 /// `KICHI_PARTIALS_FILE` 是进程级环境变量：用到它的用例必须串行。
+///
+/// 与 `shards_tests` 共用 `partials::ENV_LOCK`，否则两个测试模块会互相踩环境变量。
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner())
 }
 
@@ -111,6 +112,185 @@ fn plan_uses_indexed_total_when_detail_has_none() {
     let plan = plan_resume(Some(&entry), None, 80);
     assert!(plan.complete);
     assert_eq!(plan.total, Some(80));
+}
+
+// —— v2 分片计划（2026-10-28 单文件多分片）——
+
+fn shard(start: u64, end: u64, done: u64) -> ShardSpan {
+    ShardSpan { start, end, done }
+}
+
+#[test]
+fn shard_plan_is_only_for_known_large_files() {
+    assert!(
+        plan_shards(None, None, 0, 100, 4).is_none(),
+        "大小未知不分片"
+    );
+    assert!(
+        plan_shards(None, Some(99), 0, 100, 4).is_none(),
+        "小于阈值不分片"
+    );
+    assert!(
+        plan_shards(None, Some(100), 0, 100, 1).is_none(),
+        "wanted=1 是串行回滚开关"
+    );
+    assert!(plan_shards(None, Some(100), 0, 100, 4).is_some());
+}
+
+#[test]
+fn fresh_shard_plan_covers_the_file_without_gaps() {
+    let plan = plan_shards(None, Some(1000), 0, 100, 4).expect("应分片");
+    assert!(plan.truncate);
+    assert!(!plan.complete);
+    assert_eq!(
+        plan.spans,
+        vec![
+            shard(0, 250, 0),
+            shard(250, 500, 0),
+            shard(500, 750, 0),
+            shard(750, 1000, 0),
+        ]
+    );
+    assert_eq!(plan.done_bytes(), 0);
+}
+
+#[test]
+fn last_shard_may_be_smaller_than_the_others() {
+    let plan = plan_shards(None, Some(1001), 0, 100, 4).expect("应分片");
+    assert_eq!(plan.spans.len(), 4);
+    // 每片 ceil(1001/4) = 251，最后一片只有 248 字节
+    assert_eq!(plan.spans[3].start, 753);
+    assert_eq!(plan.spans[3].end, 1001);
+    assert_eq!(plan.spans[3].len(), 248);
+}
+
+#[test]
+fn v1_sequential_entry_keeps_the_old_path() {
+    let dir = temp_dir("shard-v1");
+    let (entry, _) = entry_in(&dir, "old", Some(1000));
+    assert!(
+        plan_shards(Some(&entry), Some(1000), 300, 100, 4).is_none(),
+        "旧顺序断点不能转成分片"
+    );
+}
+
+#[test]
+fn shard_plan_resets_when_remote_size_changed() {
+    let dir = temp_dir("shard-changed");
+    let part = dir.join("a.kichi-part");
+    std::fs::write(&part, vec![0u8; 100]).expect("写 part");
+    let entry = PartialEntry::new_sharded(
+        "file",
+        &part,
+        &dir.join("a.mkv"),
+        1000,
+        vec![shard(0, 500, 100), shard(500, 1000, 0)],
+    );
+    let plan = plan_shards(Some(&entry), Some(2000), 100, 100, 4).expect("大小变了也要给出新计划");
+    assert!(plan.truncate, "云端文件变了必须整文件重下");
+    assert_eq!(plan.total, 2000);
+    assert!(plan.spans.iter().all(|span| span.done == 0));
+    assert_eq!(plan.spans.last().map(|span| span.end), Some(2000));
+}
+
+#[test]
+fn shard_plan_resumes_done_bytes_and_clamps_to_disk() {
+    let dir = temp_dir("shard-resume");
+    let part = dir.join("a.kichi-part");
+    std::fs::write(&part, vec![0u8; 300]).expect("写 part");
+    let entry = PartialEntry::new_sharded(
+        "file",
+        &part,
+        &dir.join("a.mkv"),
+        1000,
+        vec![shard(0, 500, 400), shard(500, 1000, 0)],
+    );
+    let plan = plan_shards(Some(&entry), Some(1000), 300, 100, 4).expect("应续传");
+    assert!(!plan.truncate);
+    assert_eq!(plan.spans[0].done, 300, "索引比磁盘多记时以磁盘为准");
+    assert_eq!(plan.spans[1].done, 0);
+}
+
+#[test]
+fn shard_plan_marks_complete_only_when_every_span_is_done() {
+    let dir = temp_dir("shard-complete");
+    let part = dir.join("a.kichi-part");
+    std::fs::write(&part, vec![0u8; 1000]).expect("写满 part");
+    let entry = PartialEntry::new_sharded(
+        "file",
+        &part,
+        &dir.join("a.mkv"),
+        1000,
+        vec![shard(0, 500, 500), shard(500, 1000, 500)],
+    );
+    let plan = plan_shards(Some(&entry), Some(1000), 1000, 100, 4).expect("应能识别完成");
+    assert!(plan.complete, "所有片都写完：只需 sync + rename");
+    assert_eq!(plan.done_bytes(), 1000);
+}
+
+#[test]
+fn broken_shard_spans_fall_back_to_a_full_restart() {
+    let dir = temp_dir("shard-broken");
+    let part = dir.join("a.kichi-part");
+    std::fs::write(&part, vec![0u8; 100]).expect("写 part");
+    let entry = PartialEntry::new_sharded(
+        "file",
+        &part,
+        &dir.join("a.mkv"),
+        1000,
+        // 中间有空洞：不能信
+        vec![shard(0, 400, 100), shard(500, 1000, 0)],
+    );
+    let plan = plan_shards(Some(&entry), Some(1000), 100, 100, 4).expect("应重下");
+    assert!(plan.truncate);
+    assert_eq!(plan.spans[0].start, 0);
+    assert_eq!(plan.spans.last().map(|span| span.end), Some(1000));
+}
+
+#[test]
+fn plan_shards_keeps_resuming_a_v2_part_when_sharding_is_turned_off() {
+    let dir = temp_dir("shard-off");
+    let part = dir.join("a.kichi-part");
+    std::fs::write(&part, vec![0u8; 200]).expect("写 part");
+    let entry = PartialEntry::new_sharded(
+        "file",
+        &part,
+        &dir.join("a.mkv"),
+        1000,
+        vec![shard(0, 500, 200), shard(500, 1000, 0)],
+    );
+    let plan = plan_shards(Some(&entry), Some(1000), 200, 100, 1)
+        .expect("已有 v2 断点不能退回顺序追加（稀疏文件会把空洞当数据）");
+    assert!(!plan.truncate);
+    assert_eq!(plan.spans[0].done, 200);
+}
+
+#[test]
+fn shard_index_roundtrips_and_v1_json_still_loads() {
+    let dir = temp_dir("shard-json");
+    let path = dir.join("partials.json");
+    let part = dir.join("a.kichi-part");
+    std::fs::write(&part, b"x").expect("写 part");
+
+    let sharded = PartialEntry::new_sharded(
+        "file-v2",
+        &part,
+        &dir.join("a.mkv"),
+        1000,
+        vec![shard(0, 500, 100), shard(500, 1000, 0)],
+    );
+    save(&path, std::slice::from_ref(&sharded)).expect("保存 v2");
+    assert_eq!(lookup_in(&path, "file-v2", &dir), Some(sharded));
+
+    // 旧 v1 文件（没有 shards 字段、version=1）必须照旧读出来
+    let v1 = format!(
+        r#"{{"version":1,"entries":[{{"id":"file-v1","part":{},"final":{},"total":10,"updated_unix":0}}]}}"#,
+        serde_json::to_string(&part.display().to_string()).expect("序列化路径"),
+        serde_json::to_string(&dir.join("a.mkv").display().to_string()).expect("序列化路径"),
+    );
+    std::fs::write(&path, v1).expect("写 v1 索引");
+    let loaded = lookup_in(&path, "file-v1", &dir).expect("v1 条目应能读");
+    assert!(loaded.shards.is_empty(), "v1 条目按顺序续传处理");
 }
 
 #[test]

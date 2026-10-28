@@ -9,7 +9,7 @@
 //! 即使 epoch 已变也必须还回调度槽，让新会话排队的批次在旧线程退出后开始。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,10 +19,29 @@ use super::queue::{add_result, current_epoch, BatchReport, Job, JobOutcome};
 use super::queue_collect::{self, Collected};
 use super::transfers;
 use crate::session::download::{safe_file_name, Cancel, DownloadCallbacks};
+use crate::session::media::KnownHint;
 use crate::session::{Failure, Session};
 
 /// 进度回投的最小间隔。
 pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
+/// 批内并发下载数：默认 3，`KICHI_DOWNLOAD_PARALLEL` 可覆盖。
+///
+/// 0 / 非法值回默认；1 = 完全退回串行（出问题不用改代码）。上限 8 只是
+/// 防止环境变量写错时一次起出上百条线程；PikPak 直链走 CDN，再高多半只是抢带宽。
+pub(crate) const PARALLEL_ENV: &str = "KICHI_DOWNLOAD_PARALLEL";
+pub(crate) const DEFAULT_PARALLEL: usize = 3;
+const MAX_PARALLEL: usize = 8;
+
+/// 当前生效的批内并发数。
+pub(crate) fn download_parallel() -> usize {
+    std::env::var(PARALLEL_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(DEFAULT_PARALLEL)
+        .min(MAX_PARALLEL)
+}
 
 /// 相对下载根目录的目录路径 → 本地绝对路径。
 ///
@@ -138,63 +157,139 @@ fn download_all(
         return None;
     }
 
-    for (index, job) in collected.files.iter().enumerate() {
-        if my_epoch != current_epoch() || cancel.is_cancelled() {
-            break;
-        }
-        transfers::begin(batch, index);
-        post_sync();
+    // 一个批次里 N 条线程共享任务游标：取详情 / 建连接 / 传输的等待互相叠起来。
+    // `KICHI_DOWNLOAD_PARALLEL=1` 时这里退化成和以前完全一样的单线程循环。
+    let interrupted = run_parallel(
+        &collected.files,
+        download_parallel(),
+        |index, job| {
+            transfers::begin(batch, index);
+            post_sync();
 
-        let target = local_dir(dir, &job.sub_dir);
-        let throttle = Throttle::default();
-        let progress = |bytes: u64, total: Option<u64>| {
-            if throttle.should_send(bytes, total) {
-                transfers::progress(batch, index, bytes, total);
+            let target = local_dir(dir, &job.sub_dir);
+            let throttle = Throttle::default();
+            let progress = |bytes: u64, total: Option<u64>| {
+                if throttle.should_send(bytes, total) {
+                    transfers::progress(batch, index, bytes, total);
+                    post_live();
+                }
+            };
+            let note = |text: &str| {
+                transfers::note(batch, index, text);
+                // 说明不是结构变化：走 live 贴到当前文件行（第二行）上。
+                // 以前走 post_sync 时它被下载中的第二行隐藏，等于看不见。
                 post_live();
+            };
+            let callbacks = DownloadCallbacks {
+                progress: &progress,
+                note: &note,
+            };
+            let outcome = session.download_file(
+                &job.id,
+                &job.name,
+                KnownHint::from_list(job.size, job.audit_flagged),
+                &target,
+                callbacks,
+                cancel,
+            );
+            // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
+            if my_epoch != current_epoch() {
+                return;
             }
-        };
-        let note = |text: &str| {
-            transfers::note(batch, index, text);
-            // 说明不是结构变化：走 live 贴到当前文件行（第二行）上。
-            // 以前走 post_sync 时它被下载中的第二行隐藏，等于看不见。
-            post_live();
-        };
-        let callbacks = DownloadCallbacks {
-            progress: &progress,
-            note: &note,
-        };
-        let outcome = session.download_file(
-            &job.id,
-            &job.name,
-            job.audit_flagged,
-            &target,
-            callbacks,
-            cancel,
-        );
-        // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
-        if my_epoch != current_epoch() {
-            return None;
-        }
-        let cancelled = cancel.is_cancelled();
-        match outcome {
-            Ok(downloaded) => {
-                add_result(batch, JobOutcome::Saved);
-                transfers::finish_ok(batch, index, &downloaded.path);
-                post_sync();
+            let cancelled = cancel.is_cancelled();
+            match outcome {
+                Ok(downloaded) => {
+                    add_result(batch, JobOutcome::Saved);
+                    transfers::finish_ok(batch, index, &downloaded.path);
+                    post_sync();
+                }
+                Err(_) if cancelled => {
+                    // 取消不算失败：数量对得上总账，记录由统一收尾标成已取消
+                }
+                Err(err) => {
+                    let reason = err.to_string();
+                    add_result(batch, JobOutcome::Failed { reason: &reason });
+                    transfers::finish_err(batch, index, &reason);
+                    post_sync();
+                }
             }
-            Err(_) if cancelled => {
-                // 取消不算失败：数量对得上总账，记录由统一收尾标成已取消
-                break;
-            }
-            Err(err) => {
-                let reason = err.to_string();
-                add_result(batch, JobOutcome::Failed { reason: &reason });
-                transfers::finish_err(batch, index, &reason);
-                post_sync();
-            }
-        }
+        },
+        || my_epoch != current_epoch() || cancel.is_cancelled(),
+    );
+    if interrupted {
+        // 交给 `run_jobs` 的 catch_unwind：标失败 / 释放占用 / 推进下一批。
+        // 这里必须在所有下载线程 join 完之后才往上抛。
+        std::panic::resume_unwind(Box::new("下载线程异常中断"));
     }
     None
+}
+
+/// 多线程消费一个共享任务游标；返回是否被 panic 打断。
+///
+/// 当前线程也是 worker 之一：`workers = 1` 时不额外起线程，行为和旧串行循环
+/// 完全一致。helper 线程起不来时只降级并发度（当前线程会把剩余任务做完），
+/// 不丢任务、也不把整批判失败。
+///
+/// 任一线程 panic 时置中断标志，其他线程不再领新任务；本函数等**所有**线程
+/// join 完才返回，收尾逻辑不会和还在写记录/进度条的线程并发。
+fn run_parallel<T, F, S>(items: &[T], workers: usize, work: F, should_stop: S) -> bool
+where
+    T: Sync,
+    F: Fn(usize, &T) + Sync,
+    S: Fn() -> bool + Sync,
+{
+    if items.is_empty() {
+        return false;
+    }
+    let workers = workers.clamp(1, items.len());
+    let cursor = AtomicUsize::new(0);
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let run = || loop {
+        if interrupted.load(Ordering::SeqCst) || should_stop() {
+            break;
+        }
+        let index = cursor.fetch_add(1, Ordering::SeqCst);
+        let Some(item) = items.get(index) else {
+            break;
+        };
+        // 取到任务后、开始写记录前再查一次：取消 / 登出后不再开始新文件
+        if interrupted.load(Ordering::SeqCst) || should_stop() {
+            break;
+        }
+        work(index, item);
+    };
+    let run = &run;
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for number in 1..workers {
+            let flag = Arc::clone(&interrupted);
+            let spawned = std::thread::Builder::new()
+                .name(format!("kichi-dl-{number}"))
+                .spawn_scoped(scope, move || {
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                });
+            match spawned {
+                Ok(handle) => handles.push(handle),
+                Err(err) => {
+                    // 少一条线程只影响速度；当前线程会继续把游标走完
+                    eprintln!("[kichi] 无法创建下载线程（{number}）：{err}");
+                }
+            }
+        }
+        let own = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_ok();
+        if !own {
+            interrupted.store(true, Ordering::SeqCst);
+        }
+        for handle in handles {
+            if handle.join().is_err() {
+                interrupted.store(true, Ordering::SeqCst);
+            }
+        }
+        !own || interrupted.load(Ordering::SeqCst)
+    })
 }
 
 /// 进度节流：250ms 或进 1% 才发。

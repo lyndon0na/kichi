@@ -11,10 +11,12 @@ pub mod media;
 pub mod partials;
 mod paths;
 pub mod search;
+mod shards;
 mod store;
 mod tasks;
 
 mod client_cache;
+mod refresh;
 
 pub use paths::{config_dir, store_path};
 pub use search::{ScanBatch, ScanEnd, SearchHit};
@@ -89,6 +91,14 @@ pub struct Session {
     inner: Mutex<Inner>,
     /// 网盘客户端缓存（按 access token）：连接池与 TLS session 都在里面
     clients: ClientCache,
+    /// 令牌刷新单飞（并发下载线程同时发现临期时只刷一次）
+    refresh_lock: Mutex<()>,
+    /// 测试注入口：换成假刷新实现，验证只发一次请求
+    #[cfg(test)]
+    refresh_hook: Mutex<Option<Arc<refresh::RefreshHook>>>,
+    /// 测试里禁止写真实钥匙串（假令牌绝不能覆盖用户的会话）
+    #[cfg(test)]
+    store_disabled: bool,
 }
 
 struct Inner {
@@ -186,6 +196,11 @@ impl Session {
             store_path,
             inner: Mutex::new(Inner { current, device_id }),
             clients: ClientCache::default(),
+            refresh_lock: Mutex::new(()),
+            #[cfg(test)]
+            refresh_hook: Mutex::new(None),
+            #[cfg(test)]
+            store_disabled: false,
         }
     }
 
@@ -269,29 +284,6 @@ impl Session {
         }
     }
 
-    /// 确保令牌可用（到期前 5 分钟自动刷新）。阻塞。
-    pub fn ensure_tokens(&self) -> Result<(), Failure> {
-        let (refresh_token, needs_refresh) = self.with_inner(|inner| {
-            inner
-                .current
-                .as_ref()
-                .map(|s| {
-                    (
-                        s.refresh_token.clone(),
-                        s.tokens().needs_refresh(REFRESH_MARGIN),
-                    )
-                })
-                .ok_or(crate::session::Failure::Auth("尚未登录".into()))
-        })?;
-
-        if !needs_refresh {
-            return Ok(());
-        }
-
-        let tokens = auth::refresh(&self.config, &self.device_id(), &refresh_token)?;
-        self.replace_tokens(tokens).map_err(Failure::from)
-    }
-
     fn replace_tokens(&self, tokens: kichi_core::TokenPair) -> Result<(), StoreError> {
         // 令牌一换，按令牌缓存的网盘 client 就作废了（换账号不可能复用）
         self.clients.clear();
@@ -305,6 +297,10 @@ impl Session {
         let Some(saved) = updated else {
             return Ok(());
         };
+        #[cfg(test)]
+        if self.store_disabled {
+            return Ok(());
+        }
         store::save(&self.store_path, &saved)?;
         Ok(())
     }

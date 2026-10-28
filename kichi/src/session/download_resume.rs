@@ -159,7 +159,18 @@ pub(super) fn prepare_part(
         .and_then(|entry| std::fs::metadata(entry.part_path()).ok())
         .map(|meta| meta.len())
         .unwrap_or(0);
-    let plan = plan_resume(entry.as_ref(), remote_size, part_len);
+    let mut plan = plan_resume(entry.as_ref(), remote_size, part_len);
+    // v2 分片的 part 是稀疏文件，长度不等于「已下载到哪」；顺序路径绝不能
+    // 直接按 part_len 追加。正常流程会先在 shards.rs 处理 v2 条目，这里只是
+    // 防御性兜底（例如索引损坏 / 手动把 CONNECTIONS 设成 1 的极端路径）。
+    if entry.as_ref().is_some_and(|entry| !entry.shards.is_empty()) {
+        plan = super::partials::ResumePlan {
+            offset: 0,
+            truncate: true,
+            total: plan.total,
+            complete: false,
+        };
+    }
 
     if let Some(entry) = entry {
         let part_path = entry.part_path();

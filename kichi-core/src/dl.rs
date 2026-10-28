@@ -11,9 +11,9 @@
 //! | 响应 | 含义 | 处理 |
 //! | --- | --- | --- |
 //! | 206 | 接受 Range | 解析 `Content-Range`；`start` 必须等于请求偏移 |
-//! | 200 | 服务器忽略 Range | `start_offset = 0`，调用方截断 part 从头写 |
+//! | 200 | 服务器忽略 Range | `start_offset = 0`，调用方截断 part 从头写（有界分片请求直接报错回退） |
 //! | 416 | 偏移越界 | 返回 [`Error::RangeNotSatisfiable`]，调用方截断重来 |
-//! | 206 缺 `Content-Range` | 无法确认断点 | 丢掉这条响应，改发不带 Range 的请求 |
+//! | 206 缺 `Content-Range` | 无法确认断点 | 无界请求改发不带 Range 的请求；有界分片请求报错回退 |
 
 use std::io;
 use std::sync::Arc;
@@ -81,6 +81,49 @@ impl DriveClient {
         offset: u64,
         idle: Duration,
     ) -> Result<DownloadStream, Error> {
+        self.open_range(info, offset, None, idle)
+    }
+
+    /// 打开一个**有界**区间 `[start, end]`（闭区间，对应 `Range: bytes=start-end`）。
+    ///
+    /// 供单文件多分片使用。校验与 [`DriveClient::open_download_from`] 一致：
+    /// `start` 必须等于请求起点，完整大小取 `Content-Range` 的 total。
+    ///
+    /// 服务器返回 200（忽略 Range）或 206 缺 `Content-Range` 时**不能**把这批
+    /// 字节写进分片区间，返回 [`Error::RangeNotSatisfiable`] 让会话层退回单连接。
+    pub fn open_download_range(
+        &self,
+        info: &FileInfo,
+        start: u64,
+        end: u64,
+    ) -> Result<DownloadStream, Error> {
+        self.open_download_range_with(info, start, end, download_idle())
+    }
+
+    /// 同 [`DriveClient::open_download_range`]，但可指定空闲读超时（测试注入用）。
+    pub fn open_download_range_with(
+        &self,
+        info: &FileInfo,
+        start: u64,
+        end: u64,
+        idle: Duration,
+    ) -> Result<DownloadStream, Error> {
+        if start > end {
+            return Err(Error::InvalidInput(format!(
+                "分片区间不合法：{start}-{end}"
+            )));
+        }
+        self.open_range(info, start, Some(end), idle)
+    }
+
+    /// `end` 为 `None` 时是「从偏移到文件末尾」，`Some` 时是闭区间分片。
+    fn open_range(
+        &self,
+        info: &FileInfo,
+        start: u64,
+        end: Option<u64>,
+        idle: Duration,
+    ) -> Result<DownloadStream, Error> {
         let Some(url) = info.download_url() else {
             return Err(Error::Other(
                 "官方没有下发这个文件的下载链接（可能是违规或受限文件）".to_owned(),
@@ -89,8 +132,10 @@ impl DriveClient {
         // 先取流再写盘：这样「下载 0 字节就成功」不会变成一个没有内容的空文件
         let client = self.download_client(idle)?;
         let mut request = client.get(&url);
-        if offset > 0 {
-            request = request.header(RANGE, format!("bytes={offset}-"));
+        match end {
+            Some(end) => request = request.header(RANGE, format!("bytes={start}-{end}")),
+            None if start > 0 => request = request.header(RANGE, format!("bytes={start}-")),
+            None => {}
         }
         let response = request.send().map_err(|e| {
             // 连接阶段先失败时说「连不上」，别说成「服务器没响应」
@@ -130,7 +175,11 @@ impl DriveClient {
                 .and_then(|value| value.to_str().ok())
                 .and_then(parse_content_range);
             let Some(range) = range else {
-                if offset == 0 {
+                // 分片区间无法确认起点 / 总大小时绝不能猜：退回单连接重下
+                if end.is_some() {
+                    return Err(Error::RangeNotSatisfiable { total: None });
+                }
+                if start == 0 {
                     // 从 0 开始的 206 即使没有 Content-Range，Content-Length 也是完整长度
                     let total = response.content_length();
                     return Ok(DownloadStream {
@@ -142,28 +191,39 @@ impl DriveClient {
                 }
                 // 无法确认断点位置：丢掉这条响应，改发不带 Range 的请求（安全优先）
                 drop(response);
-                return self.open_download_from_with(info, 0, idle);
+                return self.open_range(info, 0, None, idle);
             };
-            let Some(start) = range.start else {
+            let Some(received_start) = range.start else {
                 return Err(Error::RangeNotSatisfiable { total: range.total });
             };
-            if start != offset {
+            if received_start != start {
                 return Err(Error::RangeNotSatisfiable { total: range.total });
             }
-            // 206 的 Content-Length 只是剩余字节；完整大小以 Content-Range 为准
-            let total = range
-                .total
-                .or(info.size)
-                .or_else(|| range.end.map(|end| end.saturating_add(1)));
+            // 206 的 Content-Length 只是剩余字节；完整大小以 Content-Range 为准。
+            // 分片响应里 `range.end` 只是这一片的末尾，不能当文件总大小。
+            let total = if end.is_some() {
+                range.total.or(info.size)
+            } else {
+                range
+                    .total
+                    .or(info.size)
+                    .or_else(|| range.end.map(|end| end.saturating_add(1)))
+            };
             return Ok(DownloadStream {
                 response,
                 total_bytes: total,
                 idle,
-                start_offset: start,
+                start_offset: received_start,
             });
         }
 
-        // 200：服务器忽略了 Range（或本来就是 0 偏移），从 0 开始
+        // 200：服务器忽略了 Range。分片请求不能把整文件写进一片，交给会话层退回
+        // 单连接重下；不带分片的 0 偏移请求仍按完整文件处理。
+        if end.is_some() {
+            return Err(Error::RangeNotSatisfiable {
+                total: response.content_length(),
+            });
+        }
         let total = response.content_length();
         Ok(DownloadStream {
             response,

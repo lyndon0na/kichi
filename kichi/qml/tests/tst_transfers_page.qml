@@ -868,6 +868,32 @@ TestCase {
         compare(detailControlAt(0, "sizeText").text, "4 MB / 10 MB")
     }
 
+    // 批内并发后可能同时有多条「下载中」：每一行都要按自己的 key 取实时进度。
+    function test_two_running_files_keep_their_own_live_progress() {
+        publish([
+            record("1:0", "running"),
+            record("1:1", "running")
+        ])
+        wait(80)
+
+        backend.transferLive = [
+            { key: "1:0", progress: 20, progressText: "20%",
+              sizeText: "2 MB / 10 MB", rateText: "1 MB/s", noteText: "" },
+            { key: "1:1", progress: 70, progressText: "70%",
+              sizeText: "7 MB / 10 MB", rateText: "2 MB/s", noteText: "" }
+        ]
+        wait(80)
+
+        compare(Math.round(controlAt(0, "rowProgress").value), 20,
+                "第一行只吃自己的进度")
+        compare(Math.round(controlAt(1, "rowProgress").value), 70,
+                "第二行也要实时刷新，不能停在开始时的值")
+        compare(controlAt(0, "sizeText").text, "2 MB / 10 MB")
+        compare(controlAt(1, "sizeText").text, "7 MB / 10 MB")
+        compare(controlAt(0, "rateText").text, "1 MB/s")
+        compare(controlAt(1, "rateText").text, "2 MB/s")
+    }
+
     // —— 速度 / 剩余时间 / 卡住 / 重试说明（2026-10-27）——
 
     // 主列表文件夹父行显示整批速度 + ETA；详情页头部也显示整批速度。

@@ -18,7 +18,30 @@ use serde::{Deserialize, Serialize};
 use super::paths;
 
 /// 索引格式版本。
-pub const PARTIALS_VERSION: u32 = 1;
+///
+/// v1 只有顺序追加的 part；v2 增加 `shards`（单文件多分片的逐片进度）。
+/// 读取不检查版本号：v1 条目 `shards` 为空，继续走原来的顺序续传。
+pub const PARTIALS_VERSION: u32 = 2;
+
+/// 一个分片的进度；区间是 `[start, end)`（不包含 end）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardSpan {
+    pub start: u64,
+    pub end: u64,
+    /// 这一片已经写进 part 的字节数（相对 `start`）
+    #[serde(default)]
+    pub done: u64,
+}
+
+impl ShardSpan {
+    pub fn len(&self) -> u64 {
+        self.end.saturating_sub(self.start)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+}
 
 /// 索引里的一条断点。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +58,9 @@ pub struct PartialEntry {
     pub total: Option<u64>,
     /// 最后更新（Unix 秒）；只用于排障，不做自动过期
     pub updated_unix: i64,
+    /// v2 分片进度；空 = v1 式顺序追加（旧断点照旧能续）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shards: Vec<ShardSpan>,
 }
 
 impl PartialEntry {
@@ -46,6 +72,25 @@ impl PartialEntry {
             final_path: final_path.display().to_string(),
             total,
             updated_unix: now_unix(),
+            shards: Vec::new(),
+        }
+    }
+
+    /// 建一条带分片进度的 v2 断点记录。
+    pub fn new_sharded(
+        id: &str,
+        part: &Path,
+        final_path: &Path,
+        total: u64,
+        shards: Vec<ShardSpan>,
+    ) -> Self {
+        Self {
+            id: id.to_owned(),
+            part: part.display().to_string(),
+            final_path: final_path.display().to_string(),
+            total: Some(total),
+            updated_unix: now_unix(),
+            shards,
         }
     }
 
@@ -137,6 +182,129 @@ pub fn plan_resume(
     }
 }
 
+/// 单文件多分片的续传计划。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardPlan {
+    /// 已知的完整文件大小（分片必须知道大小）
+    pub total: u64,
+    /// 是否先把 part 截断到 0（云端大小变化 / 分片记录损坏）
+    pub truncate: bool,
+    /// 每片的 `[start, end)` 与已写字节；永远从 0 连续覆盖到 total
+    pub spans: Vec<ShardSpan>,
+    /// 所有片都已写完：只需 sync + rename，不必发请求
+    pub complete: bool,
+}
+
+impl ShardPlan {
+    /// 全部片已写字节之和（用于进度 / 完成判定）。
+    pub fn done_bytes(&self) -> u64 {
+        self.spans.iter().map(|span| span.done).sum()
+    }
+}
+
+/// 决定一个文件要不要分片、每片从哪继续（纯函数）。
+///
+/// 返回 `None` 表示**不分片**，调用方走原来的单连接路径：
+/// - 详情 / 列表都不知道总大小（`remote_size == None`）；
+/// - 文件小于 `threshold`；
+/// - `wanted < 2`（`KICHI_DOWNLOAD_CONNECTIONS=1`）；
+/// - 已有 v1 顺序断点（`shards` 为空）：旧断点继续顺序追加，不冒险转换。
+///
+/// 以下情况会返回 `truncate = true` 的全新分片计划（整个文件重下）：
+/// - 索引里的 total 与本次详情不一致（云端文件变了）；
+/// - part 比云端文件还长；
+/// - v2 分片记录不连续 / 区间不合法。
+pub fn plan_shards(
+    entry: Option<&PartialEntry>,
+    remote_size: Option<u64>,
+    part_len: u64,
+    threshold: u64,
+    wanted: usize,
+) -> Option<ShardPlan> {
+    // 已在分片中的旧 part：即使这次关了分片（wanted=1）或阈值被调高，也要按
+    // 原分片记录继续，否则顺序追加会把稀疏文件里的空洞当成已下载字节。
+    let resuming_shards = entry.is_some_and(|entry| !entry.shards.is_empty());
+    let total = remote_size.or_else(|| entry.and_then(|entry| entry.total))?;
+    if total == 0 {
+        return None;
+    }
+    if !resuming_shards && (total < threshold || wanted < 2) {
+        return None;
+    }
+    // v1 断点：保持顺序续传，不把已写的前缀转成分片
+    if entry.is_some_and(|entry| entry.shards.is_empty()) {
+        return None;
+    }
+    if let Some(entry) = entry {
+        if entry.total != Some(total) || part_len > total {
+            return Some(fresh_shard_plan(total, wanted));
+        }
+        if resuming_shards {
+            return Some(
+                reuse_shard_plan(entry, total, part_len)
+                    .unwrap_or_else(|| fresh_shard_plan(total, wanted)),
+            );
+        }
+    }
+    Some(fresh_shard_plan(total, wanted))
+}
+
+/// 全新分片：按 `wanted` 均分，最后一片可能不足一片大小。
+fn fresh_shard_plan(total: u64, wanted: usize) -> ShardPlan {
+    let wanted = u64::try_from(wanted).unwrap_or(u64::MAX).max(2);
+    let shard_size = total.div_ceil(wanted).max(1);
+    let mut spans = Vec::new();
+    let mut start = 0;
+    while start < total {
+        let end = start.saturating_add(shard_size).min(total);
+        spans.push(ShardSpan {
+            start,
+            end,
+            done: 0,
+        });
+        start = end;
+    }
+    ShardPlan {
+        total,
+        truncate: true,
+        spans,
+        complete: false,
+    }
+}
+
+/// 复用 v2 分片记录；记录不合法时返回 `None`（调用方整文件重下）。
+fn reuse_shard_plan(entry: &PartialEntry, total: u64, part_len: u64) -> Option<ShardPlan> {
+    let spans = &entry.shards;
+    if spans.is_empty() || spans[0].start != 0 || spans.last()?.end != total {
+        return None;
+    }
+    let mut expected_start = 0;
+    let mut clamped = Vec::with_capacity(spans.len());
+    for span in spans {
+        if span.is_empty() || span.start != expected_start || span.done > span.len() {
+            return None;
+        }
+        // 崩溃可能让索引比磁盘多记一点：以磁盘实际能覆盖到的位置为准
+        let done = span
+            .done
+            .min(part_len.saturating_sub(span.start))
+            .min(span.len());
+        clamped.push(ShardSpan {
+            start: span.start,
+            end: span.end,
+            done,
+        });
+        expected_start = span.end;
+    }
+    let complete = part_len >= total && clamped.iter().all(|span| span.done == span.len());
+    Some(ShardPlan {
+        total,
+        truncate: false,
+        spans: clamped,
+        complete,
+    })
+}
+
 impl PartialEntry {
     /// 按云端 id 查断点；只接受 part 仍存在、且位于本次下载根目录之下的条目。
     ///
@@ -149,6 +317,10 @@ impl PartialEntry {
         part.is_file() && part.starts_with(target_dir)
     }
 }
+
+/// 测试里改 `KICHI_PARTIALS_FILE` 时共用这把锁（跨测试模块）。
+#[cfg(test)]
+pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// 进程内串行化索引读改写（下载是串行的，这里只需要防界面线程同时查）。
 fn lock() -> MutexGuard<'static, ()> {
