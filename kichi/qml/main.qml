@@ -282,7 +282,9 @@ ApplicationWindow {
         title: qsTr("退出登录")
         modal: true
         anchors.centerIn: parent
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        footer: StandardDialogFooter {
+            dialog: signOutDialog
+        }
 
         Label {
             text: qsTr("将清除本机保存的登录令牌，下次需要重新输入账号密码。确定退出？")

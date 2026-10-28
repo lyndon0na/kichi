@@ -284,7 +284,9 @@ Item {
         title: qsTr("删除任务")
         modal: true
         anchors.centerIn: parent
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        footer: StandardDialogFooter {
+            dialog: deleteDialog
+        }
 
         Label {
             width: 380

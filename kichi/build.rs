@@ -25,6 +25,7 @@ const QML_FILES: &[&str] = &[
     "qml/KScrollBar.qml",
     "qml/KProgressBar.qml",
     "qml/DialogFooter.qml",
+    "qml/StandardDialogFooter.qml",
     "qml/UiMetrics.qml",
     "qml/TasksPage.qml",
     "qml/TransfersPage.qml",

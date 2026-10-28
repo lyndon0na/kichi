@@ -598,7 +598,10 @@ Item {
         title: qsTr("清空已完成记录")
         modal: true
         anchors.centerIn: Overlay.overlay
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        footer: StandardDialogFooter {
+            objectName: "clearConfirmBox"
+            dialog: clearDialog
+        }
 
         Label {
             objectName: "clearConfirmText"

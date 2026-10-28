@@ -1331,10 +1331,12 @@ TestCase {
                "说明已中断的记录会保留")
         compare(backend.clearCount, 0, "确认之前不清")
 
-        // Dialog 的「确定」在测试里走同一条真实路径
-        page.confirmClear()
+        // 自定义 footer 的 DialogButtonBox：确定必须经 accepted → onAccepted 走到动作
+        var box = findChild(dialog, "clearConfirmBox")
+        verify(box !== null, "确认框有按钮组")
+        box.accepted()
         wait(40)
-        compare(backend.clearCount, 1, "确认后调用一次清空")
+        compare(backend.clearCount, 1, "点确定后调用一次清空")
     }
 
     function test_clear_button_disabled_when_only_open_rows() {
