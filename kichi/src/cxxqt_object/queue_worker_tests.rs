@@ -302,3 +302,20 @@ fn parallel_env_defaults_and_serial_rollback() {
     std::env::remove_var(PARALLEL_ENV);
     assert_eq!(download_parallel(), DEFAULT_PARALLEL);
 }
+
+#[test]
+fn a_saved_file_is_recorded_even_after_logout() {
+    // rename 与登出作废互斥，成品一旦落盘就要照实记完成——否则历史写「已中断」，
+    // 用户点重试会再下一份 `名字 (1).ext`
+    assert!(records_result(true, false, true), "正常完成");
+    assert!(records_result(true, false, false), "登出瞬间刚下完");
+    assert!(records_result(true, true, false), "取消刚好下完也记完成");
+}
+
+#[test]
+fn unsaved_results_are_recorded_only_in_the_same_session() {
+    assert!(records_result(false, false, true), "同一会话的失败要记原因");
+    assert!(!records_result(false, false, false), "旧会话的失败不改记录");
+    assert!(!records_result(false, true, true), "取消不记失败");
+    assert!(!records_result(false, true, false));
+}

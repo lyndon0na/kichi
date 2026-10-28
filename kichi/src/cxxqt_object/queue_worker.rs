@@ -133,6 +133,18 @@ pub(crate) fn run_jobs(
     post_finished(batch, end, my_epoch);
 }
 
+/// 这条下载结果要不要落进记录表。
+///
+/// - `saved`：成品已经 rename 到磁盘上——登出也照实记成完成。rename 与登出作废
+///   互斥（`commit_lock`），所以「文件在磁盘上、历史却写已中断」只可能发生在
+///   rename 之后、线程回到这里之前的那一小段；丢掉这条结果会让用户点重试再下
+///   一份 `名字 (1).ext`。
+/// - 失败且被取消：不记，统一收尾会标「已取消」；
+/// - 其余失败：只有同一个会话才记（旧会话的行在登出时已落成「已中断」）。
+fn records_result(saved: bool, cancelled: bool, same_epoch: bool) -> bool {
+    saved || (!cancelled && same_epoch)
+}
+
 /// 建目录 + 逐条下载（[`run_jobs`] 的主体；panic 由调用方兜底）。
 ///
 /// 返回批次级失败原因（只有根目录建不出来）：这时这一批算整体失败，
@@ -198,21 +210,30 @@ fn download_all(
                 callbacks,
                 cancel,
             );
-            // 下载期间退出过登录：这条结果属于上个会话（在途行已落成「已中断」），丢弃
-            if my_epoch != current_epoch() {
+            let saved = outcome.is_ok();
+            let cancelled = cancel.is_cancelled();
+            let same_epoch = my_epoch == current_epoch();
+            if !records_result(saved, cancelled, same_epoch) {
                 return;
             }
-            let cancelled = cancel.is_cancelled();
             match outcome {
                 Ok(downloaded) => {
+                    // 成品已经落盘（rename 在 `download_file` 里、commit_lock 之内完成），
+                    // 所以即便下载期间退出过登录也照实记成完成：丢掉这条结果会让历史
+                    // 写「已中断」，用户点重试又下一份 `名字 (1).ext`。记录表跨登出保留
+                    // （ADR 0014），改的是原来那一批。
                     add_result(batch, JobOutcome::Saved);
                     transfers::finish_ok(batch, index, &downloaded.path);
-                    post_sync();
-                }
-                Err(_) if cancelled => {
-                    // 取消不算失败：数量对得上总账，记录由统一收尾标成已取消
+                    if same_epoch {
+                        post_sync();
+                    } else {
+                        // 登出时的强制写盘已经过去了，这里要再写一次，否则要等到
+                        // 下一次结构事件或退出才落盘
+                        post_sync_forced();
+                    }
                 }
                 Err(err) => {
+                    // 走到这里只剩「同一个会话、没被取消」的失败（见 `records_result`）
                     let reason = err.to_string();
                     add_result(batch, JobOutcome::Failed { reason: &reason });
                     transfers::finish_err(batch, index, &reason);
@@ -338,6 +359,16 @@ fn post_sync() {
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
             qichi.as_mut().sync_transfers();
+        },
+    );
+}
+
+/// 记录变了，并且必须马上落盘：登出竞态里刚下完的行赶不上下一次节流写盘。
+fn post_sync_forced() {
+    super::actions::enqueue_ui(
+        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
+            qichi.as_mut().sync_transfers();
+            super::downloads::flush_history();
         },
     );
 }
