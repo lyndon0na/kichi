@@ -484,6 +484,47 @@ fn body_cut_off_error_text_never_contains_the_url() {
 }
 
 #[test]
+fn truncated_chunked_body_is_an_error_not_eof() {
+    // 未知总大小时，只有「chunked 正常结束」与「连接正常关闭」算完整；
+    // 没读到结束块就断开必须报错，否则截断的文件会被当成下完
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("监听本地端口");
+    let addr = listener.local_addr().expect("取本地地址");
+    std::thread::spawn(move || {
+        let Ok((mut socket, _)) = listener.accept() else {
+            return;
+        };
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match socket.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => request.extend_from_slice(&chunk[..read]),
+            }
+        }
+        // 只发一个有数据的块，结束块（0\r\n\r\n）之前就断开
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n01234\r\n");
+    });
+    let info = local_info(&format!("http://{addr}/signed-secret"));
+    let mut stream = test_client()
+        .open_download_with(&info, Duration::from_secs(2))
+        .unwrap_or_else(|err| panic!("响应头正常，应能打开流：{err:?}"));
+    assert_eq!(stream.total_bytes(), None, "chunked 响应没有总大小");
+    let mut buffer = [0u8; 64];
+    let err = loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => panic!("结束块还没收到就 EOF，不能当成完整结束"),
+            Ok(_) => continue,
+            Err(err) => break err,
+        }
+    };
+    assert!(
+        !err.to_string().contains("http"),
+        "失败原因不该带 URL：{err}"
+    );
+}
+
+#[test]
 fn download_client_is_reused_for_the_same_idle() {
     let client = test_client();
     let idle = Duration::from_secs(7);

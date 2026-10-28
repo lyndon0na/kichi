@@ -12,7 +12,6 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use kichi_core::dl::DownloadStream;
 use kichi_core::Error as CoreError;
 
 use super::download::{commit_lock, Cancel, Downloaded, Progress};
@@ -257,8 +256,17 @@ pub(super) enum ReadOutcome {
     Cancelled,
 }
 
-pub(super) fn read_into_part(
-    stream: &mut DownloadStream,
+/// 读到 EOF 后按总大小判定结果（泛型只为单测能塞 `Cursor`）：
+///
+/// - 已知 `total`：提前结束可重试（保留 part），超出按本地错误删 part；
+/// - **未知 `total`**：算完整。这不是放水：HTTP 的合法 EOF 只有「chunked
+///   结束块」与「连接正常关闭」两种，chunked 被截断、带 `Content-Length`
+///   却发不满的响应都会在读时报错（`dl_tests.rs` 的
+///   `body_cut_off_error_text_never_contains_the_url` /
+///   `truncated_chunked_body_is_an_error_not_eof`），走不到这里。剩下的
+///   就是「服务器没说长度、把字节发完了」，没有可比的依据。
+pub(super) fn read_into_part<S: Read>(
+    stream: &mut S,
     part: &mut Part,
     progress: &Progress<'_>,
     cancel: &Cancel,

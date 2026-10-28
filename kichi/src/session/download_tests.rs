@@ -3,8 +3,8 @@
 //! 下载循环本身需要真实会话，属于 `live_tests.rs` 的范围。
 
 use super::super::download_resume::{
-    classify_open_error, download_retries, resume_failure, retry_delay, save_empty_file,
-    OpenAction, DEFAULT_RETRIES, RETRIES_ENV,
+    classify_open_error, download_retries, read_into_part, resume_failure, retry_delay,
+    save_empty_file, OpenAction, Part, ReadOutcome, DEFAULT_RETRIES, RETRIES_ENV,
 };
 use super::*;
 use kichi_core::Error as CoreError;
@@ -221,4 +221,62 @@ fn resume_failure_only_mentions_bytes_when_there_are_some() {
     let some = resume_failure("下载中断".into(), 45 * 1024 * 1024).to_string();
     assert!(some.contains("45.0 MB"), "要说明续传起点：{some}");
     assert!(some.contains("可重试续传"), "{some}");
+}
+
+/// 读一个假字节流，返回（结果, 已写字节数）。
+fn read_body(body: &[u8], total: Option<u64>, tag: &str) -> (ReadOutcome, u64) {
+    let dir = temp_dir(tag);
+    let part_path = dir.join("a.part");
+    let file = std::fs::File::create(&part_path).expect("建 part 文件");
+    let mut part = Part {
+        file,
+        part_path: part_path.clone(),
+        final_path: dir.join("a.mkv"),
+        offset: 0,
+        total,
+    };
+    let mut stream = std::io::Cursor::new(body.to_vec());
+    let cancel = Cancel::default();
+    let progress = |_: u64, _: Option<u64>| {};
+    let outcome = read_into_part(&mut stream, &mut part, &progress, &cancel);
+    let offset = part.offset;
+    drop(part);
+    let _ = std::fs::remove_dir_all(&dir);
+    (outcome, offset)
+}
+
+#[test]
+fn known_total_early_eof_is_retryable_and_keeps_the_part() {
+    let (outcome, offset) = read_body(b"0123456789", Some(20), "eof-early");
+    assert!(
+        matches!(outcome, ReadOutcome::Retryable(_)),
+        "已知大小没下完必须可重试"
+    );
+    assert_eq!(offset, 10, "已收到的字节要保留给续传");
+}
+
+#[test]
+fn known_total_exact_length_completes() {
+    let (outcome, offset) = read_body(b"0123456789", Some(10), "exact");
+    assert!(matches!(outcome, ReadOutcome::Complete));
+    assert_eq!(offset, 10);
+}
+
+#[test]
+fn known_total_overflow_is_a_local_error() {
+    // 服务器发得比声明多：不能把多余字节当成正常文件
+    let (outcome, _) = read_body(b"0123456789", Some(5), "overflow");
+    assert!(
+        matches!(outcome, ReadOutcome::Local(_)),
+        "超出声明长度要放弃临时文件"
+    );
+}
+
+#[test]
+fn unknown_total_eof_is_complete() {
+    // 未知总大小：HTTP 层能报的截断（chunked 不完整 / Content-Length 发不满）
+    // 都在读时报错；能走到 EOF 的只有「服务器没说长度、正常发完」
+    let (outcome, offset) = read_body(b"0123456789", None, "unknown");
+    assert!(matches!(outcome, ReadOutcome::Complete));
+    assert_eq!(offset, 10);
 }
