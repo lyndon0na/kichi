@@ -2,14 +2,18 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 传输任务页：本次运行内的下载记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
+// 传输任务页：下载记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消 / 已中断）。
 //
 // 主列表一个下载批次一行：文件夹批次是文件夹名，单文件批次是文件名。
 // 点有子文件的文件夹行进入 TransferFolderPage（独立详情页），返回时主列表
 // 保持原滚动位置——所以两个页面都常驻在 StackLayout 里，绝不用 Loader 重建。
 //
-// 数据全部来自 backend.transfers（Rust 侧已排好序：进行中在前，已结束新→旧），
-// 本页只负责显示与操作入口。记录不落盘，退出 kichi 即清空。
+// 记录跨重启保留（`docs/adr/0014-download-history-on-disk.md`）：工具条下面
+// 一行日期分组（今天 / 昨天 / 更早 ▾），默认只看今天；进行中 / 排队 / 已中断
+// 的行不受日期过滤，永远排最上面。
+//
+// 数据全部来自 backend.transfers（Rust 侧已排好序并已按日期过滤），
+// 本页只负责显示与操作入口。
 Item {
     id: page
 
@@ -24,6 +28,19 @@ Item {
 
     /// 当前高亮的行 key（约 1.2 秒后淡出）
     property string highlightedKey: ""
+
+    /// 选中的日期分组（`today` / `YYYY-MM-DD`）；由 Rust 侧保存与过滤
+    property string selectedDay: "today"
+
+    /// 历史上出现过的日子：[{ key, label }]，新 → 旧
+    property var dayGroups: []
+
+    /// 分组行里直接列出的日子数（再早的收进「更早 ▾」）
+    property int inlineDays: 4
+    /// 直接列出的日子（最多 inlineDays 个）
+    readonly property var inlineDayGroups: page.dayGroups.slice(0, page.inlineDays)
+    /// 收进「更早 ▾」的日子
+    readonly property var earlierDayGroups: page.dayGroups.slice(page.inlineDays)
 
     /// 文件夹详情是否打开（Rust 侧选中状态）
     readonly property bool detailActive: page.backend !== null
@@ -60,12 +77,61 @@ Item {
             }
             if (page.backend.transferRevision !== page.revision) {
                 page.revision = page.backend.transferRevision
+                page.refreshDays()
                 page.syncRows()
             }
         }
     }
 
-    Component.onCompleted: syncRows()
+    Component.onCompleted: {
+        page.refreshDays()
+        syncRows()
+    }
+
+    // —— 日期分组 ——
+
+    /// 向 Rust 要一次「历史上有哪些日子」。
+    ///
+    /// 选中的分组由本页保存（`selectedDay`，默认今天）：它是显示状态，
+    /// Rust 只负责按它过滤。
+    function refreshDays() {
+        if (!page.backend)
+            return
+        var days = page.backend.transferHistoryDays()
+        // 复制成纯 JS 数组：QVariantList 是 array-like，直接 slice 不一定可用
+        var copy = []
+        for (var i = 0; i < days.length; i++)
+            copy.push({ key: days[i].key, label: days[i].label })
+        page.dayGroups = copy
+    }
+
+    /// 选中一个日期分组（Rust 侧按它过滤后重新发 transfers）。
+    function selectDay(day) {
+        if (!page.backend || day.length === 0)
+            return
+        page.selectedDay = day
+        page.backend.setTransferHistoryDay(day)
+        page.refreshDays()
+    }
+
+    /// 「更早 ▾」里的月份分隔文字（跨月时插一个，按年-月分组）。
+    function monthLabel(day) {
+        var parts = String(day).split("-")
+        if (parts.length < 2)
+            return ""
+        return qsTr("%1 年 %2 月").arg(parts[0]).arg(Number(parts[1]))
+    }
+
+    /// 下一个分组是不是换月了（决定菜单里要不要插月份标题）。
+    function monthChangedBefore(index) {
+        if (index <= 0)
+            return true
+        var previous = page.earlierDayGroups[index - 1]
+        var current = page.earlierDayGroups[index]
+        if (!previous || !current)
+            return false
+        return String(previous.key).slice(0, 7) !== String(current.key).slice(0, 7)
+    }
 
     // —— 文件夹详情：下钻与返回 ——
 
@@ -274,14 +340,22 @@ Item {
         }
     }
 
-    /// 有没有可清的已结束记录（按钮据此置灰）
-    readonly property bool hasFinished: {
-        for (var i = 0; i < rows.count; i++) {
-            var phase = rows.get(i).phase
-            if (phase === "done" || phase === "failed" || phase === "cancelled")
-                return true
-        }
-        return false
+    /// 有没有可清的已结束记录（按钮据此置灰）。
+    ///
+    /// 看**全部历史**而不是当前这一天：清空清的是全部历史里的已结束批次。
+    readonly property bool hasFinished: page.backend !== null
+                                       && page.backend.transferHasFinished
+
+    /// 清空确认框的正文（测试也读这一份，文案只有一处）
+    readonly property string clearConfirmMessage: qsTr(
+        "将清空全部历史里所有已结束的记录（完成 / 失败 / 已取消），"
+        + "不限于当前选中的日期。\n"
+        + "进行中、排队与已中断的记录会保留。确定清空？")
+
+    /// 二次确认「确定」之后：清全部历史里所有已结束的整批（不按日期收窄）。
+    function confirmClear() {
+        if (page.backend)
+            page.backend.clearFinishedTransfers()
     }
 
     /// 进行中条数（排队 + 准备中 + 下载中；一个文件夹算 1）
@@ -341,9 +415,109 @@ Item {
             }
 
             Button {
+                objectName: "clearFinishedButton"
                 text: qsTr("清空已完成记录")
                 enabled: page.backend !== null && page.hasFinished
-                onClicked: if (page.backend) page.backend.clearFinishedTransfers()
+                onClicked: clearDialog.open()
+            }
+        }
+
+        // —— 日期分组行：今天 · 昨天 · 10-26 · 10-25 · 更早 ▾ ——
+        //
+        // 「今天 / 昨天」由 Rust 侧的日期文案给出；更早的日子只列月-日，
+        // 超出本行能放下的部分收进「更早 ▾」（跨月时菜单里插月份标题）。
+        RowLayout {
+            objectName: "historyDayRow"
+            Layout.fillWidth: true
+            Layout.rightMargin: metrics.pageMargin
+            spacing: 12
+            visible: page.dayGroups.length > 0
+
+            Repeater {
+                model: page.inlineDayGroups
+
+                delegate: Label {
+                    required property var modelData
+                    objectName: "dayPill-" + modelData.key
+                    property string dayKey: modelData.key
+                    text: modelData.label
+                    font.pixelSize: 12
+                    verticalAlignment: Text.AlignVCenter
+                    color: page.selectedDay === dayKey ? palette.text : palette.link
+                    font.bold: page.selectedDay === dayKey
+                    font.underline: pillMouse.containsMouse
+
+                    MouseArea {
+                        id: pillMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.selectDay(dayKey)
+                    }
+                }
+            }
+
+            Label {
+                objectName: "earlierDaysLink"
+                visible: page.earlierDayGroups.length > 0
+                text: qsTr("更早 ▾")
+                font.pixelSize: 12
+                verticalAlignment: Text.AlignVCenter
+                color: palette.link
+                font.bold: page.earlierDayGroups.some(function (group) {
+                    return group.key === page.selectedDay
+                })
+                font.underline: earlierMouse.containsMouse
+
+                MouseArea {
+                    id: earlierMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    // 菜单挂在 overlay 上，坐标先换算成窗口坐标再赋值（踩坑第 10 / 11 条）
+                    onClicked: {
+                        var point = earlierMouse.mapToItem(null, 0, earlierMouse.height)
+                        moreDaysMenu.x = point.x
+                        moreDaysMenu.y = point.y
+                        moreDaysMenu.open()
+                    }
+                }
+
+                Menu {
+                    id: moreDaysMenu
+                    // 菜单一律挂在 overlay 上，坐标才与窗口一致（踩坑第 10 条）
+                    parent: Overlay.overlay
+                    width: 160
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                    Repeater {
+                        model: page.earlierDayGroups
+
+                        delegate: MenuItem {
+                            required property int index
+                            required property var modelData
+                            text: page.monthChangedBefore(index)
+                                  ? page.monthLabel(modelData.key) + " · " + modelData.label
+                                  : modelData.label
+                            checkable: true
+                            checked: page.selectedDay === modelData.key
+                            onTriggered: page.selectDay(modelData.key)
+                        }
+                    }
+                }
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            Label {
+                objectName: "historyHint"
+                visible: page.dayGroups.length > 1
+                text: qsTr("记录按天分组，进行中与已中断的始终显示")
+                font.pixelSize: 12
+                verticalAlignment: Text.AlignVCenter
+                color: palette.placeholderText
             }
         }
 
@@ -386,9 +560,12 @@ Item {
                     }
 
                     Label {
+                        objectName: "emptyHint"
                         anchors.centerIn: parent
                         visible: list.count === 0
-                        text: qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
+                        text: page.dayGroups.length === 0
+                              ? qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
+                              : qsTr("这一天没有下载记录\n可以点上面的日期看更早的记录")
                         horizontalAlignment: Text.AlignHCenter
                         color: palette.placeholderText
                     }
@@ -405,5 +582,27 @@ Item {
                 onBackRequested: page.closeFolder()
             }
         }
+    }
+
+    // 清空已完成记录：二次确认（清全部历史，不按日期收窄）。
+    // 挂在页面根节点而不是 ColumnLayout 里：Popup 不是 Item，放进布局会用 anchors
+    // 被判「被布局管理的项不能用 anchors」。
+    Dialog {
+        id: clearDialog
+        objectName: "clearConfirmDialog"
+        parent: Overlay.overlay
+        title: qsTr("清空已完成记录")
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        Label {
+            objectName: "clearConfirmText"
+            text: page.clearConfirmMessage
+            wrapMode: Text.Wrap
+            width: 380
+        }
+
+        onAccepted: page.confirmClear()
     }
 }

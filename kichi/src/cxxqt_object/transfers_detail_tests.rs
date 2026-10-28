@@ -27,10 +27,10 @@ fn job(id: &str, name: &str, kind: EntryKind, sub_dir: &[&str]) -> TransferJob {
 /// 文件夹批次：父行 + 若干子行（index 0..）。
 fn folder_batch(children: &[&str]) -> Vec<Transfer> {
     let seed = job("folder-1", "剧集", EntryKind::Folder, &[]);
-    let mut records = vec![row_from(7, 0, "source", &seed)];
+    let mut records = vec![row_from(7, 0, "source", &seed, 1_790_000_000, 1)];
     for (index, name) in children.iter().enumerate() {
         let seed = job(name, name, EntryKind::File, &["剧集"]);
-        let mut child = row_from(7, index, "source", &seed);
+        let mut child = row_from(7, index, "source", &seed, 1_790_000_000, 1);
         child.child = true;
         records.push(child);
     }

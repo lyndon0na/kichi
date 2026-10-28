@@ -9,7 +9,7 @@ mod download_naming;
 mod download_resume;
 pub mod media;
 pub mod partials;
-mod paths;
+pub mod paths;
 pub mod search;
 mod shards;
 mod store;
@@ -18,7 +18,7 @@ mod tasks;
 mod client_cache;
 mod refresh;
 
-pub use paths::{config_dir, store_path};
+pub use paths::{config_dir, store_path, transfers_path};
 pub use search::{ScanBatch, ScanEnd, SearchHit};
 pub use tasks::has_active;
 

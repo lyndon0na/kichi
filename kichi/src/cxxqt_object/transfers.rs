@@ -1,7 +1,7 @@
-//! 传输任务记录表：本次运行内的下载流水。
+//! 传输任务记录表：下载流水（跨重启保留，见 `docs/adr/0014-download-history-on-disk.md`）。
 //!
 //! 只有界面侧需要这些记录（排队顺序、失败原因、落盘路径），因此不进
-//! `kichi-core`，也不落盘：退出 kichi 即清空（见 `docs/adr/0006-transfer-tasks-page.md`）。
+//! `kichi-core`；落盘与读回规则拆在 [`super::transfers_history`]。
 //!
 //! 排队批次只登记一条「总账行」（文件夹名），轮到读目录时才用
 //! [`expand_folder`] 在它后面挂上子行 —— 主列表始终一个文件夹批次一行，
@@ -10,7 +10,10 @@
 //! 并发：下载线程直接写记录，主线程（取消 / 清空 / 登出）也写，统一走
 //! [`with_records`] 的互斥锁；锁中毒时继续用内部数据，不 panic。
 //! QML 模型由主线程通过 `sync_transfers()` 重建，下载线程只改记录 + 投递同步任务。
+//!
+//! **锁顺序**：先 `records`，再 `trees`（文件夹目录树）。任何地方都按这个顺序加锁。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -20,11 +23,8 @@ use cxx_qt_lib::QVariant;
 use kichi_core::{EntryKind, FileEntry};
 
 use super::transfers_rate::{NoteState, SpeedMeter};
-use super::transfers_view::{build_snapshot, live_map_at};
+use super::transfers_view::live_map_at;
 use super::QVariantList;
-
-/// 进程内最多保留的记录数（超出丢最早的已结束记录，进行中的绝不丢）。
-const MAX_RECORDS: usize = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransferState {
@@ -36,15 +36,31 @@ pub(crate) enum TransferState {
     Done,
     Failed,
     Cancelled,
+    /// 上次退出时还没跑完（读回历史时标上）；不能取消、也不算结束，
+    /// 但可以「重试」——重启后不自动续跑（`docs/adr/0011-resumable-downloads.md`）。
+    Interrupted,
 }
 
 impl TransferState {
+    /// 能否取消 / 占调度槽。**不含** `Interrupted`：那一轮下载已经不存在了。
+    ///
+    /// 写成显式 `match`（不用 `matches!`）：将来加状态时编译器会提醒这里漏了分支。
     pub(crate) fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Preparing | Self::Running)
+        match self {
+            Self::Queued | Self::Preparing | Self::Running => true,
+            Self::Done | Self::Failed | Self::Cancelled | Self::Interrupted => false,
+        }
     }
 
+    /// 能否被「清空已完成记录」/ 按上限淘汰清掉。
+    ///
+    /// **不**含 `Interrupted`：已中断的行是用户要看、要重试的东西，只有
+    /// 「清空全部记录」和清理规则能删它。
     pub(crate) fn is_finished(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+        match self {
+            Self::Done | Self::Failed | Self::Cancelled => true,
+            Self::Queued | Self::Preparing | Self::Running | Self::Interrupted => false,
+        }
     }
 
     pub(crate) fn text(self) -> &'static str {
@@ -55,6 +71,7 @@ impl TransferState {
             Self::Done => "已完成",
             Self::Failed => "失败",
             Self::Cancelled => "已取消",
+            Self::Interrupted => "已中断",
         }
     }
 
@@ -66,6 +83,7 @@ impl TransferState {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
         }
     }
 }
@@ -139,12 +157,31 @@ pub(crate) struct Transfer {
     pub(crate) empty_folder: bool,
     /// 文件夹总账行：被跳过的目录数（过深 / 读失败 / 本地建目录失败）
     pub(crate) skipped: usize,
+    /// 批次入队时刻（Unix 秒）：历史按天 / 月分组用（`docs/adr/0014`）
+    pub(crate) created_unix: i64,
+    /// 进程启动序号：落盘后用来识别「上一轮没跑完的行」
+    pub(crate) session: u64,
 }
 
 impl Transfer {
     pub(crate) fn display_name(&self) -> String {
         self.job.display_name()
     }
+}
+
+/// 文件夹批次的目录树（`queue_collect::Collected.dirs`，相对下载根目录）。
+///
+/// 只在内存里：读目录那一刻记下，落盘时随总账行一起写，读回后用于「已中断」
+/// 文件夹的重试与详情页展示。锁顺序：先 `records`、再 `trees`。
+fn trees() -> &'static Mutex<HashMap<u64, Vec<Vec<String>>>> {
+    static TREES: OnceLock<Mutex<HashMap<u64, Vec<Vec<String>>>>> = OnceLock::new();
+    TREES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 文件夹目录树加锁（中毒时继续用内部数据）；`transfers_history` 写盘时也走这里。
+pub(super) fn with_trees<T>(f: impl FnOnce(&mut HashMap<u64, Vec<Vec<String>>>) -> T) -> T {
+    let mut guard = trees().lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut guard)
 }
 
 /// 文件夹批次的总账行：主列表里的唯一一行，key 为 `batch:folder`。
@@ -179,10 +216,37 @@ pub(super) fn with_records<T>(f: impl FnOnce(&mut Vec<Transfer>) -> T) -> T {
 }
 
 /// 取一个新的批次序号。
+///
+/// 启动时由 [`raise_batch_counter`] 跳到历史最大值之后，避免与读回的行撞 key。
 pub(crate) fn new_batch() -> u64 {
+    counter().fetch_add(1, Ordering::SeqCst)
+}
+
+fn counter() -> &'static AtomicU64 {
     static NEXT: OnceLock<AtomicU64> = OnceLock::new();
     NEXT.get_or_init(|| AtomicU64::new(1))
-        .fetch_add(1, Ordering::SeqCst)
+}
+
+/// 批次计数器至少走到 `max_batch` 之后（读回历史时调用）。
+pub(crate) fn raise_batch_counter(max_batch: u64) {
+    let next = max_batch.saturating_add(1);
+    counter().fetch_max(next, Ordering::SeqCst);
+}
+
+/// 这一轮运行的会话号（读回后的新行都盖上它，用来区分「上一轮没跑完」）。
+fn session_slot() -> &'static AtomicU64 {
+    static SESSION: OnceLock<AtomicU64> = OnceLock::new();
+    SESSION.get_or_init(|| AtomicU64::new(1))
+}
+
+/// 当前运行的会话号。
+pub(crate) fn current_session() -> u64 {
+    session_slot().load(Ordering::SeqCst)
+}
+
+/// 设定这一轮运行的会话号（启动加载历史之后调用一次）。
+pub(crate) fn set_session(session: u64) {
+    session_slot().store(session, Ordering::SeqCst);
 }
 
 /// 整批登记。真正下载的一行一个 [`TransferJob`]（文件夹总账行只有一条）。
@@ -190,7 +254,9 @@ pub(crate) fn new_batch() -> u64 {
 /// 排队阶段只登记传给它的行；文件夹批次轮到读目录后用 [`expand_folder`]
 /// 展开成整批。
 pub(crate) fn start_batch(batch: u64, source_id: &str, job: &TransferJob) {
-    with_records(|records| push_job(records, batch, source_id, job));
+    let created = super::transfers_history::now_unix();
+    let session = current_session();
+    with_records(|records| push_job(records, batch, source_id, job, created, session));
 }
 
 /// 轮到读目录：把这一批的总账行标成「准备中」。
@@ -201,9 +267,64 @@ pub(crate) fn mark_preparing(batch: u64) {
 /// 整个文件夹批次读完了：在总账行后面挂上整批的子文件行。
 ///
 /// 父行留在原位置（主列表一个文件夹只占一行）；子行从它后面依次插入，
-/// 排队中的其他批次会自然地排在它下面。
-pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob]) {
-    with_records(|records| expand_folder_in(records, batch, jobs));
+/// 排队中的其他批次会自然地排在它下面。`dirs` 是相对下载根目录的目录树，
+/// 随记录一起落盘（已中断的文件夹重试要用）。
+pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob], dirs: &[Vec<String>]) {
+    let created = super::transfers_history::now_unix();
+    let session = current_session();
+    // 锁顺序：先 records、再 trees
+    with_records(|records| {
+        if let Some(created_unix) = records
+            .iter()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+            .map(|record| record.created_unix)
+        {
+            expand_folder_in(records, batch, jobs, created_unix, session);
+        } else {
+            expand_folder_in(records, batch, jobs, created, session);
+        }
+    });
+    with_trees(|trees| {
+        trees.insert(batch, dirs.to_vec());
+    });
+}
+
+/// 读回一条历史行（`transfers_history::restore` 用）：不跑任何状态迁移。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn restore_row(
+    batch: u64,
+    index: usize,
+    child: bool,
+    job: &TransferJob,
+    source_id: &str,
+    state: TransferState,
+    bytes: u64,
+    total: Option<u64>,
+    detail: String,
+    path: Option<PathBuf>,
+    empty_folder: bool,
+    skipped: usize,
+    created_unix: i64,
+    session: u64,
+) -> Transfer {
+    Transfer {
+        batch,
+        index,
+        child,
+        job: job.clone(),
+        source_id: source_id.to_owned(),
+        state,
+        bytes,
+        total: total.or((job.size > 0).then_some(job.size)),
+        detail,
+        path,
+        speed: SpeedMeter::default(),
+        note: NoteState::default(),
+        empty_folder,
+        skipped,
+        created_unix,
+        session,
+    }
 }
 
 /// 一批整体没跑起来（收集失败 / 线程起不来 / 根目录建不出来）：标失败。
@@ -272,22 +393,43 @@ pub(crate) fn cancel_batch(batch: u64, reason: &str) {
     with_records(|records| cancel_active_in(records, Some(batch), reason));
 }
 
-/// 只清已结束的记录，进行中的保留。
-pub(crate) fn clear_finished() {
-    with_records(clear_finished_in);
+/// 登出时把还在排队的记录标成「已中断」：这一轮下载已经作废，不会再有结果。
+///
+/// **不动正在跑的那一批的状态语义**：`queue::reset()` 只置 `abandon`，旧线程退出
+/// 时 `post_finished` 发现 epoch 变了就不再改记录（`ADR 0014`），所以这里可以把
+/// 进行中的行直接落成「已中断」，界面不会一直挂着假的「下载中」。
+pub(crate) fn interrupt_active() {
+    with_records(|records| interrupt_active_in(records));
 }
 
-/// 登出时全清（记录与文件夹详情选中都清掉）。
+fn interrupt_active_in(records: &mut [Transfer]) {
+    for record in records.iter_mut() {
+        if record.state.is_active() {
+            record.state = TransferState::Interrupted;
+            record.detail.clear();
+        }
+    }
+}
+
+/// 「清空已完成记录」：清掉整张记录表里所有「所有行都已结束」的批次。
+///
+/// 不能像 [`clear_finished_in`] 那样只满足 `is_finished()`：已中断的行不算结束，
+/// 留着它会让整批（连同里面的失败 / 完成行）一起留下，和按钮文案不符。
+pub(crate) fn clear_all() {
+    with_records(clear_all_in);
+}
+
+/// 登出时清空（记录、文件夹目录树与详情选中都清掉）。
+///
+/// **生产路径不再调用**：ADR 0014 起登出保留历史（`downloads::reset_downloads`
+/// 只作废在途下载并写盘），这里留给「确实要清干净」的单测。
+#[cfg(test)]
 pub(crate) fn reset() {
     with_records(|records| {
         records.clear();
         super::transfers_detail::clear_selection();
     });
-}
-
-/// 记录表 → QML 模型 + 进行中条数（排队 + 下载中）。
-pub(crate) fn snapshot() -> (QVariantList, i32) {
-    with_records(|records| build_snapshot(records.as_slice()))
+    with_trees(|trees| trees.clear());
 }
 
 /// 是否有单文件行正在下载（心跳只在此时才有意义）。
@@ -342,14 +484,25 @@ pub(crate) fn live_snapshot_at(now: Instant) -> QVariantList {
 /// 按 `(batch, index)` 找文件行：必须过滤掉文件夹总账行。
 ///
 /// 父行与第一个子行都可能是 `(batch, 0)`；只看坐标会误把父行当文件。
+/// 已中断的行不再收下载线程的迟到回调（那一轮下载已经不存在了）。
 fn find_file(records: &mut [Transfer], batch: u64, index: usize) -> Option<&mut Transfer> {
     records.iter_mut().find(|record| {
-        record.job.kind == EntryKind::File && record.batch == batch && record.index == index
+        record.job.kind == EntryKind::File
+            && record.batch == batch
+            && record.index == index
+            && record.state != TransferState::Interrupted
     })
 }
 
 /// 一条新记录（排队态）。`index` 在文件夹展开时由外层决定。
-pub(super) fn row_from(batch: u64, index: usize, source_id: &str, job: &TransferJob) -> Transfer {
+pub(super) fn row_from(
+    batch: u64,
+    index: usize,
+    source_id: &str,
+    job: &TransferJob,
+    created_unix: i64,
+    session: u64,
+) -> Transfer {
     Transfer {
         batch,
         index,
@@ -365,11 +518,20 @@ pub(super) fn row_from(batch: u64, index: usize, source_id: &str, job: &Transfer
         note: NoteState::default(),
         empty_folder: false,
         skipped: 0,
+        created_unix,
+        session,
     }
 }
 
-fn push_job(records: &mut Vec<Transfer>, batch: u64, source_id: &str, job: &TransferJob) {
-    records.push(row_from(batch, 0, source_id, job));
+fn push_job(
+    records: &mut Vec<Transfer>,
+    batch: u64,
+    source_id: &str,
+    job: &TransferJob,
+    created_unix: i64,
+    session: u64,
+) {
+    records.push(row_from(batch, 0, source_id, job, created_unix, session));
     trim(records);
 }
 
@@ -377,7 +539,13 @@ fn push_job(records: &mut Vec<Transfer>, batch: u64, source_id: &str, job: &Tran
 ///
 /// 不删父行：主列表永远只有一条文件夹批次行；子行只在详情页展示。
 /// 子行从父行后面依次插入，后面排队的批次位置不受影响。
-fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[TransferJob]) {
+fn expand_folder_in(
+    records: &mut Vec<Transfer>,
+    batch: u64,
+    jobs: &[TransferJob],
+    created_unix: i64,
+    session: u64,
+) {
     let Some(at) = records
         .iter()
         .position(|record| record.batch == batch && is_folder_ledger(record))
@@ -389,7 +557,7 @@ fn expand_folder_in(records: &mut Vec<Transfer>, batch: u64, jobs: &[TransferJob
         .iter()
         .enumerate()
         .map(|(index, job)| {
-            let mut row = row_from(batch, index, &source_id, job);
+            let mut row = row_from(batch, index, &source_id, job, created_unix, session);
             row.child = true;
             row
         })
@@ -425,7 +593,7 @@ pub(crate) fn begin_record(record: &mut Transfer, now: Instant) -> bool {
 
 /// 文件夹批次的总账行状态由子行聚合而来。
 ///
-/// 取消后不再被后续完成事件改回（取消的优先级最高）；没有子行时不动父行。
+/// 取消 / 已中断后不再被后续完成事件改回（两者的优先级最高）；没有子行时不动父行。
 pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
     let Some(parent) = records
         .iter()
@@ -433,7 +601,11 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
     else {
         return;
     };
-    if records[parent].state == TransferState::Cancelled {
+    let parent_state = records[parent].state;
+    if matches!(
+        parent_state,
+        TransferState::Cancelled | TransferState::Interrupted
+    ) {
         return;
     }
 
@@ -442,6 +614,7 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
     let mut running = false;
     let mut failed = false;
     let mut cancelled = false;
+    let mut interrupted = false;
     let mut all_done = true;
     for child in records
         .iter()
@@ -467,6 +640,11 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
                 cancelled = true;
                 all_done = false;
             }
+            // 上一轮没跑完的子行：父行保持「已中断」，不并入失败
+            TransferState::Interrupted => {
+                interrupted = true;
+                all_done = false;
+            }
         }
     }
     if children == 0 {
@@ -475,11 +653,13 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
 
     records[parent].state = if active {
         // 读目录刚结束、子行还没开始时保持「准备中」
-        if running || records[parent].state != TransferState::Preparing {
+        if running || parent_state != TransferState::Preparing {
             TransferState::Running
         } else {
             TransferState::Preparing
         }
+    } else if interrupted {
+        TransferState::Interrupted
     } else if failed {
         TransferState::Failed
     } else if all_done {
@@ -536,7 +716,7 @@ fn finish_folder_empty_in(records: &mut [Transfer], batch: u64) {
     else {
         return;
     };
-    if parent.state == TransferState::Cancelled {
+    if parent.state == TransferState::Cancelled || parent.state == TransferState::Interrupted {
         return;
     }
     // 路径要在改字段前算好（函数借的是记录本身）
@@ -668,7 +848,7 @@ pub(crate) fn has_done_child(records: &[Transfer], batch: u64) -> bool {
         .any(|record| record.batch == batch && record.child && record.state == TransferState::Done)
 }
 
-/// 所有记录都已结束的批次号（升序）。
+/// 所有行都已结束（完成 / 失败 / 取消）的批次号（升序）。
 fn finished_batches(records: &[Transfer]) -> Vec<u64> {
     let mut batches: Vec<u64> = records.iter().map(|record| record.batch).collect();
     batches.sort_unstable();
@@ -682,7 +862,23 @@ fn finished_batches(records: &[Transfer]) -> Vec<u64> {
     batches
 }
 
-/// 清空已结束的**整批**：正在下载的文件夹即使有已完成子行也完整保留。
+/// 可以按内存上限淘汰的整批：已结束，或整批只剩「已中断」。
+///
+/// 只用于 [`trim`]（进程内 2000 条的内存闸门）；「清空已完成记录」不碰已中断的行。
+fn evictable_batches(records: &[Transfer]) -> Vec<u64> {
+    let mut batches: Vec<u64> = records.iter().map(|record| record.batch).collect();
+    batches.sort_unstable();
+    batches.dedup();
+    batches.retain(|batch| {
+        records
+            .iter()
+            .filter(|record| record.batch == *batch)
+            .all(|record| record.state.is_finished() || record.state == TransferState::Interrupted)
+    });
+    batches
+}
+
+/// 清空已结束的**整批**：正在下载 / 排队 / 已中断的批次完整保留。
 fn clear_finished_in(records: &mut Vec<Transfer>) {
     let removable = finished_batches(records);
     if removable.is_empty() {
@@ -691,17 +887,30 @@ fn clear_finished_in(records: &mut Vec<Transfer>) {
     records.retain(|record| !removable.contains(&record.batch));
 }
 
+/// 「清空已完成记录」：清全部历史里所有「所有行都已结束」的整批，不按日期收窄。
+///
+/// 与 `clear_finished_in` 同一口径（进行中 / 排队 / 已中断保留）；分出来只是为了
+/// 在调用点说清楚「不按日期分组」这件事。
+fn clear_all_in(records: &mut Vec<Transfer>) {
+    clear_finished_in(records);
+}
+
+/// 进程内最多保留的记录数（超出丢最早的已结束记录，进行中的绝不丢）。
+///
+/// 落盘的历史不受这个数限制（ADR 0014：不设条数上限，只按天 / 月分组）。
+const MAX_RECORDS: usize = 2000;
+
 /// 超过上限时按整批淘汰最早的已结束批次；进行中的批次绝不删。
 ///
-/// 只剩最新一个已结束批次时保留它：一个超大文件夹刚下完，
+/// 只剩最新一个可淘汰批次时保留它：一个超大文件夹刚下完，
 /// 不能因为记录数超限就整条从界面上消失。
 fn trim(records: &mut Vec<Transfer>) {
     while records.len() > MAX_RECORDS {
-        let finished = finished_batches(records);
-        if finished.len() < 2 {
+        let evictable = evictable_batches(records);
+        if evictable.len() < 2 {
             break;
         }
-        let oldest = finished[0];
+        let oldest = evictable[0];
         records.retain(|record| record.batch != oldest);
     }
 }

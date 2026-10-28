@@ -7,8 +7,10 @@
 //! 文件夹批次在主列表只有一条总账行：进度 / 大小 / 文件数 / 失败数都由
 //! 子行聚合而来；子行本身只进文件夹详情页的快照。
 
-use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 use std::time::Instant;
+
+use chrono::TimeZone;
+use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 
 use super::actions::format_size;
 use super::transfers::{
@@ -89,6 +91,8 @@ pub(crate) fn batch_stats(records: &[Transfer], batch: u64) -> BatchStats {
             TransferState::Failed => stats.failed += 1,
             TransferState::Cancelled => stats.cancelled += 1,
             TransferState::Queued | TransferState::Preparing => {}
+            // 上次没下完：既不算成功也不算失败，父行保持「已中断」
+            TransferState::Interrupted => {}
         }
         match child.total {
             // 0 字节子行按 0 处理，不参与「总量未知」判断
@@ -151,8 +155,27 @@ fn folder_progress_fields(stats: &BatchStats, state: TransferState) -> (i32, Str
 }
 
 /// 文件夹总账行的第二行说明（不含「点开可重试」，那由 QML 追加）。
+///
+/// 已中断的父行单独处理：它的说明是「上次退出时未完成 · 完成 x 个 · 失败 y 个」，
+/// 不参与下面按状态拼的文案（那些都是当前这一轮才有的结果）。
 fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> String {
     let skipped = skip_suffix(record.skipped);
+    if record.state == TransferState::Interrupted && !record.detail.is_empty() {
+        // 读目录前就中断：原因由历史文件带来
+        return record.detail.clone();
+    }
+    if record.state == TransferState::Interrupted {
+        let mut text = if has_children {
+            format!(
+                "上次退出时未完成 · 完成 {} 个 · 失败 {} 个",
+                stats.done, stats.failed
+            )
+        } else {
+            "上次退出时未完成".to_owned()
+        };
+        text.push_str(&skipped);
+        return text;
+    }
     if !has_children {
         // 空文件夹没有子行：完成说明直接由落盘路径派生
         return match record.state {
@@ -182,6 +205,8 @@ fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> S
             Some(path) => format!("{} 个文件 · 保存到 {}", stats.total, path.display()),
             None => format!("{} 个文件", stats.total),
         },
+        // 上面已经单独返回
+        TransferState::Interrupted => "上次退出时未完成".to_owned(),
         TransferState::Failed => {
             let mut detail = format!("成功 {} 个 · 失败 {} 个", stats.done, stats.failed);
             if stats.cancelled > 0 {
@@ -218,6 +243,8 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
         TransferState::Running => percent.unwrap_or(-1),
         TransferState::Failed | TransferState::Cancelled => percent.unwrap_or(0),
         TransferState::Queued | TransferState::Preparing => 0,
+        // 上次下到一半：进度条停在历史位置，不假装 0
+        TransferState::Interrupted => percent.unwrap_or(0),
     };
     let progress_text = if running {
         percent
@@ -240,7 +267,7 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
             .or_else(|| (record.bytes > 0).then(|| format_size(record.bytes)))
             .unwrap_or_else(|| "—".to_owned()),
     };
-    // 完成行的说明由落盘路径派生；准备中的说明行直接由状态决定
+    // 完成行的说明由落盘路径派生；准备中 / 已中断的说明行直接由状态决定
     let detail = match record.state {
         TransferState::Preparing => "正在读取目录结构…".to_owned(),
         TransferState::Done => record
@@ -248,6 +275,8 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
             .as_ref()
             .map(|path| format!("保存到 {}", path.display()))
             .unwrap_or_default(),
+        // 已中断：说明由 QML 的「重试」行补断点文案，这里给状态说明
+        TransferState::Interrupted if record.detail.is_empty() => "上次退出时未完成".to_owned(),
         _ => record.detail.clone(),
     };
     let path_text = record
@@ -271,6 +300,11 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     insert(&mut map, "folder", QVariant::from(&false));
     insert(&mut map, "childCount", QVariant::from(&0i32));
     insert(&mut map, "failedCount", QVariant::from(&0i32));
+    insert(
+        &mut map,
+        "createdUnix",
+        QVariant::from(&record.created_unix),
+    );
     map
 }
 
@@ -295,7 +329,8 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
         (progress, String::new(), "—".to_owned())
     };
     let detail = folder_detail(record, &stats, has_children);
-    // 至少一个子文件完成，或者空文件夹已完成（目录已建出来）：才有落盘路径
+    // 至少一个子文件完成，或者空文件夹已完成（目录已建出来）：才有落盘路径。
+    // 已中断的文件夹若在中断前有子文件落下，同样给路径——那些文件确实在磁盘上。
     let empty_done = record.empty_folder && record.state == TransferState::Done;
     let path_text = if (has_children && stats.done > 0) || empty_done {
         folder_download_path(record)
@@ -327,6 +362,11 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
         &mut map,
         "failedCount",
         QVariant::from(&i32::try_from(stats.failed).unwrap_or(i32::MAX)),
+    );
+    insert(
+        &mut map,
+        "createdUnix",
+        QVariant::from(&record.created_unix),
     );
     map
 }
@@ -431,6 +471,7 @@ fn notice(key: &str, message: &str) -> QVariantMap {
     insert(&mut map, "folder", QVariant::from(&false));
     insert(&mut map, "childCount", QVariant::from(&0i32));
     insert(&mut map, "failedCount", QVariant::from(&0i32));
+    insert(&mut map, "createdUnix", QVariant::from(&0i64));
     map
 }
 
@@ -453,23 +494,39 @@ fn detail_notice_map(hidden: usize) -> QVariantMap {
     )
 }
 
-/// 排序：进行中在前（批次内按顺序），已结束在后（新 → 旧）。只取顶层记录。
+/// 排序：进行中 / 已中断在前（批次内按顺序），已结束在后（新 → 旧）。只取顶层记录。
+///
+/// 已中断的行排最上面：它们不占调度槽，但是用户要先看到、要重试的那几条
+/// （ADR 0014：「进行中 / 排队 / 已中断的行不受日期过滤，永远排最上面」）。
 pub(crate) fn ordered(records: &[Transfer]) -> Vec<&Transfer> {
-    let mut active: Vec<&Transfer> = records
+    let mut open: Vec<&Transfer> = records
         .iter()
-        .filter(|record| !record.child && record.state.is_active())
+        .filter(|record| {
+            !record.child
+                && (record.state.is_active() || record.state == TransferState::Interrupted)
+        })
         .collect();
     let mut finished: Vec<&Transfer> = records
         .iter()
         .filter(|record| !record.child && record.state.is_finished())
         .collect();
-    active.sort_by_key(|record| (record.batch, record.index));
+    // 打开着的批次按批号（旧 → 新）；已中断的批次比进行中的还靠前，先让用户看见
+    open.sort_by_key(|record| {
+        (
+            record.state != TransferState::Interrupted,
+            record.batch,
+            record.index,
+        )
+    });
     finished.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
-    active.extend(finished);
-    active
+    open.extend(finished);
+    open
 }
 
-/// 记录表 → 主列表模型 + 进行中条数（按批次算，一个文件夹算 1）。
+/// 记录表 → 主列表模型 + 进行中条数（按批次算，一个文件夹算 1），不分日期。
+///
+/// 生产路径走 [`build_history_snapshot`]（带日期分组）；这个不分组的版本留给单测。
+#[cfg(test)]
 pub(crate) fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     let top_level: Vec<&Transfer> = records.iter().filter(|record| !record.child).collect();
     let total = top_level.len();
@@ -484,6 +541,126 @@ pub(crate) fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     if total > MAX_ROWS {
         list.append(QVariant::from(&notice_map(total - MAX_ROWS)));
     }
+    let active = i32::try_from(active).unwrap_or(i32::MAX);
+    (list, active)
+}
+
+// —— 日期分组（`docs/adr/0014-download-history-on-disk.md`）——
+
+/// 分组查询的「不限日期」。
+pub(crate) const HISTORY_DAY_ALL: &str = "all";
+/// 分组查询的「今天」（默认；刷新时换算成此刻的日期）。
+pub(crate) const HISTORY_DAY_TODAY: &str = "today";
+
+/// 一条记录该归到哪一天（本地时区），`YYYY-MM-DD`。
+pub(crate) fn day_key(created_unix: i64) -> String {
+    match chrono::Local.timestamp_opt(created_unix, 0).single() {
+        Some(time) => time.format("%Y-%m-%d").to_string(),
+        None => String::new(),
+    }
+}
+
+fn day_label(key: &str, today: &str, yesterday: &str) -> String {
+    if key == today {
+        "今天".to_owned()
+    } else if key == yesterday {
+        "昨天".to_owned()
+    } else {
+        // 同年只显示「月-日」；跨年补两位年份，免得「01-02」看不出是哪一年
+        let short = key.get(5..).unwrap_or(key);
+        match (key.get(..4), today.get(..4)) {
+            (Some(year), Some(current)) if year != current => {
+                format!("{}-{short}", &year[2..])
+            }
+            _ => short.to_owned(),
+        }
+    }
+}
+
+/// 历史上出现过的日子（新 → 旧），带显示文案。
+///
+/// 只统计顶层行（一个批次一行）。`created_unix == 0` 的旧记录不参与分组：
+/// 它们进不了任何一天，只能靠「全部」看。
+pub(crate) fn history_days(records: &[Transfer], now: i64) -> Vec<(String, String)> {
+    let mut keys: Vec<String> = records
+        .iter()
+        .filter(|record| !record.child && record.created_unix > 0)
+        .map(|record| day_key(record.created_unix))
+        .filter(|key| !key.is_empty())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys.reverse();
+
+    let today = day_key(now);
+    let yesterday = day_key(now.saturating_sub(24 * 3600));
+    keys.into_iter()
+        .map(|key| {
+            let label = day_label(&key, &today, &yesterday);
+            (key, label)
+        })
+        .collect()
+}
+
+/// 这个批次属于哪一天（顶层行的入队时刻）。
+fn record_day(records: &[Transfer], record: &Transfer) -> String {
+    let created = super::transfers_history::created_of(records, record.batch);
+    if created > 0 {
+        day_key(created)
+    } else {
+        String::new()
+    }
+}
+
+/// 这一天能看到它吗：进行中 / 排队 / 已中断永远可见；其余按批次入队那天。
+fn matches_day(records: &[Transfer], record: &Transfer, day: &str) -> bool {
+    if record.state.is_active() || record.state == TransferState::Interrupted {
+        return true;
+    }
+    if day.is_empty() || day == HISTORY_DAY_ALL {
+        return true;
+    }
+    record_day(records, record) == day
+}
+
+/// 这一行是「读目录前整体失败 / 整个中断」的文件夹总账行吗（整批重试用它自己的目录树重来）。
+pub(crate) fn is_whole_folder_ledger(records: &[Transfer], key: &str) -> bool {
+    let Some(record) = records
+        .iter()
+        .find(|record| record_key(record) == key && is_folder_ledger(record))
+    else {
+        return false;
+    };
+    let has_children = records
+        .iter()
+        .any(|row| row.batch == record.batch && row.child);
+    if has_children {
+        return false;
+    }
+    matches!(
+        record.state,
+        TransferState::Failed | TransferState::Interrupted
+    )
+}
+
+/// 主列表快照（按日期过滤）：进行中 / 排队 / 已中断排最上面，其余只看选中那天。
+pub(crate) fn build_history_snapshot(records: &[Transfer], day: &str) -> (QVariantList, i32) {
+    let visible: Vec<&Transfer> = ordered(records)
+        .into_iter()
+        .filter(|record| matches_day(records, record, day))
+        .collect();
+    let total = visible.len();
+    let mut list = QVariantList::default();
+    for record in visible.into_iter().take(MAX_ROWS) {
+        list.append(QVariant::from(&record_map(record, records)));
+    }
+    if total > MAX_ROWS {
+        list.append(QVariant::from(&notice_map(total - MAX_ROWS)));
+    }
+    let active = records
+        .iter()
+        .filter(|record| !record.child && record.state.is_active())
+        .count();
     let active = i32::try_from(active).unwrap_or(i32::MAX);
     (list, active)
 }

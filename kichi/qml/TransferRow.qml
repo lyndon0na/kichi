@@ -49,14 +49,19 @@ ItemDelegate {
 
     readonly property bool notice: row.phase === "notice"
     readonly property bool failed: row.phase === "failed"
+    /// 上次退出时没跑完（读回的历史行）：给「重试」，不给「打开位置」
+    readonly property bool interrupted: row.phase === "interrupted"
     /// 空文件夹 Done 行没有子行但有落盘路径（path 非空），所以下面两条要分开看：
     /// 没有子行 → 不显示下钻箭头；有路径 → 仍可「打开位置」。
     readonly property bool canOpenDetails: row.folder && row.childCount > 0
     readonly property bool hasFailedChildren: row.folder && row.failedCount > 0
+    /// 只有真的落过盘才有位置可打开（已中断 / 失败 / 取消都没有）
     readonly property bool canReveal: row.path.length > 0
-    /// 子文件失败 / 单文件失败可重试；文件夹父行只有「读目录前整体失败」
+    /// 子文件失败 / 单文件失败可重试；文件夹父行只有「读目录前整体失败或整个中断」
     /// （没有任何子行）才能整批重试，部分失败去详情页逐个重试。
-    readonly property bool canRetry: row.failed && (!row.folder || row.childCount === 0)
+    /// 已中断的行同样给「重试」：断点还在就续传，改过下载目录就从头下。
+    readonly property bool canRetry: (row.failed || row.interrupted)
+                                     && (!row.folder || row.childCount === 0)
 
     /// 在文件管理器里选中落盘文件 / 打开文件夹（整段路径与「打开位置」都走这里）
     function revealFile() {
@@ -183,6 +188,7 @@ ItemDelegate {
                     font.pixelSize: 12
                     verticalAlignment: Text.AlignVCenter
                     color: row.failed ? "#c0392b"
+                         : row.interrupted ? "#b9770e"
                          : row.phase === "done" ? "#3c9d5a"
                          : palette.placeholderText
                 }
@@ -284,8 +290,9 @@ ItemDelegate {
                     font.pixelSize: 12
                     verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideMiddle
-                    color: row.failed || row.hasFailedChildren
-                         ? "#c0392b" : palette.placeholderText
+                    color: row.failed || row.hasFailedChildren ? "#c0392b"
+                         : row.interrupted ? "#b9770e"
+                         : palette.placeholderText
                     font.underline: detailMouse.containsMouse
                                     && row.canReveal && !row.folder
 
@@ -325,6 +332,11 @@ ItemDelegate {
                     verticalAlignment: Text.AlignVCenter
                     color: palette.link
                     font.underline: retryMouse.containsMouse
+
+                    // 已中断行：说清断点前提（改过下载目录 = 从头下，ADR 0011 / 0014）
+                    ToolTip.visible: row.interrupted && retryMouse.containsMouse
+                    ToolTip.delay: 400
+                    ToolTip.text: qsTr("上次未完成，若下载目录未变会从断点续传")
 
                     MouseArea {
                         id: retryMouse

@@ -24,7 +24,7 @@ fn job(id: &str, name: &str, kind: EntryKind, sub_dir: &[&str]) -> TransferJob {
 
 fn record(id: &str, kind: EntryKind, sub_dir: &[&str], state: TransferState) -> Transfer {
     let seed = job(id, "第 1 集.mkv", kind, sub_dir);
-    let mut record = row_from(7, 0, "folder-id", &seed);
+    let mut record = row_from(7, 0, "folder-id", &seed, 1_790_000_000, 1);
     record.state = state;
     record
 }
@@ -32,10 +32,10 @@ fn record(id: &str, kind: EntryKind, sub_dir: &[&str], state: TransferState) -> 
 /// 文件夹批次：父行 + 若干子行（index 0..）。
 fn folder_batch(children: &[(&str, TransferState)]) -> Vec<Transfer> {
     let seed = job("folder-1", "剧集", EntryKind::Folder, &[]);
-    let mut records = vec![row_from(7, 0, "folder-id", &seed)];
+    let mut records = vec![row_from(7, 0, "folder-id", &seed, 1_790_000_000, 1)];
     for (index, (name, state)) in children.iter().enumerate() {
         let seed = job(name, name, EntryKind::File, &["剧集"]);
-        let mut child = row_from(7, index, "folder-id", &seed);
+        let mut child = row_from(7, index, "folder-id", &seed, 1_790_000_000, 1);
         child.child = true;
         child.state = *state;
         records.push(child);
@@ -91,7 +91,7 @@ fn folder_with_children_never_retries_as_a_whole() {
 }
 
 #[test]
-fn only_failed_records_can_be_retried() {
+fn only_failed_or_interrupted_records_can_be_retried() {
     for state in [
         TransferState::Queued,
         TransferState::Preparing,
@@ -102,12 +102,43 @@ fn only_failed_records_can_be_retried() {
         let record = record("file-1", EntryKind::File, &[], state);
         assert!(
             retry_target_in(&[record], "7:0").is_none(),
-            "只有 failed 能重试，{state:?} 不行"
+            "只有 failed / interrupted 能重试，{state:?} 不行"
+        );
+    }
+    for state in [TransferState::Failed, TransferState::Interrupted] {
+        let record = record("file-1", EntryKind::File, &[], state);
+        assert!(
+            retry_target_in(&[record], "7:0").is_some(),
+            "{state:?} 可以重试"
         );
     }
     assert!(
         retry_target_in(&[], "7:0").is_none(),
         "不存在的 key 返回 None"
+    );
+}
+
+#[test]
+fn whole_folder_retry_is_only_for_ledgers_without_children() {
+    let mut whole = folder_batch(&[]);
+    whole[0].state = TransferState::Interrupted;
+    assert!(
+        super::super::transfers_view::is_whole_folder_ledger(&whole, "7:folder"),
+        "已中断、没有子行的文件夹整批重来"
+    );
+
+    let mut partial = folder_batch(&[("a.mkv", TransferState::Interrupted)]);
+    partial[0].state = TransferState::Interrupted;
+    assert!(
+        !super::super::transfers_view::is_whole_folder_ledger(&partial, "7:folder"),
+        "有子行的文件夹不整批重来"
+    );
+
+    let mut done = folder_batch(&[]);
+    done[0].state = TransferState::Done;
+    assert!(
+        !super::super::transfers_view::is_whole_folder_ledger(&done, "7:folder"),
+        "完成的文件夹不给重试"
     );
 }
 
@@ -127,6 +158,23 @@ fn remove_only_drops_the_matching_row() {
     assert_eq!(records[0].job.id, "file-2", "其它行一动不动");
     assert!(!remove_in(&mut records, "7:0"), "删过就不存在了");
     assert!(!remove_in(&mut records, "9:9"), "不存在的 key 返回 false");
+}
+
+#[test]
+fn interrupted_parent_disappears_after_its_last_child_is_retried() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Interrupted),
+        ("b.mkv", TransferState::Interrupted),
+    ]);
+    records[0].state = TransferState::Interrupted;
+
+    assert!(remove_in(&mut records, "7:0"));
+    assert_eq!(records.len(), 2, "还剩父行 + 一个子行");
+    assert!(remove_in(&mut records, "7:1"));
+    assert!(
+        records.is_empty(),
+        "最后一个子行被重试后已中断的父行也一起消失"
+    );
 }
 
 #[test]
@@ -209,7 +257,7 @@ fn folder_ledger(name: &str) -> TransferJob {
 fn empty_folder_done_row_has_its_directory() {
     // 真实流程里 `finish_folder_empty` 已把建出来的目录写进 path（transfers_tests 覆盖），
     // 这里只验「路径取得到、QML 的打开位置有用」
-    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"));
+    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"), 1_790_000_000, 1);
     record.state = TransferState::Done;
     record.empty_folder = true;
     record.path = Some(PathBuf::from("/home/me/Downloads/剧集"));
@@ -223,7 +271,7 @@ fn empty_folder_done_row_has_its_directory() {
 
 #[test]
 fn failed_empty_batch_has_no_path() {
-    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"));
+    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"), 1_790_000_000, 1);
     record.state = TransferState::Failed;
     record.detail = "所有子目录都无法读取（跳过 2 个）".into();
 
@@ -250,7 +298,7 @@ fn folder_path_still_comes_from_done_children_first() {
 
 #[test]
 fn empty_folder_row_is_not_retryable_as_a_whole() {
-    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"));
+    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"), 1_790_000_000, 1);
     record.state = TransferState::Done;
     record.empty_folder = true;
     assert!(

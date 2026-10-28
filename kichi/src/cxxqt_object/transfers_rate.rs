@@ -201,8 +201,11 @@ pub(crate) fn batch_rate_info(records: &[Transfer], batch: u64, now: Instant) ->
         .filter(|record| record.batch == batch && record.child)
     {
         match record.state {
-            // 已完成不占剩余；失败 / 取消的残量不再算进整批
-            TransferState::Done | TransferState::Failed | TransferState::Cancelled => {}
+            // 已完成不占剩余；失败 / 取消的残量不再算进整批；已中断的行不参与 ETA
+            TransferState::Done
+            | TransferState::Failed
+            | TransferState::Cancelled
+            | TransferState::Interrupted => {}
             TransferState::Running => {
                 if running.is_none() {
                     running = Some(record);

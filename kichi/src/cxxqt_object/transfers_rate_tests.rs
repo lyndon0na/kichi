@@ -28,14 +28,35 @@ fn job(name: &str, size: u64, kind: EntryKind) -> TransferJob {
 }
 
 fn file_record(name: &str, size: u64) -> Transfer {
-    row_from(1, 0, "source", &job(name, size, EntryKind::File))
+    row_from(
+        1,
+        0,
+        "source",
+        &job(name, size, EntryKind::File),
+        1_790_000_000,
+        1,
+    )
 }
 
 /// 一个文件夹批次：父行 + 子行。
 fn folder_records(children: &[(&str, u64)]) -> Vec<Transfer> {
-    let mut records = vec![row_from(1, 0, "source", &job("剧集", 0, EntryKind::Folder))];
+    let mut records = vec![row_from(
+        1,
+        0,
+        "source",
+        &job("剧集", 0, EntryKind::Folder),
+        1_790_000_000,
+        1,
+    )];
     for (index, (name, size)) in children.iter().enumerate() {
-        let mut row = row_from(1, index, "source", &job(name, *size, EntryKind::File));
+        let mut row = row_from(
+            1,
+            index,
+            "source",
+            &job(name, *size, EntryKind::File),
+            1_790_000_000,
+            1,
+        );
         row.child = true;
         records.push(row);
     }
@@ -283,6 +304,8 @@ fn batch_remaining_skips_failed_and_cancelled() {
         2,
         "source",
         &job("c.mkv", 30 * 1024 * 1024, EntryKind::File),
+        1_790_000_000,
+        1,
     );
     failed.child = true;
     failed.state = TransferState::Failed;
@@ -292,6 +315,8 @@ fn batch_remaining_skips_failed_and_cancelled() {
         3,
         "source",
         &job("d.mkv", 50 * 1024 * 1024, EntryKind::File),
+        1_790_000_000,
+        1,
     );
     cancelled.child = true;
     cancelled.state = TransferState::Cancelled;
@@ -325,7 +350,14 @@ fn batch_unknown_size_hides_eta_but_a_failed_row_does_not() {
     // 还没轮到、大小未知：整批不给 ETA
     records[3].total = None;
     // 失败行的大小未知不该阻塞 ETA
-    let mut failed = row_from(1, 3, "source", &job("failed.mkv", 0, EntryKind::File));
+    let mut failed = row_from(
+        1,
+        3,
+        "source",
+        &job("failed.mkv", 0, EntryKind::File),
+        1_790_000_000,
+        1,
+    );
     failed.child = true;
     failed.state = TransferState::Failed;
     failed.total = None;

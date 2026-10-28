@@ -119,7 +119,12 @@ impl qobject::Kichi {
 
 impl qobject::Kichi {
     /// 退出前注销托盘（QML 在 Qt.quit() 之前调用）。
+    ///
+    /// 真退出与托盘点「退出」两条路径都会调用它（QML 的 `onClosing` 与
+    /// `quitRequested`），所以下载历史的强制写盘也挂在这里：
+    /// 进程直接结束前把记录表落成最后一次（ADR 0014）。
     pub fn shutdown_tray(&self) {
+        super::downloads::flush_history();
         super::tray::stop();
     }
 

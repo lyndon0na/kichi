@@ -191,6 +191,7 @@ Item {
                 font.pixelSize: 12
                 verticalAlignment: Text.AlignVCenter
                 color: page.folderValue("phase", "") === "failed" ? "#c0392b"
+                     : page.folderValue("phase", "") === "interrupted" ? "#b9770e"
                      : page.folderValue("phase", "") === "done" ? "#3c9d5a"
                      : palette.placeholderText
             }

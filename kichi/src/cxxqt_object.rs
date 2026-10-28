@@ -90,6 +90,9 @@ pub mod qobject {
         /// 文件夹详情是否打开（false 时主列表可见）
         #[qproperty(bool, transfer_detail_active, cxx_name = "transferDetailActive", READ, NOTIFY = changed)]
         #[qproperty(i32, download_active, cxx_name = "downloadActive", READ, NOTIFY = changed)]
+        /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰；
+        /// 不随日期分组收窄——清空清的是全部历史）
+        #[qproperty(bool, transfer_has_finished, cxx_name = "transferHasFinished", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
         #[qproperty(bool, search_active, cxx_name = "searchActive", READ, NOTIFY = changed)]
@@ -253,12 +256,22 @@ pub mod qobject {
         #[cxx_name = "cancelDownloads"]
         fn cancel_downloads(self: Pin<&mut Self>);
 
-        /// 清空已结束（完成 / 失败 / 已取消）的传输记录
+        /// 清空已结束（完成 / 失败 / 已取消 / 已中断）的记录：清全部历史，不按日期收窄
         #[qinvokable]
         #[cxx_name = "clearFinishedTransfers"]
         fn clear_finished_transfers(self: Pin<&mut Self>);
 
-        /// 重试一条失败的传输记录（文件级，回到原批次下载目录）
+        /// 分组行要列的日子（新 → 旧）：`[{ key, label }, …]`
+        #[qinvokable]
+        #[cxx_name = "transferHistoryDays"]
+        fn transfer_history_days(self: &Self) -> QVariantList;
+
+        /// 选中一个历史分组（`today` / 具体日期 / `all`）；默认只看今天
+        #[qinvokable]
+        #[cxx_name = "setTransferHistoryDay"]
+        fn set_transfer_history_day(self: Pin<&mut Self>, day: QString);
+
+        /// 重试一条失败 / 已中断的传输记录（文件级回到原下载目录；文件夹整批重来）
         #[qinvokable]
         #[cxx_name = "retryTransfer"]
         fn retry_transfer(self: Pin<&mut Self>, key: QString);
@@ -390,6 +403,7 @@ mod tasks;
 mod transfers;
 mod transfers_actions;
 mod transfers_detail;
+mod transfers_history;
 mod transfers_rate;
 mod transfers_view;
 mod tray;
@@ -486,7 +500,7 @@ pub struct KichiRust {
     pub(crate) settings_path: QString,
     /// 令牌存储后端（KWallet / 降级文件），设置页只读展示
     pub(crate) storage_backend: QString,
-    /// 传输任务记录（本次运行内；QML 直接当 model 用）
+    /// 传输任务记录（跨重启保留，见 `docs/adr/0014`；QML 直接当 model 用）
     pub(crate) transfers: QVariantList,
     /// 记录结构版本（QML 据此决定要不要重读 `transfers`）
     pub(crate) transfer_revision: i32,
@@ -498,6 +512,8 @@ pub struct KichiRust {
     pub(crate) transfer_detail_active: bool,
     /// 进行中（排队 + 准备中 + 下载中）的传输条数：侧栏徽标
     pub(crate) download_active: i32,
+    /// 全部历史里有没有可清的已结束批次（不按日期收窄）
+    pub(crate) transfer_has_finished: bool,
     /// 有批次在准备（读目录）或执行；QML 不再拿它禁用下载入口
     pub(crate) download_running: bool,
     /// 排队中的批次数（不含正在跑的那一批）
@@ -599,6 +615,7 @@ impl Default for KichiRust {
             transfer_detail: QVariantList::default(),
             transfer_detail_active: false,
             download_active: 0,
+            transfer_has_finished: false,
             download_running: false,
             download_queued: 0,
             download_dir: QString::default(),
@@ -619,6 +636,8 @@ impl Default for KichiRust {
             backend: Backend::new(crate::session::store_path()),
         };
         object.load_settings();
+        // 启动时读回下载历史（首次 sync_transfers 之前；批次号从历史最大值之后接着走）
+        downloads::load_history(&mut object);
         object.apply_restored();
         object
     }

@@ -35,9 +35,18 @@ TestCase {
         property var transferLive: []
         property var transferDetail: []
         property bool transferDetailActive: false
+        /// 全部历史里有没有可清的已结束批次（模拟 Rust 的同名属性）
+        property bool transferHasFinished: false
 
         /// 用例注入的详情快照（模拟 Rust 按选中批次生成的 transferDetail）
         property var detailData: []
+
+        /// 日期分组（模拟 Rust `transferHistoryDays()`）
+        property var historyDays: []
+        /// 当前选中的分组（Rust 侧过滤依据）
+        property string historyDay: "today"
+        /// 清空动作的记录
+        property int clearCount: 0
 
         /// 逐条动作的记录：断言「点了哪一行、调了几次」
         property int revealCount: 0
@@ -54,7 +63,15 @@ TestCase {
 
         function cancelDownloads() {}
         function openDownloadDir() {}
-        function clearFinishedTransfers() {}
+        function clearFinishedTransfers() {
+            clearCount += 1
+        }
+        function transferHistoryDays() {
+            return historyDays
+        }
+        function setTransferHistoryDay(day) {
+            historyDay = day
+        }
         function locateTransfer(sourceId) {}
         function isDownloadPending(id) {
             return false
@@ -104,7 +121,11 @@ TestCase {
         backend.transferLive = []
         backend.transferDetail = []
         backend.transferDetailActive = false
+        backend.transferHasFinished = false
         backend.detailData = []
+        backend.historyDays = []
+        backend.historyDay = "today"
+        backend.clearCount = 0
         backend.revealCount = 0
         backend.revealedKey = ""
         backend.retryCount = 0
@@ -145,6 +166,8 @@ TestCase {
             return "失败"
         if (phase === "cancelled")
             return "已取消"
+        if (phase === "interrupted")
+            return "已中断"
         return ""
     }
 
@@ -232,29 +255,32 @@ TestCase {
         return phase === "queued" || phase === "preparing" || phase === "running"
     }
 
-    /// 与 Rust `transfers::ordered()` 同规则（文件夹 key 的 index 按 0 排）。
+    /// 与 Rust `transfers_view::ordered()` 同规则（文件夹 key 的 index 按 0 排）：
+    /// 进行中 / 已中断在前（其中已中断的批次更靠前），已结束新 → 旧。
     function ordered(records) {
         function pair(key) {
             var parts = key.split(":")
             var index = parts[1] === "folder" ? 0 : Number(parts[1])
             return [Number(parts[0]), index]
         }
-        var active = [], finished = []
+        var open = [], finished = []
         for (var i = 0; i < records.length; i++) {
-            if (isActivePhase(records[i].state))
-                active.push(records[i])
+            if (isActivePhase(records[i].state) || records[i].state === "interrupted")
+                open.push(records[i])
             else
                 finished.push(records[i])
         }
-        active.sort(function (a, b) {
+        open.sort(function (a, b) {
             var ka = pair(a.key), kb = pair(b.key)
-            return (ka[0] - kb[0]) || (ka[1] - kb[1])
+            var ia = a.state === "interrupted" ? 0 : 1
+            var ib = b.state === "interrupted" ? 0 : 1
+            return (ia - ib) || (ka[0] - kb[0]) || (ka[1] - kb[1])
         })
         finished.sort(function (a, b) {
             var ka = pair(a.key), kb = pair(b.key)
             return (kb[0] - ka[0]) || (kb[1] - ka[1])
         })
-        return active.concat(finished)
+        return open.concat(finished)
     }
 
     // —— 按 objectName 取控件（主列表与详情列表都常驻，不能扫「第一个 ListView」）——
@@ -1125,5 +1151,193 @@ TestCase {
         wait(50)
         compare(dump(), "2:0:queued", "旧失败行消失，新排队行出现")
         compare(mainModel().count, 1)
+    }
+
+    // —— 日期分组行（2026-10-28 下载历史落盘）——
+
+    function dayGroup(key, label) {
+        return { key: key, label: label }
+    }
+
+    /// 按 key 取分组行里的日子药丸（每个日子一个固定 objectName）。
+    function dayPill(day) {
+        var row = findChild(page, "historyDayRow")
+        if (!row)
+            return null
+        return findChild(row, "dayPill-" + day)
+    }
+
+    function pillTexts() {
+        return page.inlineDayGroups.map(function (group) {
+            var pill = dayPill(group.key)
+            return pill ? pill.text : "<missing>"
+        })
+    }
+
+    function test_day_row_lists_recent_days_and_folds_the_rest() {
+        backend.historyDays = [
+            dayGroup("2026-10-28", "今天"),
+            dayGroup("2026-10-27", "昨天"),
+            dayGroup("2026-10-26", "10-26"),
+            dayGroup("2026-10-25", "10-25"),
+            dayGroup("2026-10-24", "10-24"),
+            dayGroup("2026-09-30", "09-30")
+        ]
+        publish([record("1:0", "done")])
+        wait(60)
+
+        var row = findChild(page, "historyDayRow")
+        verify(row !== null && row.visible, "有历史时显示日期分组行")
+        compare(pillTexts().join(","), "今天,昨天,10-26,10-25",
+                "只直接列出最近四天")
+
+        var earlier = findChild(page, "earlierDaysLink")
+        verify(earlier !== null && earlier.visible, "剩下的收进「更早」")
+        compare(earlier.text, "更早 ▾")
+    }
+
+    function test_day_row_is_hidden_without_history() {
+        publish([record("1:0", "running")])
+        wait(60)
+        var row = findChild(page, "historyDayRow")
+        verify(row === null || !row.visible, "没有历史记录时不显示分组行")
+    }
+
+    function test_clicking_a_day_asks_the_backend_to_filter() {
+        backend.historyDays = [
+            dayGroup("2026-10-28", "今天"),
+            dayGroup("2026-10-27", "昨天")
+        ]
+        publish([record("1:0", "done")])
+        wait(60)
+
+        var first = dayPill("2026-10-28")
+        var second = dayPill("2026-10-27")
+        verify(first !== null && second !== null, "两天都有按钮")
+        mouseClick(second)
+        wait(40)
+        compare(backend.historyDay, "2026-10-27", "点「昨天」交给 Rust 过滤")
+        compare(page.selectedDay, "2026-10-27")
+        compare(second.font.bold, true, "选中的日子加粗")
+        compare(first.font.bold, false)
+    }
+
+    function test_empty_day_shows_its_own_hint() {
+        backend.historyDays = [
+            dayGroup("2026-10-28", "今天"),
+            dayGroup("2026-10-27", "昨天")
+        ]
+        backend.historyDay = "2026-10-27"
+        page.selectedDay = "2026-10-27"
+        publish([])
+        wait(60)
+
+        var hint = findChild(page, "emptyHint")
+        verify(hint !== null && hint.visible)
+        verify(hint.text.indexOf("这一天没有下载记录") >= 0,
+               "按日期看时提示这一天没有记录：" + hint.text)
+    }
+
+    // —— 已中断的行 ——
+
+    function test_interrupted_row_offers_retry_and_says_it_was_cut_off() {
+        var row = record("1:0", "interrupted")
+        row.stateText = "已中断"
+        row.detail = "上次退出时未完成"
+        row.path = ""
+        publish([row])
+        wait(60)
+
+        compare(controlAt(0, "stateText").text, "已中断")
+        var detail = controlAt(0, "detailLink")
+        verify(detail !== null && detail.text.indexOf("上次退出时未完成") >= 0)
+        var retry = controlAt(0, "retryLink")
+        verify(retry !== null && retry.visible, "已中断的行给「重试」")
+        var reveal = controlAt(0, "revealLink")
+        verify(reveal === null || !reveal.visible, "没有落盘路径就没有「打开位置」")
+
+        mouseClick(retry)
+        compare(backend.retryCount, 1)
+        compare(backend.retriedKey, "1:0")
+    }
+
+    function test_interrupted_folder_without_children_retries_as_a_whole() {
+        publish([folderRecord("1:folder", "interrupted", {
+            childCount: 0,
+            stateText: "已中断",
+            detail: "上次退出时未完成"
+        })])
+        wait(60)
+
+        var retry = controlAt(0, "retryLink")
+        verify(retry !== null && retry.visible, "没有子行的已中断文件夹可整批重试")
+        mouseClick(retry)
+        compare(backend.retriedKey, "1:folder")
+    }
+
+    function test_interrupted_folder_with_children_has_no_whole_retry() {
+        publish([folderRecord("1:folder", "interrupted", {
+            childCount: 2,
+            stateText: "已中断",
+            detail: "上次退出时未完成 · 完成 1 个 · 失败 0 个"
+        })], [
+            childRecord("1:0", "interrupted", "a.mkv"),
+            childRecord("1:1", "interrupted", "b.mkv")
+        ])
+        wait(60)
+
+        var retry = controlAt(0, "retryLink")
+        verify(retry === null || !retry.visible, "去详情页逐个重试")
+        var hint = controlAt(0, "openDetailsHint")
+        verify(hint !== null && hint.visible, "已中断的文件夹仍可点进详情")
+    }
+
+    // —— 清空已完成记录：二次确认 ——
+
+    function test_clear_button_asks_for_confirmation_first() {
+        backend.transferHasFinished = true
+        publish([record("1:0", "done")])
+        wait(60)
+
+        var button = findChild(page, "clearFinishedButton")
+        verify(button !== null && button.enabled, "有已结束记录时按钮可用")
+        mouseClick(button)
+        wait(60)
+
+        var dialog = findChild(page, "clearConfirmDialog")
+        verify(dialog !== null && dialog.opened, "点了清空先弹确认")
+        verify(page.clearConfirmMessage.indexOf("全部历史") >= 0,
+               "说明清的是全部历史")
+        verify(page.clearConfirmMessage.indexOf("已中断") >= 0,
+               "说明已中断的记录会保留")
+        compare(backend.clearCount, 0, "确认之前不清")
+
+        // Dialog 的「确定」在测试里走同一条真实路径
+        page.confirmClear()
+        wait(40)
+        compare(backend.clearCount, 1, "确认后调用一次清空")
+    }
+
+    function test_clear_button_disabled_when_only_open_rows() {
+        backend.transferHasFinished = false
+        publish([record("1:0", "running"), record("2:0", "interrupted")])
+        wait(60)
+        var button = findChild(page, "clearFinishedButton")
+        verify(button !== null)
+        compare(button.enabled, false, "只有进行中 / 已中断时清空不可点")
+    }
+
+    // 清空看的是全部历史：当前这天只有进行中的行，别的日子有已结束的行也要能点。
+    function test_clear_button_follows_whole_history_not_the_selected_day() {
+        backend.transferHasFinished = true
+        backend.historyDays = [
+            dayGroup("2026-10-28", "今天"),
+            dayGroup("2026-10-27", "昨天")
+        ]
+        publish([record("1:0", "running")])
+        wait(60)
+        var button = findChild(page, "clearFinishedButton")
+        verify(button !== null && button.enabled,
+               "别的日子有已结束记录时按钮仍可用")
     }
 }

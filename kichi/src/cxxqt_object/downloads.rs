@@ -14,7 +14,7 @@
 //! 调度器推进、把记录表刷到 QML 属性。
 
 use std::pin::Pin;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use cxx_qt::CxxQtType;
@@ -27,7 +27,9 @@ use super::reveal;
 use super::transfers;
 use super::transfers_actions;
 use super::transfers_detail;
+use super::transfers_history::{self, StoreTarget};
 use super::transfers_rate::heartbeat_due;
+use super::transfers_view::HISTORY_DAY_ALL;
 use crate::session::Failure;
 
 /// 上一次推 `transferLive` 的时刻（心跳节流；只有主线程读写）。
@@ -41,6 +43,50 @@ fn mark_live_pushed() {
     *last_live_push()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+}
+
+/// 这一轮运行的历史文件目标（启动时加载定下，之后不变）。
+fn history_target() -> &'static Mutex<Option<StoreTarget>> {
+    static TARGET: OnceLock<Mutex<Option<StoreTarget>>> = OnceLock::new();
+    TARGET.get_or_init(|| Mutex::new(None))
+}
+
+fn with_target<T>(f: impl FnOnce(&mut Option<StoreTarget>) -> T) -> T {
+    let mut guard: MutexGuard<'static, Option<StoreTarget>> = history_target()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut guard)
+}
+
+/// 启动时加载一次下载历史（首次 `sync_transfers()` 之前由构造器调用）。
+///
+/// 走不进 `impl Kichi`：构造器里 `self` 还没成形，而读盘之后紧接着就要把
+/// 记录表刷到属性上。
+pub(crate) fn load_history(object: &mut crate::cxxqt_object::KichiRust) {
+    let target = transfers_history::boot(&StoreTarget::from_env());
+    transfers::set_session(target.session);
+    with_target(|slot| *slot = Some(target));
+    let (list, active) = transfers_history::snapshot();
+    object.transfers = list;
+    object.transfer_revision = object.transfer_revision.wrapping_add(1);
+    object.download_active = active;
+    object.transfer_has_finished = transfers_history::has_finished();
+}
+
+/// 强制把记录表写盘（退出 / 登出前调用）。
+pub(crate) fn flush_history() {
+    let target = with_target(|slot| slot.clone());
+    if let Some(target) = target {
+        transfers_history::flush_now(&target);
+    }
+}
+
+/// 节流写盘：结构同步时调用，最多 2 秒写一次。
+fn maybe_write_history() {
+    let target = with_target(|slot| slot.clone());
+    if let Some(target) = target {
+        transfers_history::maybe_flush(&target);
+    }
 }
 
 impl qobject::Kichi {
@@ -111,13 +157,53 @@ impl qobject::Kichi {
         }
     }
 
-    /// 清空已结束（完成 / 失败 / 已取消）的记录，进行中的保留。
+    /// 清空已结束（完成 / 失败 / 已取消）的记录，进行中 / 排队 / 已中断的保留。
+    ///
+    /// 清的是**全部历史**里所有已结束的整批，不按日期分组收窄（ADR 0014）。
     pub fn clear_finished_transfers(mut self: Pin<&mut Self>) {
-        transfers::clear_finished();
+        transfers::clear_all();
         self.as_mut().sync_transfers();
     }
 
-    /// 重试一条失败的传输记录：按文件 id 重新入队，落回原批次的下载目录。
+    /// 分组行要列的日子（新 → 旧）：`[{ key, label }, …]`。
+    ///
+    /// 每条带 `key`：QML 的 Repeater 靠它定位到具体某天的按钮。
+    pub fn transfer_history_days(&self) -> super::QVariantList {
+        use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QVariant};
+
+        let days = transfers_history::history_days_now();
+        let mut list = super::QVariantList::default();
+        for (key, label) in days {
+            let mut map = QMap::<QMapPair_QString_QVariant>::default();
+            let key_text = QString::from(key.as_str());
+            map.insert_clone(&QString::from("key"), &QVariant::from(&key_text));
+            let label_text = QString::from(label.as_str());
+            map.insert_clone(&QString::from("label"), &QVariant::from(&label_text));
+            list.append(QVariant::from(&map));
+        }
+        list
+    }
+
+    /// 选中一个分组（`today` / 具体日期 / `all`）；默认只看今天。
+    pub fn set_transfer_history_day(mut self: Pin<&mut Self>, day: QString) {
+        let day = day.to_string();
+        let day = if day.trim().is_empty() {
+            HISTORY_DAY_ALL.to_owned()
+        } else {
+            day
+        };
+        let changed = transfers_history::set_history_day(&day);
+        if changed {
+            self.as_mut().sync_transfers();
+        } else {
+            self.as_mut().notify();
+        }
+    }
+
+    /// 重试一条失败 / 已中断的传输记录：按原 id、原下载目录、原子目录重新入队。
+    ///
+    /// 文件夹总账行（读目录前整体失败或整个中断）用它落盘的目录树与子行整批重来；
+    /// 断点能否接上取决于 `partials.json`（改过下载目录 = 从头下）。
     ///
     /// 顺序：取目标（记录锁）→ 查重 + 登记（调度锁）→ 成功后才删旧行 →
     /// 先提示再加入、推进队列（`advance` 的启动失败原因可以覆盖提示）。
@@ -129,13 +215,32 @@ impl qobject::Kichi {
         };
         let name = job.display_name();
         let source_id = job.id.clone();
-        if queue::reserve_retry(job).is_some() {
-            transfers_actions::remove(&key);
+        // 读目录前整体失败 / 整个中断的文件夹：用它落盘时记下的目录树整批重来。
+        // 先把旧行抽出来（`take_whole_folder` 删掉整批），登记失败时再挂回去，历史不丢。
+        let whole_folder = transfers_actions::is_whole_folder(&key)
+            .then(|| transfers_actions::take_whole_folder(&key))
+            .flatten();
+        let retry_job = whole_folder
+            .as_ref()
+            .map(|(_, job)| job.clone())
+            .unwrap_or(job);
+        if queue::reserve_retry(retry_job).is_some() {
+            // 整批重试时旧行已经被抽走；丢掉暂存的目录树（新批次会重新读目录）
+            if let Some((batch, _)) = &whole_folder {
+                transfers_actions::forget_stash(*batch);
+            } else {
+                transfers_actions::remove(&key);
+            }
             self.as_mut()
                 .set_message(&format!("已重新加入下载队列：{name}"), false);
             // advance 会 sync；线程起不来时它会用失败原因覆盖上面的提示
             self.as_mut().advance_downloads();
         } else {
+            if let Some((batch, restored)) = whole_folder {
+                // 登记失败：把抽走的整批放回去，免得「已中断」行凭空消失
+                transfers_actions::restore_folder(batch, &restored);
+                self.as_mut().sync_transfers();
+            }
             // 同一个文件 id 已在排队 / 下载中：旧行不删，带用户去看已有那一行
             self.as_mut().set_message("这个条目已在下载队列中", false);
             self.as_mut()
@@ -259,9 +364,11 @@ impl qobject::Kichi {
 
     /// 把记录表刷到 QML 属性（主线程调用）。
     ///
-    /// 结构变化（排队 / 准备 / 开始 / 完成 / 失败 / 取消 / 清空）走这里，整个模型重建。
+    /// 结构变化（排队 / 准备 / 开始 / 完成 / 失败 / 取消 / 清空）走这里，整个模型重建；
+    /// 顺手按 2 秒节流写一次下载历史（`docs/adr/0014-download-history-on-disk.md`）。
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
-        let (list, active) = transfers::snapshot();
+        let (list, active) = transfers_history::snapshot();
+        let has_finished = transfers_history::has_finished();
         let live = transfers::live_snapshot();
         let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
@@ -273,10 +380,12 @@ impl qobject::Kichi {
             rust.transfer_detail = detail;
             rust.transfer_detail_active = detail_active;
             rust.download_active = active;
+            rust.transfer_has_finished = has_finished;
             rust.download_running = running;
             rust.download_queued = queued;
         }
         mark_live_pushed();
+        maybe_write_history();
         self.as_mut().notify();
     }
 
@@ -350,13 +459,21 @@ impl qobject::Kichi {
         ));
     }
 
-    /// 登出时作废下载：清空记录与徽标，保留已下载的断点。
+    /// 登出时作废在途下载；**下载历史保留**（ADR 0014）。
     ///
     /// 在途线程只置 `abandon`（停止 + 保留 part + 绝不 rename），调度槽留到
     /// 线程自己收尾；重新登录后同一文件可以入队，但旧线程退出前只显示「排队中」。
+    ///
+    /// 记录表**不清**：在途行先落成「已中断」（进度与重试入口都留着），再强制写盘。
+    /// 旧线程退出后 `post_finished` 的 epoch 检查保证它们不再改记录。
     pub(crate) fn reset_downloads(mut self: Pin<&mut Self>) {
         queue::reset();
-        transfers::reset();
+        // 在途的批次已经作废：记录落成「已中断」（保留重试入口），再强制写盘。
+        // 旧线程退出后 `post_finished` 的 epoch 检查保证它们不再改记录。
+        transfers::interrupt_active();
+        flush_history();
+        // 文件夹详情页的选中不跨会话；记录与「打开位置」都保留
+        transfers_detail::clear_selection();
         self.as_mut().sync_transfers();
     }
 }

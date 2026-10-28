@@ -95,6 +95,12 @@ pub(crate) fn run_jobs(
         download_all(&session, &dir, batch, &collected, &cancel, my_epoch)
     }));
     let interrupted = outcome.is_err();
+    if my_epoch != current_epoch() {
+        // 登出后旧线程收尾（含 panic）：记录是上个会话的，不改状态 —— 登出时已写盘成
+        // 「下载中」，下次启动读回「已中断」。只释放调度槽并推进下一批（ADR 0014）。
+        post_finished(batch, BatchEnd::Interrupted, my_epoch);
+        return;
+    }
     if interrupted {
         // 记录表里这一批还活着的行都标失败；通知统一由 post_finished 发
         transfers::fail_batch(batch, "下载线程异常中断");
@@ -364,7 +370,7 @@ fn post_finished(batch: u64, end: BatchEnd, my_epoch: u64) {
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
             if my_epoch != current_epoch() {
-                // 登出后旧线程收尾：把调度槽还回来，新会话排队的批次才能开始
+                // 登出后旧线程收尾：记录属于上个会话，只把调度槽还回来
                 let _ = super::queue::release(batch);
                 qichi.as_mut().advance_downloads();
                 return;
