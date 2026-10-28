@@ -184,6 +184,15 @@ impl qobject::Kichi {
         list
     }
 
+    /// 当前选中的分组换算成具体日子（「今天」→ 此刻的 `YYYY-MM-DD`）。
+    ///
+    /// 分组按钮按具体日期建 key（`transfer_history_days` 的 `key`），默认选中的
+    /// 「今天」不是日期，QML 拿这个把高亮对到当天那一个按钮上；跨过午夜后由
+    /// 下一次刷新自然指向新的一天。
+    pub fn transfer_history_day(&self) -> QString {
+        QString::from(transfers_history::resolved_day().as_str())
+    }
+
     /// 选中一个分组（`today` / 具体日期 / `all`）；默认只看今天。
     pub fn set_transfer_history_day(mut self: Pin<&mut Self>, day: QString) {
         let day = day.to_string();

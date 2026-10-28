@@ -29,7 +29,8 @@ Item {
     /// 当前高亮的行 key（约 1.2 秒后淡出）
     property string highlightedKey: ""
 
-    /// 选中的日期分组（`today` / `YYYY-MM-DD`）；由 Rust 侧保存与过滤
+    /// 选中的日期分组（`YYYY-MM-DD`）；由 Rust 侧保存与过滤。
+    /// 初值只是刷新前的占位，`refreshDays()` 会换成 Rust 换算好的具体日子
     property string selectedDay: "today"
 
     /// 历史上出现过的日子：[{ key, label }]，新 → 旧
@@ -93,7 +94,9 @@ Item {
     /// 向 Rust 要一次「历史上有哪些日子」。
     ///
     /// 选中的分组由本页保存（`selectedDay`，默认今天）：它是显示状态，
-    /// Rust 只负责按它过滤。
+    /// Rust 只负责按它过滤。按钮按具体日期建 key，所以每次刷新都把 Rust 那边
+    /// 换算好的日子取回来（「今天」→ `YYYY-MM-DD`），高亮才对得上；跨过午夜后
+    /// 也由下一次刷新自然指向新的一天。
     function refreshDays() {
         if (!page.backend)
             return
@@ -103,6 +106,7 @@ Item {
         for (var i = 0; i < days.length; i++)
             copy.push({ key: days[i].key, label: days[i].label })
         page.dayGroups = copy
+        page.selectedDay = page.backend.transferHistoryDay()
     }
 
     /// 选中一个日期分组（Rust 侧按它过滤后重新发 transfers）。

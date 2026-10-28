@@ -45,6 +45,8 @@ TestCase {
         property var historyDays: []
         /// 当前选中的分组（Rust 侧过滤依据）
         property string historyDay: "today"
+        /// 「今天」换算成的日期（模拟 Rust `transferHistoryDay()`）
+        property string todayKey: "2026-10-28"
         /// 清空动作的记录
         property int clearCount: 0
 
@@ -68,6 +70,9 @@ TestCase {
         }
         function transferHistoryDays() {
             return historyDays
+        }
+        function transferHistoryDay() {
+            return historyDay === "today" ? todayKey : historyDay
         }
         function setTransferHistoryDay(day) {
             historyDay = day
@@ -125,6 +130,7 @@ TestCase {
         backend.detailData = []
         backend.historyDays = []
         backend.historyDay = "today"
+        backend.todayKey = "2026-10-28"
         backend.clearCount = 0
         backend.revealCount = 0
         backend.revealedKey = ""
@@ -1220,6 +1226,19 @@ TestCase {
         compare(page.selectedDay, "2026-10-27")
         compare(second.font.bold, true, "选中的日子加粗")
         compare(first.font.bold, false)
+    }
+
+    function test_today_is_highlighted_by_default() {
+        backend.historyDays = [
+            dayGroup("2026-10-28", "今天"),
+            dayGroup("2026-10-27", "昨天")
+        ]
+        publish([record("1:0", "done")])
+        wait(60)
+
+        compare(page.selectedDay, "2026-10-28", "默认的「今天」换算成具体日期")
+        compare(dayPill("2026-10-28").font.bold, true, "启动后「今天」加粗")
+        compare(dayPill("2026-10-27").font.bold, false)
     }
 
     function test_empty_day_shows_its_own_hint() {

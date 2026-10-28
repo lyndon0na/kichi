@@ -266,6 +266,11 @@ pub mod qobject {
         #[cxx_name = "transferHistoryDays"]
         fn transfer_history_days(self: &Self) -> QVariantList;
 
+        /// 当前选中的历史分组换算成具体日子（`today` → 此刻的 `YYYY-MM-DD`）
+        #[qinvokable]
+        #[cxx_name = "transferHistoryDay"]
+        fn transfer_history_day(self: &Self) -> QString;
+
         /// 选中一个历史分组（`today` / 具体日期 / `all`）；默认只看今天
         #[qinvokable]
         #[cxx_name = "setTransferHistoryDay"]
