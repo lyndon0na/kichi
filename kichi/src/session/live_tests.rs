@@ -574,6 +574,251 @@ fn live_probe_download_range() {
     assert!(read > 0, "206 响应没有 body");
 }
 
+/// 探针：单连接 vs 4 分片的瞬时吞吐对比（只读，不落盘）。
+///
+/// 为什么要有：ADR 0013 的分片默认值得拿「网速正常时」的数据说话。
+/// 2026-10-28 那次采样（1 连接 29.5 / 4 片 27.6 MB/s）正好赶上用户自家网慢，
+/// 全网都堵在上限附近，测不出 CDN 有没有单连接限速。
+///
+/// 用法（先在本机 GUI 登录过一次）：
+///   KICHI_TEST_FILE_ID=<≥32 MiB 的文件 id> \
+///     cargo test -p kichi --bin kichi -- \
+///     --ignored live_probe_download_throughput --nocapture
+///
+/// `KICHI_TEST_SECONDS` 控制每段采样时长（默认 15 秒）。
+/// 会真下载「时长 × 吞吐 × 2 段」的流量，跑前提醒用户。
+#[test]
+#[ignore = "需要先在本机 GUI 登录一次；会真下载几十到几百 MB"]
+fn live_probe_download_throughput() {
+    use std::time::Duration;
+
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, _)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+
+    let seconds: u64 = std::env::var("KICHI_TEST_SECONDS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(15);
+    let span = Duration::from_secs(seconds);
+
+    let id = match std::env::var("KICHI_TEST_FILE_ID") {
+        Ok(id) if !id.trim().is_empty() => id.trim().to_owned(),
+        _ => find_big_file(&session, 32 * 1024 * 1024)
+            .expect("没找到 ≥ 32 MiB 的文件；请用 KICHI_TEST_FILE_ID 指定一个"),
+    };
+    let info = media::file_info(&session, &id, None, false).expect("取文件详情失败");
+    let Some(size) = info.size else {
+        panic!("详情没给大小，没法按区间采样；换一个文件或用 KICHI_TEST_FILE_ID");
+    };
+    println!(
+        "文件：{}（{:.1} MB，每段采样 {seconds} 秒）",
+        info.name,
+        size as f64 / 1e6
+    );
+
+    // both（默认）/ single / shards / serial：
+    // 分两段跑一遍要下两倍流量，排查时只跑一段；
+    // serial = 同样 4 个区间但**依次**读，用来分清「CDN 限并发」与「真的没收益」。
+    let mode = std::env::var("KICHI_TEST_MODE").unwrap_or_else(|_| "both".to_owned());
+    let client = session.drive().expect("构造客户端失败");
+
+    let mut single = 0.0;
+    if mode == "both" || mode == "single" {
+        single = sample_single(client.as_ref(), &info, span);
+        println!("1 连接：{single:.1} MB/s");
+    }
+
+    let mut sharded = 0.0;
+    if mode == "both" || mode == "shards" {
+        sharded = sample_shards(&client, &info, size, 4, span);
+        println!("4 分片（并发）：{sharded:.1} MB/s");
+    }
+
+    if mode == "serial" {
+        let serial = sample_shards_serial(client.as_ref(), &info, size, 4, span);
+        println!("4 分片（依次）：{serial:.1} MB/s");
+    }
+
+    if mode == "open" {
+        // 开放式 Range（bytes=N-）：与真正的分片一样带 Range 头，但不设结束位置
+        let middle = size / 2;
+        let label = "开放式 Range 从中间";
+        let Some(mut stream) = open_with_retry(|| client.open_download_from(&info, middle), label)
+        else {
+            return;
+        };
+        let bytes = drain(&mut stream, label, span);
+        println!(
+            "{label}：{:.1} MB/s",
+            bytes as f64 / 1e6 / span.as_secs_f64()
+        );
+    }
+
+    if single > 0.0 && sharded > 0.0 {
+        println!("分片收益：{:.2}×", sharded / single);
+    }
+}
+
+/// 同样按区间切成 4 段，但一条读完再读下一条：总字节 ÷ (4 × 每段时长)。
+fn sample_shards_serial(
+    client: &kichi_core::DriveClient,
+    info: &kichi_core::FileInfo,
+    size: u64,
+    shards: u64,
+    span: std::time::Duration,
+) -> f64 {
+    let step = size / shards;
+    let mut total = 0u64;
+    for index in 0..shards {
+        let start = index * step;
+        let end = if index + 1 == shards {
+            size
+        } else {
+            start + step
+        };
+        let label = format!("第 {} 片（依次）", index + 1);
+        let Some(mut stream) = open_with_retry(
+            || client.open_download_range(info, start, end.saturating_sub(1)),
+            &label,
+        ) else {
+            continue;
+        };
+        let bytes = drain(&mut stream, &label, span);
+        println!("{label}：{:.1} MB", bytes as f64 / 1e6);
+        total += bytes;
+    }
+    total as f64 / 1e6 / (span.as_secs_f64() * shards as f64)
+}
+
+/// 从根目录往下找第一个 ≥ `min_bytes` 的文件（只列目录，不下载）。
+fn find_big_file(session: &Session, min_bytes: u64) -> Option<String> {
+    let mut folders = std::collections::VecDeque::new();
+    folders.push_back(None);
+    for _ in 0..4 {
+        let parent = folders.pop_front()?;
+        let Ok(entries) = session.list_dir(parent.as_deref()) else {
+            continue;
+        };
+        for entry in entries {
+            match entry.kind {
+                kichi_core::EntryKind::File if entry.size >= min_bytes => {
+                    return Some(entry.id.clone())
+                }
+                kichi_core::EntryKind::Folder if folders.len() < 8 => {
+                    folders.push_back(Some(entry.id.clone()))
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// 单连接读 `span` 秒，返回 MB/s。打开失败只记 0（不打断另一段采样）。
+fn sample_single(
+    client: &kichi_core::DriveClient,
+    info: &kichi_core::FileInfo,
+    span: std::time::Duration,
+) -> f64 {
+    let Some(mut stream) = open_with_retry(|| client.open_download_from(info, 0), "单连接")
+    else {
+        return 0.0;
+    };
+    drain(&mut stream, "单连接", span) as f64 / 1e6 / span.as_secs_f64()
+}
+
+/// 打开下载流：失败等 1 秒重试一次（真机偶发连接被拒，一次就放弃会误判）。
+fn open_with_retry<F>(mut open: F, label: &str) -> Option<kichi_core::DownloadStream>
+where
+    F: FnMut() -> Result<kichi_core::DownloadStream, kichi_core::Error>,
+{
+    match open() {
+        Ok(stream) => return Some(stream),
+        Err(err) => println!("{label}打开失败（{}），1 秒后重试一次", probe_error(&err)),
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    match open() {
+        Ok(stream) => Some(stream),
+        Err(err) => {
+            println!("{label}重试仍失败：{}", probe_error(&err));
+            None
+        }
+    }
+}
+
+/// 同时开 `shards` 条区间连接读 `span` 秒，返回合计 MB/s。
+fn sample_shards(
+    client: &std::sync::Arc<kichi_core::DriveClient>,
+    info: &kichi_core::FileInfo,
+    size: u64,
+    shards: u64,
+    span: std::time::Duration,
+) -> f64 {
+    let step = size / shards;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..shards)
+            .map(|index| {
+                let client = std::sync::Arc::clone(client);
+                let info = info.clone();
+                let start = index * step;
+                let end = if index + 1 == shards {
+                    size
+                } else {
+                    start + step
+                };
+                scope.spawn(move || {
+                    let label = format!("第 {} 片", index + 1);
+                    let Some(mut stream) = open_with_retry(
+                        || client.open_download_range(&info, start, end.saturating_sub(1)),
+                        &label,
+                    ) else {
+                        return 0.0;
+                    };
+                    drain(&mut stream, &label, span) as f64
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or(0.0))
+            .sum::<f64>()
+    }) / 1e6
+        / span.as_secs_f64()
+}
+
+/// 一直读到 `span` 用尽或流结束/出错；返回读到的字节数（出错原因打到 stdout）。
+fn drain(stream: &mut kichi_core::DownloadStream, label: &str, span: std::time::Duration) -> u64 {
+    let started = std::time::Instant::now();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    while started.elapsed() < span {
+        match std::io::Read::read(stream, &mut buffer) {
+            Ok(0) => {
+                println!("{label}：读到文件末尾");
+                break;
+            }
+            Ok(read) => total += read as u64,
+            Err(err) => {
+                // 只报错误类别：io::Error 的文案里可能带签名 URL
+                println!(
+                    "{label}：{:.1} 秒读出错（已收 {:.1} MB，{:?}）",
+                    started.elapsed().as_secs_f64(),
+                    total as f64 / 1e6,
+                    err.kind()
+                );
+                break;
+            }
+        }
+    }
+    total
+}
+
 /// 探针打印错误时只报类别 / 状态码，绝不带签名 URL。
 fn probe_error(err: &kichi_core::Error) -> String {
     match err {
