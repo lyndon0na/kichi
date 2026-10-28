@@ -218,9 +218,16 @@ fn api_error(status: StatusCode, body: &str) -> Error {
         }
     }
     match status.as_u16() {
-        401 | 403 => Error::Auth {
+        // 只有 401 是「令牌不认」。403 是「这个请求不被允许」（地区限制、
+        // 风控、条目受限等），当成登录失效会把整条会话踢回登录页；官方真正
+        // 的鉴权错误（invalid_grant / unauthenticated）在上面按 JSON 负载
+        // 识别，不受这里影响。
+        401 => Error::Auth {
             reason: format!("HTTP {status}"),
         },
+        // 403 的文件体多是网关的 HTML，原样塞进界面很难看；给一句准确、
+        // 不猜原因的说明（不再带 html / code）
+        403 => Error::Other(format!("服务器拒绝了这个请求（HTTP {status}）")),
         429 => Error::RateLimited {
             reason: format!("HTTP {status}"),
         },
@@ -294,6 +301,23 @@ mod tests {
                 assert_eq!(reason, "http_502");
             }
             other => panic!("应归为 Api，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_401_means_the_session_is_gone() {
+        // 服务器回 HTML / 空体时只能看状态码：401 是令牌不认
+        assert!(matches!(
+            api_error(StatusCode::UNAUTHORIZED, ""),
+            Error::Auth { .. }
+        ));
+        // 403 只是「这次请求不允许」，不能把人踢回登录页
+        match api_error(StatusCode::FORBIDDEN, "<html>forbidden</html>") {
+            Error::Other(text) => {
+                assert!(text.contains("HTTP 403"), "{text}");
+                assert!(!text.contains("<html>"), "不要把网关的 HTML 塞进界面");
+            }
+            other => panic!("403 应归为普通失败，实际 {other:?}"),
         }
     }
 
