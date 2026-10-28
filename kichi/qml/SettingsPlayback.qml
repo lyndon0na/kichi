@@ -74,6 +74,23 @@ ColumnLayout {
         text: qsTr("选具体档位后直接开播；该文件没有这一档就播放原画。「每次询问」的菜单固定列出 原画 / 1080P / 720P / 480P，没有的档位会写明。")
     }
 
+    CheckBox {
+        text: qsTr("自动加载同目录字幕")
+        checked: playback.backend ? playback.backend.autoSubtitles : true
+        onToggled: function () {
+            if (playback.backend)
+                playback.backend.setAutoSubtitles(checked)
+        }
+    }
+
+    Label {
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
+        color: palette.placeholderText
+        font.pixelSize: 12
+        text: qsTr("同名优先（如 Movie.mkv 配 Movie.zh.srt）；目录里只有一条字幕时也会加载，多条时默认选中文。最多等 2 秒，超时先开播。只对 mpv 生效。")
+    }
+
     GridLayout {
         Layout.fillWidth: true
         columns: 3

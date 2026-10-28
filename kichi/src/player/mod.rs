@@ -20,6 +20,7 @@
 pub mod ipc;
 mod launch;
 pub mod session;
+pub mod subtitles;
 
 use kichi_core::PlayOption;
 

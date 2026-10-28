@@ -13,6 +13,8 @@ pub mod paths;
 pub mod search;
 mod shards;
 mod store;
+pub mod subtitle_cache;
+pub mod subtitles;
 mod tasks;
 
 mod client_cache;

@@ -49,6 +49,13 @@ impl qobject::Kichi {
         });
     }
 
+    /// 播放时自动加载字幕开关。
+    pub fn set_auto_subtitles(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().update_settings(|settings| {
+            settings.auto_subtitles = enabled;
+        });
+    }
+
     /// 关闭到托盘。
     ///
     /// 打开时立刻启托盘，起不来就**保持开关打开但取消勾选的假象**——
@@ -156,11 +163,24 @@ impl qobject::Kichi {
 
     /// 把设置快照刷到 QML 属性上。
     fn sync_settings(mut self: Pin<&mut Self>, snapshot: &Settings) {
-        let (quality, command, args, notify, tray, field, ascending, width, height, maximized) = (
+        let (
+            quality,
+            command,
+            args,
+            notify,
+            auto_subs,
+            tray,
+            field,
+            ascending,
+            width,
+            height,
+            maximized,
+        ) = (
             snapshot.preferred_quality.as_str(),
             snapshot.player_command.as_str(),
             snapshot.player_args.as_str(),
             snapshot.notify_enabled,
+            snapshot.auto_subtitles,
             snapshot.close_to_tray,
             snapshot.sort_field.as_str(),
             snapshot.sort_ascending,
@@ -174,6 +194,7 @@ impl qobject::Kichi {
         rust.player_command = QString::from(command);
         rust.player_args = QString::from(args);
         rust.notify_enabled = notify;
+        rust.auto_subtitles = auto_subs;
         rust.close_to_tray = tray;
         rust.sort_field = snapshot.sort_field;
         rust.sort_ascending = ascending;

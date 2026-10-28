@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::ipc::{self, StartOutcome};
+use super::subtitles::{self, LateSubtitles, SubtitleAssets};
 use super::{launch, mask_url, PlayerConfig};
 use crate::session::download::Cancel;
 
@@ -34,8 +35,10 @@ const POLL: Duration = Duration::from_millis(200);
 /// 一次播放的结果（回投给界面层）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartEvent {
-    /// 窗口已出现（或纯音频已开始解码）
-    Ready,
+    /// 窗口已出现（或纯音频已开始解码）。
+    ///
+    /// `subtitle_note` 是自动字幕没能挂上去的原因；没有字幕 / 成功时为 `None`。
+    Ready { subtitle_note: Option<String> },
     /// 启动失败 / 播放器在出窗口前退出。文案已含文件名，界面直接显示
     Failed(String),
     /// 用户取消（界面不写任何文案）
@@ -76,15 +79,21 @@ pub fn start(
     url: &str,
     title: &str,
     cancel: Arc<Cancel>,
+    subtitles: Option<SubtitleAssets>,
+    late: Option<LateSubtitles>,
     notify: impl FnOnce(StartEvent) + Send + 'static,
 ) -> Result<u64, String> {
     if url.trim().is_empty() {
         return Err("播放链接为空".to_owned());
     }
     if !config.is_mpv() {
-        // 非 mpv：spawn 成功即视为开播（没有窗口探测，也没法取消）
+        // 非 mpv：spawn 成功即视为开播（没有窗口探测，也没法挂字幕）
+        drop(subtitles);
+        drop(late);
         launch::spawn(config, url, title)?;
-        notify(StartEvent::Ready);
+        notify(StartEvent::Ready {
+            subtitle_note: None,
+        });
         return Ok(0);
     }
 
@@ -131,6 +140,8 @@ pub fn start(
                 &url,
                 &title,
                 &program,
+                subtitles,
+                late,
                 notify,
             );
             // 进程已由监控线程收尾（或被强杀）：从登记表移除，
@@ -150,6 +161,9 @@ pub fn start(
 }
 
 /// 监控线程主体：连接 → observe + loadfile → 等就绪 → 收尾。
+// 参数都是监控线程的固定上下文（socket / 进程 / 取消 / 直链 / 标题 / 程序名 /
+// 字幕资产 / 回投），拆成结构体只会多一层解包，没有可读性收益。
+#[allow(clippy::too_many_arguments)]
 fn run_monitor(
     socket: &std::path::Path,
     child: &Arc<Mutex<Option<Child>>>,
@@ -157,8 +171,16 @@ fn run_monitor(
     url: &str,
     title: &str,
     program: &str,
+    subtitles: Option<SubtitleAssets>,
+    late: Option<LateSubtitles>,
     emit: impl FnOnce(StartEvent),
 ) {
+    let no_status_note = || {
+        subtitles
+            .as_ref()
+            .filter(|assets| !assets.is_empty())
+            .map(|_| "当前播放器无法确认播放状态，字幕未加载".to_owned())
+    };
     let Some(mut conn) = ipc::connect(socket, cancel) else {
         if cancel.is_cancelled() {
             kill_child(child);
@@ -174,7 +196,9 @@ fn run_monitor(
             return;
         }
         eprintln!("[kichi] 连不上 mpv 的 IPC，无法观测播放状态（{program}）");
-        emit(StartEvent::Ready);
+        emit(StartEvent::Ready {
+            subtitle_note: no_status_note(),
+        });
         wait_for_exit(child);
         return;
     };
@@ -195,18 +219,20 @@ fn run_monitor(
     // 链接打不开时用**同一个**直链重试：PikPak 的签名直链偶发第一次被 CDN 拒
     // （403），立刻再来一次就能播（实测复现，见 ADR 0007）。
     let mut attempt = 0usize;
-    let reason = loop {
+    // `attach_ok`：只有真正看到窗口才挂字幕；`Unknown` 也走 `None`，但文件
+    // 可能还没加载，`sub-add` 会报错。
+    let (reason, attach_ok) = loop {
         match ipc::watch(&mut conn, cancel) {
-            StartOutcome::Ready => break None,
+            StartOutcome::Ready => break (None, true),
             StartOutcome::Cancelled => {
                 shut_down(&mut conn, child);
                 emit(StartEvent::Cancelled);
                 return;
             }
-            StartOutcome::Failed(reason) => break Some(reason),
+            StartOutcome::Failed(reason) => break (Some(reason), false),
             StartOutcome::LoadFailed(reason) => {
                 if attempt >= ipc::LOAD_RETRIES {
-                    break Some(reason);
+                    break (Some(reason), false);
                 }
                 let delay = ipc::retry_delay(attempt);
                 attempt += 1;
@@ -220,28 +246,56 @@ fn run_monitor(
                 }
                 if let Err(err) = conn.loadfile(url) {
                     eprintln!("[kichi] 重试播放失败（IPC 写入）：{err}");
-                    break Some("无法与播放器通信（IPC 写入失败）".to_owned());
+                    break (Some("无法与播放器通信（IPC 写入失败）".to_owned()), false);
                 }
                 continue;
             }
             StartOutcome::Unknown => {
                 eprintln!("[kichi] 无法观测 mpv 的窗口状态，按已开播处理（{program}）");
-                break None;
+                break (None, false);
             }
         }
     };
 
     match reason {
         None => {
+            // 挂字幕前先查取消：别把最多 500 ms 的回执等待加在取消路径上
+            if cancel.is_cancelled() {
+                shut_down(&mut conn, child);
+                emit(StartEvent::Cancelled);
+                return;
+            }
+            // 请求 id 与「有没有 select 过」跨预挂 / 播放中补挂共用
+            let mut next_sub_id = ipc::SUB_ADD_REQ_BASE;
+            let mut selected = false;
+            let subtitle_note = if attach_ok {
+                subtitles::attach(
+                    &mut conn,
+                    subtitles.as_ref(),
+                    &mut next_sub_id,
+                    &mut selected,
+                )
+            } else {
+                no_status_note()
+            };
             // 先收起提示条：窗口已经出现，后面的 idle / 等退出都不该让用户等
-            emit(StartEvent::Ready);
+            emit(StartEvent::Ready { subtitle_note });
             // 播完自动退出；失败只记一句，不影响「已经开播」这个结论
             if let Err(err) = conn.disable_idle() {
                 eprintln!("[kichi] 关闭 mpv 的 idle 失败：{err}");
             }
-            // 已经开播：这里的取消只来自「退出 kichi」（shutdown_all），
-            // 收到就请 mpv 退出，超时强杀
-            wait_playing(&mut conn, child, cancel);
+            // 已开播：这里的取消只来自「退出 kichi」（shutdown_all），
+            // 收到就请 mpv 退出，超时强杀。预等没下完的字幕在这期间补挂。
+            let mut late_held: Vec<SubtitleAssets> = Vec::new();
+            wait_playing(
+                &mut conn,
+                child,
+                cancel,
+                late.as_ref(),
+                &mut late_held,
+                &mut next_sub_id,
+                &mut selected,
+            );
         }
         Some(reason) => {
             // HTTP 状态码只在 mpv 日志里（"http: HTTP error 403 Forbidden"）
@@ -261,7 +315,18 @@ fn run_monitor(
 
 /// 已经开播：等 mpv 自己播完退出；若期间收到取消（kichi 真退出），
 /// 发 `quit` 并宽限，仍不退出就强杀。
-fn wait_playing(conn: &mut ipc::Connection, child: &Arc<Mutex<Option<Child>>>, cancel: &Cancel) {
+///
+/// 预等没下完的字幕在这期间从共享槽里取出来补挂：取到的资产必须留到播放结束
+/// （`late_held`），否则临时目录会提前删掉、mpv 读到半路文件消失。
+fn wait_playing(
+    conn: &mut ipc::Connection,
+    child: &Arc<Mutex<Option<Child>>>,
+    cancel: &Cancel,
+    late: Option<&LateSubtitles>,
+    late_held: &mut Vec<SubtitleAssets>,
+    next_sub_id: &mut u64,
+    selected: &mut bool,
+) {
     loop {
         if cancel.is_cancelled() {
             shut_down(conn, child);
@@ -269,6 +334,19 @@ fn wait_playing(conn: &mut ipc::Connection, child: &Arc<Mutex<Option<Child>>>, c
         }
         if child_exited(child) {
             return;
+        }
+        if let Some(late) = late {
+            if let Some(assets) = subtitles::take_slot(&late.slot) {
+                if !assets.is_empty() {
+                    match subtitles::attach(conn, Some(&assets), next_sub_id, selected) {
+                        None => {
+                            eprintln!("[kichi] 字幕：播放中补挂 {} 条", assets.tracks().len());
+                        }
+                        Some(note) => eprintln!("[kichi] 字幕：播放中补挂失败：{note}"),
+                    }
+                }
+                late_held.push(assets);
+            }
         }
         std::thread::sleep(POLL);
     }
@@ -497,7 +575,15 @@ mod tests {
         };
         assert!(config.is_mpv(), "测试命令要按 mpv 路径处理");
         let cancel = Arc::new(Cancel::default());
-        let result = start(&config, "https://cdn.invalid/v?sign=S", "t", cancel, |_| {});
+        let result = start(
+            &config,
+            "https://cdn.invalid/v?sign=S",
+            "t",
+            cancel,
+            None,
+            None,
+            |_| {},
+        );
         assert!(result.is_err(), "spawn 失败必须冒泡给提示条");
         assert_eq!(active_count(), 0, "失败不能留下登记项");
     }
@@ -519,6 +605,8 @@ mod tests {
             "https://cdn.invalid/v?sign=S",
             "t",
             cancel,
+            None,
+            None,
             move |event| {
                 let _ = sender.send(event);
             },
@@ -527,7 +615,9 @@ mod tests {
         assert_eq!(id, 0);
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(2)).ok(),
-            Some(StartEvent::Ready)
+            Some(StartEvent::Ready {
+                subtitle_note: None
+            })
         );
         assert_eq!(active_count(), 0);
     }
@@ -539,11 +629,14 @@ mod tests {
     const FAKE_MPV: &str = r#"import json, os, socket, sys, time
 sock = None
 mode = "ready"
+log = None
 for arg in sys.argv[1:]:
     if arg.startswith("--input-ipc-server="):
         sock = arg.split("=", 1)[1]
     elif arg.startswith("--fake-mode="):
         mode = arg.split("=", 1)[1]
+    elif arg.startswith("--fake-log="):
+        log = arg.split("=", 1)[1]
 if not sock:
     sys.exit(2)
 if os.path.exists(sock):
@@ -577,7 +670,7 @@ while time.time() < deadline:
         if cmd and cmd[0] == "observe_property":
             send({"request_id": 0, "error": "success"})
         elif cmd and cmd[0] == "loadfile":
-            if mode == "ready":
+            if mode in ("ready", "sub-fail"):
                 time.sleep(0.2)
                 send({"event": "property-change", "name": "vo-configured", "data": True})
             elif mode == "fail":
@@ -595,6 +688,15 @@ while time.time() < deadline:
                     send({"event": "property-change", "name": "vo-configured", "data": True})
             elif mode == "never":
                 pass  # 一直不出窗口：测「取消关掉还没出窗口的 mpv」
+        elif cmd and cmd[0] == "sub-add":
+            if log:
+                with open(log, "a") as f:
+                    f.write("%s\t%s\n" % (cmd[2] if len(cmd) > 2 else "",
+                                          cmd[3] if len(cmd) > 3 else ""))
+            if mode == "sub-fail":
+                send({"request_id": msg.get("request_id"), "error": "loading failed"})
+            else:
+                send({"request_id": msg.get("request_id"), "error": "success"})
         elif cmd and cmd[0] == "quit":
             os.remove(sock)
             sys.exit(0)
@@ -623,6 +725,15 @@ while time.time() < deadline:
         }
     }
 
+    /// 同 [`fake_mpv_config`]，但把收到的 `sub-add`（flags + title）追加写到 `log`。
+    fn fake_mpv_config_with_log(mode: &str, log: &std::path::Path) -> PlayerConfig {
+        let mut config = fake_mpv_config(mode);
+        config
+            .pre_args
+            .push(format!("--fake-log={}", log.display()));
+        config
+    }
+
     #[test]
     fn mpv_reports_ready_when_the_window_appears() {
         let _guard = serial();
@@ -635,6 +746,8 @@ while time.time() < deadline:
             "https://cdn.invalid/v?sign=S",
             "测试视频",
             cancel,
+            None,
+            None,
             move |event| {
                 let _ = sender.send(event);
             },
@@ -643,10 +756,164 @@ while time.time() < deadline:
         let event = receiver
             .recv_timeout(Duration::from_secs(10))
             .expect("应当回投事件");
-        assert_eq!(event, StartEvent::Ready);
+        assert_eq!(
+            event,
+            StartEvent::Ready {
+                subtitle_note: None
+            }
+        );
         // Ready 之后监控线程还在等它退出（这里它会一直挂着直到退出收尾）
         shutdown_all();
         assert_eq!(active_count(), 0, "退出收尾要把会话清干净");
+    }
+
+    fn test_assets() -> (SubtitleAssets, std::path::PathBuf) {
+        let mut assets = SubtitleAssets::create().expect("建字幕临时目录");
+        assets
+            .push(
+                "srt",
+                b"1\n00:00:01,000 --> 00:00:02,000\nhi\n",
+                "测试.zh.srt",
+            )
+            .expect("写字幕");
+        let dir = assets
+            .tracks()
+            .first()
+            .and_then(|track| track.path.parent())
+            .map(std::path::Path::to_path_buf)
+            .expect("字幕有临时目录");
+        (assets, dir)
+    }
+
+    #[test]
+    fn subtitles_are_attached_before_ready_and_cleaned_up() {
+        let _guard = serial();
+        shutdown_all();
+        let config = fake_mpv_config("ready");
+        let cancel = Arc::new(Cancel::default());
+        let (assets, dir) = test_assets();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        start(
+            &config,
+            "https://cdn.invalid/v?sign=S",
+            "带字幕",
+            cancel,
+            Some(assets),
+            None,
+            move |event| {
+                let _ = sender.send(event);
+            },
+        )
+        .expect("启动假 mpv 失败");
+        let event = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("应当回投事件");
+        assert_eq!(
+            event,
+            StartEvent::Ready {
+                subtitle_note: None
+            }
+        );
+        shutdown_all();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while dir.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!dir.exists(), "mpv 退出后字幕临时目录要删掉");
+    }
+
+    #[test]
+    fn a_rejected_sub_add_becomes_a_ready_note() {
+        let _guard = serial();
+        shutdown_all();
+        let config = fake_mpv_config("sub-fail");
+        let cancel = Arc::new(Cancel::default());
+        let (assets, _dir) = test_assets();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        start(
+            &config,
+            "https://cdn.invalid/v?sign=S",
+            "字幕被拒",
+            cancel,
+            Some(assets),
+            None,
+            move |event| {
+                let _ = sender.send(event);
+            },
+        )
+        .expect("启动假 mpv 失败");
+        let event = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("应当回投事件");
+        match event {
+            StartEvent::Ready { subtitle_note } => {
+                let note = subtitle_note.expect("回执失败要带说明");
+                assert!(note.contains("字幕未能加载"), "{note}");
+            }
+            other => panic!("字幕失败不能拖垮播放：{other:?}"),
+        }
+        shutdown_all();
+    }
+
+    #[test]
+    fn late_subtitles_are_attached_while_playing() {
+        // 预等 2 秒没下完的字幕：播放中放进共享槽，监控线程要自己补挂
+        let _guard = serial();
+        shutdown_all();
+        let dir = std::env::temp_dir().join(format!("kichi-late-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join("sub-add.log");
+        let _ = std::fs::remove_file(&log);
+        let config = fake_mpv_config_with_log("ready", &log);
+        let slot: crate::player::subtitles::SubtitleSlot = Arc::new(Mutex::new(None));
+        let late_cancel = Arc::new(Cancel::default());
+        let cancel = Arc::new(Cancel::default());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        start(
+            &config,
+            "https://cdn.invalid/v?sign=S",
+            "补挂",
+            cancel,
+            None,
+            Some(LateSubtitles::new(slot.clone(), late_cancel.clone())),
+            move |event| {
+                let _ = sender.send(event);
+            },
+        )
+        .expect("启动假 mpv 失败");
+        let event = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("应当回投事件");
+        assert_eq!(
+            event,
+            StartEvent::Ready {
+                subtitle_note: None
+            }
+        );
+        // 预等阶段没有字幕，播放开始后才“下完”
+        let (assets, sub_dir) = test_assets();
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(assets);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut text = String::new();
+        while Instant::now() < deadline {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if !text.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(text.contains("测试.zh.srt"), "播放中应当补挂：{text:?}");
+        assert!(
+            text.starts_with("select\t"),
+            "一条都没挂过时，补挂的第一条要选中：{text:?}"
+        );
+        shutdown_all();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while sub_dir.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!sub_dir.exists(), "补挂的字幕临时目录也要清理");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -662,6 +929,8 @@ while time.time() < deadline:
             "https://cdn.invalid/v?sign=S",
             "慢启动",
             cancel.clone(),
+            None,
+            None,
             move |event| {
                 let _ = sender.send(event);
             },
@@ -705,6 +974,8 @@ while time.time() < deadline:
             "https://cdn.invalid/v?sign=S",
             "起不来",
             cancel,
+            None,
+            None,
             move |event| {
                 let _ = sender.send(event);
             },
@@ -732,6 +1003,8 @@ while time.time() < deadline:
             "https://cdn.invalid/v?sign=S",
             "第一次被拒",
             cancel,
+            None,
+            None,
             move |event| {
                 let _ = sender.send(event);
             },
@@ -740,7 +1013,13 @@ while time.time() < deadline:
         let event = receiver
             .recv_timeout(Duration::from_secs(10))
             .expect("应当回投事件");
-        assert_eq!(event, StartEvent::Ready, "重试后应当成功开播");
+        assert_eq!(
+            event,
+            StartEvent::Ready {
+                subtitle_note: None
+            },
+            "重试后应当成功开播"
+        );
         shutdown_all();
     }
 
@@ -756,6 +1035,8 @@ while time.time() < deadline:
             "https://cdn.invalid/v?sign=S",
             "坏链接",
             cancel,
+            None,
+            None,
             move |event| {
                 let _ = sender.send(event);
             },

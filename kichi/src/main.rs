@@ -13,6 +13,11 @@ mod settings;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
+    // 上次崩溃可能留下字幕临时目录：只清 24 小时前的，避免误删另一个实例正在用的。
+    player::subtitles::sweep_stale(std::time::Duration::from_secs(24 * 60 * 60));
+    // 持久字幕缓存：删 30 天前的，并把总大小收到 100 MiB 以内。
+    session::subtitle_cache::sweep();
+
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 

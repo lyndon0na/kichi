@@ -36,6 +36,8 @@ const FIRST_SIGNAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// `observe_property` 的请求号：回包 `request_id` 用它区分是哪个属性的结果。
 const VO_CONF_REQ: u64 = 1;
 const AUDIO_REQ: u64 = 2;
+/// `sub-add` 的请求号起点；第 N 条字幕用 `SUB_ADD_REQ_BASE + N`。
+pub const SUB_ADD_REQ_BASE: u64 = 1000;
 
 /// 链接打不开时的自动重试：PikPak 的签名直链偶发第一次被 CDN 拒（403），
 /// 同一个 URL 立刻再 `loadfile` 就能播——实测复现过（见 ADR 0007）。
@@ -123,6 +125,79 @@ impl Connection {
     /// 让 mpv 播放这个直链。
     pub fn loadfile(&mut self, url: &str) -> std::io::Result<()> {
         self.send(&json!({"command": ["loadfile", url]}))
+    }
+
+    /// 运行时挂一条外挂字幕（`--sub-file` 只认命令行 / 配置文件）。
+    ///
+    /// 第一条用 `select` 直接选中，其余用 `auto` 挂上但不切轨。
+    pub fn sub_add(
+        &mut self,
+        request_id: u64,
+        path: &Path,
+        select: bool,
+        title: &str,
+    ) -> std::io::Result<()> {
+        let path = path.to_str().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "字幕路径不是有效 UTF-8")
+        })?;
+        self.send(&json!({
+            "command": [
+                "sub-add",
+                path,
+                if select { "select" } else { "auto" },
+                title,
+            ],
+            "request_id": request_id,
+        }))
+    }
+
+    /// 收 `sub-add` 的命令回执。
+    ///
+    /// 事件与无关 `request_id` 一律忽略；某个 id 回 `error != "success"` 才算失败。
+    /// **超时不算失败**：命令已经写进 socket，只是 mpv 没在预算内确认。
+    pub fn collect_replies(&mut self, ids: &[u64], timeout: Duration) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + timeout;
+        let mut pending = ids.to_vec();
+        let mut line = String::new();
+        while !pending.is_empty() {
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "[kichi] 等字幕回执超时，按已送达处理（未确认 {} 条）",
+                    pending.len()
+                );
+                return Ok(());
+            }
+            match self.reader.read_line(&mut line) {
+                // 播放器在确认前退出：字幕命令已经发了，但结果未知
+                Ok(0) => return Err("播放器在确认字幕前退出了".to_owned()),
+                Ok(_) => {}
+                Err(err) if is_timeout(&err) => continue,
+                Err(err) => return Err(format!("读取字幕回执失败：{err}")),
+            }
+            let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+                line.clear();
+                continue;
+            };
+            line.clear();
+            let Some(request) = value.get("request_id").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(index) = pending.iter().position(|id| *id == request) else {
+                continue;
+            };
+            pending.swap_remove(index);
+            let error = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("success");
+            if error != "success" {
+                return Err(format!("播放器拒绝加载字幕（{error}）"));
+            }
+        }
+        Ok(())
     }
 
     /// 就绪后关掉 idle：播完自动退出，不留下一个空窗口的进程。
@@ -636,5 +711,80 @@ mod tests {
             1
         );
         assert_eq!(args[0], "run");
+    }
+
+    fn run_sub_add(name: &str, replies: &[&str], ids: &[u64]) -> (Result<(), String>, Vec<String>) {
+        let socket = temp_socket(name);
+        let server = fake_mpv(&socket, replies, Some(Duration::from_millis(300)));
+        let cancel = Cancel::default();
+        let mut conn = connect(&socket, &cancel).expect("连上假 mpv");
+        let path = Path::new("/tmp/kichi-play/subs-test/sub0.srt");
+        if let Some(first) = ids.first() {
+            conn.sub_add(*first, path, true, "电影.zh.srt")
+                .expect("发第一条字幕");
+        }
+        if let Some(second) = ids.get(1) {
+            conn.sub_add(*second, path, false, "电影.en.srt")
+                .expect("发第二条字幕");
+        }
+        let result = conn.collect_replies(ids, Duration::from_millis(400));
+        drop(conn);
+        let received = server.join().expect("假 mpv 线程结束");
+        let _ = std::fs::remove_file(&socket);
+        (result, received)
+    }
+
+    #[test]
+    fn sub_add_selects_the_first_track_and_autos_the_rest() {
+        let (result, received) = run_sub_add(
+            "sub-add-ok",
+            &[
+                r#"{"request_id":1000,"error":"success"}"#,
+                r#"{"request_id":1001,"error":"success"}"#,
+            ],
+            &[SUB_ADD_REQ_BASE, SUB_ADD_REQ_BASE + 1],
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(received.len(), 2, "{received:?}");
+        let first = &received[0];
+        assert!(first.contains("\"sub-add\""), "{first}");
+        assert!(first.contains("sub0.srt"), "{first}");
+        assert!(first.contains("\"select\""), "{first}");
+        assert!(first.contains("电影.zh.srt"), "{first}");
+        assert!(first.contains("\"request_id\":1000"), "{first}");
+        let second = &received[1];
+        assert!(second.contains("\"auto\""), "{second}");
+        assert!(second.contains("电影.en.srt"), "{second}");
+        assert!(second.contains("\"request_id\":1001"), "{second}");
+    }
+
+    #[test]
+    fn sub_add_replies_ignore_events_and_report_errors() {
+        let (result, _) = run_sub_add(
+            "sub-add-error",
+            &[
+                r#"{"event":"log-message","level":"warn","text":"x"}"#,
+                r#"{"request_id":1000,"error":"success"}"#,
+                r#"{"request_id":1001,"error":"loading failed"}"#,
+            ],
+            &[SUB_ADD_REQ_BASE, SUB_ADD_REQ_BASE + 1],
+        );
+        let err = result.expect_err("第二条回执失败");
+        assert!(err.contains("loading failed"), "{err}");
+    }
+
+    #[test]
+    fn sub_add_reply_timeout_is_not_a_failure() {
+        let socket = temp_socket("sub-add-timeout");
+        let server = fake_mpv(&socket, &[], Some(Duration::from_millis(500)));
+        let cancel = Cancel::default();
+        let mut conn = connect(&socket, &cancel).expect("连上假 mpv");
+        conn.sub_add(SUB_ADD_REQ_BASE, Path::new("/tmp/x.srt"), true, "x.srt")
+            .expect("发命令");
+        let result = conn.collect_replies(&[SUB_ADD_REQ_BASE], Duration::from_millis(250));
+        assert_eq!(result, Ok(()), "命令已送达，等不到回执不算失败");
+        drop(conn);
+        let _ = server.join();
+        let _ = std::fs::remove_file(&socket);
     }
 }

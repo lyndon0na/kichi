@@ -13,6 +13,7 @@ pub(crate) mod http;
 pub mod manage;
 pub mod media;
 pub mod search;
+pub mod subtitles;
 pub mod tasks;
 pub mod types;
 

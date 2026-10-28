@@ -449,10 +449,15 @@ impl FileDto {
     }
 }
 
-/// 视频/音频扩展名表（判断播放入口用）。
-const MEDIA_EXTENSIONS: &[&str] = &[
+/// 视频扩展名表（判断播放入口、自动加载字幕用）。
+pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "webm", "ts", "m2ts", "m4v", "flv", "wmv", "rmvb", "rm", "mpg",
-    "mpeg", "3gp", "ogv", "mp3", "flac", "wav", "m4a", "ogg", "opus", "aac", "ape", "wma",
+    "mpeg", "3gp", "ogv",
+];
+
+/// 音频扩展名表：能播放，但不尝试挂外挂字幕。
+pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "wav", "m4a", "ogg", "opus", "aac", "ape", "wma",
 ];
 
 /// 是否按媒体处理（决定是否显示播放入口）。
@@ -473,7 +478,7 @@ pub(crate) fn is_media(name: &str, category: &str, mime: &str, extension: &str) 
     }
     let from_extension = |text: &str| {
         let ext = text.trim().trim_start_matches('.').to_ascii_lowercase();
-        MEDIA_EXTENSIONS.contains(&ext.as_str())
+        VIDEO_EXTENSIONS.contains(&ext.as_str()) || AUDIO_EXTENSIONS.contains(&ext.as_str())
     };
     if !extension.is_empty() && from_extension(extension) {
         return true;

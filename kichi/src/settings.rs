@@ -132,6 +132,8 @@ pub struct Settings {
     pub player_args: String,
     /// 离线任务完成/失败时弹系统通知
     pub notify_enabled: bool,
+    /// 播放时自动加载同目录字幕（只对 mpv 生效）
+    pub auto_subtitles: bool,
     /// 关闭窗口时缩到托盘
     pub close_to_tray: bool,
     pub sort_field: SortField,
@@ -152,6 +154,7 @@ impl Default for Settings {
             player_command: String::new(),
             player_args: String::new(),
             notify_enabled: true,
+            auto_subtitles: true,
             close_to_tray: false,
             sort_field: SortField::Name,
             sort_ascending: true,
@@ -389,6 +392,7 @@ mod tests {
         assert!(warning.is_none());
         assert_eq!(settings.preferred_quality, Quality::Original);
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
+        assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
         assert_eq!(settings.window_width, 0, "负尺寸收回为 0");
         let _ = std::fs::remove_file(&path);
     }

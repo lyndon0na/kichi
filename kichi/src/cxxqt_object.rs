@@ -65,6 +65,8 @@ pub mod qobject {
         #[qproperty(QString, player_default_command, cxx_name = "playerDefaultCommand", READ, NOTIFY = changed)]
         #[qproperty(QString, player_default_args, cxx_name = "playerDefaultArgs", READ, NOTIFY = changed)]
         #[qproperty(bool, notify_enabled, cxx_name = "notifyEnabled", READ, NOTIFY = changed)]
+        /// 播放时自动加载同目录字幕（只对 mpv 生效）
+        #[qproperty(bool, auto_subtitles, cxx_name = "autoSubtitles", READ, NOTIFY = changed)]
         #[qproperty(bool, close_to_tray, cxx_name = "closeToTray", READ, NOTIFY = changed)]
         #[qproperty(bool, tray_available, cxx_name = "trayAvailable", READ, NOTIFY = changed)]
         #[qproperty(i32, tray_show_requested, cxx_name = "trayShowRequested", READ, NOTIFY = changed)]
@@ -224,6 +226,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setNotifyEnabled"]
         fn set_notify_enabled(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "setAutoSubtitles"]
+        fn set_auto_subtitles(self: Pin<&mut Self>, enabled: bool);
 
         #[qinvokable]
         #[cxx_name = "setCloseToTray"]
@@ -398,6 +404,7 @@ mod file_actions;
 mod files;
 mod notifications;
 mod play;
+mod play_subtitles;
 mod queue;
 mod queue_collect;
 mod queue_worker;
@@ -479,6 +486,8 @@ pub struct KichiRust {
     pub(crate) play_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
     /// 播放请求代数：退出登录 / 重登后旧结果作废
     pub(crate) play_epoch: u64,
+    /// 点播放时快照的字幕计划（菜单开着时目录刷新不影响本次播放）
+    pub(crate) play_subtitle_plan: crate::session::subtitles::SubtitlePlan,
     /// 持久化设置（启动时读一次，改动即落盘）
     pub(crate) settings: crate::settings::Settings,
     /// 清晰度偏好（"ask" / "original" / "transcode"，QML 展示用）
@@ -490,6 +499,8 @@ pub struct KichiRust {
     pub(crate) player_default_command: QString,
     pub(crate) player_default_args: QString,
     pub(crate) notify_enabled: bool,
+    /// 播放时自动加载同目录字幕（只对 mpv 生效）
+    pub(crate) auto_subtitles: bool,
     pub(crate) close_to_tray: bool,
     /// 托盘是否真的起来了（失败时界面禁用「关闭到托盘」）
     pub(crate) tray_available: bool,
@@ -596,6 +607,7 @@ impl Default for KichiRust {
             play_notice: QString::default(),
             play_cancel: None,
             play_epoch: 0,
+            play_subtitle_plan: crate::session::subtitles::SubtitlePlan::None,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),
             player_command: QString::default(),
@@ -603,6 +615,7 @@ impl Default for KichiRust {
             player_default_command: QString::from(crate::player::DEFAULT_PLAYER),
             player_default_args: QString::from(crate::player::DEFAULT_ARGS),
             notify_enabled: true,
+            auto_subtitles: true,
             close_to_tray: false,
             tray_available: false,
             tray_show_requested: 0,
@@ -698,6 +711,7 @@ impl KichiRust {
         self.player_command = QString::from(settings.player_command.as_str());
         self.player_args = QString::from(settings.player_args.as_str());
         self.notify_enabled = settings.notify_enabled;
+        self.auto_subtitles = settings.auto_subtitles;
         self.close_to_tray = settings.close_to_tray;
         self.sort_field = settings.sort_field;
         self.sort_field_text = QString::from(settings.sort_field.as_str());
