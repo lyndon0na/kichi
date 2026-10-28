@@ -11,11 +11,23 @@ fn summary<'a>(
     failed: usize,
     failure: Option<&'a str>,
 ) -> BatchSummary<'a> {
+    summary_with(name, folder, done, failed, 0, failure)
+}
+
+fn summary_with<'a>(
+    name: &'a str,
+    folder: bool,
+    done: usize,
+    failed: usize,
+    skipped: usize,
+    failure: Option<&'a str>,
+) -> BatchSummary<'a> {
     BatchSummary {
         name,
         folder,
         done,
         failed,
+        skipped,
         failure,
     }
 }
@@ -40,7 +52,38 @@ fn folder_success_reports_count_without_path() {
     assert!(notice.body.contains("「剧集」"));
     assert!(notice.body.contains("50 个文件"));
     assert!(!notice.body.contains("保存到"));
+    assert!(!notice.body.contains("跳过"), "没有跳过时不写后缀");
     assert_eq!(notice.icon, "folder-download");
+}
+
+#[test]
+fn folder_success_mentions_skipped_directories() {
+    let notice = batch_finished(summary_with("剧集", true, 50, 0, 2, None));
+    assert_eq!(notice.summary, "下载完成");
+    assert!(
+        notice.body.contains("50 个文件 · 跳过 2 个目录"),
+        "跳过数是完成通知的一部分：{}",
+        notice.body
+    );
+}
+
+#[test]
+fn folder_partial_failure_carries_the_skip_count() {
+    let notice = batch_finished(summary_with("剧集", true, 48, 2, 1, Some("断网")));
+    assert!(notice
+        .body
+        .contains("成功 48 个，失败 2 个 · 跳过 1 个目录"));
+    assert!(notice.body.contains("详情见传输任务页"));
+}
+
+#[test]
+fn folder_total_failure_does_not_add_the_skip_count() {
+    let notice = batch_finished(summary_with("剧集", true, 0, 50, 3, Some("断网")));
+    assert!(
+        !notice.body.contains("跳过"),
+        "全失败时数字已经够多，不塞跳过数：{}",
+        notice.body
+    );
 }
 
 #[test]
@@ -78,14 +121,16 @@ fn single_file_failure_without_reason_points_to_transfers() {
 
 #[test]
 fn prepare_failure_includes_name_and_reason() {
-    let notice = batch_failed("剧集", true, "这个位置没有可下载的文件");
+    let notice = batch_failed("剧集", true, "所有子目录都无法读取（跳过 2 个）");
     assert_eq!(notice.summary, "下载失败");
-    assert_eq!(notice.body, "「剧集」\n这个位置没有可下载的文件");
+    assert_eq!(notice.body, "「剧集」\n所有子目录都无法读取（跳过 2 个）");
     assert_eq!(notice.icon, "dialog-error");
 }
 
 #[test]
 fn empty_batch_is_not_reported_as_success() {
+    // 空文件夹已在 `queue_worker::end_notice` 直接返回 None，正常不会走到这里；
+    // 这条只锁住 builder 自己的兜底文案，防止别处误用成「下载完成」。
     let notice = batch_finished(summary("剧集", true, 0, 0, None));
     assert_eq!(notice.summary, "下载结束");
     assert!(notice.body.contains("未下载任何文件"));

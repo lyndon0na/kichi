@@ -17,6 +17,8 @@ pub(crate) struct BatchSummary<'a> {
     pub(crate) folder: bool,
     pub(crate) done: usize,
     pub(crate) failed: usize,
+    /// 被跳过的目录数（过深 / 读失败 / 本地建目录失败）
+    pub(crate) skipped: usize,
     /// 单文件批次最后一条失败原因
     pub(crate) failure: Option<&'a str>,
 }
@@ -28,10 +30,18 @@ pub(crate) fn batch_finished(summary: BatchSummary<'_>) -> Notice {
         folder,
         done,
         failed,
+        skipped,
         failure,
     } = summary;
+    // 跳过数只往「有成功」的通知里塞：全失败时数字已经够多，别再加噪音
+    let skip_note = if skipped > 0 {
+        format!(" · 跳过 {skipped} 个目录")
+    } else {
+        String::new()
+    };
 
-    // 一个文件都没动成（空批次兜底）：不给「下载完成」，也别假装有失败数字
+    // 一个文件都没动成（空批次兜底）：不给「下载完成」，也别假装有失败数字。
+    // 实际上空文件夹已在 `end_notice` 直接返回 None，正常不会走到这里。
     if done == 0 && failed == 0 {
         return Notice {
             summary: "下载结束",
@@ -44,7 +54,7 @@ pub(crate) fn batch_finished(summary: BatchSummary<'_>) -> Notice {
         if failed == 0 {
             return Notice {
                 summary: "下载完成",
-                body: format!("「{name}」\n{done} 个文件"),
+                body: format!("「{name}」\n{done} 个文件{skip_note}"),
                 icon: "folder-download",
             };
         }
@@ -57,7 +67,9 @@ pub(crate) fn batch_finished(summary: BatchSummary<'_>) -> Notice {
         }
         return Notice {
             summary: "下载结束",
-            body: format!("「{name}」\n成功 {done} 个，失败 {failed} 个\n详情见传输任务页"),
+            body: format!(
+                "「{name}」\n成功 {done} 个，失败 {failed} 个{skip_note}\n详情见传输任务页"
+            ),
             icon: "dialog-warning",
         };
     }
@@ -81,7 +93,7 @@ pub(crate) fn batch_finished(summary: BatchSummary<'_>) -> Notice {
     }
 }
 
-/// 批次还没开始就失败（读目录出错 / 空文件夹 / 线程起不来）→ 一条通知。
+/// 批次还没开始就失败（读目录出错 / 线程起不来 / 根目录建不出来）→ 一条通知。
 pub(crate) fn batch_failed(name: &str, folder: bool, reason: &str) -> Notice {
     let body = if folder {
         format!("「{name}」\n{reason}")

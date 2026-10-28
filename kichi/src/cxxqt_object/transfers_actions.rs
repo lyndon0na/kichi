@@ -72,7 +72,7 @@ fn remove_empty_parent(records: &mut Vec<Transfer>, batch: u64) {
 }
 
 /// 一条记录的落盘路径：完成行有文件路径；文件夹父行在至少一个子文件完成后
-/// 给出文件夹路径，否则不可定位。
+/// 给出文件夹路径，空文件夹（Done 且没有子行）给建出来的目录。
 pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
     with_records(|records| path_for_in(records, key))
 }
@@ -80,6 +80,9 @@ pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
 fn path_for_in(records: &[Transfer], key: &str) -> Option<PathBuf> {
     let record = records.iter().find(|record| record_key(record) == key)?;
     if record.job.kind == EntryKind::Folder {
+        if let Some(path) = &record.path {
+            return Some(path.clone());
+        }
         if has_done_child(records, record.batch) {
             return folder_download_path(record);
         }

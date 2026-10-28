@@ -152,15 +152,26 @@ fn folder_progress_fields(stats: &BatchStats, state: TransferState) -> (i32, Str
 
 /// 文件夹总账行的第二行说明（不含「点开可重试」，那由 QML 追加）。
 fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> String {
+    let skipped = skip_suffix(record.skipped);
     if !has_children {
+        // 空文件夹没有子行：完成说明直接由落盘路径派生
         return match record.state {
             TransferState::Preparing => "正在读取目录结构…".to_owned(),
+            TransferState::Done if record.empty_folder => {
+                let mut text = match folder_download_path(record) {
+                    Some(path) => format!("空文件夹 · 保存到 {}", path.display()),
+                    None => "空文件夹".to_owned(),
+                };
+                text.push_str(&skipped);
+                text
+            }
             _ => record.detail.clone(),
         };
     }
-    match record.state {
-        TransferState::Queued => String::new(),
-        TransferState::Preparing => format!("准备下载 {} 个文件…", stats.total),
+    let mut text = match record.state {
+        TransferState::Queued => return String::new(),
+        // 准备中还没开始下载，跳过数等进下载循环再显示
+        TransferState::Preparing => return format!("准备下载 {} 个文件…", stats.total),
         TransferState::Running => {
             let position = stats
                 .running_position
@@ -172,19 +183,30 @@ fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> S
             None => format!("{} 个文件", stats.total),
         },
         TransferState::Failed => {
-            let mut text = format!("成功 {} 个 · 失败 {} 个", stats.done, stats.failed);
+            let mut detail = format!("成功 {} 个 · 失败 {} 个", stats.done, stats.failed);
             if stats.cancelled > 0 {
-                text.push_str(&format!(" · 取消 {} 个", stats.cancelled));
+                detail.push_str(&format!(" · 取消 {} 个", stats.cancelled));
             }
-            text
+            detail
         }
         TransferState::Cancelled => {
-            let mut text = format!("已完成 {} 个 · 已取消", stats.done);
+            let mut detail = format!("已完成 {} 个 · 已取消", stats.done);
             if stats.failed > 0 {
-                text.push_str(&format!(" · 失败 {} 个", stats.failed));
+                detail.push_str(&format!(" · 失败 {} 个", stats.failed));
             }
-            text
+            detail
         }
+    };
+    text.push_str(&skipped);
+    text
+}
+
+/// 说明行末尾的跳过后缀（没有跳过时为空串）。
+fn skip_suffix(skipped: usize) -> String {
+    if skipped == 0 {
+        String::new()
+    } else {
+        format!(" · 跳过 {skipped} 个目录")
     }
 }
 
@@ -273,7 +295,9 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
         (progress, String::new(), "—".to_owned())
     };
     let detail = folder_detail(record, &stats, has_children);
-    let path_text = if has_children && stats.done > 0 {
+    // 至少一个子文件完成，或者空文件夹已完成（目录已建出来）：才有落盘路径
+    let empty_done = record.empty_folder && record.state == TransferState::Done;
+    let path_text = if (has_children && stats.done > 0) || empty_done {
         folder_download_path(record)
             .map(|path| path.display().to_string())
             .unwrap_or_default()

@@ -3,7 +3,8 @@
 //! 与 `downloads.rs` 分工：
 //! - `downloads.rs`：QML 能看到的入口（右键菜单的「下载」、取消、打开目录）与属性刷新；
 //! - 本文件：占用表、串行队列、线程启动与收尾、登出作废；
-//! - `queue_worker.rs`：文件夹递归、下载循环、进度节流与回投；
+//! - `queue_collect.rs`：目录遍历与跳过分类（过深 / 读失败 / 防环）；
+//! - `queue_worker.rs`：下载循环、进度节流与回投；
 //! - `transfers.rs`：本次运行内的逐条记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消）。
 //!
 //! 判重键是**云端条目 id**，不是本地文件名：同一条目在排队 / 准备 / 下载中时
@@ -20,13 +21,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use kichi_core::{EntryKind, FileEntry};
 
+use super::queue_collect::Collected;
 use super::queue_worker::{run_jobs, spawn_batch, Start};
 use super::transfers::{self, TransferJob};
 use crate::session::download::Cancel;
 use crate::session::Session;
-
-/// 递归文件夹的最大深度（防环形/异常结构把线程拖死）。
-pub(crate) const MAX_DEPTH: usize = 16;
 
 /// 队列里的一个待下载条目。
 #[derive(Debug, Clone)]
@@ -54,11 +53,15 @@ pub(crate) struct BatchReport {
     pub(crate) folder: bool,
     pub(crate) done: usize,
     pub(crate) failed: usize,
+    /// 被跳过的目录数（过深 / 云端读失败 / 本地建目录失败）
+    pub(crate) skipped: usize,
+    /// 文件夹批次一个文件都没有，建完目录树就算完成
+    pub(crate) empty_folder: bool,
     /// 最后一条失败原因（单文件批次通知用）
     pub(crate) failure: Option<String>,
 }
 
-/// 批次还没开始就失败（读目录 / 空文件夹 / 线程起不来）。
+/// 批次还没开始就失败（读目录 / 线程起不来）。
 #[derive(Debug)]
 pub(crate) struct BatchFailure {
     pub(crate) name: String,
@@ -91,6 +94,10 @@ struct Pending {
     state: PendingState,
     done: usize,
     failed: usize,
+    /// 被跳过的目录数（收集阶段 + 下载线程建目录失败累计）
+    skipped: usize,
+    /// 文件夹批次没有任何文件（空文件夹：建出目录就算完成）
+    empty_folder: bool,
     /// 单文件重试时保留的层级；普通下载 / 文件夹批次为空
     sub_dir: Vec<String>,
     /// 最后一条失败原因（单文件批次通知用）
@@ -161,6 +168,8 @@ fn enqueue(
         state: PendingState::Queued,
         done: 0,
         failed: 0,
+        skipped: 0,
+        empty_folder: false,
         sub_dir,
         failure: None,
     });
@@ -308,7 +317,11 @@ pub(crate) enum StartOutcome {
 }
 
 /// 目录收集完成：把整批子行挂到总账行后面并启动下载线程。主线程调用。
-pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>) -> StartOutcome {
+pub(crate) fn start_download(
+    session: &Arc<Session>,
+    batch: u64,
+    collected: Collected,
+) -> StartOutcome {
     let found = with_scheduler(|scheduler| {
         let current = scheduler
             .current
@@ -338,10 +351,13 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
             .filter(|pending| pending.batch == batch)
         {
             current.state = PendingState::Running;
+            current.skipped = collected.skipped;
+            current.empty_folder = collected.files.is_empty();
         }
     });
 
-    let records: Vec<TransferJob> = jobs
+    let records: Vec<TransferJob> = collected
+        .files
         .iter()
         .map(|job| TransferJob {
             id: job.id.clone(),
@@ -353,13 +369,14 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
             dir: dir.clone(),
         })
         .collect();
+    transfers::set_skipped(batch, collected.skipped);
     transfers::expand_folder(batch, &records);
 
     let my_epoch = current_epoch();
     let session = session.clone();
     let spawned = std::thread::Builder::new()
         .name("kichi-dl".into())
-        .spawn(move || run_jobs(session, dir, batch, jobs, cancel, my_epoch));
+        .spawn(move || run_jobs(session, dir, batch, collected, cancel, my_epoch));
     match spawned {
         Ok(_) => StartOutcome::Started,
         Err(err) => {
@@ -375,9 +392,9 @@ pub(crate) fn start_download(session: &Arc<Session>, batch: u64, jobs: Vec<Job>)
     }
 }
 
-/// 跳过一批（收集失败 / 空目录 / 读完目录前被取消）。主线程调用。
+/// 跳过一批（收集失败 / 读完目录前被取消）。主线程调用。
 ///
-/// 返回这一批的汇总（名称 / 是否文件夹 / 成败计数 / 最后失败原因），
+/// 返回这一批的汇总（名称 / 是否文件夹 / 成败与跳过计数 / 最后失败原因），
 /// 供收尾时拼系统通知。只释放这一批；后面排队的批次由随后的 [`advance`] 接手。
 pub(crate) fn release(batch: u64) -> Option<BatchReport> {
     with_scheduler(|scheduler| {
@@ -399,6 +416,8 @@ pub(crate) fn release(batch: u64) -> Option<BatchReport> {
             entry,
             done,
             failed,
+            skipped,
+            empty_folder,
             failure,
             ..
         } = pending;
@@ -407,6 +426,8 @@ pub(crate) fn release(batch: u64) -> Option<BatchReport> {
             folder: entry.kind == EntryKind::Folder,
             done,
             failed,
+            skipped,
+            empty_folder,
             failure,
         })
     })
@@ -429,6 +450,22 @@ pub(crate) fn add_result(batch: u64, outcome: JobOutcome<'_>) {
                     pending.failure = Some(reason.to_owned());
                 }
             }
+        }
+    });
+}
+
+/// 一批里又多跳过了几个目录（下载线程建本地目录失败时调用）。
+pub(crate) fn add_skipped(batch: u64, extra: usize) {
+    if extra == 0 {
+        return;
+    }
+    with_scheduler(|scheduler| {
+        if let Some(pending) = scheduler
+            .current
+            .as_mut()
+            .filter(|pending| pending.batch == batch)
+        {
+            pending.skipped += extra;
         }
     });
 }

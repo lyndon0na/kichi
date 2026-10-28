@@ -1,7 +1,7 @@
-//! `queue_worker.rs` 的单元测试：进度节流与批次结束通知。
+//! `queue_worker.rs` 的单元测试：进度节流、批次结束的通知与状态栏、建目录。
 //!
-//! 下载循环本身要真实会话，属于 `live_tests` 的范围；显示路径的测试在
-//! `transfers_tests.rs`（由 `TransferJob::display_name` 负责）。
+//! 下载循环本身要真实会话，属于 `live_tests` 的范围；目录遍历的边界在
+//! `queue_collect_tests.rs`；显示路径的测试在 `transfers_tests.rs`。
 
 use super::*;
 
@@ -12,11 +12,25 @@ fn report(
     failed: usize,
     failure: Option<&str>,
 ) -> BatchReport {
+    report_with(name, folder, done, failed, 0, false, failure)
+}
+
+fn report_with(
+    name: &str,
+    folder: bool,
+    done: usize,
+    failed: usize,
+    skipped: usize,
+    empty_folder: bool,
+    failure: Option<&str>,
+) -> BatchReport {
     BatchReport {
         name: name.to_owned(),
         folder,
         done,
         failed,
+        skipped,
+        empty_folder,
         failure: failure.map(str::to_owned),
     }
 }
@@ -43,25 +57,175 @@ fn throttle_without_total_uses_time_only() {
 fn cancelled_batch_has_no_notice() {
     let report = report("剧集", true, 3, 0, None);
     assert!(
-        end_notice(&report, BatchEnd::Cancelled).is_none(),
+        end_notice(&report, &BatchEnd::Cancelled).is_none(),
         "用户主动取消不弹系统通知"
     );
 }
 
 #[test]
 fn interrupted_batch_has_one_error_notice() {
-    let notice =
-        end_notice(&report("剧集", true, 3, 0, None), BatchEnd::Interrupted).expect("中断要弹一条");
+    let notice = end_notice(&report("剧集", true, 3, 0, None), &BatchEnd::Interrupted)
+        .expect("中断要弹一条");
     assert_eq!(notice.summary, "下载失败");
     assert_eq!(notice.icon, "dialog-error");
     assert!(notice.body.contains("下载线程异常中断"));
 }
 
 #[test]
+fn batch_level_failure_has_its_reason_in_the_notice() {
+    let end = BatchEnd::Failed("创建下载目录失败：权限不足".to_owned());
+    let notice = end_notice(&report("剧集", true, 0, 0, None), &end).expect("批次级失败要弹");
+    assert_eq!(notice.summary, "下载失败");
+    assert!(notice.body.contains("创建下载目录失败：权限不足"));
+}
+
+#[test]
 fn completed_batch_uses_summary_builder() {
-    let notice = end_notice(&report("a.mkv", false, 1, 0, None), BatchEnd::Completed)
+    let notice = end_notice(&report("a.mkv", false, 1, 0, None), &BatchEnd::Completed)
         .expect("正常完成要弹一条");
     assert_eq!(notice.summary, "下载完成");
     assert_eq!(notice.body, "a.mkv");
     assert!(!notice.body.contains('/'), "通知不写保存路径");
+}
+
+#[test]
+fn empty_folder_is_a_success_without_a_notice() {
+    let report = report_with("空文件夹", true, 0, 0, 0, true, None);
+    assert!(
+        end_notice(&report, &BatchEnd::Completed).is_none(),
+        "空文件夹建完就完了，不值得弹系统通知"
+    );
+}
+
+#[test]
+fn empty_folder_status_says_what_was_created() {
+    let report = report_with("空文件夹", true, 0, 0, 0, true, None);
+    assert_eq!(
+        status_text(&report, &BatchEnd::Completed).as_deref(),
+        Some("已创建空文件夹：空文件夹")
+    );
+}
+
+#[test]
+fn completed_status_mentions_skipped_directories() {
+    let report = report_with("剧集", true, 12, 0, 3, false, None);
+    assert_eq!(
+        status_text(&report, &BatchEnd::Completed).as_deref(),
+        Some("下载完成：12 个文件（跳过 3 个目录）")
+    );
+
+    let clean = report_with("剧集", true, 12, 0, 0, false, None);
+    assert_eq!(
+        status_text(&clean, &BatchEnd::Completed).as_deref(),
+        Some("下载完成：12 个文件"),
+        "没有跳过时不写后缀"
+    );
+}
+
+#[test]
+fn failed_and_partial_batches_stay_out_of_the_status_bar() {
+    let partial = report_with("剧集", true, 10, 2, 1, false, Some("断网"));
+    assert_eq!(status_text(&partial, &BatchEnd::Completed), None);
+
+    let failed = report_with("剧集", true, 0, 5, 0, false, Some("断网"));
+    assert_eq!(status_text(&failed, &BatchEnd::Completed), None);
+
+    let dir_failed = BatchEnd::Failed("创建下载目录失败".to_owned());
+    assert_eq!(status_text(&partial, &dir_failed), None);
+    assert_eq!(status_text(&partial, &BatchEnd::Interrupted), None);
+
+    assert_eq!(
+        status_text(&partial, &BatchEnd::Cancelled).as_deref(),
+        Some("下载已取消（已完成 10 个，失败 2 个）")
+    );
+}
+
+// —— 建目录（本地空目录树）——
+
+fn temp_root(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("kichi-dirs-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    dir
+}
+
+#[test]
+fn local_dir_sanitises_every_part() {
+    let path = local_dir(
+        Path::new("/home/me/Downloads"),
+        &["剧集".to_owned(), ".piko".to_owned()],
+    );
+    assert_eq!(
+        path,
+        PathBuf::from("/home/me/Downloads")
+            .join("剧集")
+            .join("_.piko"),
+        "建目录与文件落盘共用 safe_file_name"
+    );
+}
+
+#[test]
+fn create_dirs_builds_the_whole_tree() {
+    let root = temp_root("tree");
+    let dirs = vec![
+        vec!["剧集".to_owned()],
+        vec!["剧集".to_owned(), "第一季".to_owned()],
+        vec!["剧集".to_owned(), "空".to_owned()],
+    ];
+    let (skipped, fatal) = create_dirs(&root, &dirs, &Cancel::default());
+    assert_eq!(skipped, 0);
+    assert!(fatal.is_none());
+    for parts in &dirs {
+        assert!(local_dir(&root, parts).is_dir(), "每一层都要真的建出来");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn create_dirs_counts_non_root_failures_as_skips() {
+    let root = temp_root("blocked");
+    // 二级目录的位置先占成普通文件，它下面的目录就建不出来
+    std::fs::create_dir_all(root.join("剧集")).expect("建一级目录");
+    std::fs::write(root.join("剧集").join("挡住"), b"x").expect("写占位文件");
+    let dirs = vec![
+        vec!["剧集".to_owned()],
+        vec!["剧集".to_owned(), "挡住".to_owned()],
+    ];
+    let (skipped, fatal) = create_dirs(&root, &dirs, &Cancel::default());
+    assert_eq!(skipped, 1, "非根目录建不出来只并入跳过");
+    assert!(fatal.is_none(), "根目录建好了，不算整批失败");
+    assert!(local_dir(&root, &dirs[0]).is_dir());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn create_dirs_root_failure_is_fatal() {
+    let root = temp_root("fatal");
+    // 下载根目录位置被一个普通文件占住 → 根目录本身建不出来
+    std::fs::write(root.join("剧集"), b"x").expect("写占位文件");
+    let dirs = vec![
+        vec!["剧集".to_owned()],
+        vec!["剧集".to_owned(), "第一季".to_owned()],
+    ];
+    let (skipped, fatal) = create_dirs(&root, &dirs, &Cancel::default());
+    assert_eq!(skipped, 0, "根目录失败不能算跳过");
+    assert!(
+        fatal
+            .as_deref()
+            .is_some_and(|reason| reason.contains("创建下载目录失败")),
+        "根目录建不出来要整批失败：{fatal:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn create_dirs_stops_on_cancel() {
+    let root = temp_root("cancel");
+    let cancel = Cancel::default();
+    cancel.cancel();
+    let dirs = vec![vec!["剧集".to_owned()]];
+    let (skipped, fatal) = create_dirs(&root, &dirs, &cancel);
+    assert_eq!((skipped, fatal), (0, None));
+    assert!(!local_dir(&root, &dirs[0]).exists(), "取消后不再建目录");
+    let _ = std::fs::remove_dir_all(&root);
 }

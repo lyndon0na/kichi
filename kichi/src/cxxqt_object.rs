@@ -381,6 +381,7 @@ mod files;
 mod notifications;
 mod play;
 mod queue;
+mod queue_collect;
 mod queue_worker;
 mod reveal;
 mod search;

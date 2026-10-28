@@ -1,6 +1,8 @@
-//! 下载线程的执行体：递归读目录、逐条下载、进度节流、结果回投。
+//! 下载线程的执行体：建目录、逐条下载、进度节流、结果回投。
 //!
-//! 调度与占用表在 [`super::queue`]；本文件只在后台跑，不碰 Qt 对象，
+//! 目录遍历在 [`super::queue_collect`]（空文件夹 / 过深 / 收集期失败的边界
+//! 见 `docs/adr/0012-folder-download-boundaries.md`）；调度与占用表在
+//! [`super::queue`]；本文件只在后台跑，不碰 Qt 对象，
 //! 所有界面更新都经 `actions::enqueue_ui` 回主线程。
 
 use std::path::{Path, PathBuf};
@@ -8,65 +10,53 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kichi_core::{EntryKind, FileEntry};
+use kichi_core::FileEntry;
 
-use super::queue::{add_result, current_epoch, BatchReport, Job, JobOutcome, MAX_DEPTH};
+use super::queue::{add_result, current_epoch, BatchReport, Job, JobOutcome};
+use super::queue_collect::{self, Collected};
 use super::transfers;
-use crate::session::download::{Cancel, DownloadCallbacks};
+use crate::session::download::{safe_file_name, Cancel, DownloadCallbacks};
 use crate::session::{Failure, Session};
 
 /// 进度回投的最小间隔。
 pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
-/// 递归收集文件夹里的文件（保留层级；阻塞）。
-pub(crate) fn collect_folder(
-    session: &Arc<Session>,
-    folder: &FileEntry,
-    cancel: &Cancel,
-) -> Result<Vec<Job>, Failure> {
-    let mut jobs = Vec::new();
-    let mut path = vec![folder.name.clone()];
-    walk(session, &folder.id, &mut path, &mut jobs, 0, cancel)?;
-    Ok(jobs)
+/// 相对下载根目录的目录路径 → 本地绝对路径。
+///
+/// 建目录与文件落盘必须共用这一套 `safe_file_name` 拼接（`docs/pitfalls.md`），
+/// 否则目录建在一个名字下、文件落到另一个名字下。
+pub(crate) fn local_dir(root: &Path, parts: &[String]) -> PathBuf {
+    let mut path = root.to_path_buf();
+    for part in parts {
+        path.push(safe_file_name(part));
+    }
+    path
 }
 
-fn walk(
-    session: &Arc<Session>,
-    folder_id: &str,
-    path: &mut Vec<String>,
-    jobs: &mut Vec<Job>,
-    depth: usize,
-    cancel: &Cancel,
-) -> Result<(), Failure> {
-    if depth > MAX_DEPTH {
-        return Err(Failure::Other(format!(
-            "目录层级超过 {MAX_DEPTH} 层，为避免异常结构已停止读取"
-        )));
-    }
-    // 每页之间查取消：读完整个目录可能要好几秒
-    for entry in session.list_dir_with_cancel(Some(folder_id), Some(cancel))? {
+/// 先把收集到的目录树建出来；返回（新增跳过数, 根目录失败的致命原因）。
+///
+/// 根目录建不出来 = 整批失败（后面所有文件都落不下去）；非根失败只并入跳过计数，
+/// 文件下载本身还会 `create_dir_all`，不依赖这里预建成功。
+fn create_dirs(root: &Path, dirs: &[Vec<String>], cancel: &Cancel) -> (usize, Option<String>) {
+    let mut skipped = 0;
+    let mut fatal = None;
+    for (index, parts) in dirs.iter().enumerate() {
         if cancel.is_cancelled() {
-            return Err(Failure::Other("下载已取消".to_owned()));
+            break;
         }
-        match entry.kind {
-            EntryKind::Folder => {
-                path.push(entry.name.clone());
-                walk(session, &entry.id, path, jobs, depth + 1, cancel)?;
-                path.pop();
+        let path = local_dir(root, parts);
+        if let Err(err) = std::fs::create_dir_all(&path) {
+            if index == 0 {
+                fatal = Some(format!("创建下载目录失败：{err}"));
+                break;
             }
-            EntryKind::File => jobs.push(Job {
-                id: entry.id.clone(),
-                sub_dir: path.clone(),
-                name: entry.name.clone(),
-                size: entry.size,
-                audit_flagged: entry.audit_flagged,
-            }),
+            skipped += 1;
         }
     }
-    Ok(())
+    (skipped, fatal)
 }
 
-/// 下载线程：逐条下载，结果回投主线程。
+/// 下载线程：建目录、逐条下载，结果回投主线程。
 ///
 /// 整个循环包在 `catch_unwind` 里：panic 也必须走到收尾（标失败 / 释放占用 /
 /// 推进下一批），不能让一批永远占着 `current`。收尾本身在 [`post_finished`]
@@ -75,55 +65,84 @@ pub(crate) fn run_jobs(
     session: Arc<Session>,
     dir: PathBuf,
     batch: u64,
-    jobs: Vec<Job>,
+    collected: Collected,
     cancel: Arc<Cancel>,
     my_epoch: u64,
 ) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        download_all(&session, &dir, batch, &jobs, &cancel, my_epoch)
+        download_all(&session, &dir, batch, &collected, &cancel, my_epoch)
     }));
     let interrupted = outcome.is_err();
     if interrupted {
         // 记录表里这一批还活着的行都标失败；通知统一由 post_finished 发
         transfers::fail_batch(batch, "下载线程异常中断");
     }
+    // `download_all` 返回的批次级失败原因（建目录失败）：标掉还没完成的记录。
+    // 取消优先：期间按过取消就按取消收尾，别把行写成失败。
+    let batch_error = match &outcome {
+        Ok(reason) if !cancel.is_cancelled() => reason.clone(),
+        _ => None,
+    };
+    if let Some(reason) = &batch_error {
+        transfers::fail_batch(batch, reason);
+    }
     // 取消 / 登出导致提前退出时，还没轮到的条目也要收尾。
     // 取消时当前条可能刚好下载成功，也会落在这里。
     if cancel.is_cancelled() {
         transfers::cancel_batch(batch, "");
     }
-    // 优先级：panic > 取消 > 正常完成。fail_batch 已经写下的失败原因
+    // 优先级：panic > 取消 > 批次级失败 > 正常完成。fail_batch 已经写下的失败原因
     // 不会被 cancel_batch 覆盖（后者只动活动记录，失败行已经结束了）。
     let end = if interrupted {
         BatchEnd::Interrupted
     } else if cancel.is_cancelled() {
         BatchEnd::Cancelled
+    } else if let Some(reason) = batch_error {
+        BatchEnd::Failed(reason)
     } else {
         BatchEnd::Completed
     };
     post_finished(batch, end, my_epoch);
 }
 
-/// 逐条下载（[`run_jobs`] 的主体；panic 由调用方兜底）。
+/// 建目录 + 逐条下载（[`run_jobs`] 的主体；panic 由调用方兜底）。
+///
+/// 返回批次级失败原因（只有根目录建不出来）：这时这一批算整体失败，
+/// 而不是「完成了但跳过很多」。
 fn download_all(
     session: &Arc<Session>,
     dir: &Path,
     batch: u64,
-    jobs: &[Job],
+    collected: &Collected,
     cancel: &Arc<Cancel>,
     my_epoch: u64,
-) {
-    for (index, job) in jobs.iter().enumerate() {
+) -> Option<String> {
+    let (dir_skipped, fatal) = create_dirs(dir, &collected.dirs, cancel);
+    if dir_skipped > 0 {
+        super::queue::add_skipped(batch, dir_skipped);
+        transfers::add_skipped(batch, dir_skipped);
+    }
+    if fatal.is_some() {
+        return fatal;
+    }
+    if cancel.is_cancelled() {
+        return None;
+    }
+    if collected.files.is_empty() {
+        // 空文件夹（可能带被跳过的分支）：目录已建好，这一批算完成
+        transfers::finish_folder_empty(batch);
+        post_sync();
+        return None;
+    }
+
+    for (index, job) in collected.files.iter().enumerate() {
         if my_epoch != current_epoch() || cancel.is_cancelled() {
             break;
         }
         transfers::begin(batch, index);
         post_sync();
 
-        let mut target = dir.to_path_buf();
-        for part in &job.sub_dir {
-            target.push(crate::session::download::safe_file_name(part));
-        }
+        let target = local_dir(dir, &job.sub_dir);
         let throttle = Throttle::default();
         let progress = |bytes: u64, total: Option<u64>| {
             if throttle.should_send(bytes, total) {
@@ -151,7 +170,7 @@ fn download_all(
         );
         // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
         if my_epoch != current_epoch() {
-            return;
+            return None;
         }
         let cancelled = cancel.is_cancelled();
         match outcome {
@@ -172,6 +191,7 @@ fn download_all(
             }
         }
     }
+    None
 }
 
 /// 进度节流：250ms 或进 1% 才发。
@@ -227,12 +247,14 @@ fn post_live() {
     );
 }
 
-/// 一批结束的三态（决定通知文案与状态栏）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 一批结束的四种去向（决定通知文案与状态栏）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BatchEnd {
     Completed,
     Cancelled,
     Interrupted,
+    /// 批次级失败（根目录建不出来）：原因写进记录与通知
+    Failed(String),
 }
 
 /// 整批结束：释放占用、最多发一条通知、给状态栏收尾，然后推进下一批。
@@ -250,31 +272,44 @@ fn post_finished(batch: u64, end: BatchEnd, my_epoch: u64) {
                 return;
             };
             if qichi.notify_enabled {
-                if let Some(notice) = end_notice(&report, end) {
+                if let Some(notice) = end_notice(&report, &end) {
                     super::notifications::show_notice(&notice);
                 }
             }
-            match end {
-                BatchEnd::Cancelled => qichi.as_mut().set_message(
-                    &format!(
-                        "下载已取消（已完成 {} 个，失败 {} 个）",
-                        report.done, report.failed
-                    ),
-                    false,
-                ),
-                BatchEnd::Completed if report.failed == 0 && report.done > 0 => qichi
-                    .as_mut()
-                    .set_message(&format!("下载完成：{} 个文件", report.done), false),
-                // 失败 / 中断按用户选择不留在状态栏，清掉「开始下载…」之类的旧文案
-                _ => qichi.as_mut().set_message("", false),
+            // 状态栏文案由纯函数决定：空文件夹 = 完成，失败 / 中断不进状态栏
+            match status_text(&report, &end) {
+                Some(text) => qichi.as_mut().set_message(&text, false),
+                None => qichi.as_mut().set_message("", false),
             }
             qichi.as_mut().advance_downloads();
         },
     );
 }
 
-/// 批次结束 → 一条通知；取消不弹。
-fn end_notice(report: &BatchReport, end: BatchEnd) -> Option<super::notifications::Notice> {
+/// 批次结束 → 状态栏文案（`None` = 清空，失败 / 中断不留旧文案）。
+fn status_text(report: &BatchReport, end: &BatchEnd) -> Option<String> {
+    match end {
+        BatchEnd::Cancelled => Some(format!(
+            "下载已取消（已完成 {} 个，失败 {} 个）",
+            report.done, report.failed
+        )),
+        BatchEnd::Completed if report.empty_folder => {
+            Some(format!("已创建空文件夹：{}", report.name))
+        }
+        BatchEnd::Completed if report.done > 0 && report.failed == 0 => {
+            let mut text = format!("下载完成：{} 个文件", report.done);
+            if report.skipped > 0 {
+                text.push_str(&format!("（跳过 {} 个目录）", report.skipped));
+            }
+            Some(text)
+        }
+        // 失败 / 中断 / 部分失败按用户选择不留在状态栏
+        _ => None,
+    }
+}
+
+/// 批次结束 → 一条通知；取消与空文件夹不弹。
+fn end_notice(report: &BatchReport, end: &BatchEnd) -> Option<super::notifications::Notice> {
     match end {
         BatchEnd::Cancelled => None,
         BatchEnd::Interrupted => Some(super::notifications::batch_failed(
@@ -282,12 +317,20 @@ fn end_notice(report: &BatchReport, end: BatchEnd) -> Option<super::notification
             report.folder,
             "下载线程异常中断",
         )),
+        BatchEnd::Failed(reason) => Some(super::notifications::batch_failed(
+            &report.name,
+            report.folder,
+            reason,
+        )),
+        // 空文件夹是成功，但不值得打扰：验收点见 ADR 0012
+        BatchEnd::Completed if report.empty_folder => None,
         BatchEnd::Completed => Some(super::notifications::batch_finished(
             super::notifications::BatchSummary {
                 name: &report.name,
                 folder: report.folder,
                 done: report.done,
                 failed: report.failed,
+                skipped: report.skipped,
                 failure: report.failure.as_deref(),
             },
         )),
@@ -324,7 +367,7 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
         builder
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    collect_folder(&session, &folder, &cancel)
+                    queue_collect::collect_folder(&session, &folder, &cancel)
                 }))
                 .unwrap_or_else(|_| Err(Failure::Other("读取目录时后台任务异常中断".to_owned())));
                 let cancelled = cancel.is_cancelled();
@@ -345,8 +388,14 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
             audit_flagged: start.entry.audit_flagged,
         };
         let dir = start.dir.clone();
+        // 单文件批次没有目录树要建：sub_dir 已由下载循环自己 create_dir_all
+        let collected = Collected {
+            files: vec![job],
+            dirs: Vec::new(),
+            skipped: 0,
+        };
         builder
-            .spawn(move || run_jobs(session, dir, batch, vec![job], cancel, my_epoch))
+            .spawn(move || run_jobs(session, dir, batch, collected, cancel, my_epoch))
             .map(|_| ())
     }
 }

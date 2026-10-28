@@ -738,8 +738,7 @@ TestCase {
     }
 
     // 读目录前整体失败：没有子行，父行可整批重试。
-    function test_failed_folder_without_children_offers_retry() {
-        publish([folderRecord("1:folder", "failed", {
+    function test_failed_folder_without_children_offers_retry() {        publish([folderRecord("1:folder", "failed", {
             childCount: 0,
             stateText: "失败",
             detail: "目录读取失败"
@@ -753,6 +752,56 @@ TestCase {
         mouseClick(retry)
         compare(backend.retryCount, 1)
         compare(backend.retriedKey, "1:folder", "重试的是文件夹总账行")
+    }
+
+    // 空文件夹：Done 且没有子行，但有落盘路径（ADR 0012）。
+    // 打开位置可用、不显示下钻箭头、不给重试。
+    function test_empty_folder_done_row_reveals_its_directory() {
+        publish([folderRecord("1:folder", "done", {
+            childCount: 0,
+            stateText: "已完成",
+            sizeText: "—",
+            detail: "空文件夹 · 保存到 /home/me/Downloads/空文件夹",
+            path: "/home/me/Downloads/空文件夹"
+        })])
+        wait(60)
+
+        var hint = controlAt(0, "openDetailsHint")
+        verify(hint === null || !hint.visible, "空文件夹没有子行，不显示 ›")
+        var header = controlAt(0, "rowHeader")
+        verify(header !== null && !header.enabled, "空文件夹第一行不可点开详情")
+
+        var reveal = controlAt(0, "revealLink")
+        verify(reveal !== null && reveal.visible, "空文件夹可「打开位置」")
+        mouseClick(reveal)
+        compare(backend.revealCount, 1)
+        compare(backend.revealedKey, "1:folder")
+
+        var retry = controlAt(0, "retryLink")
+        verify(retry === null || !retry.visible, "空文件夹算完成，不给重试")
+        compare(controlAt(0, "stateText").text, "已完成")
+        compare(controlAt(0, "sizeText").text, "—")
+
+        var detail = controlAt(0, "detailLink")
+        verify(detail !== null, "空文件夹要有说明行")
+        compare(detail.text, "空文件夹 · 保存到 /home/me/Downloads/空文件夹")
+    }
+
+    // 带跳过数的完成行：说明行原样显示 Rust 拼好的文案。
+    function test_done_row_shows_skipped_directories() {
+        publish([folderRecord("1:folder", "done", {
+            childCount: 3,
+            detail: "3 个文件 · 保存到 /home/me/Downloads/剧集 · 跳过 2 个目录",
+            path: "/home/me/Downloads/剧集"
+        })])
+        wait(60)
+
+        var detail = controlAt(0, "detailLink")
+        verify(detail !== null)
+        verify(detail.text.indexOf("跳过 2 个目录") >= 0,
+               "跳过后缀要显示出来：" + detail.text)
+        var reveal = controlAt(0, "revealLink")
+        verify(reveal !== null && reveal.visible, "有文件落盘的完成行仍可打开位置")
     }
 
     // 详情页开着时定位别的条目：先回主列表，再滚到目标行。

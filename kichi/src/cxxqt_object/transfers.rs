@@ -135,6 +135,10 @@ pub(crate) struct Transfer {
     pub(crate) speed: SpeedMeter,
     /// 下载中说明的存活状态（重试 / 续传说明恢复 5 秒后自动消失）
     pub(crate) note: NoteState,
+    /// 文件夹总账行：一个文件都没有，建出目录就算完成（空文件夹）
+    pub(crate) empty_folder: bool,
+    /// 文件夹总账行：被跳过的目录数（过深 / 读失败 / 本地建目录失败）
+    pub(crate) skipped: usize,
 }
 
 impl Transfer {
@@ -147,6 +151,7 @@ impl Transfer {
 ///
 /// 子行与单文件行都是 `EntryKind::File`；父行和第一个子行都可能是
 /// `(batch, index = 0)`，所以按 `(batch, index)` 查文件时必须再过滤类型。
+/// 空文件夹的总账行**没有子行**，`Done` 由 [`finish_folder_empty`] 直接写下。
 pub(crate) fn is_folder_ledger(record: &Transfer) -> bool {
     !record.child && record.job.kind == EntryKind::Folder
 }
@@ -201,9 +206,29 @@ pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob]) {
     with_records(|records| expand_folder_in(records, batch, jobs));
 }
 
-/// 一批整体没跑起来（收集失败 / 空目录 / 线程起不来）：标失败。
+/// 一批整体没跑起来（收集失败 / 线程起不来 / 根目录建不出来）：标失败。
 pub(crate) fn fail_batch(batch: u64, reason: &str) {
     with_records(|records| fail_batch_in(records, batch, reason));
+}
+
+/// 文件夹收集阶段记下的跳过数（展开子行之后写，空文件夹也写）。
+pub(crate) fn set_skipped(batch: u64, skipped: usize) {
+    with_records(|records| set_skipped_in(records, batch, skipped));
+}
+
+/// 下载阶段又跳过了几个目录（本地空目录创建失败）。
+pub(crate) fn add_skipped(batch: u64, extra: usize) {
+    if extra == 0 {
+        return;
+    }
+    with_records(|records| add_skipped_in(records, batch, extra));
+}
+
+/// 空文件夹批次结束：父行直接标完成，落盘路径 = 下载目录 + 文件夹名。
+///
+/// 这一批没有子行，[`refresh_parent_state`] 不会碰它；取消过的行不改。
+pub(crate) fn finish_folder_empty(batch: u64) {
+    with_records(|records| finish_folder_empty_in(records, batch));
 }
 
 /// 一条开始下载。
@@ -334,6 +359,8 @@ pub(super) fn row_from(batch: u64, index: usize, source_id: &str, job: &Transfer
         path: None,
         speed: SpeedMeter::default(),
         note: NoteState::default(),
+        empty_folder: false,
+        skipped: 0,
     }
 }
 
@@ -481,6 +508,41 @@ fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
     }
 }
 
+/// 跳过数只记在文件夹总账行上（QML 的说明行从这一行取）。
+fn set_skipped_in(records: &mut [Transfer], batch: u64, skipped: usize) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if is_folder_ledger(record) {
+            record.skipped = skipped;
+        }
+    }
+}
+
+fn add_skipped_in(records: &mut [Transfer], batch: u64, extra: usize) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if is_folder_ledger(record) {
+            record.skipped += extra;
+        }
+    }
+}
+
+fn finish_folder_empty_in(records: &mut [Transfer], batch: u64) {
+    let Some(parent) = records
+        .iter_mut()
+        .find(|record| record.batch == batch && is_folder_ledger(record))
+    else {
+        return;
+    };
+    if parent.state == TransferState::Cancelled {
+        return;
+    }
+    // 路径要在改字段前算好（函数借的是记录本身）
+    let path = folder_download_path(parent);
+    parent.state = TransferState::Done;
+    parent.empty_folder = true;
+    parent.path = path;
+    parent.detail.clear();
+}
+
 fn progress_in(records: &mut [Transfer], batch: u64, index: usize, bytes: u64, total: Option<u64>) {
     progress_in_at(records, batch, index, bytes, total, Instant::now());
 }
@@ -595,7 +657,7 @@ pub(crate) fn folder_download_path(record: &Transfer) -> Option<PathBuf> {
     })
 }
 
-/// 这个批次是否已经有子文件落盘（父行的「打开位置」只在此时可用）。
+/// 这个批次是否已经有子文件落盘（父行的「打开位置」按此给出文件夹）。
 pub(crate) fn has_done_child(records: &[Transfer], batch: u64) -> bool {
     records
         .iter()

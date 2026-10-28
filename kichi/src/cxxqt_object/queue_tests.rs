@@ -1,6 +1,6 @@
 //! `queue.rs` 的单元测试：按源 id 占用、串行推进、释放与取消。
 //!
-//! 只测纯调度逻辑（不碰网络、不起真线程）：`collect_folder` 与
+//! 只测纯调度逻辑（不碰网络、不起真线程）：`queue_collect::collect_folder` 与
 //! `run_jobs` 都需要真实会话，属于 `live_tests` 的范围。
 
 use super::*;
@@ -377,6 +377,46 @@ fn release_reports_last_failure() {
         Some("磁盘已满"),
         "单文件批次的通知用最后一条失败原因"
     );
+    transfers::reset();
+    reset();
+}
+
+// —— 空文件夹 / 跳过计数（2026-10-27 文件夹下载边界）——
+
+#[test]
+fn release_defaults_to_no_skips_and_not_empty() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve(
+        entry("file-1", EntryKind::File, "a.mkv"),
+        PathBuf::from("/tmp"),
+    )
+    .expect("登记");
+    let _ = next_start().expect("轮到这一批");
+    let report = release(batch).expect("批次结束后应有汇总");
+    assert_eq!(report.skipped, 0, "默认没有跳过的目录");
+    assert!(!report.empty_folder, "默认不是空文件夹批次");
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn add_skipped_only_touches_the_current_batch() {
+    let _guard = lock();
+    reset_for_test();
+    let first = reserve_id("a").expect("a");
+    let second = reserve_id("b").expect("b");
+    let _ = next_start().expect("a 开跑");
+
+    add_skipped(second, 5);
+    add_skipped(first, 2);
+    add_skipped(first, 3);
+    let report = release(first).expect("a 结束");
+    assert_eq!(report.skipped, 5, "只累计当前批次，且在同一个计数上叠加");
+
+    let _ = next_start().expect("b 顶上");
+    let report = release(second).expect("b 结束");
+    assert_eq!(report.skipped, 0, "排队中的批次不会被写到");
     transfers::reset();
     reset();
 }

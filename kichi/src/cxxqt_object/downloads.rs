@@ -4,7 +4,9 @@
 //! - **一次只跑一批、批内串行**：并行的下载会互相抢带宽，官方也视为压力；
 //!   不同条目可以排队，轮到才读目录；
 //! - 判重键是云端条目 id：同一条目在排队 / 准备 / 下载中时点下载 = 跳转定位；
-//! - 文件夹下载轮到时才递归列目录，落盘时保留层级；
+//! - 文件夹下载轮到时才递归列目录，落盘时保留层级，并先建出完整目录树；
+//! - **空文件夹算成功**：建出目录即完成，不弹通知；读不到的子目录按跳过处理
+//!   （边界见 `docs/adr/0012-folder-download-boundaries.md`）；
 //! - 进度经主线程队列回投（`pump()` 消费），后台线程不碰 Qt 对象；
 //! - 登出时在途下载整体作废。
 //!
@@ -20,6 +22,7 @@ use cxx_qt_lib::QString;
 
 use super::qobject;
 use super::queue;
+use super::queue_collect;
 use super::reveal;
 use super::transfers;
 use super::transfers_actions;
@@ -142,7 +145,7 @@ impl qobject::Kichi {
 
     /// 打开某个文件夹批次的详情页：只有「已有子文件」的文件夹行有效。
     ///
-    /// 无效 key（排队中 / 准备中 / 空目录失败的文件夹）不会激活详情，
+    /// 无效 key（排队中 / 准备中 / 空文件夹）不会激活详情，
     /// QML 侧看到 `transferDetailActive` 仍为 false 就留在主列表。
     pub fn open_transfer_folder(mut self: Pin<&mut Self>, key: QString) {
         transfers_detail::select_folder(&key.to_string());
@@ -190,7 +193,7 @@ impl qobject::Kichi {
     pub(crate) fn on_folder_collected(
         mut self: Pin<&mut Self>,
         batch: u64,
-        result: Result<Vec<queue::Job>, Failure>,
+        result: Result<queue_collect::Collected, Failure>,
         cancelled: bool,
         my_epoch: u64,
     ) {
@@ -198,13 +201,16 @@ impl qobject::Kichi {
         if my_epoch != queue::current_epoch() {
             return;
         }
-        if let Some(jobs) = self.as_mut().settle_collected(batch, result, cancelled) {
-            let total = jobs.len();
+        if let Some(collected) = self.as_mut().settle_collected(batch, result, cancelled) {
+            let total = collected.files.len();
             let session = self.backend.session.clone();
-            match queue::start_download(&session, batch, jobs) {
-                queue::StartOutcome::Started => self
+            match queue::start_download(&session, batch, collected) {
+                // 空文件夹没有「开始下载 0 个文件」这种提示：
+                // 建完目录后由收尾写「已创建空文件夹」
+                queue::StartOutcome::Started if total > 0 => self
                     .as_mut()
                     .set_message(&format!("开始下载 {total} 个文件……"), false),
+                queue::StartOutcome::Started => {}
                 // 线程起不来：`start_download` 已把这一批标失败并释放
                 queue::StartOutcome::Failed(failure) => {
                     self.as_mut().notify_batch_failed(
@@ -218,17 +224,17 @@ impl qobject::Kichi {
                 queue::StartOutcome::NotCurrent | queue::StartOutcome::Cancelled => {}
             }
         }
-        // 不管这一批是开跑、失败还是空目录，都要让后面排队的顶上
+        // 不管这一批是开跑、失败还是空文件夹，都要让后面排队的顶上
         self.as_mut().advance_downloads();
     }
 
-    /// 收集结果 → 记录表状态。返回要下载的条目；`None` = 这一批到此为止。
+    /// 收集结果 → 记录表状态。返回收集到的目录树；`None` = 这一批到此为止。
     fn settle_collected(
         mut self: Pin<&mut Self>,
         batch: u64,
-        result: Result<Vec<queue::Job>, Failure>,
+        result: Result<queue_collect::Collected, Failure>,
         cancelled: bool,
-    ) -> Option<Vec<queue::Job>> {
+    ) -> Option<queue_collect::Collected> {
         let failure = match result {
             _ if cancelled => {
                 // 用户主动取消：不弹系统通知
@@ -237,18 +243,8 @@ impl qobject::Kichi {
                 self.as_mut().sync_transfers();
                 return None;
             }
-            Ok(jobs) if jobs.is_empty() => {
-                const REASON: &str = "这个位置没有可下载的文件";
-                transfers::fail_batch(batch, REASON);
-                if let Some(report) = queue::release(batch) {
-                    self.as_mut()
-                        .notify_batch_failed(&report.name, report.folder, REASON);
-                }
-                self.as_mut().set_message("", false);
-                self.as_mut().sync_transfers();
-                return None;
-            }
-            Ok(jobs) => return Some(jobs),
+            // 空文件夹也是成功：目录由下载线程建好后标完成
+            Ok(collected) => return Some(collected),
             Err(err) => err,
         };
         transfers::fail_batch(batch, &failure.to_string());

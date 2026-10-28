@@ -75,7 +75,7 @@ Item {
         page.detailKey = key
         page.backend.openTransferFolder(key)
         page.refreshDetailFolder()
-        // 无效 key（排队中 / 空目录失败）不会激活详情，清掉避免残留
+        // 无效 key（排队中 / 空文件夹）不会激活详情，清掉避免残留
         if (!page.backend.transferDetailActive) {
             page.detailKey = ""
             page.detailFolder = null

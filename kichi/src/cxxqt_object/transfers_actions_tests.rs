@@ -198,3 +198,63 @@ fn folder_path_needs_at_least_one_done_child() {
         "失败的那个子行仍然没有路径"
     );
 }
+
+// —— 空文件夹的「打开位置」（2026-10-27）——
+
+fn folder_ledger(name: &str) -> TransferJob {
+    job("folder-1", name, EntryKind::Folder, &[])
+}
+
+#[test]
+fn empty_folder_done_row_has_its_directory() {
+    // 真实流程里 `finish_folder_empty` 已把建出来的目录写进 path（transfers_tests 覆盖），
+    // 这里只验「路径取得到、QML 的打开位置有用」
+    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"));
+    record.state = TransferState::Done;
+    record.empty_folder = true;
+    record.path = Some(PathBuf::from("/home/me/Downloads/剧集"));
+
+    assert_eq!(
+        path_for_in(&[record], "7:folder"),
+        Some(PathBuf::from("/home/me/Downloads/剧集")),
+        "空文件夹的目录已经建出来，可以打开位置"
+    );
+}
+
+#[test]
+fn failed_empty_batch_has_no_path() {
+    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"));
+    record.state = TransferState::Failed;
+    record.detail = "所有子目录都无法读取（跳过 2 个）".into();
+
+    assert_eq!(
+        path_for_in(&[record], "7:folder"),
+        None,
+        "失败的批次可能压根没建目录，不给路径"
+    );
+}
+
+#[test]
+fn folder_path_still_comes_from_done_children_first() {
+    let mut records = folder_batch(&[("a.mkv", TransferState::Failed)]);
+    records[0].state = TransferState::Failed;
+    assert_eq!(path_for_in(&records, "7:folder"), None);
+
+    records[1].state = TransferState::Done;
+    assert_eq!(
+        path_for_in(&records, "7:folder"),
+        Some(PathBuf::from("/home/me/Downloads/剧集")),
+        "有子文件完成时行为不变"
+    );
+}
+
+#[test]
+fn empty_folder_row_is_not_retryable_as_a_whole() {
+    let mut record = row_from(7, 0, "folder-1", &folder_ledger("剧集"));
+    record.state = TransferState::Done;
+    record.empty_folder = true;
+    assert!(
+        retry_target_in(&[record], "7:folder").is_none(),
+        "空文件夹算成功，没有重试入口"
+    );
+}

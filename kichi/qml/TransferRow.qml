@@ -49,6 +49,8 @@ ItemDelegate {
 
     readonly property bool notice: row.phase === "notice"
     readonly property bool failed: row.phase === "failed"
+    /// 空文件夹 Done 行没有子行但有落盘路径（path 非空），所以下面两条要分开看：
+    /// 没有子行 → 不显示下钻箭头；有路径 → 仍可「打开位置」。
     readonly property bool canOpenDetails: row.folder && row.childCount > 0
     readonly property bool hasFailedChildren: row.folder && row.failedCount > 0
     readonly property bool canReveal: row.path.length > 0
@@ -196,7 +198,7 @@ ItemDelegate {
                     Layout.preferredWidth: 150
                 }
 
-                // 文件夹行的下钻提示；没有子文件（排队 / 准备中 / 空目录失败）不显示
+                // 文件夹行的下钻提示；没有子文件（排队 / 准备中 / 空文件夹）不显示
                 Label {
                     objectName: "openDetailsHint"
                     visible: row.canOpenDetails
