@@ -4,7 +4,7 @@
 
 use super::super::download_resume::{
     classify_open_error, download_retries, read_into_part, resume_failure, retry_delay,
-    save_empty_file, OpenAction, Part, ReadOutcome, DEFAULT_RETRIES, RETRIES_ENV,
+    save_empty_file, OpenAction, Part, ReadOutcome, RetryBudget, DEFAULT_RETRIES, RETRIES_ENV,
 };
 use super::*;
 use kichi_core::Error as CoreError;
@@ -212,6 +212,66 @@ fn retry_count_env_parses_and_can_be_disabled() {
     }
     std::env::remove_var(RETRIES_ENV);
     assert_eq!(download_retries(), DEFAULT_RETRIES);
+}
+
+// —— 重试预算 ——
+
+#[test]
+fn retry_budget_stops_after_consecutive_failures() {
+    let mut budget = RetryBudget::new(3);
+    assert_eq!(budget.grant(), Some(0));
+    assert_eq!(budget.grant(), Some(1));
+    assert_eq!(budget.grant(), Some(2));
+    assert_eq!(budget.grant(), None, "连续三次都失败就该放弃");
+    assert!(budget.exhausted());
+}
+
+#[test]
+fn retry_budget_resets_after_progress() {
+    // 长下载里零星抖动：每次都下了点数据再断，不该累积耗尽（known-issues §4.1）
+    let mut budget = RetryBudget::new(3);
+    for round in 0..50 {
+        budget.progressed();
+        assert_eq!(budget.grant(), Some(0), "第 {round} 轮应该还有满额");
+    }
+}
+
+#[test]
+fn retry_budget_has_a_total_cap() {
+    // 服务器每次只给一点就断：连续计数一直被清零，得靠总额度收口
+    let mut budget = RetryBudget::new(1);
+    let mut granted = 0;
+    while budget.grant().is_some() {
+        granted += 1;
+        budget.progressed();
+        assert!(granted < 10_000, "总额度必须有限");
+    }
+    assert_eq!(granted, 20, "总额度 = 连续上限 × 20");
+    assert!(budget.exhausted());
+}
+
+#[test]
+fn retry_budget_zero_disables_retries() {
+    let mut budget = RetryBudget::new(0);
+    assert_eq!(budget.grant(), None);
+    budget.progressed();
+    assert_eq!(
+        budget.grant(),
+        None,
+        "KICHI_DOWNLOAD_RETRIES=0 关掉重试后不该再试"
+    );
+}
+
+#[test]
+fn retry_budget_reports_consecutive_count_for_messages() {
+    let mut budget = RetryBudget::new(3);
+    assert_eq!(budget.consecutive(), 0);
+    assert_eq!(budget.max_consecutive(), 3);
+    budget.grant();
+    budget.grant();
+    assert_eq!(budget.consecutive(), 2, "提示里的 n/max 用连续计数");
+    budget.progressed();
+    assert_eq!(budget.consecutive(), 0);
 }
 
 #[test]

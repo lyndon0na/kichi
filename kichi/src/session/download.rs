@@ -23,6 +23,7 @@ pub use super::download_naming::safe_file_name;
 use super::download_resume::{
     classify_open_error, download_retries, local_write_failure, prepare_part, read_into_part,
     resume_failure, retry_delay, save_empty_file, OpenAction, Part, Prepared, ReadOutcome,
+    RetryBudget,
 };
 use super::media::{file_info, file_info_for_download, KnownHint};
 use super::partials::{self, PartialEntry};
@@ -169,8 +170,7 @@ impl Session {
             Prepared::Streaming(part) => part,
         };
 
-        let max_retries = download_retries();
-        let mut retries: u32 = 0;
+        let mut budget = RetryBudget::new(download_retries());
         let mut info = info;
         let mut first_attempt = true;
 
@@ -215,12 +215,11 @@ impl Session {
                             continue;
                         }
                         OpenAction::Retry { refresh } => {
-                            if retries >= max_retries {
+                            let Some(attempt) = budget.grant() else {
                                 part.remember(file_id);
                                 return Err(resume_failure(err.to_string(), offset));
-                            }
-                            retries += 1;
-                            let delay = retry_delay(retries - 1);
+                            };
+                            let delay = retry_delay(attempt);
                             let head = if refresh {
                                 "下载链接已过期"
                             } else {
@@ -230,8 +229,8 @@ impl Session {
                                 "{head}，{} 秒后从 {} 继续（{}/{}）",
                                 delay.as_secs(),
                                 readable_size(offset),
-                                retries,
-                                max_retries
+                                budget.consecutive(),
+                                budget.max_consecutive()
                             ));
                             if !sleep_cancellable(cancel, delay) {
                                 return Err(part.abort(file_id, cancel));
@@ -265,7 +264,7 @@ impl Session {
                                             part.remember(file_id);
                                             return Err(err);
                                         }
-                                        if retries >= max_retries {
+                                        if budget.exhausted() {
                                             part.remember(file_id);
                                             return Err(resume_failure(err.to_string(), offset));
                                         }
@@ -307,6 +306,8 @@ impl Session {
                 part.total = stream.total_bytes().or(info.size).or(part.total);
             }
 
+            // 这次读拿到的新字节（用来判断该不该把连续失败计数清零）
+            let before_read = part.offset;
             match read_into_part(&mut stream, &mut part, progress, cancel) {
                 ReadOutcome::Complete => {
                     // 数据已齐：登出也只能保留 part，绝不 rename
@@ -364,18 +365,21 @@ impl Session {
                     return Err(Failure::Other(reason));
                 }
                 ReadOutcome::Retryable(reason) => {
-                    if retries >= max_retries {
+                    // 这次读真推进了数据：连续失败计数清零，额度还回去
+                    if part.offset > before_read {
+                        budget.progressed();
+                    }
+                    let Some(attempt) = budget.grant() else {
                         part.remember(file_id);
                         return Err(resume_failure(reason, part.offset));
-                    }
-                    retries += 1;
-                    let delay = retry_delay(retries - 1);
+                    };
+                    let delay = retry_delay(attempt);
                     note(&format!(
                         "连接中断，{} 秒后从 {} 继续（{}/{}）",
                         delay.as_secs(),
                         readable_size(part.offset),
-                        retries,
-                        max_retries
+                        budget.consecutive(),
+                        budget.max_consecutive()
                     ));
                     if !sleep_cancellable(cancel, delay) {
                         return Err(part.abort(file_id, cancel));

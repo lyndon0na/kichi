@@ -16,7 +16,8 @@ use kichi_core::{Error as CoreError, FileInfo};
 
 use super::super::download::{sleep_cancellable, Cancel, DownloadCallbacks};
 use super::super::download_resume::{
-    classify_open_error, download_retries, resume_failure, retry_delay, OpenAction, CHUNK,
+    classify_open_error, download_retries, resume_failure, retry_delay, OpenAction, RetryBudget,
+    CHUNK,
 };
 use super::super::media::{file_info_for_download, KnownHint};
 use super::super::partials::{self, PartialEntry, ShardSpan};
@@ -265,8 +266,7 @@ pub(super) fn run_shard(
         Err(err) => return ShardOutcome::Kept(err.to_string()),
     };
     let mut buffer = vec![0u8; CHUNK];
-    let max_retries = download_retries();
-    let mut retries = 0u32;
+    let mut budget = RetryBudget::new(download_retries());
 
     loop {
         if cancel.is_cancelled() {
@@ -311,19 +311,18 @@ pub(super) fn run_shard(
                         return ShardOutcome::Fallback("服务器要求从头下载".to_owned())
                     }
                     OpenAction::Retry { refresh } => {
-                        if retries >= max_retries {
+                        let Some(attempt) = budget.grant() else {
                             return ShardOutcome::Kept(
                                 resume_failure(err.to_string(), shared.done_bytes()).to_string(),
                             );
-                        }
-                        retries += 1;
-                        let delay = retry_delay(retries - 1);
+                        };
+                        let delay = retry_delay(attempt);
                         (callbacks.note)(&format!(
                             "第 {} 片连接中断，{} 秒后继续（{}/{}）",
                             index + 1,
                             delay.as_secs(),
-                            retries,
-                            max_retries
+                            budget.consecutive(),
+                            budget.max_consecutive()
                         ));
                         if !sleep_cancellable(cancel, delay) {
                             return ShardOutcome::Cancelled;
@@ -333,7 +332,7 @@ pub(super) fn run_shard(
                                 if cancel.is_cancelled() {
                                     return ShardOutcome::Cancelled;
                                 }
-                                if retries >= max_retries
+                                if budget.exhausted()
                                     || matches!(
                                         err,
                                         Failure::Auth(_)
@@ -369,19 +368,22 @@ pub(super) fn run_shard(
                 if cancel.is_cancelled() {
                     return ShardOutcome::Cancelled;
                 }
-                if retries >= max_retries {
+                // 这一轮真读进了新字节：连续失败计数清零
+                if state.done.load(Ordering::SeqCst) > done {
+                    budget.progressed();
+                }
+                let Some(attempt) = budget.grant() else {
                     return ShardOutcome::Kept(
                         resume_failure(reason, shared.done_bytes()).to_string(),
                     );
-                }
-                retries += 1;
-                let delay = retry_delay(retries - 1);
+                };
+                let delay = retry_delay(attempt);
                 (callbacks.note)(&format!(
                     "第 {} 片连接中断，{} 秒后继续（{}/{}）",
                     index + 1,
                     delay.as_secs(),
-                    retries,
-                    max_retries
+                    budget.consecutive(),
+                    budget.max_consecutive()
                 ));
                 if !sleep_cancellable(cancel, delay) {
                     return ShardOutcome::Cancelled;

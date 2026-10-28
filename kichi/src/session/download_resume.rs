@@ -32,6 +32,63 @@ pub(super) const RETRY_DELAYS: [Duration; 3] = [
 ];
 /// 覆盖自动重试次数的环境变量。
 pub(super) const RETRIES_ENV: &str = "KICHI_DOWNLOAD_RETRIES";
+/// 整次下载的重试总上限 = 连续上限的这么多倍。
+///
+/// 连续预算（`DEFAULT_RETRIES`）管「一波抖动别拖死」；这条管「服务器每次只给
+/// 几 KB 就断开」——每次都有进展、连续计数永远清零，没有总上限就成了无限重试。
+const TOTAL_BUDGET_FACTOR: u32 = 20;
+
+/// 重试预算：连续失败 + 整次下载总额两条线。
+///
+/// - 每推进一次数据（真拿到新字节）连续计数清零，几小时的下载不会因为零星抖动
+///   把额度耗光（2026-10-28 修，见 `docs/known-issues.md` §4.1）；
+/// - 总额度防「每次给一点就断」的无限重试循环。
+pub(super) struct RetryBudget {
+    consecutive: u32,
+    total: u32,
+    max_consecutive: u32,
+    max_total: u32,
+}
+
+impl RetryBudget {
+    pub(super) fn new(max_consecutive: u32) -> Self {
+        Self {
+            consecutive: 0,
+            total: 0,
+            max_consecutive,
+            max_total: max_consecutive.saturating_mul(TOTAL_BUDGET_FACTOR),
+        }
+    }
+
+    /// 已经连续失败几次（提示里的 `n/max` 用它）。
+    pub(super) fn consecutive(&self) -> u32 {
+        self.consecutive
+    }
+
+    pub(super) fn max_consecutive(&self) -> u32 {
+        self.max_consecutive
+    }
+
+    /// 额度用完没有（连续或总额任一用尽）。
+    pub(super) fn exhausted(&self) -> bool {
+        self.consecutive >= self.max_consecutive || self.total >= self.max_total
+    }
+
+    /// 刚拿到新字节：连续计数清零（总额不清零）。
+    pub(super) fn progressed(&mut self) {
+        self.consecutive = 0;
+    }
+
+    /// 申请一次重试；返回本次重试的序号（0 起，决定等待多久）。`None` = 没额度了。
+    pub(super) fn grant(&mut self) -> Option<u32> {
+        if self.exhausted() {
+            return None;
+        }
+        self.consecutive += 1;
+        self.total += 1;
+        Some(self.consecutive - 1)
+    }
+}
 
 /// 官方明确说是 0 字节：不发 GET，直接在本地落一个 0 字节文件。
 ///
