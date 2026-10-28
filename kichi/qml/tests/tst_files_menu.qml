@@ -1,0 +1,155 @@
+import QtQuick
+import QtTest
+import ".."
+
+// 文件右键菜单里的「重命名 / 新建文件夹」弹窗（2026-10-28）。
+//
+// 为什么要有：QQC2 的 Dialog 配 `standardButtons` 时，点 Ok（AcceptRole）会
+// 当场 close()；而改名 / 新建都是异步请求，失败原因回来时对话框已经不可见，
+// 用户只看到「点了确定就消失了」。这里锁住改后的规则：
+// 点确定不关、失败原因留在原地、成功才收起、请求进行中不能再点。
+//
+// 运行：
+//   QT_QPA_PLATFORM=offscreen /usr/lib64/qt6/bin/qmltestrunner \
+//       -input kichi/qml/tests/tst_files_menu.qml
+TestCase {
+    name: "FilesPageMenuDialogs"
+    when: windowShown
+    width: 900
+    height: 600
+
+    // 替代 Kichi 桥接对象：只提供弹窗用到的属性 / 方法 / 信号。
+    QtObject {
+        id: backend
+        property bool fileActionRunning: false
+        // 右键菜单的几个绑定会读这两个属性（菜单不开也会求值）
+        property bool busy: false
+        property var playMenu: []
+        property int renameCount: 0
+        property string renamedName: ""
+        property int folderCount: 0
+        property string createdName: ""
+
+        signal fileActionDone(string action, bool ok, string message)
+
+        function renameEntry(id, name) {
+            renameCount += 1
+            renamedName = name
+            fileActionRunning = true
+        }
+        function createFolder(name) {
+            folderCount += 1
+            createdName = name
+            fileActionRunning = true
+        }
+        /// 模拟 Rust 收尾：先清「进行中」，再发结果
+        function finish(action, ok, message) {
+            fileActionRunning = false
+            fileActionDone(action, ok, message)
+        }
+    }
+
+    Component {
+        id: menuComponent
+        FilesPageMenu {}
+    }
+
+    property var menu: null
+
+    function init() {
+        backend.fileActionRunning = false
+        backend.renameCount = 0
+        backend.renamedName = ""
+        backend.folderCount = 0
+        backend.createdName = ""
+        menu = menuComponent.createObject(parent, {
+            width: 600, height: 400, visible: true, backend: backend
+        })
+        verify(menu !== null, "FilesPageMenu 创建失败")
+    }
+
+    function cleanup() {
+        if (menu)
+            menu.destroy()
+        menu = null
+    }
+
+    /// 打开重命名弹窗（target 由页面在右键时写入，这里直接给）
+    function startRename() {
+        menu.targetId = "id-1"
+        menu.targetName = "旧名字.mkv"
+        menu.targetIsFolder = false
+        menu.openRename()
+        wait(60)
+        var dialog = findChild(menu, "renameDialog")
+        verify(dialog !== null && dialog.opened, "重命名对话框打开了")
+        return dialog
+    }
+
+    function test_failed_rename_stays_open_with_the_reason() {
+        var dialog = startRename()
+        findChild(dialog, "renameNameField").text = "新名字.mkv"
+        var ok = findChild(dialog, "dialogFooterOk")
+        verify(ok !== null && ok.visible, "页脚有「确定」")
+        mouseClick(ok)
+        wait(40)
+
+        compare(backend.renameCount, 1, "点确定只发一次改名请求")
+        compare(backend.renamedName, "新名字.mkv")
+        verify(dialog.opened, "请求还没回来：对话框不关")
+
+        backend.finish("rename", false, "同名文件已存在")
+        wait(40)
+        verify(dialog.opened, "失败后对话框留在原地")
+        var error = findChild(dialog, "renameError")
+        verify(error !== null && error.visible, "失败原因看得到")
+        compare(error.text, "同名文件已存在")
+    }
+
+    function test_successful_rename_closes_the_dialog() {
+        var dialog = startRename()
+        findChild(dialog, "renameNameField").text = "新名字.mkv"
+        mouseClick(findChild(dialog, "dialogFooterOk"))
+        wait(40)
+        verify(dialog.opened, "成功之前仍然开着")
+
+        backend.finish("rename", true, "已改名为「新名字.mkv」")
+        wait(40)
+        verify(!dialog.opened, "成功后收起")
+    }
+
+    function test_failed_new_folder_stays_open_with_the_reason() {
+        menu.openNewFolder()
+        wait(60)
+        var dialog = findChild(menu, "folderDialog")
+        verify(dialog !== null && dialog.opened, "新建文件夹对话框打开了")
+        findChild(dialog, "folderNameField").text = "新文件夹"
+        mouseClick(findChild(dialog, "dialogFooterOk"))
+        wait(40)
+        compare(backend.folderCount, 1, "点确定只发一次请求")
+        compare(backend.createdName, "新文件夹")
+
+        backend.finish("folder", false, "同名文件夹已存在")
+        wait(40)
+        verify(dialog.opened, "失败后对话框留在原地")
+        var error = findChild(dialog, "folderError")
+        verify(error !== null && error.visible, "失败原因看得到")
+        compare(error.text, "同名文件夹已存在")
+    }
+
+    function test_ok_is_disabled_while_an_action_is_running() {
+        backend.fileActionRunning = true
+        var dialog = startRename()
+        var ok = findChild(dialog, "dialogFooterOk")
+        compare(ok.enabled, false, "请求进行中：确定置灰，防连点")
+    }
+
+    function test_unchanged_name_does_not_send_a_request() {
+        var dialog = startRename()
+        findChild(dialog, "renameNameField").text = "旧名字.mkv"
+        mouseClick(findChild(dialog, "dialogFooterOk"))
+        wait(40)
+        compare(backend.renameCount, 0, "名字没变不发请求")
+        verify(dialog.opened, "对话框也不关，用户可以接着改")
+    }
+}

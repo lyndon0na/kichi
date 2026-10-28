@@ -102,14 +102,21 @@ Item {
     // —— 重命名 ——
     Dialog {
         id: renameDialog
+        objectName: "renameDialog"
 
         title: qsTr("重命名")
         modal: true
         anchors.centerIn: parent
-        standardButtons: Dialog.Ok | Dialog.Cancel
         width: root.dialogWidth + leftPadding + rightPadding
 
-        property bool submitting: false
+        // 不用 standardButtons：点在 Ok 上 Dialog 会自己关，而请求是异步的，
+        // 失败原因回来时窗口已经没了。改由页脚按钮提交，结果回来才关（见 onFileActionDone）。
+        footer: DialogFooter {
+            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            onOkClicked: root.submitRename(nameField.text)
+            onCancelClicked: renameDialog.close()
+        }
+
         property string errorText: ""
 
         onOpened: {
@@ -124,8 +131,6 @@ Item {
             nameField.forceActiveFocus()
         }
 
-        onAccepted: root.submitRename(nameField.text)
-
         ColumnLayout {
             width: root.dialogWidth
             spacing: 8
@@ -139,12 +144,14 @@ Item {
 
             TextField {
                 id: nameField
+                objectName: "renameNameField"
                 Layout.fillWidth: true
                 selectByMouse: true
                 onAccepted: root.submitRename(text)
             }
 
             Label {
+                objectName: "renameError"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.pixelSize: 12
@@ -158,12 +165,19 @@ Item {
     // —— 新建文件夹 ——
     Dialog {
         id: folderDialog
+        objectName: "folderDialog"
 
         title: qsTr("新建文件夹")
         modal: true
         anchors.centerIn: parent
-        standardButtons: Dialog.Ok | Dialog.Cancel
         width: root.dialogWidth + leftPadding + rightPadding
+
+        // 与重命名同一个理由：失败原因要能停在对话框里，见上面的说明
+        footer: DialogFooter {
+            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            onOkClicked: root.submitNewFolder(folderField.text)
+            onCancelClicked: folderDialog.close()
+        }
 
         property string errorText: ""
 
@@ -172,10 +186,6 @@ Item {
             folderField.text = ""
             folderField.forceActiveFocus()
         }
-        onAccepted: {
-            if (root.backend)
-                root.backend.createFolder(folderField.text)
-        }
 
         ColumnLayout {
             width: root.dialogWidth
@@ -183,16 +193,15 @@ Item {
 
             TextField {
                 id: folderField
+                objectName: "folderNameField"
                 Layout.fillWidth: true
                 selectByMouse: true
                 placeholderText: qsTr("文件夹名称")
-                onAccepted: {
-                    if (root.backend)
-                        root.backend.createFolder(text)
-                }
+                onAccepted: root.submitNewFolder(text)
             }
 
             Label {
+                objectName: "folderError"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.pixelSize: 12
@@ -261,12 +270,22 @@ Item {
     // 提交改名；名字没变就当作取消，不发请求
     function submitRename(text) {
         const trimmed = String(text || "").trim()
-        if (trimmed.length === 0)
+        if (trimmed.length === 0 || !root.backend)
             return
         if (trimmed === root.targetName)
             return
-        if (root.backend)
-            root.backend.renameEntry(root.targetId, trimmed)
+        // 重新提交时先清掉上一次的失败原因（结果回来会再填）
+        renameDialog.errorText = ""
+        root.backend.renameEntry(root.targetId, trimmed)
+    }
+
+    // 提交新建文件夹；空名字不发请求
+    function submitNewFolder(text) {
+        const trimmed = String(text || "").trim()
+        if (trimmed.length === 0 || !root.backend)
+            return
+        folderDialog.errorText = ""
+        root.backend.createFolder(trimmed)
     }
 
     // 结果留在各自的对话框里：失败原地显示原因，成功才收起
