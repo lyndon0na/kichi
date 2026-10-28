@@ -39,6 +39,7 @@ Item {
         width: root.dialogWidth + leftPadding + rightPadding
 
         footer: DialogFooter {
+            outerMargin: renameDialog.padding
             okEnabled: root.backend !== null && !root.backend.fileActionRunning
             onOkClicked: root.submitRename(nameField.text)
             onCancelClicked: renameDialog.close()
@@ -101,6 +102,7 @@ Item {
         width: root.dialogWidth + leftPadding + rightPadding
 
         footer: DialogFooter {
+            outerMargin: folderDialog.padding
             okEnabled: root.backend !== null && !root.backend.fileActionRunning
             onOkClicked: root.submitNewFolder(folderField.text)
             onCancelClicked: folderDialog.close()
@@ -151,6 +153,7 @@ Item {
         width: root.dialogWidth + leftPadding + rightPadding
 
         footer: DialogFooter {
+            outerMargin: trashDialog.padding
             okText: qsTr("移入回收站")
             okEnabled: root.backend !== null && !root.backend.fileActionRunning
             onOkClicked: root.submitTrash()

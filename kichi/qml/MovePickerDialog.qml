@@ -293,6 +293,7 @@ Dialog {
     }
 
     footer: DialogFooter {
+        outerMargin: picker.padding
         okText: picker.mode === "move" ? qsTr("移动到这里") : qsTr("复制到这里")
         okEnabled: picker.canApply
         cancelEnabled: !(picker.backend && picker.backend.fileActionRunning)
