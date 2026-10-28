@@ -366,6 +366,34 @@ fn write_is_throttled_to_two_seconds() {
 }
 
 #[test]
+fn progress_write_needs_both_the_interval_and_new_bytes() {
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    // 第一次：没有上次写盘记录，字节也算「变了」
+    assert!(progress_write_due(None, start, None, 100));
+    // 卡住：指纹没变，即使节流到点也不重写
+    assert!(!progress_write_due(
+        None,
+        start + Duration::from_secs(5),
+        Some(100),
+        100
+    ));
+    // 走到新字节但要等节流
+    assert!(!progress_write_due(
+        Some(start),
+        start + Duration::from_millis(1999),
+        Some(100),
+        200
+    ));
+    assert!(progress_write_due(
+        Some(start),
+        start + WRITE_INTERVAL,
+        Some(100),
+        200
+    ));
+}
+
+#[test]
 fn folder_dirs_are_written_on_the_ledger_only() {
     let rows = folder_rows(1, "剧集");
     let dirs = vec![(

@@ -4,6 +4,7 @@
 //! 只占一条总账行，子行的字段与详情快照也在这里覆盖。
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use cxx_qt_lib::QString;
 use kichi_core::EntryKind;
@@ -1093,4 +1094,29 @@ fn history_snapshot_filters_by_day_but_keeps_active_rows() {
 
     let (all, _) = build_history_snapshot(&records, HISTORY_DAY_ALL);
     assert_eq!(all.len(), 4, "「全部」不过滤");
+}
+
+#[test]
+fn progress_stamp_tracks_running_bytes_only() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["a.mkv", "b.mkv"]);
+    let idle = progress_stamp_in(&records);
+    set(&mut records, 1, 0, TransferState::Running);
+    set(&mut records, 1, 1, TransferState::Running);
+    assert_ne!(progress_stamp_in(&records), idle, "行开始跑本身算进度变化");
+
+    let before = progress_stamp_in(&records);
+    progress_in_at(&mut records, 1, 0, 4096, None, Instant::now());
+    assert_ne!(progress_stamp_in(&records), before, "走了新字节必须变");
+
+    // 卡住：同样的字节数不改变指纹，心跳不会反复重写整张表
+    let stuck = progress_stamp_in(&records);
+    progress_in_at(&mut records, 1, 0, 4096, None, Instant::now());
+    assert_eq!(progress_stamp_in(&records), stuck);
+
+    // 已结束的行不再影响指纹（结构事件自己会写盘）
+    set(&mut records, 1, 0, TransferState::Done);
+    let done = progress_stamp_in(&records);
+    progress_in_at(&mut records, 1, 0, 999_999, None, Instant::now());
+    assert_eq!(progress_stamp_in(&records), done);
 }

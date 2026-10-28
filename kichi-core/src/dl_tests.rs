@@ -448,7 +448,7 @@ fn stalled_body_read_reports_timed_out_and_keeps_received_bytes() {
 #[test]
 fn body_cut_off_error_text_never_contains_the_url() {
     // 发不满 Content-Length 就断开：读失败原因会进传输记录并落盘，
-    // 里面绝不能出现带签名的直链（docs/known-issues.md §4.2）
+    // 里面绝不能出现带签名的直链（docs/pitfalls.md 第 29 条）
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("监听本地端口");
     let addr = listener.local_addr().expect("取本地地址");
     std::thread::spawn(move || {

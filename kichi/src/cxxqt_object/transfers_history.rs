@@ -8,7 +8,8 @@
 //! - 上一轮没跑完的行读回为「已中断」，保留「重试」入口；
 //! - 清理：同批次超过 90 天、且不是已完成的整批删；文件超过 10 MB 时按整批
 //!   丢最旧的已结束批次，直到 5 MB 以内；
-//! - 写盘按 2 秒节流，退出 / 登出强制写一次；写失败只记 stderr，不阻断下载。
+//! - 写盘按 2 秒节流（结构变化与下载中的字节推进共用节拍），退出 / 登出强制写一次；
+//!   写失败只记 stderr，不阻断下载。
 //!
 //! 不落盘：速度窗口、卡住时钟、说明存活状态——重启后从零开始。
 //!
@@ -624,6 +625,56 @@ pub(crate) fn maybe_flush(target: &StoreTarget) {
     if !due {
         return;
     }
+    if let Err(err) = write_now(target) {
+        eprintln!("[kichi] 下载历史未能落盘（本次仅失去跨重启记录）：{err}");
+    }
+}
+
+/// 上次写盘时的进度指纹（见 [`super::transfers::progress_stamp_in`]）。
+fn last_progress_stamp() -> &'static Mutex<Option<u64>> {
+    static LAST: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+fn with_last_progress_stamp<T>(f: impl FnOnce(&mut Option<u64>) -> T) -> T {
+    let mut guard: MutexGuard<'static, Option<u64>> = last_progress_stamp()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut guard)
+}
+
+/// 该不该为进度写盘：节流到点，**且**字节指纹确实变了。
+///
+/// 下载卡住时心跳会反复刷新进度行，指纹没变就不该重写整张表。抽成纯函数
+/// 方便单测；真实调用只发生在主线程（`sync_transfer_live`）。
+pub(crate) fn progress_write_due(
+    last: Option<Instant>,
+    now: Instant,
+    saved_stamp: Option<u64>,
+    stamp: u64,
+) -> bool {
+    write_due(last, now) && saved_stamp != Some(stamp)
+}
+
+/// 进度触发的节流写盘（下载中由 `sync_transfer_live` 调用）。
+///
+/// 结构事件之外的唯一写盘口。不写的话，纯进度阶段被 SIGKILL / 直接注销后，
+/// 重启的「已中断」行会退回最后一次结构事件的进度（常见停在 0）。
+pub(crate) fn maybe_flush_progress(target: &StoreTarget) {
+    let now = Instant::now();
+    let stamp = super::transfers::progress_stamp();
+    let saved = with_last_progress_stamp(|slot| *slot);
+    let due = with_last_write(|last| {
+        if !progress_write_due(*last, now, saved, stamp) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    });
+    if !due {
+        return;
+    }
+    with_last_progress_stamp(|slot| *slot = Some(stamp));
     if let Err(err) = write_now(target) {
         eprintln!("[kichi] 下载历史未能落盘（本次仅失去跨重启记录）：{err}");
     }

@@ -89,6 +89,14 @@ fn maybe_write_history() {
     }
 }
 
+/// 进度写盘：2 秒节流 + 字节没变不写（`sync_transfer_live` 调用）。
+fn maybe_write_history_progress() {
+    let target = with_target(|slot| slot.clone());
+    if let Some(target) = target {
+        transfers_history::maybe_flush_progress(&target);
+    }
+}
+
 impl qobject::Kichi {
     /// 下载一个条目（文件直接下；文件夹轮到时递归读目录）。界面右键菜单的「下载」走这里。
     ///
@@ -407,6 +415,10 @@ impl qobject::Kichi {
         mark_live_pushed();
         self.as_mut().rust_mut().transfer_live = live;
         self.as_mut().notify();
+        // 进度也要落盘（2 秒节流 + 字节没变不写）：只在结构事件写盘的话，
+        // 长下载被 SIGKILL / 直接注销后，重启的「已中断」行会停在上次结构变化的
+        // 进度（常见是 0），而不是实际下载到的位置（ADR 0014「代价与后果」）。
+        maybe_write_history_progress();
     }
 
     /// 主线程 1Hz 心跳：没有进度回调时也让「已卡住 N 秒」继续走。

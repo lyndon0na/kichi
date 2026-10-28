@@ -775,6 +775,28 @@ pub(crate) fn progress_in_at(
     }
 }
 
+/// 进行中行的字节指纹：判断「上次写盘后有没有真的走到新字节」。
+///
+/// 只用于进度写盘的节流决策，不参与序列化，也不需要抗碰撞：下载卡住时
+/// 心跳会反复调 `sync_transfer_live()`，指纹没变就不必重写整张表。
+pub(crate) fn progress_stamp_in(records: &[Transfer]) -> u64 {
+    records.iter().fold(0u64, |stamp, record| {
+        if record.state != TransferState::Running {
+            return stamp;
+        }
+        stamp
+            .wrapping_mul(1_000_003)
+            .wrapping_add(record.bytes)
+            .wrapping_add(record.index as u64)
+            .wrapping_add(record.batch)
+    })
+}
+
+/// 当前记录表的进度指纹（见 [`progress_stamp_in`]）。
+pub(crate) fn progress_stamp() -> u64 {
+    with_records(|records| progress_stamp_in(records))
+}
+
 /// 单条记录的进度：写字节数，同时喂速度窗口与说明状态。
 pub(crate) fn progress_record(record: &mut Transfer, now: Instant, bytes: u64, total: Option<u64>) {
     if record.state != TransferState::Running {

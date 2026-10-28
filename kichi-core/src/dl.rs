@@ -402,7 +402,7 @@ fn is_timeout(err: &io::Error) -> bool {
 ///
 /// 不用 `reqwest::Error` 的 `Display`：带 url 的错误会在末尾追加
 /// `for url (...)`，而那正是带签名的下载直链，这段文本还会落进
-/// `transfers.json`（`docs/known-issues.md` §4.2）。
+/// `transfers.json`（`docs/pitfalls.md` 第 29 条）。
 fn network_reason(err: &reqwest::Error) -> String {
     if err.is_connect() {
         "无法连接下载服务器".to_owned()
