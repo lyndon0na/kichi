@@ -211,7 +211,7 @@ impl qobject::Kichi {
 
     /// 重试一条失败 / 已中断的传输记录：按原 id、原下载目录、原子目录重新入队。
     ///
-    /// 文件夹总账行（读目录前整体失败或整个中断）用它落盘的目录树与子行整批重来；
+    /// 文件夹总账行（读目录前整体失败或整个中断）整批重来：重新读一遍目录，
     /// 断点能否接上取决于 `partials.json`（改过下载目录 = 从头下）。
     ///
     /// 顺序：取目标（记录锁）→ 查重 + 登记（调度锁）→ 成功后才删旧行 →
@@ -224,7 +224,7 @@ impl qobject::Kichi {
         };
         let name = job.display_name();
         let source_id = job.id.clone();
-        // 读目录前整体失败 / 整个中断的文件夹：用它落盘时记下的目录树整批重来。
+        // 读目录前整体失败 / 整个中断的文件夹：整批重来（会重新读一遍目录）。
         // 先把旧行抽出来（`take_whole_folder` 删掉整批），登记失败时再挂回去，历史不丢。
         let whole_folder = transfers_actions::is_whole_folder(&key)
             .then(|| transfers_actions::take_whole_folder(&key))
@@ -311,7 +311,7 @@ impl qobject::Kichi {
         cancelled: bool,
         my_epoch: u64,
     ) {
-        // 期间退出过登录：记录表已清空，这一批属于上个会话，只还调度槽、不碰记录。
+        // 期间退出过登录：这一批属于上个会话（在途行已落成「已中断」），只还调度槽、不碰记录。
         // 旧线程真正退出后，重新登录排队的批次才能开始。
         if my_epoch != queue::current_epoch() {
             let _ = queue::release(batch);

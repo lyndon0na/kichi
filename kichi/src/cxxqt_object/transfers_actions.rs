@@ -44,7 +44,7 @@ fn retry_target_in(records: &[Transfer], key: &str) -> Option<TransferJob> {
     Some(record.job.clone())
 }
 
-/// 这一行是「读目录前整体失败 / 整个中断」的文件夹总账行吗（整批重试用自己的目录树重来）。
+/// 这一行是「读目录前整体失败 / 整个中断」的文件夹总账行吗（整批重来会重新读目录）。
 pub(crate) fn is_whole_folder(key: &str) -> bool {
     with_records(|records| super::transfers_view::is_whole_folder_ledger(records, key))
 }
@@ -116,7 +116,12 @@ fn take_stash(batch: u64) -> Option<Stash> {
 
 /// 删掉一条旧记录（入队成功之后才调）。返回是否真的删了。
 pub(crate) fn remove(key: &str) -> bool {
-    with_records(|records| remove_in(records, key))
+    let removed = with_records(|records| remove_in(records, key));
+    if removed {
+        // 最后一个子行被移走时父行也一起消失，它的目录树别留着
+        super::transfers::prune_trees();
+    }
+    removed
 }
 
 fn remove_in(records: &mut Vec<Transfer>, key: &str) -> bool {

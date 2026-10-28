@@ -22,7 +22,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use kichi_core::EntryKind;
 use serde::{Deserialize, Serialize};
 
-use super::transfers::{restore_row, with_records, Transfer, TransferJob, TransferState};
+use super::transfers::{
+    is_folder_ledger, restore_row, with_records, Transfer, TransferJob, TransferState,
+};
 
 /// 落盘格式版本。读取不看版本号：高版本也只按已知字段解析，未知字段忽略。
 pub(crate) const HISTORY_VERSION: u32 = 1;
@@ -199,9 +201,10 @@ pub(crate) fn entry_of(record: &Transfer, dirs: Vec<Vec<String>>) -> EntryRecord
 
 /// 整张记录表 → 条目（原样导出，清理不在这里做）。
 ///
-/// 目录树属于整个文件夹批次：每一条同批次的行都带上（读回时不依赖行序挑出
-/// 总账行，孤儿修复也能核对子行是否落在父行的目录树里）。一份几 KB 的目录树
-/// 在整个批次里重复几次，换来的是读回规则简单、不依赖顺序。
+/// 目录树属于整个文件夹批次，**只写在总账行上**：读回时的孤儿校验只认总账行
+/// 那一份（[`batch_is_consistent`]）。给每条子行都克隆一份的话，300 个子文件
+/// 的文件夹就往文件里写 300 份树，主线程每 2 秒整表重写一次，文件被撑到 10 MB
+/// 后启动清理反而去丢更早的已完成批次。
 pub(crate) fn entries_of(
     records: &[Transfer],
     dirs: &[(u64, Vec<Vec<String>>)],
@@ -209,13 +212,28 @@ pub(crate) fn entries_of(
     records
         .iter()
         .map(|record| {
-            let tree = dirs
-                .iter()
-                .find(|(batch, _)| *batch == record.batch)
-                .map(|(_, tree)| tree.clone())
-                .unwrap_or_default();
+            let tree = if is_folder_ledger(record) {
+                dirs.iter()
+                    .find(|(batch, _)| *batch == record.batch)
+                    .map(|(_, tree)| tree.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             entry_of(record, tree)
         })
+        .collect()
+}
+
+/// 落盘条目里的目录树（每个文件夹批次一份，挂在总账行上）。
+///
+/// 读回后挂进内存：写盘时还要用（否则重启后的第一次写盘会把它们丢掉），
+/// 也保住孤儿校验的数据。整批重试本身不读它——重试会重新读一遍目录。
+fn trees_of(entries: &[EntryRecord]) -> Vec<(u64, Vec<Vec<String>>)> {
+    entries
+        .iter()
+        .filter(|entry| !entry.child && !entry.dirs.is_empty())
+        .map(|entry| (entry.batch, entry.dirs.clone()))
         .collect()
 }
 
@@ -462,7 +480,9 @@ pub(crate) fn save(path: &Path, entries: &[EntryRecord]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("创建配置目录失败：{err}"))?;
     }
-    let body = serde_json::to_vec_pretty(&HistoryFile {
+    // 紧凑格式：这是内部状态镜像，没人手读；缩进实测每条约多 230 字节，
+    // 而 10 MB 的清理线是按实际文件大小卡的。
+    let body = serde_json::to_vec(&HistoryFile {
         version: HISTORY_VERSION,
         entries: entries.to_vec(),
     })
@@ -624,6 +644,8 @@ pub(crate) fn boot(target: &StoreTarget) -> StoreTarget {
     let entries = load(&target.path);
     let previous_max = entries.iter().map(|entry| entry.session).max().unwrap_or(0);
     let session = next_session(previous_max);
+    // 目录树随总账行落盘；`restore` 会吃掉 entries，先把树取出来
+    let trees = trees_of(&entries);
     let restored = restore(entries, session);
     let now = now_unix();
 
@@ -640,6 +662,8 @@ pub(crate) fn boot(target: &StoreTarget) -> StoreTarget {
             .map(|record| record.batch)
             .max()
             .unwrap_or(0);
+        // 锁顺序：先 records、再 trees（与 `write_now` 一致）
+        super::transfers::restore_trees(trees, &restored);
         records.extend(restored);
         max_batch
     });
@@ -671,6 +695,8 @@ fn shrink_oversized(target: &StoreTarget) {
         return;
     }
     with_records(|records| drop_batches(records, &dropped));
+    // 整批没了，目录树也别留着（锁外调用：prune 自己先取 records 再取 trees）
+    super::transfers::prune_trees();
     if let Err(err) = write_now(target) {
         eprintln!("[kichi] 整理过大的下载历史失败：{err}");
     }

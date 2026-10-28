@@ -623,7 +623,7 @@ fn matches_day(records: &[Transfer], record: &Transfer, day: &str) -> bool {
     record_day(records, record) == day
 }
 
-/// 这一行是「读目录前整体失败 / 整个中断」的文件夹总账行吗（整批重试用它自己的目录树重来）。
+/// 这一行是「读目录前整体失败 / 整个中断」的文件夹总账行吗（整批重来会重新读目录）。
 pub(crate) fn is_whole_folder_ledger(records: &[Transfer], key: &str) -> bool {
     let Some(record) = records
         .iter()

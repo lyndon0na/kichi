@@ -171,8 +171,8 @@ impl Transfer {
 
 /// 文件夹批次的目录树（`queue_collect::Collected.dirs`，相对下载根目录）。
 ///
-/// 只在内存里：读目录那一刻记下，落盘时随总账行一起写，读回后用于「已中断」
-/// 文件夹的重试与详情页展示。锁顺序：先 `records`、再 `trees`。
+/// 读目录那一刻记下，落盘时写在总账行上，读回后挂回这里。批次被清掉 / 淘汰 /
+/// 删行后由 [`prune_trees`] 收走，不会留到进程退出。锁顺序：先 `records`、再 `trees`。
 fn trees() -> &'static Mutex<HashMap<u64, Vec<Vec<String>>>> {
     static TREES: OnceLock<Mutex<HashMap<u64, Vec<Vec<String>>>>> = OnceLock::new();
     TREES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -182,6 +182,31 @@ fn trees() -> &'static Mutex<HashMap<u64, Vec<Vec<String>>>> {
 pub(super) fn with_trees<T>(f: impl FnOnce(&mut HashMap<u64, Vec<Vec<String>>>) -> T) -> T {
     let mut guard = trees().lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
+}
+
+/// 读回后把落盘的目录树挂回内存（只留记录表里还在的批次）。
+///
+/// 写盘时要从这里取树，不挂回来的话重启后的第一次写盘就把它们丢了。
+/// 调用方持有 `records` 锁（锁顺序：先 records、再 trees）。
+pub(super) fn restore_trees(trees: Vec<(u64, Vec<Vec<String>>)>, records: &[Transfer]) {
+    let live: Vec<u64> = records.iter().map(|record| record.batch).collect();
+    let kept: Vec<(u64, Vec<Vec<String>>)> = trees
+        .into_iter()
+        .filter(|(batch, _)| live.contains(batch))
+        .collect();
+    with_trees(|map| map.extend(kept));
+}
+
+/// 丢掉记录表里已经不存在的批次的目录树。
+///
+/// 目录树只在内存里留到批次被永久删掉（清空已完成 / 内存上限淘汰 / 启动缩小）
+/// 为止；不收的话，长会话里每下过一个文件夹就留一份到进程退出。
+///
+/// 不能在 `with_records` 的闭包里调用（先取 records、再取 trees）。
+pub(super) fn prune_trees() {
+    let live: Vec<u64> =
+        with_records(|records| records.iter().map(|record| record.batch).collect());
+    with_trees(|trees| trees.retain(|batch, _| live.contains(batch)));
 }
 
 /// 文件夹批次的总账行：主列表里的唯一一行，key 为 `batch:folder`。
@@ -257,6 +282,8 @@ pub(crate) fn start_batch(batch: u64, source_id: &str, job: &TransferJob) {
     let created = super::transfers_history::now_unix();
     let session = current_session();
     with_records(|records| push_job(records, batch, source_id, job, created, session));
+    // 记录数超上限时 `push_job` 会淘汰整批，被淘汰批次的目录树跟着收走
+    prune_trees();
 }
 
 /// 轮到读目录：把这一批的总账行标成「准备中」。
@@ -268,7 +295,7 @@ pub(crate) fn mark_preparing(batch: u64) {
 ///
 /// 父行留在原位置（主列表一个文件夹只占一行）；子行从它后面依次插入，
 /// 排队中的其他批次会自然地排在它下面。`dirs` 是相对下载根目录的目录树，
-/// 随记录一起落盘（已中断的文件夹重试要用）。
+/// 随总账行落盘（读回时的孤儿校验用；整批重试会重新读目录）。
 pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob], dirs: &[Vec<String>]) {
     let created = super::transfers_history::now_unix();
     let session = current_session();
@@ -287,6 +314,8 @@ pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob], dirs: &[Vec<String
     with_trees(|trees| {
         trees.insert(batch, dirs.to_vec());
     });
+    // `expand_folder_in` 也会 trim；被淘汰的批次目录树跟着收走（新批次在记录表里，留着）
+    prune_trees();
 }
 
 /// 读回一条历史行（`transfers_history::restore` 用）：不跑任何状态迁移。
@@ -417,6 +446,7 @@ fn interrupt_active_in(records: &mut [Transfer]) {
 /// 留着它会让整批（连同里面的失败 / 完成行）一起留下，和按钮文案不符。
 pub(crate) fn clear_all() {
     with_records(clear_all_in);
+    prune_trees();
 }
 
 /// 登出时清空（记录、文件夹目录树与详情选中都清掉）。

@@ -198,7 +198,7 @@ fn download_all(
                 callbacks,
                 cancel,
             );
-            // 下载期间退出过登录：记录表已整表清空，这条结果属于上个会话，丢弃
+            // 下载期间退出过登录：这条结果属于上个会话（在途行已落成「已中断」），丢弃
             if my_epoch != current_epoch() {
                 return;
             }

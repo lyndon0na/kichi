@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use kichi_core::EntryKind;
 
 use super::*;
-use crate::cxxqt_object::transfers::{row_from, TransferJob, TransferState};
+use crate::cxxqt_object::transfers::{row_from, with_trees, TransferJob, TransferState};
 
 /// 每个用例一个独立的临时文件路径（不依赖外部 crate，只用 pid + 名字）。
 fn temp_path(name: &str) -> PathBuf {
@@ -379,7 +379,113 @@ fn folder_dirs_are_written_on_the_ledger_only() {
     let ledger = written.iter().find(|entry| !entry.child).expect("有总账行");
     assert_eq!(ledger.dirs.len(), 2, "总账行带目录树");
     let child = written.iter().find(|entry| entry.child).expect("有子行");
-    assert_eq!(child.dirs.len(), 2, "同批的子行也带（读回不依赖行序）");
+    assert!(child.dirs.is_empty(), "同批的子行不带（只写一份）");
+}
+
+#[test]
+fn folder_tree_survives_the_round_trip() {
+    let rows = folder_rows(1, "剧集");
+    let dirs = vec![(
+        1u64,
+        vec![
+            vec!["剧集".to_owned()],
+            vec!["剧集".to_owned(), "第一季".to_owned()],
+        ],
+    )];
+    let written = entries(&rows, &dirs);
+    assert_eq!(trees_of(&written), dirs, "从总账行读回同一份目录树");
+}
+
+#[test]
+fn write_now_stores_the_folder_tree_once() {
+    // 真实路径：内存记录表 + 目录树 → 文件。批次号取一个其它用例不会用到的值
+    let batch = 9_500_201;
+    let path = temp_path("tree-once");
+    let tree = vec![
+        vec!["剧集".to_owned()],
+        vec!["剧集".to_owned(), "第一季".to_owned()],
+    ];
+    with_records(|records| records.extend(folder_rows(batch, "剧集")));
+    with_trees(|trees| {
+        trees.insert(batch, tree.clone());
+    });
+    let target = StoreTarget {
+        path: path.clone(),
+        session: 3,
+    };
+    write_now(&target).expect("写盘成功");
+
+    let loaded = load(&path);
+    let mine: Vec<&EntryRecord> = loaded.iter().filter(|entry| entry.batch == batch).collect();
+    assert_eq!(mine.len(), 2, "总账行 + 子行都写进去了");
+    let ledger = mine.iter().find(|entry| !entry.child).expect("有总账行");
+    assert_eq!(ledger.dirs, tree, "总账行带完整目录树");
+    let child = mine.iter().find(|entry| entry.child).expect("有子行");
+    assert!(child.dirs.is_empty(), "子行不再克隆一份");
+
+    with_records(|records| records.retain(|record| record.batch != batch));
+    with_trees(|trees| {
+        trees.remove(&batch);
+    });
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn restore_trees_keeps_only_batches_in_the_table() {
+    let live = 9_500_301u64;
+    let gone = 9_500_302u64;
+    let tree = vec![vec!["剧集".to_owned()]];
+    with_records(|records| {
+        records.extend(folder_rows(live, "剧集"));
+        // 调用方持有 records 锁（boot 就是这么调的）
+        crate::cxxqt_object::transfers::restore_trees(
+            vec![(live, tree.clone()), (gone, tree.clone())],
+            records,
+        );
+    });
+    with_trees(|trees| {
+        assert_eq!(trees.get(&live), Some(&tree), "读回的批次挂上目录树");
+        assert!(!trees.contains_key(&gone), "记录表里没有的批次不挂");
+        trees.remove(&live);
+    });
+    with_records(|records| records.retain(|record| record.batch != live));
+}
+
+#[test]
+fn prune_trees_drops_batches_that_left_the_record_table() {
+    let live = 9_500_101u64;
+    let gone = 9_500_102u64;
+    with_records(|records| {
+        records.push(restore_row(
+            live,
+            0,
+            false,
+            &job("留着.mkv", EntryKind::File),
+            "src-live",
+            TransferState::Done,
+            1,
+            Some(1),
+            String::new(),
+            None,
+            false,
+            0,
+            1_790_000_000,
+            3,
+        ))
+    });
+    with_trees(|trees| {
+        trees.insert(live, vec![vec!["留着".to_owned()]]);
+        trees.insert(gone, vec![vec!["丢掉".to_owned()]]);
+    });
+
+    crate::cxxqt_object::transfers::prune_trees();
+
+    with_trees(|trees| {
+        assert!(trees.contains_key(&live), "还在记录表里的批次留着");
+        assert!(!trees.contains_key(&gone), "记录表里没有的批次收走");
+        trees.remove(&live);
+    });
+    with_records(|records| records.retain(|record| record.batch != live));
 }
 
 #[test]
