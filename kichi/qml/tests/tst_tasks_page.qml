@@ -91,6 +91,24 @@ TestCase {
         compare(model.get(1).key, "t2")
     }
 
+    function test_table_layout_uses_compact_rows() {
+        push([task("t1", "running", 10)])
+
+        var header = findChild(page, "tasksTableHeader")
+        verify(header)
+        compare(header.implicitHeight, 34)
+        compare(list.spacing, 2)
+
+        var row = null
+        tryVerify(function () {
+            row = findChild(list, "taskRow_t1")
+            return row !== null
+        })
+        compare(row.implicitHeight, 56)
+        compare(row.name, "t1.mkv")
+        compare(row.phaseText, "running")
+    }
+
     function test_activation_refreshes_tasks() {
         compare(backend.refreshCalls, 0)
 

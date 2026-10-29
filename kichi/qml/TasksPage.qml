@@ -16,6 +16,13 @@ Item {
     readonly property bool tasksLoading: backend ? backend.tasksLoading : false
     readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
     readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
+    readonly property int tableHeaderHeight: 34
+    readonly property int tableRowHeight: 56
+    readonly property int statusColumnWidth: 88
+    readonly property int progressColumnWidth: 150
+    readonly property int actionColumnWidth: 64
+    readonly property int tableColumnSpacing: 12
+    readonly property int tableContentPadding: 12
 
     onActiveChanged: {
         if (active && backend)
@@ -106,22 +113,39 @@ Item {
             font.pixelSize: theme.fontMeta
         }
 
+        TaskTableHeader {
+            Layout.fillWidth: true
+            Layout.preferredHeight: page.tableHeaderHeight
+            rowHeight: page.tableHeaderHeight
+            statusColumnWidth: page.statusColumnWidth
+            progressColumnWidth: page.progressColumnWidth
+            actionColumnWidth: page.actionColumnWidth
+            columnSpacing: page.tableColumnSpacing
+            contentPadding: page.tableContentPadding
+        }
+
         ListView {
             id: list
             objectName: "tasksList"
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 10
+            spacing: 2
             model: taskRows
 
             // 列表铺到窗口右缘，条画在右侧 10px 车道里
             ScrollBar.vertical: KScrollBar {}
 
-            delegate: TaskCard {
-                // 卡片宽度减去滚动条车道，右边不会压到条
+            delegate: TaskRow {
+                // 行宽减去滚动条车道，右边不会压到条
                 width: list.width - metrics.scrollBarSlot
-                // ⚠ 这里**不要**再写 `key: model.key ?? ""` 这类绑定：TaskCard 的字段
+                rowHeight: page.tableRowHeight
+                statusColumnWidth: page.statusColumnWidth
+                progressColumnWidth: page.progressColumnWidth
+                actionColumnWidth: page.actionColumnWidth
+                columnSpacing: page.tableColumnSpacing
+                contentPadding: page.tableContentPadding
+                // ⚠ 这里**不要**再写 `key: model.key ?? ""` 这类绑定：TaskRow 的字段
                 // 都是 required property，ListView 会按同名角色自动注入；一旦手写
                 // `model.xxx` 覆盖上去，自动注入就被顶掉，而 ListModel 的 `model`
                 // 对象在这里读不到这些角色 → 整张卡片字段全空（只剩空壳和删除按钮）。
