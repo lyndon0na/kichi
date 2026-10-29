@@ -53,11 +53,13 @@ ItemDelegate {
 
     background: Rectangle {
         radius: theme.radiusSmall
+        // MouseArea 位于内容层下方，不能可靠接收整行 hover；
+        // ItemDelegate 自己的 hovered 不受子项遮挡影响。
         color: row.highlighted
                ? theme.accentSoft
                : mouseArea.pressed
                  ? theme.surfacePressed
-                 : mouseArea.containsMouse
+                 : row.hovered
                    ? theme.surfaceHover
                    : theme.surfaceClear
 
@@ -203,15 +205,5 @@ ItemDelegate {
                 onClicked: row.copyRequested(row.copyText)
             }
         }
-    }
-
-    HoverHandler {
-        id: rowHover
-    }
-
-    ToolTip {
-        visible: rowHover.hovered && (row.title.length > 0 || row.url.length > 0)
-        text: row.url.length > 0 ? row.title + "\n" + row.url : row.title
-        delay: 700
     }
 }

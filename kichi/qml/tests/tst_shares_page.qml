@@ -42,7 +42,13 @@ TestCase {
         SharesPage {}
     }
 
+    Component {
+        id: headerComponent
+        ShareHeaderControls {}
+    }
+
     property var page: null
+    property var header: null
     property var list: page ? findChild(page, "sharesList") : null
     property var model: list ? list.model : null
 
@@ -53,6 +59,11 @@ TestCase {
             backend: backend
         })
         verify(page !== null, "SharesPage 创建失败")
+        header = headerComponent.createObject(parent, {
+            width: 700,
+            target: page
+        })
+        verify(header !== null, "ShareHeaderControls 创建失败")
         list = findChild(page, "sharesList")
         model = list ? list.model : null
         page.active = false
@@ -67,7 +78,10 @@ TestCase {
     function cleanup() {
         if (page)
             page.destroy()
+        if (header)
+            header.destroy()
         page = null
+        header = null
         list = null
         model = null
     }
@@ -117,6 +131,8 @@ TestCase {
         page.active = false
         page.active = true
         tryCompare(backend, "refreshCalls", 2)
+        mouseClick(findChild(header, "refreshShares"))
+        tryCompare(backend, "refreshCalls", 3)
     }
 
     function test_table_has_file_icon_and_selection_actions_without_checkboxes() {
@@ -124,13 +140,30 @@ TestCase {
         waitForRendering(list)
 
         verify(findChild(page, "sharesTableHeader"))
-        verify(findChild(page, "revokeSelectedShares"))
-        verify(findChild(page, "revokeSelectedShares").enabled === false)
+        verify(findChild(header, "revokeSelectedShares"))
+        verify(findChild(header, "revokeSelectedShares").enabled === false)
 
         const row = list.itemAtIndex(0)
         verify(row)
         verify(findChild(row, "shareTypeIcon"))
         verify(findChild(row, "shareSelectCheckBox") === null)
+    }
+
+    function test_row_hover_stays_visible_across_content() {
+        push([share("a")])
+        waitForRendering(list)
+
+        const row = list.itemAtIndex(0)
+        verify(row)
+        const points = [[5, 5], [120, 20], [360, 20],
+                        [row.width - 48, row.height / 2]]
+        for (let i = 0; i < points.length; i++) {
+            mouseMove(row, points[i][0], points[i][1])
+            wait(20)
+            verify(row.hovered, "row hover lost at " + points[i].join(","))
+            verify(row.background.color.a > 0,
+                   "hover background lost at " + points[i].join(","))
+        }
     }
 
     function test_copy_button_copies_link_and_password_together() {
@@ -160,6 +193,18 @@ TestCase {
         compare(page.selectedIdsInOrder().join(","), "a,c")
         mouseClick(list.itemAtIndex(1), 20, 20, Qt.LeftButton, Qt.ShiftModifier)
         compare(page.selectedIdsInOrder().join(","), "b,c")
+    }
+
+    function test_ctrl_a_selects_all_shares() {
+        push([share("a"), share("b"), share("c")])
+        waitForRendering(list)
+        compare(findChild(header, "shareHeaderStatus").text, "共 3 个分享链接")
+        mouseClick(list.itemAtIndex(0), 20, 20)
+        compare(page.selectedIdsInOrder().join(","), "a")
+        keyClick(Qt.Key_A, Qt.ControlModifier)
+        wait(20)
+        compare(page.selectedIdsInOrder().join(","), "a,b,c")
+        compare(findChild(header, "shareHeaderStatus").text, "已选择 3 个分享")
     }
 
     function test_right_click_narrows_to_unselected_row() {
@@ -216,7 +261,7 @@ TestCase {
         page.selectRow("a", 0, Qt.NoModifier)
         page.selectRow("b", 1, Qt.ControlModifier)
 
-        const revokeButton = findChild(page, "revokeSelectedShares")
+        const revokeButton = findChild(header, "revokeSelectedShares")
         verify(revokeButton && revokeButton.enabled)
         mouseClick(revokeButton)
         verify(page.revokeDialog.dialog.opened)

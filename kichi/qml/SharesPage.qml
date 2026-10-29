@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 分享管理页：服务端列表按表格展示，支持行内复制、Ctrl/Shift 多选和批量取消分享。
+// 分享管理页：服务端列表按表格展示，支持行内复制、Ctrl/Shift/Ctrl+A 多选和批量取消分享。
 Item {
     id: page
 
@@ -13,6 +13,7 @@ Item {
     readonly property bool loading: backend ? backend.sharesLoading : false
     readonly property bool actionRunning: backend ? backend.shareActionRunning : false
     readonly property int selectedCount: selection.count
+    readonly property int shareCount: shareRows.count
     readonly property bool showEmptyState: shareRows.count === 0 && !loading
     readonly property bool showLoadingState: shareRows.count === 0 && loading
 
@@ -27,8 +28,10 @@ Item {
     readonly property int rowHeight: 56
 
     onActiveChanged: {
-        if (active && backend)
-            backend.refreshShares()
+        if (!active)
+            return
+        page.refresh()
+        Qt.callLater(function () { list.forceActiveFocus() })
     }
 
     UiMetrics { id: metrics }
@@ -81,43 +84,6 @@ Item {
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapSm
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.rightMargin: metrics.pageMargin
-            spacing: theme.gapSm
-
-            Label {
-                Layout.fillWidth: true
-                text: page.copyNotice.length > 0
-                      ? page.copyNotice
-                      : page.selectedCount > 0
-                        ? qsTr("已选择 %1 个分享").arg(page.selectedCount)
-                        : shareRows.count > 0
-                          ? qsTr("共 %1 个分享链接").arg(shareRows.count) : ""
-                color: page.copyNotice.length > 0 ? theme.success : theme.textMuted
-                font.pixelSize: theme.fontMeta
-                elide: Text.ElideRight
-            }
-
-            KButton {
-                objectName: "revokeSelectedShares"
-                text: page.selectedCount > 1
-                      ? qsTr("取消分享（%1）").arg(page.selectedCount)
-                      : qsTr("取消分享")
-                variant: "dangerOutline"
-                enabled: page.selectedCount > 0 && !page.actionRunning
-                onClicked: page.openRevoke(page.selectedIdsInOrder())
-            }
-
-            KButton {
-                text: qsTr("刷新")
-                iconName: "refresh"
-                variant: "ghost"
-                enabled: !page.loading
-                onClicked: page.backend.refreshShares()
-            }
-        }
-
         ShareTableHeader {
             Layout.fillWidth: true
             Layout.preferredHeight: page.headerRowHeight
@@ -140,6 +106,10 @@ Item {
             spacing: 2
             model: shareRows
             ScrollBar.vertical: KScrollBar {}
+            focus: page.active
+            Keys.onPressed: function (event) {
+                page.handleKey(event)
+            }
 
             delegate: ShareRow {
                 id: row
@@ -334,6 +304,20 @@ Item {
                 ? qsTr("已取消 %1 个分享").arg(count)
                 : qsTr("分享已取消")
         copyNoticeTimer.restart()
+    }
+
+    function refresh() {
+        if (page.backend && !page.loading)
+            page.backend.refreshShares()
+    }
+
+    function handleKey(event) {
+        if (!page.backend)
+            return
+        if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
+            selection.selectAll(page.backend.shares ? page.backend.shares : [])
+            event.accepted = true
+        }
     }
 
     function normalize(share) {

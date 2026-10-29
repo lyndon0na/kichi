@@ -206,6 +206,15 @@ ApplicationWindow {
                     // 撑开物：页名靠左，搜索框和目录操作靠右
                     Item {
                         Layout.fillWidth: true
+                        visible: root.currentPage !== 1
+                    }
+
+                    ShareHeaderControls {
+                        id: shareHeaderControls
+                        visible: root.currentPage === 1
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        target: sharesPage
                     }
 
                     RowLayout {
@@ -497,6 +506,7 @@ ApplicationWindow {
                     }
 
                     SharesPage {
+                        id: sharesPage
                         backend: backend
                         active: root.currentPage === 1
                     }
