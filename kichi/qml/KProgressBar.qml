@@ -15,8 +15,9 @@ import QtQuick.Controls
 // 注意：即使 indeterminate 为 false 也照刷——那个虚线容器 visible: false
 // 时宽度仍跟着走，Repeater 仍在维护。
 //
-// 系统文件改不了（升级会覆盖，也不是我们的包），所以这里只覆盖 contentItem；
-// background（槽、圆角、高度、配色）仍旧交给当前风格，换主题不会脱节。
+// 系统文件改不了（升级会覆盖，也不是我们的包），所以这里自绘轨道和填充。
+// 不能只覆盖 contentItem：org.kde.desktop 的 background 本身就会把轨道和进度
+// 一起画出来，再叠一层 contentItem 会变成「粗胶囊压在细轨道上」。
 //
 // 用法与 ProgressBar 完全一致：from / to / value / indeterminate。
 ProgressBar {
@@ -26,25 +27,50 @@ ProgressBar {
 
     // 虚线段长（与 breeze 的 14px 一致）
     readonly property int segment: 14
+    /// 轨道和填充的固定高度：不跟随风格 background 的内部实现
+    readonly property int grooveHeight: 8
 
     // 填充色：系统强调色 —— 圆角实条，不再描一圈比槽更深的边
     readonly property color fillColor: Qt.rgba(theme.accent.r, theme.accent.g,
                                                theme.accent.b, 0.85)
 
+    implicitWidth: 200
+    implicitHeight: grooveHeight
+    leftInset: 0
+    rightInset: 0
+    topInset: 0
+    bottomInset: 0
+    leftPadding: 0
+    rightPadding: 0
+    topPadding: 0
+    bottomPadding: 0
+
+    background: Item {
+        implicitWidth: 200
+        implicitHeight: bar.grooveHeight
+
+        Rectangle {
+            width: parent.width
+            height: bar.grooveHeight
+            anchors.verticalCenter: parent.verticalCenter
+            radius: height / 2
+            color: theme.surfacePressed
+        }
+    }
+
     contentItem: Item {
         implicitWidth: 200
-        // 槽高跟随当前风格的 background，换风格不高低不一（取不到时退回 6px）
-        implicitHeight: bar.implicitBackgroundHeight > 0 ? bar.implicitBackgroundHeight : 6
+        implicitHeight: bar.grooveHeight
         clip: true
 
         // —— 确定进度：一条填充条 ——
         Rectangle {
             visible: !bar.indeterminate
             x: 0
-            y: 0
-            height: parent.height
+            y: (parent.height - height) / 2
+            height: bar.grooveHeight
             width: Math.max(0, bar.position) * parent.width
-            radius: height / 2
+            radius: Math.min(width, height) / 2
             color: bar.fillColor
         }
 
@@ -57,9 +83,9 @@ ProgressBar {
             id: marquee
             visible: bar.indeterminate
             x: -2 * bar.segment
-            y: 0
+            y: (parent.height - height) / 2
             width: parent.width + 2 * bar.segment
-            height: parent.height
+            height: bar.grooveHeight
             clip: true
 
             Row {
@@ -71,7 +97,7 @@ ProgressBar {
                     delegate: Rectangle {
                         width: bar.segment
                         height: marquee.height
-                        radius: height / 2
+                        radius: Math.min(width, height) / 2
                         color: bar.fillColor
                     }
                 }

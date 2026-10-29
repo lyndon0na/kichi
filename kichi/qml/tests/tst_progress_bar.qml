@@ -107,9 +107,22 @@ TestCase {
         var bars = findBars(host)
         compare(bars.length, 3, "三条进度条都要在")
         for (var i = 0; i < bars.length; i++) {
+            verify(bars[i].background !== null, bars[i].objectName + " 缺少轨道")
             verify(bars[i].width > 0, bars[i].objectName + " 宽度为 0")
             verify(bars[i].height > 0, bars[i].objectName + " 高度为 0")
             verify(bars[i].contentItem.height > 0, bars[i].objectName + " 内容高度为 0")
+            var groove = bars[i].background.children[0]
+            var fill = bars[i].contentItem.children[0]
+            verify(groove !== null, bars[i].objectName + " 轨道子项缺失")
+            verify(fill !== null, bars[i].objectName + " 填充子项缺失")
+            compare(groove.height, bars[i].grooveHeight,
+                    bars[i].objectName + " 轨道高度不固定")
+            compare(fill.height, bars[i].grooveHeight,
+                    bars[i].objectName + " 填充高度不固定")
+            fuzzyCompare(groove.y + groove.height / 2, bars[i].height / 2, 0.01,
+                         bars[i].objectName + " 轨道没有垂直居中")
+            fuzzyCompare(fill.y + fill.height / 2, bars[i].height / 2, 0.01,
+                         bars[i].objectName + " 填充没有垂直居中")
         }
 
         var determinate = bars[0]
