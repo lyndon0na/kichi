@@ -1,4 +1,4 @@
-//! `queue.rs` 的单元测试：按源 id 占用、串行推进、释放与取消。
+//! `queue.rs` 的单元测试：按源 id 占用、并发推进、文件夹独占、释放与取消。
 //!
 //! 只测纯调度逻辑（不碰网络、不起真线程）：`queue_collect::collect_folder` 与
 //! `run_jobs` 都需要真实会话，属于 `live_tests` 的范围。
@@ -21,6 +21,13 @@ fn entry(id: &str, kind: EntryKind, name: &str) -> FileEntry {
 
 fn reserve_id(id: &str) -> Option<u64> {
     reserve(entry(id, EntryKind::Folder, id), PathBuf::from("/tmp"))
+}
+
+fn reserve_file_id(id: &str) -> Option<u64> {
+    reserve(
+        entry(id, EntryKind::File, &format!("{id}.mkv")),
+        PathBuf::from("/tmp"),
+    )
 }
 
 /// 重试种子（单文件 / 文件夹总账行都造得出来）。
@@ -46,10 +53,15 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// 测试共用一个进程级调度器：每条用例结束都要清干净，否则互相污染。
 fn reset_for_test() {
-    // 新语义下 reset 会保留「已起线程」的 current；测试残留必须先 release。
-    let residual =
-        with_scheduler(|scheduler| scheduler.current.as_ref().map(|pending| pending.batch));
-    if let Some(batch) = residual {
+    // 新语义下 reset 会保留「已起线程」的 active；测试残留必须先 release。
+    let residual = with_scheduler(|scheduler| {
+        scheduler
+            .active
+            .iter()
+            .map(|pending| pending.batch)
+            .collect::<Vec<_>>()
+    });
+    for batch in residual {
         let _ = release(batch);
     }
     reset();
@@ -82,7 +94,7 @@ fn different_sources_queue_up_in_order() {
     let second = reserve_id("b").expect("b");
     assert_ne!(first, second, "不同条目各占一个批次");
     with_scheduler(|scheduler| {
-        assert!(scheduler.current.is_none());
+        assert!(scheduler.active.is_empty());
         let ids: Vec<&str> = scheduler
             .queue
             .iter()
@@ -130,7 +142,7 @@ fn single_file_skips_preparing() {
     assert!(!start.folder, "单文件不用读目录");
     with_scheduler(|scheduler| {
         assert_eq!(
-            scheduler.current.as_ref().map(|pending| pending.state),
+            scheduler.active.first().map(|pending| pending.state),
             Some(PendingState::Running),
             "单文件跳过「准备中」，直接下载中"
         );
@@ -269,21 +281,53 @@ fn a_panicked_worker_still_frees_its_slot() {
 }
 
 #[test]
-fn only_one_batch_runs_at_a_time() {
+fn single_file_batches_fill_the_parallel_slots() {
     let _guard = lock();
     reset_for_test();
-    reserve_id("a").expect("a");
-    reserve_id("b").expect("b");
-    let first = next_start().expect("第一批开跑");
+    let limit = download_parallel();
+    for index in 0..=limit {
+        reserve_file_id(&format!("file-{index}")).expect("登记单文件");
+    }
+
+    let mut started = Vec::new();
+    for _ in 0..limit {
+        started.push(next_start().expect("并发槽逐个启动").batch);
+    }
+    assert_eq!(started.len(), limit, "独立单文件填满并发槽");
+    assert!(next_start().is_none(), "超过并发数的文件继续排队");
+    assert_eq!(counts(), (true, 1));
+
+    assert!(release(started[0]).is_some());
+    let next = next_start().expect("释放一个槽后，队首下一批顶上");
+    assert_ne!(next.batch, started[0]);
+    assert_eq!(next.entry.id, format!("file-{limit}"));
+    assert_eq!(counts(), (true, 0));
+    transfers::reset();
+    reset();
+}
+
+#[test]
+fn folder_batch_stays_exclusive() {
+    let _guard = lock();
+    reset_for_test();
+    reserve_file_id("file").expect("单文件排队");
+    reserve_id("folder").expect("文件夹排队");
+    reserve_file_id("tail").expect("文件夹后面的单文件排队");
+
+    let file = next_start().expect("先启动队首单文件");
+    assert!(!file.folder);
     assert!(
         next_start().is_none(),
-        "正在跑的那批没结束前，绝不取下一批（串行执行）"
+        "队首轮到文件夹时，必须等已有单文件全部结束"
     );
-    // 它结束后才轮到 b
-    assert!(release(first.batch).is_some());
-    let second = next_start().expect("第二批顶上");
-    assert_ne!(second.batch, first.batch);
-    assert_eq!(second.entry.id, "b");
+
+    assert!(release(file.batch).is_some());
+    let folder = next_start().expect("槽空后文件夹独占启动");
+    assert!(folder.folder);
+    assert!(next_start().is_none(), "文件夹运行期间不能启动外面的单文件");
+    assert!(release(folder.batch).is_some());
+    let tail = next_start().expect("文件夹结束后才继续后面的单文件");
+    assert_eq!(tail.entry.id, "tail");
     transfers::reset();
     reset();
 }

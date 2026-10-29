@@ -1,8 +1,8 @@
-//! 下载调度：按源条目 id 占用 + 串行批次队列。
+//! 下载调度：按源条目 id 占用 + 并发批次队列。
 //!
 //! 与 `downloads.rs` 分工：
 //! - `downloads.rs`：QML 能看到的入口（右键菜单的「下载」、取消、打开目录）与属性刷新；
-//! - 本文件：占用表、串行队列、线程启动与收尾、登出收尾（保留断点与调度槽）；
+//! - 本文件：占用表、并发队列、线程启动与收尾、登出收尾（保留断点与调度槽）；
 //! - `queue_collect.rs`：目录遍历与跳过分类（过深 / 读失败 / 防环）；
 //! - `queue_worker.rs`：下载循环、进度节流与回投；
 //! - `transfers.rs`：逐条记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消 / 已中断），
@@ -12,8 +12,9 @@
 //! 不能再入队。查重与登记在**同一把锁**里完成——列目录那几秒入口也是通的，
 //! 只在入口查布尔量会漏（2026-10-27 的 P1 并发 bug 就是这么来的）。
 //!
-//! 不同目录可以同时排队，但**一次只有一批在动**：轮到才读目录，读完再进下载循环。
-//! 后台线程绝不碰 Qt 对象：结果一律经 `actions::enqueue_ui` 回主线程。
+//! 独立单文件批次最多按 `KICHI_DOWNLOAD_PARALLEL` 同时下载；文件夹批次仍独占，
+//! 避免「文件夹内部 3 路 + 外面 3 个单文件」把并发翻倍。后台线程绝不碰 Qt 对象：
+//! 结果一律经 `actions::enqueue_ui` 回主线程。
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -23,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use kichi_core::{EntryKind, FileEntry};
 
 use super::queue_collect::Collected;
-use super::queue_worker::{run_jobs, spawn_batch, Start};
+use super::queue_worker::{download_parallel, run_jobs, spawn_batch, Start};
 use super::transfers::{self, TransferJob};
 use crate::session::download::Cancel;
 use crate::session::Session;
@@ -105,7 +106,7 @@ struct Pending {
     failure: Option<String>,
     /// 真的起过线程（目录收集或下载）；只有这种批次才可能在登出后还活着
     started: bool,
-    /// 登出时留下收尾的批次：不再参与判重，但仍占着 current 直到线程退出
+    /// 登出时留下收尾的批次：不再参与判重，但仍占着调度槽直到线程退出
     abandoned: bool,
 }
 
@@ -115,11 +116,11 @@ impl Pending {
     }
 }
 
-/// 进程内唯一的调度状态（排队 + 正在跑的那一批）。
+/// 进程内唯一的调度状态（排队 + 正在跑的若干单文件，或一个文件夹批次）。
 #[derive(Default)]
 struct Scheduler {
     queue: VecDeque<Pending>,
-    current: Option<Pending>,
+    active: Vec<Pending>,
 }
 
 fn scheduler() -> &'static Mutex<Scheduler> {
@@ -154,7 +155,7 @@ pub(crate) fn bump_epoch() {
 /// `abandoned` 批次只在等旧线程退出，不算占用：重新登录后同一个文件可以再入队。
 fn is_taken(scheduler: &Scheduler, source_id: &str) -> bool {
     let same_id = |pending: &Pending| !pending.abandoned && pending.source_id == source_id;
-    scheduler.current.as_ref().is_some_and(same_id) || scheduler.queue.iter().any(same_id)
+    scheduler.active.iter().any(same_id) || scheduler.queue.iter().any(same_id)
 }
 
 /// 把一个待下载条目放进队列（记录登记之后调用）。
@@ -247,9 +248,9 @@ pub(crate) fn is_pending(source_id: &str) -> bool {
 pub(crate) fn mark_started(batch: u64) {
     with_scheduler(|scheduler| {
         if let Some(current) = scheduler
-            .current
-            .as_mut()
-            .filter(|pending| pending.batch == batch)
+            .active
+            .iter_mut()
+            .find(|pending| pending.batch == batch)
         {
             current.started = true;
         }
@@ -259,14 +260,14 @@ pub(crate) fn mark_started(batch: u64) {
 /// 当前是否有一批在准备或执行，以及排队中的批次数（属性刷新用）。
 pub(crate) fn counts() -> (bool, i32) {
     with_scheduler(|scheduler| {
-        // `current` 在准备中 / 下载中 / 登出后等旧线程退出时都存在
-        let running = scheduler.current.is_some();
+        // active 在准备中 / 下载中 / 登出后等旧线程退出时都存在
+        let running = !scheduler.active.is_empty();
         let queued = i32::try_from(scheduler.queue.len()).unwrap_or(i32::MAX);
         (running, queued)
     })
 }
 
-/// 推进队列：没有正在跑的批次时，pop 下一批并起线程。
+/// 推进队列：填满独立单文件并发槽；文件夹批次只有等其他槽全空后才独占启动。
 ///
 /// 返回启动失败的批次（线程起不来这类必须显式收尾并通知，不能像
 /// `run_in_background` 那样只打 stderr）。主线程调用。
@@ -290,12 +291,34 @@ pub(crate) fn advance(session: &Arc<Session>) -> Vec<BatchFailure> {
 }
 
 /// 取下一批，并在同一个锁里标成「准备中 / 下载中」。
+///
+/// 文件夹独占是刻意的：文件夹内部已经有批内并发，再与外部单文件叠加会让
+/// 实际连接数翻倍。单文件只从队首连续取，保证队列顺序不被后来的小文件插队。
 fn next_start() -> Option<Start> {
     with_scheduler(|scheduler| {
-        if scheduler.current.is_some() {
+        // 登出后的旧线程仍占着槽；等它们全部退出后才允许新会话开跑。
+        if scheduler.active.iter().any(|pending| pending.abandoned) {
+            return None;
+        }
+        let limit = download_parallel();
+        if scheduler.active.len() >= limit {
+            return None;
+        }
+        if scheduler.active.iter().any(|pending| pending.folder()) {
             return None;
         }
         loop {
+            if scheduler.active.len() >= limit {
+                return None;
+            }
+            let folder_next = scheduler.queue.front().is_some_and(Pending::folder);
+            if folder_next {
+                if !scheduler.active.is_empty() {
+                    return None;
+                }
+            } else if scheduler.queue.is_empty() {
+                return None;
+            }
             let mut pending = scheduler.queue.pop_front()?;
             if pending.cancel.is_cancelled() {
                 // 排队期间整批被取消：不用起线程，释放占用后看下一批
@@ -322,7 +345,7 @@ fn next_start() -> Option<Start> {
                 cancel: pending.cancel.clone(),
                 sub_dir: pending.sub_dir.clone(),
             };
-            scheduler.current = Some(pending);
+            scheduler.active.push(pending);
             return Some(start);
         }
     })
@@ -348,9 +371,9 @@ pub(crate) fn start_download(
 ) -> StartOutcome {
     let found = with_scheduler(|scheduler| {
         let current = scheduler
-            .current
-            .as_mut()
-            .filter(|pending| pending.batch == batch)?;
+            .active
+            .iter_mut()
+            .find(|pending| pending.batch == batch)?;
         Some((
             current.dir.clone(),
             current.cancel.clone(),
@@ -370,9 +393,9 @@ pub(crate) fn start_download(
     }
     with_scheduler(|scheduler| {
         if let Some(current) = scheduler
-            .current
-            .as_mut()
-            .filter(|pending| pending.batch == batch)
+            .active
+            .iter_mut()
+            .find(|pending| pending.batch == batch)
         {
             current.state = PendingState::Running;
             current.skipped = collected.skipped;
@@ -427,12 +450,12 @@ pub(crate) fn start_download(
 /// 调度槽只能由线程自己的收尾回调释放，绝不因为登出提前 `take`。
 pub(crate) fn release(batch: u64) -> Option<BatchReport> {
     with_scheduler(|scheduler| {
-        let pending = if scheduler
-            .current
-            .as_ref()
-            .is_some_and(|pending| pending.batch == batch)
+        let pending = if let Some(index) = scheduler
+            .active
+            .iter()
+            .position(|pending| pending.batch == batch)
         {
-            scheduler.current.take()?
+            scheduler.active.remove(index)
         } else {
             // 测试里会直接释放还没轮到、也没起线程的批次
             let index = scheduler
@@ -466,9 +489,9 @@ pub(crate) fn release(batch: u64) -> Option<BatchReport> {
 pub(crate) fn add_result(batch: u64, outcome: JobOutcome<'_>) {
     with_scheduler(|scheduler| {
         if let Some(pending) = scheduler
-            .current
-            .as_mut()
-            .filter(|pending| pending.batch == batch)
+            .active
+            .iter_mut()
+            .find(|pending| pending.batch == batch)
         {
             match outcome {
                 JobOutcome::Saved => {
@@ -490,9 +513,9 @@ pub(crate) fn add_skipped(batch: u64, extra: usize) {
     }
     with_scheduler(|scheduler| {
         if let Some(pending) = scheduler
-            .current
-            .as_mut()
-            .filter(|pending| pending.batch == batch)
+            .active
+            .iter_mut()
+            .find(|pending| pending.batch == batch)
         {
             pending.skipped += extra;
         }
@@ -502,10 +525,10 @@ pub(crate) fn add_skipped(batch: u64, extra: usize) {
 /// 取消所有未结束的批次。
 ///
 /// 排队中的还没起线程，直接放掉占用（记录由调用方统一标「已取消」）；
-/// 正在跑的那一批只置取消标志，等线程自己收尾后释放。
+/// 正在跑的每一批只置取消标志，等线程自己收尾后释放。
 pub(crate) fn cancel_all() {
     with_scheduler(|scheduler| {
-        if let Some(current) = scheduler.current.as_mut() {
+        for current in &mut scheduler.active {
             current.cancel.cancel();
         }
         for pending in scheduler.queue.drain(..) {
@@ -516,19 +539,20 @@ pub(crate) fn cancel_all() {
 
 /// 登出：作废在途结果、保留断点，并清空排队。
 ///
-/// 已经起过线程的 `current` **不能直接丢掉**：它可能还卡在 `read` 里（最长一个
-/// 空闲读超时），醒来后仍会碰同一个 `.kichi-part`。这里只置 `abandon` 并保留
-/// 调度槽，等线程自己的收尾回调 `release` 后才允许新批次开始（期间显示「排队中」）。
+/// 已经起过线程的 active 批次**不能直接丢掉**：它们可能还卡在 `read` 里（最长
+/// 一个空闲读超时），醒来后仍会碰同一个 `.kichi-part`。这里只置 `abandon` 并
+/// 保留调度槽，等线程自己的收尾回调 `release` 后才允许新批次开始。
 pub(crate) fn reset() {
     // 与下载线程「最后检查 abandon + rename」互斥：登出返回后绝不会再冒出成品文件。
     let _commit = crate::session::download::commit_lock();
     bump_epoch();
     with_scheduler(|scheduler| {
-        if let Some(mut current) = scheduler.current.take() {
+        let active = std::mem::take(&mut scheduler.active);
+        for mut current in active {
             current.cancel.abandon();
             if current.started {
                 current.abandoned = true;
-                scheduler.current = Some(current);
+                scheduler.active.push(current);
             }
         }
         for pending in scheduler.queue.drain(..) {

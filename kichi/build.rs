@@ -42,6 +42,8 @@ const QML_FILES: &[&str] = &[
     "qml/TasksPage.qml",
     "qml/TaskCard.qml",
     "qml/TransfersPage.qml",
+    "qml/TransferActiveSummary.qml",
+    "qml/TransferMainRow.qml",
     "qml/TransferRow.qml",
     "qml/TransferFolderPage.qml",
     "qml/SettingsPage.qml",

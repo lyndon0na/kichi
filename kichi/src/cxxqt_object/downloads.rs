@@ -1,8 +1,8 @@
 //! 下载到本地：QML 入口与状态属性。
 //!
 //! 队列节奏与后台细节在 [`super::queue`]：
-//! - **一次只跑一批、批内串行**：并行的下载会互相抢带宽，官方也视为压力；
-//!   不同条目可以排队，轮到才读目录；
+//! - **独立单文件最多并发 `KICHI_DOWNLOAD_PARALLEL` 批**；文件夹批次独占，
+//!   文件夹内部再按同一上限并发下载子文件，避免两层并发数叠加；
 //! - 判重键是云端条目 id：同一条目在排队 / 准备 / 下载中时点下载 = 跳转定位；
 //! - 文件夹下载轮到时才递归列目录，落盘时保留层级，并先建出完整目录树；
 //! - **空文件夹算成功**：建出目录即完成，不弹通知；读不到的子目录按跳过处理
@@ -26,10 +26,10 @@ use super::queue_collect;
 use super::reveal;
 use super::transfers;
 use super::transfers_actions;
+use super::transfers_active;
 use super::transfers_detail;
 use super::transfers_history::{self, StoreTarget};
 use super::transfers_rate::heartbeat_due;
-use super::transfers_view::HISTORY_DAY_ALL;
 use crate::session::Failure;
 
 /// 上一次推 `transferLive` 的时刻（心跳节流；只有主线程读写）。
@@ -68,6 +68,7 @@ pub(crate) fn load_history(object: &mut crate::cxxqt_object::KichiRust) {
     with_target(|slot| *slot = Some(target));
     let (list, active) = transfers_history::snapshot();
     object.transfers = list;
+    object.transfer_active_group = transfers_active::snapshot();
     object.transfer_revision = object.transfer_revision.wrapping_add(1);
     object.download_active = active;
     object.transfer_has_finished = transfers_history::has_finished();
@@ -112,7 +113,7 @@ impl qobject::Kichi {
         };
         let dir = self.settings.download_dir_path();
         let source_id = entry.id.clone();
-        // 登记成功后先推进队列：空闲时这一下就把线程起来了；有批次在跑就只是排队。
+        // 登记成功后先推进队列：有空闲槽时这一下就把线程起来了；槽满就只是排队。
         // `advance_downloads` 里已经 sync 过一次，这里不再重复。
         if queue::reserve(entry, dir).is_some() {
             self.as_mut().advance_downloads();
@@ -123,8 +124,9 @@ impl qobject::Kichi {
             .locate_transfer(QString::from(source_id.as_str()));
     }
 
-    /// 批量下载（多选后右键「下载到本地」）。每个条目各自一批，按传入顺序排队，
-    /// 仍然一次只跑一批；跨批次不合并通知（`docs/adr/0010`）。
+    /// 批量下载（多选后右键「下载到本地」）。每个条目各自一批，按传入顺序排队；
+    /// 独立文件填满并发槽，轮到文件夹时等已跑文件结束再独占；
+    /// 每个批次各发自己的通知（`docs/adr/0010`）。
     ///
     /// 已经在排队 / 下载中的条目直接跳过：多选时不像单条那样跳去传输页——
     /// 那会打断用户正在看的目录。结果用状态栏一句话说清楚。
@@ -200,54 +202,10 @@ impl qobject::Kichi {
 
     /// 清空已结束（完成 / 失败 / 已取消）的记录，进行中 / 排队 / 已中断的保留。
     ///
-    /// 清的是**全部历史**里所有已结束的整批，不按日期分组收窄（ADR 0014）。
+    /// 清的是**全部历史**里所有已结束的整批（ADR 0014）。
     pub fn clear_finished_transfers(mut self: Pin<&mut Self>) {
         transfers::clear_all();
         self.as_mut().sync_transfers();
-    }
-
-    /// 分组行要列的日子（新 → 旧）：`[{ key, label }, …]`。
-    ///
-    /// 每条带 `key`：QML 的 Repeater 靠它定位到具体某天的按钮。
-    pub fn transfer_history_days(&self) -> super::QVariantList {
-        use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QVariant};
-
-        let days = transfers_history::history_days_now();
-        let mut list = super::QVariantList::default();
-        for (key, label) in days {
-            let mut map = QMap::<QMapPair_QString_QVariant>::default();
-            let key_text = QString::from(key.as_str());
-            map.insert_clone(&QString::from("key"), &QVariant::from(&key_text));
-            let label_text = QString::from(label.as_str());
-            map.insert_clone(&QString::from("label"), &QVariant::from(&label_text));
-            list.append(QVariant::from(&map));
-        }
-        list
-    }
-
-    /// 当前选中的分组换算成具体日子（「今天」→ 此刻的 `YYYY-MM-DD`）。
-    ///
-    /// 分组按钮按具体日期建 key（`transfer_history_days` 的 `key`），默认选中的
-    /// 「今天」不是日期，QML 拿这个把高亮对到当天那一个按钮上；跨过午夜后由
-    /// 下一次刷新自然指向新的一天。
-    pub fn transfer_history_day(&self) -> QString {
-        QString::from(transfers_history::resolved_day().as_str())
-    }
-
-    /// 选中一个分组（`today` / 具体日期 / `all`）；默认只看今天。
-    pub fn set_transfer_history_day(mut self: Pin<&mut Self>, day: QString) {
-        let day = day.to_string();
-        let day = if day.trim().is_empty() {
-            HISTORY_DAY_ALL.to_owned()
-        } else {
-            day
-        };
-        let changed = transfers_history::set_history_day(&day);
-        if changed {
-            self.as_mut().sync_transfers();
-        } else {
-            self.as_mut().notify();
-        }
     }
 
     /// 重试一条失败 / 已中断的传输记录：按原 id、原下载目录、原子目录重新入队。
@@ -420,6 +378,7 @@ impl qobject::Kichi {
         let (list, active) = transfers_history::snapshot();
         let has_finished = transfers_history::has_finished();
         let live = transfers::live_snapshot();
+        let active_group = transfers_active::snapshot();
         let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
         {
@@ -427,6 +386,7 @@ impl qobject::Kichi {
             rust.transfers = list;
             rust.transfer_revision = rust.transfer_revision.wrapping_add(1);
             rust.transfer_live = live;
+            rust.transfer_active_group = active_group;
             rust.transfer_detail = detail;
             rust.transfer_detail_active = detail_active;
             rust.download_active = active;
@@ -445,8 +405,13 @@ impl qobject::Kichi {
     /// 滚动位置回到顶部（2026-10-27 实测），下载期间就没法往下翻。
     pub(crate) fn sync_transfer_live(mut self: Pin<&mut Self>) {
         let live = transfers::live_snapshot();
+        let active_group = transfers_active::snapshot();
         mark_live_pushed();
-        self.as_mut().rust_mut().transfer_live = live;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.transfer_live = live;
+            rust.transfer_active_group = active_group;
+        }
         self.as_mut().notify();
         // 进度也要落盘（2 秒节流 + 字节没变不写）：只在结构事件写盘的话，
         // 长下载被 SIGKILL / 直接注销后，重启的「已中断」行会停在上次结构变化的

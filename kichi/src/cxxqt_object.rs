@@ -93,13 +93,14 @@ pub mod qobject {
         /// ListView 模型重灌（会把滚动位置冲回顶部）。
         #[qproperty(i32, transfer_revision, cxx_name = "transferRevision", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, transfer_live, cxx_name = "transferLive", READ, NOTIFY = changed)]
+        /// 进行中摘要（最多一张卡片）：独立文件组或一个正在跑 / 准备中的文件夹
+        #[qproperty(QVariantList, transfer_active_group, cxx_name = "transferActiveGroup", READ, NOTIFY = changed)]
         /// 选中的文件夹批次的子文件列表（详情页专用）
         #[qproperty(QVariantList, transfer_detail, cxx_name = "transferDetail", READ, NOTIFY = changed)]
         /// 文件夹详情是否打开（false 时主列表可见）
         #[qproperty(bool, transfer_detail_active, cxx_name = "transferDetailActive", READ, NOTIFY = changed)]
         #[qproperty(i32, download_active, cxx_name = "downloadActive", READ, NOTIFY = changed)]
-        /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰；
-        /// 不随日期分组收窄——清空清的是全部历史）
+        /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰）
         #[qproperty(bool, transfer_has_finished, cxx_name = "transferHasFinished", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
@@ -284,21 +285,6 @@ pub mod qobject {
         #[cxx_name = "clearFinishedTransfers"]
         fn clear_finished_transfers(self: Pin<&mut Self>);
 
-        /// 分组行要列的日子（新 → 旧）：`[{ key, label }, …]`
-        #[qinvokable]
-        #[cxx_name = "transferHistoryDays"]
-        fn transfer_history_days(self: &Self) -> QVariantList;
-
-        /// 当前选中的历史分组换算成具体日子（`today` → 此刻的 `YYYY-MM-DD`）
-        #[qinvokable]
-        #[cxx_name = "transferHistoryDay"]
-        fn transfer_history_day(self: &Self) -> QString;
-
-        /// 选中一个历史分组（`today` / 具体日期 / `all`）；默认只看今天
-        #[qinvokable]
-        #[cxx_name = "setTransferHistoryDay"]
-        fn set_transfer_history_day(self: Pin<&mut Self>, day: QString);
-
         /// 重试一条失败 / 已中断的传输记录（文件级回到原下载目录；文件夹整批重来）
         #[qinvokable]
         #[cxx_name = "retryTransfer"]
@@ -473,6 +459,7 @@ mod settings;
 mod tasks;
 mod transfers;
 mod transfers_actions;
+mod transfers_active;
 mod transfers_detail;
 mod transfers_history;
 mod transfers_rate;
@@ -589,8 +576,10 @@ pub struct KichiRust {
     pub(crate) transfers: QVariantList,
     /// 记录结构版本（QML 据此决定要不要重读 `transfers`）
     pub(crate) transfer_revision: i32,
-    /// 正在下载那一条的实时进度（当前文件行 + 文件夹父行聚合，0~2 条：避免为进度重建整个列表）
+    /// 正在下载文件的实时进度（各文件行 + 文件夹父行聚合；进度节拍只刷新它）
     pub(crate) transfer_live: QVariantList,
+    /// 传输页顶部摘要：0 或 1 个分组，进度节拍也会刷新它
+    pub(crate) transfer_active_group: QVariantList,
     /// 选中文件夹批次的子文件列表（详情页专用）
     pub(crate) transfer_detail: QVariantList,
     /// 文件夹详情是否打开
@@ -712,6 +701,7 @@ impl Default for KichiRust {
             transfers: QVariantList::default(),
             transfer_revision: 0,
             transfer_live: QVariantList::default(),
+            transfer_active_group: QVariantList::default(),
             transfer_detail: QVariantList::default(),
             transfer_detail_active: false,
             download_active: 0,

@@ -518,55 +518,9 @@ fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
 
 // —— 记录表 ↔ 磁盘 ——
 
-/// 选中的日期分组（`today` / 具体日期 / `all`），默认只看今天。
-///
-/// 这是纯显示状态：只影响 `snapshot` 交给 QML 的行，不写盘、不跨重启。
-fn selected_day() -> &'static Mutex<String> {
-    static DAY: OnceLock<Mutex<String>> = OnceLock::new();
-    DAY.get_or_init(|| {
-        Mutex::new(crate::cxxqt_object::transfers_view::HISTORY_DAY_TODAY.to_owned())
-    })
-}
-
-fn with_selected_day<T>(f: impl FnOnce(&mut String) -> T) -> T {
-    let mut guard = selected_day().lock().unwrap_or_else(|e| e.into_inner());
-    f(&mut guard)
-}
-
-/// 选中的分组（`today` / 具体日期 / `all`）；返回是否真的变了。
-pub(crate) fn set_history_day(day: &str) -> bool {
-    with_selected_day(|current| {
-        if current == day {
-            return false;
-        }
-        *current = day.to_owned();
-        true
-    })
-}
-
-/// 把选中的分组落到具体的日子上（「今天」→ 此刻的日期）并返回它。
-///
-/// 每次刷新现推：「今天」跨过午夜后自然指向新的一天。
-pub(crate) fn resolved_day() -> String {
-    let day = with_selected_day(|day| day.clone());
-    if day == crate::cxxqt_object::transfers_view::HISTORY_DAY_TODAY {
-        crate::cxxqt_object::transfers_view::day_key(now_unix())
-    } else {
-        day
-    }
-}
-
-/// 历史上出现过的日子（新 → 旧），带显示文案。
-pub(crate) fn history_days_now() -> Vec<(String, String)> {
-    with_records(|records| crate::cxxqt_object::transfers_view::history_days(records, now_unix()))
-}
-
-/// 记录表 → QML 主列表模型 + 进行中条数，按选中的分组收窄。
+/// 记录表 → QML 主列表模型 + 进行中条数。
 pub(crate) fn snapshot() -> (crate::cxxqt_object::QVariantList, i32) {
-    let day = resolved_day();
-    with_records(|records| {
-        crate::cxxqt_object::transfers_view::build_history_snapshot(records, &day)
-    })
+    with_records(|records| crate::cxxqt_object::transfers_view::build_snapshot(records))
 }
 
 /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰，不按日期收窄）。

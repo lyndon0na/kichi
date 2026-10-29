@@ -471,11 +471,11 @@ pub(crate) fn has_running_file() -> bool {
     })
 }
 
-/// 正在下载那一条的实时进度（当前文件行 + 文件夹父行聚合）。
+/// 所有正在下载文件的实时进度（各文件行 + 文件夹父行聚合）。
 ///
 /// 单独成一路属性：进度每 250ms 变一次，若跟着整个模型重建，`ListView`
 /// 会整列表重灌、滚动位置回到顶部（2026-10-27 实测），下载期间就没法翻看了。
-/// QML 按 key 取对应行，父行与当前文件行都在这一份里。
+/// QML 按 key 取对应行；顶部摘要和文件夹详情都从这一份取速度 / 进度。
 pub(crate) fn live_snapshot() -> QVariantList {
     live_snapshot_at(Instant::now())
 }
@@ -487,8 +487,8 @@ pub(crate) fn live_snapshot() -> QVariantList {
 pub(crate) fn live_snapshot_at(now: Instant) -> QVariantList {
     with_records(|records| {
         let mut list = QVariantList::default();
-        // 2026-10-28 批内并发后可能同时有多条「下载中」：每一条都要下发自己的
-        // 实时进度，否则除第一条外的行进度条永远停在开始时的值。
+        // 批内并发与跨批并发都可能同时出现多条「下载中」：每一条都要下发自己的
+        // 实时进度，否则除第一条外的 lane / 详情行会停在开始时的值。
         let mut parent_batches = Vec::new();
         for running in records.iter().filter(|record| {
             record.state == TransferState::Running && record.job.kind == EntryKind::File
@@ -939,17 +939,17 @@ fn clear_finished_in(records: &mut Vec<Transfer>) {
     records.retain(|record| !removable.contains(&record.batch));
 }
 
-/// 「清空已完成记录」：清全部历史里所有「所有行都已结束」的整批，不按日期收窄。
+/// 「清空已完成记录」：清全部历史里所有「所有行都已结束」的整批。
 ///
 /// 与 `clear_finished_in` 同一口径（进行中 / 排队 / 已中断保留）；分出来只是为了
-/// 在调用点说清楚「不按日期分组」这件事。
+/// 在调用点说清楚清空口径。
 fn clear_all_in(records: &mut Vec<Transfer>) {
     clear_finished_in(records);
 }
 
 /// 进程内最多保留的记录数（超出丢最早的已结束记录，进行中的绝不丢）。
 ///
-/// 落盘的历史不受这个数限制（ADR 0014：不设条数上限，只按天 / 月分组）。
+/// 落盘的历史不受这个数限制（ADR 0014：不设条数上限）。
 const MAX_RECORDS: usize = 2000;
 
 /// 超过上限时按整批淘汰最早的已结束批次；进行中的批次绝不删。

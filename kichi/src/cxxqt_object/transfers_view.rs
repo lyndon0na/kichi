@@ -9,7 +9,6 @@
 
 use std::time::Instant;
 
-use chrono::TimeZone;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 
 use super::actions::format_size;
@@ -33,11 +32,11 @@ pub(crate) fn percent_of(record: &Transfer) -> Option<i32> {
     }
 }
 
-fn text(value: &str) -> QVariant {
+pub(crate) fn text(value: &str) -> QVariant {
     QVariant::from(&QString::from(value))
 }
 
-fn insert(map: &mut QVariantMap, key: &str, value: QVariant) {
+pub(crate) fn insert(map: &mut QVariantMap, key: &str, value: QVariant) {
     map.insert_clone(&QString::from(key), &value);
 }
 
@@ -494,39 +493,26 @@ fn detail_notice_map(hidden: usize) -> QVariantMap {
     )
 }
 
-/// 排序：进行中 / 已中断在前（批次内按顺序），已结束在后（新 → 旧）。只取顶层记录。
+/// 排序：进行中在前（按排队顺序），其余顶层记录按批次新 → 旧。只取顶层记录。
 ///
-/// 已中断的行排最上面：它们不占调度槽，但是用户要先看到、要重试的那几条
-/// （ADR 0014：「进行中 / 排队 / 已中断的行不受日期过滤，永远排最上面」）。
+/// 已中断不算进行中，也不单独置顶；它和完成 / 失败 / 取消一样属于历史，
+/// 按批次时间参与同一套排序。
 pub(crate) fn ordered(records: &[Transfer]) -> Vec<&Transfer> {
-    let mut open: Vec<&Transfer> = records
+    let mut active: Vec<&Transfer> = records
         .iter()
-        .filter(|record| {
-            !record.child
-                && (record.state.is_active() || record.state == TransferState::Interrupted)
-        })
+        .filter(|record| !record.child && record.state.is_active())
         .collect();
-    let mut finished: Vec<&Transfer> = records
+    let mut historical: Vec<&Transfer> = records
         .iter()
-        .filter(|record| !record.child && record.state.is_finished())
+        .filter(|record| !record.child && !record.state.is_active())
         .collect();
-    // 打开着的批次按批号（旧 → 新）；已中断的批次比进行中的还靠前，先让用户看见
-    open.sort_by_key(|record| {
-        (
-            record.state != TransferState::Interrupted,
-            record.batch,
-            record.index,
-        )
-    });
-    finished.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
-    open.extend(finished);
-    open
+    active.sort_by_key(|record| (record.batch, record.index));
+    historical.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
+    active.extend(historical);
+    active
 }
 
-/// 记录表 → 主列表模型 + 进行中条数（按批次算，一个文件夹算 1），不分日期。
-///
-/// 生产路径走 [`build_history_snapshot`]（带日期分组）；这个不分组的版本留给单测。
-#[cfg(test)]
+/// 记录表 → 主列表模型 + 进行中条数（按批次算，一个文件夹算 1）。
 pub(crate) fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     let top_level: Vec<&Transfer> = records.iter().filter(|record| !record.child).collect();
     let total = top_level.len();
@@ -543,84 +529,6 @@ pub(crate) fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     }
     let active = i32::try_from(active).unwrap_or(i32::MAX);
     (list, active)
-}
-
-// —— 日期分组（`docs/adr/0014-download-history-on-disk.md`）——
-
-/// 分组查询的「不限日期」。
-pub(crate) const HISTORY_DAY_ALL: &str = "all";
-/// 分组查询的「今天」（默认；刷新时换算成此刻的日期）。
-pub(crate) const HISTORY_DAY_TODAY: &str = "today";
-
-/// 一条记录该归到哪一天（本地时区），`YYYY-MM-DD`。
-pub(crate) fn day_key(created_unix: i64) -> String {
-    match chrono::Local.timestamp_opt(created_unix, 0).single() {
-        Some(time) => time.format("%Y-%m-%d").to_string(),
-        None => String::new(),
-    }
-}
-
-fn day_label(key: &str, today: &str, yesterday: &str) -> String {
-    if key == today {
-        "今天".to_owned()
-    } else if key == yesterday {
-        "昨天".to_owned()
-    } else {
-        // 同年只显示「月-日」；跨年补两位年份，免得「01-02」看不出是哪一年
-        let short = key.get(5..).unwrap_or(key);
-        match (key.get(..4), today.get(..4)) {
-            (Some(year), Some(current)) if year != current => {
-                format!("{}-{short}", &year[2..])
-            }
-            _ => short.to_owned(),
-        }
-    }
-}
-
-/// 历史上出现过的日子（新 → 旧），带显示文案。
-///
-/// 只统计顶层行（一个批次一行）。`created_unix == 0` 的旧记录不参与分组：
-/// 它们进不了任何一天，只能靠「全部」看。
-pub(crate) fn history_days(records: &[Transfer], now: i64) -> Vec<(String, String)> {
-    let mut keys: Vec<String> = records
-        .iter()
-        .filter(|record| !record.child && record.created_unix > 0)
-        .map(|record| day_key(record.created_unix))
-        .filter(|key| !key.is_empty())
-        .collect();
-    keys.sort();
-    keys.dedup();
-    keys.reverse();
-
-    let today = day_key(now);
-    let yesterday = day_key(now.saturating_sub(24 * 3600));
-    keys.into_iter()
-        .map(|key| {
-            let label = day_label(&key, &today, &yesterday);
-            (key, label)
-        })
-        .collect()
-}
-
-/// 这个批次属于哪一天（顶层行的入队时刻）。
-fn record_day(records: &[Transfer], record: &Transfer) -> String {
-    let created = super::transfers_history::created_of(records, record.batch);
-    if created > 0 {
-        day_key(created)
-    } else {
-        String::new()
-    }
-}
-
-/// 这一天能看到它吗：进行中 / 排队 / 已中断永远可见；其余按批次入队那天。
-fn matches_day(records: &[Transfer], record: &Transfer, day: &str) -> bool {
-    if record.state.is_active() || record.state == TransferState::Interrupted {
-        return true;
-    }
-    if day.is_empty() || day == HISTORY_DAY_ALL {
-        return true;
-    }
-    record_day(records, record) == day
 }
 
 /// 这一行是「读目录前整体失败 / 整个中断」的文件夹总账行吗（整批重来会重新读目录）。
@@ -641,28 +549,6 @@ pub(crate) fn is_whole_folder_ledger(records: &[Transfer], key: &str) -> bool {
         record.state,
         TransferState::Failed | TransferState::Interrupted
     )
-}
-
-/// 主列表快照（按日期过滤）：进行中 / 排队 / 已中断排最上面，其余只看选中那天。
-pub(crate) fn build_history_snapshot(records: &[Transfer], day: &str) -> (QVariantList, i32) {
-    let visible: Vec<&Transfer> = ordered(records)
-        .into_iter()
-        .filter(|record| matches_day(records, record, day))
-        .collect();
-    let total = visible.len();
-    let mut list = QVariantList::default();
-    for record in visible.into_iter().take(MAX_ROWS) {
-        list.append(QVariant::from(&record_map(record, records)));
-    }
-    if total > MAX_ROWS {
-        list.append(QVariant::from(&notice_map(total - MAX_ROWS)));
-    }
-    let active = records
-        .iter()
-        .filter(|record| !record.child && record.state.is_active())
-        .count();
-    let active = i32::try_from(active).unwrap_or(i32::MAX);
-    (list, active)
 }
 
 /// 记录表 → 某个文件夹批次的子文件快照（固定 index 顺序，不按状态重排）。

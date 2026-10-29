@@ -33,6 +33,8 @@ TestCase {
         property int downloadActive: 0
         property int downloadQueued: 0
         property var transferLive: []
+        /// 模拟 Rust `transferActiveGroup`：0 或 1 个进行中分组。
+        property var transferActiveGroup: buildActiveGroup(transfers, detailData, transferLive)
         property var transferDetail: []
         property bool transferDetailActive: false
         /// 全部历史里有没有可清的已结束批次（模拟 Rust 的同名属性）
@@ -41,12 +43,6 @@ TestCase {
         /// 用例注入的详情快照（模拟 Rust 按选中批次生成的 transferDetail）
         property var detailData: []
 
-        /// 日期分组（模拟 Rust `transferHistoryDays()`）
-        property var historyDays: []
-        /// 当前选中的分组（Rust 侧过滤依据）
-        property string historyDay: "today"
-        /// 「今天」换算成的日期（模拟 Rust `transferHistoryDay()`）
-        property string todayKey: "2026-10-28"
         /// 清空动作的记录
         property int clearCount: 0
 
@@ -67,15 +63,6 @@ TestCase {
         function openDownloadDir() {}
         function clearFinishedTransfers() {
             clearCount += 1
-        }
-        function transferHistoryDays() {
-            return historyDays
-        }
-        function transferHistoryDay() {
-            return historyDay === "today" ? todayKey : historyDay
-        }
-        function setTransferHistoryDay(day) {
-            historyDay = day
         }
         function locateTransfer(sourceId) {}
         function isDownloadPending(id) {
@@ -109,6 +96,90 @@ TestCase {
             transferDetailActive = false
             transferDetail = []
         }
+
+        function liveMap(rows) {
+            var map = {}
+            for (var i = 0; i < rows.length; i++)
+                map[rows[i].key] = rows[i]
+            return map
+        }
+
+        function laneOf(row, liveByKey) {
+            var live = liveByKey[row.key] || {}
+            return {
+                key: row.key,
+                sourceId: row.sourceId || "",
+                name: row.name,
+                progress: live.progress !== undefined ? live.progress : row.progress,
+                progressText: live.progressText !== undefined
+                               ? live.progressText : row.progressText,
+                sizeText: live.sizeText !== undefined ? live.sizeText : row.sizeText,
+                rateText: live.rateText || "",
+                noteText: live.noteText || "",
+                shardText: live.shardText || ""
+            }
+        }
+
+        function buildActiveGroup(rows, detailRows, liveRows) {
+            var liveByKey = liveMap(liveRows || [])
+            for (var f = 0; f < rows.length; f++) {
+                var folder = rows[f]
+                if (folder.folder && (folder.state === "running"
+                                      || folder.state === "preparing")) {
+                    var children = []
+                    for (var c = 0; c < (detailRows || []).length; c++) {
+                        if (detailRows[c].state === "running")
+                            children.push(detailRows[c])
+                    }
+                    var folderLive = liveByKey[folder.key] || {}
+                    return [{
+                        kind: "folder",
+                        groupKey: folder.key,
+                        sourceId: folder.sourceId,
+                        name: folder.name,
+                        state: folder.state,
+                        stateText: folder.stateText,
+                        runningCount: children.length,
+                        totalCount: folder.childCount || children.length,
+                        finishedCount: 0,
+                        hiddenCount: Math.max(0, children.length - 3),
+                        progress: folderLive.progress !== undefined
+                                  ? folderLive.progress : folder.progress,
+                        progressText: folderLive.progressText || folder.progressText,
+                        sizeText: folderLive.sizeText || folder.sizeText,
+                        lanes: children.slice(0, 3).map(function(child) {
+                            return laneOf(child, liveByKey)
+                        })
+                    }]
+                }
+            }
+
+            var files = []
+            for (var i = 0; i < rows.length; i++) {
+                if (!rows[i].folder && !rows[i].child && rows[i].state === "running")
+                    files.push(rows[i])
+            }
+            if (files.length === 0)
+                return []
+            return [{
+                kind: "files",
+                groupKey: "files",
+                sourceId: "",
+                name: "",
+                state: "running",
+                stateText: "下载中",
+                runningCount: files.length,
+                totalCount: files.length,
+                finishedCount: 0,
+                hiddenCount: Math.max(0, files.length - 3),
+                progress: files[0].progress,
+                progressText: "",
+                sizeText: files[0].sizeText,
+                lanes: files.slice(0, 3).map(function(file) {
+                    return laneOf(file, liveByKey)
+                })
+            }]
+        }
     }
 
     Component {
@@ -128,9 +199,6 @@ TestCase {
         backend.transferDetailActive = false
         backend.transferHasFinished = false
         backend.detailData = []
-        backend.historyDays = []
-        backend.historyDay = "today"
-        backend.todayKey = "2026-10-28"
         backend.clearCount = 0
         backend.revealCount = 0
         backend.revealedKey = ""
@@ -244,15 +312,18 @@ TestCase {
     /// （批号、序号升序），已结束在后（新 → 旧）。少了这一步，一条记录完成时
     /// 在快照里的位置压根不变，就测不出「完成一行导致整段搬移」这类问题。
     function publish(records, detail) {
-        backend.transfers = ordered(records)
         if (detail !== undefined)
             backend.detailData = detail
+        backend.transfers = ordered(records)
         if (backend.transferDetailActive)
             backend.transferDetail = backend.detailData
         backend.transferRevision += 1
         backend.downloadActive = backend.transfers.filter(function (item) {
             return item.state === "running" || item.state === "queued"
                    || item.state === "preparing"
+        }).length
+        backend.downloadQueued = backend.transfers.filter(function(item) {
+            return item.state === "queued"
         }).length
         backend.changed()
     }
@@ -262,31 +333,29 @@ TestCase {
     }
 
     /// 与 Rust `transfers_view::ordered()` 同规则（文件夹 key 的 index 按 0 排）：
-    /// 进行中 / 已中断在前（其中已中断的批次更靠前），已结束新 → 旧。
+    /// 进行中按排队顺序在前，其余记录（含已中断）统一新 → 旧。
     function ordered(records) {
         function pair(key) {
             var parts = key.split(":")
             var index = parts[1] === "folder" ? 0 : Number(parts[1])
             return [Number(parts[0]), index]
         }
-        var open = [], finished = []
+        var active = [], historical = []
         for (var i = 0; i < records.length; i++) {
-            if (isActivePhase(records[i].state) || records[i].state === "interrupted")
-                open.push(records[i])
+            if (isActivePhase(records[i].state))
+                active.push(records[i])
             else
-                finished.push(records[i])
+                historical.push(records[i])
         }
-        open.sort(function (a, b) {
+        active.sort(function (a, b) {
             var ka = pair(a.key), kb = pair(b.key)
-            var ia = a.state === "interrupted" ? 0 : 1
-            var ib = b.state === "interrupted" ? 0 : 1
-            return (ia - ib) || (ka[0] - kb[0]) || (ka[1] - kb[1])
+            return (ka[0] - kb[0]) || (ka[1] - kb[1])
         })
-        finished.sort(function (a, b) {
+        historical.sort(function (a, b) {
             var ka = pair(a.key), kb = pair(b.key)
             return (kb[0] - ka[0]) || (kb[1] - ka[1])
         })
-        return open.concat(finished)
+        return active.concat(historical)
     }
 
     // —— 按 objectName 取控件（主列表与详情列表都常驻，不能扫「第一个 ListView」）——
@@ -297,6 +366,18 @@ TestCase {
 
     function detailList() {
         return findChild(page, "transferDetailList")
+    }
+
+    function activeSummary() {
+        return findChild(page, "transferActiveSummary")
+    }
+
+    function activeLane(key) {
+        return findChild(activeSummary(), "activeLane-" + key)
+    }
+
+    function activeLaneControl(key, name) {
+        return findByName(activeLane(key), name)
     }
 
     function mainModel() {
@@ -375,6 +456,13 @@ TestCase {
         wait(80)
     }
 
+    function openActiveFolder() {
+        var title = findChild(activeSummary(), "activeSummaryTitle")
+        verify(title !== null, "进行中摘要没有标题")
+        mouseClick(title)
+        wait(80)
+    }
+
     // —— 原有：主列表差异算法 ——
 
     // 触发过卡死的原始序列：失败记录留着，重新下载。
@@ -385,7 +473,10 @@ TestCase {
 
         publish([record("2:0", "running"), record("1:0", "failed")])
         wait(50)
-        compare(dump(), "2:0:running,1:0:failed")
+        compare(dump(), "1:0:failed", "进行中离开历史列表")
+        verify(activeSummary().visible, "进行中进入顶部摘要")
+        compare(findChild(activeSummary(), "activeSummaryTitle").text,
+                "正在下载 1 个文件")
     }
 
     // 连续超时重试：每批都把新的排到最前，必须每次收敛。
@@ -417,7 +508,7 @@ TestCase {
             record("1:0", "done")
         ])
         wait(20)
-        compare(dump(), "2:0:running,1:2:done,1:0:done")
+        compare(dump(), "1:2:done,1:0:done", "进行中不混进历史差异列表")
 
         publish([record("2:0", "cancelled")])
         wait(20)
@@ -449,7 +540,7 @@ TestCase {
         publish([record("1:0", "failed"), notice(5)])
         wait(20)
         compare(mainModel().count, 2)
-        publish([record("2:0", "running"), record("1:0", "failed"), notice(5)])
+        publish([record("2:0", "queued"), record("1:0", "failed"), notice(5)])
         wait(20)
         compare(mainModel().count, 3)
         compare(mainModel().get(0).key, "2:0")
@@ -465,7 +556,8 @@ TestCase {
         compare(mainModel().count, 0)
         publish([record("2:0", "running")])
         wait(20)
-        compare(dump(), "2:0:running")
+        compare(mainModel().count, 0, "新下载在顶部摘要里")
+        verify(activeSummary().visible)
     }
 
     // 2026-10-27 用户实测：滚到「看不到正在下载那条」的位置（已完成段中间），
@@ -561,12 +653,15 @@ TestCase {
     function test_preparing_row_renders() {
         var row = record("1:0", "preparing")
         row.name = "大文件夹"
+        row.folder = true
+        row.childCount = 0
         row.sizeText = "—"
         publish([row, record("2:0", "queued")])
         wait(60)
-        compare(mainModel().count, 2)
-        compare(mainModel().get(0).phase, "preparing")
-        compare(mainModel().get(0).sourceId, "src-1:0")
+        compare(mainModel().count, 1, "准备中的文件夹只占顶部摘要")
+        compare(mainModel().get(0).phase, "queued")
+        compare(findChild(activeSummary(), "activeSummaryTitle").text,
+                "正在准备「大文件夹」")
         compare(backend.downloadActive, 2, "准备中也算进行中")
     }
 
@@ -590,10 +685,11 @@ TestCase {
         ])
         wait(50)
 
-        compare(mainModel().count, 2, "一个文件夹 + 一个单文件 = 两行")
-        compare(dump(), "1:folder:running,2:0:done")
-        compare(mainModel().get(0).childCount, 3)
-        compare(mainModel().get(0).folder, true)
+        compare(mainModel().count, 1, "进行中的文件夹只占摘要，完成记录进历史")
+        compare(dump(), "2:0:done")
+        compare(findChild(activeSummary(), "activeSummaryTitle").text,
+                folder.name, "真实文件夹批次用文件夹名作标题")
+        verify(activeLane("1:1") !== null, "正在跑的子文件进入摘要")
     }
 
     function test_folder_row_with_children_is_clickable() {
@@ -608,10 +704,7 @@ TestCase {
         publish([folder], detail)
         wait(50)
 
-        var hint = controlAt(0, "openDetailsHint")
-        verify(hint !== null && hint.visible, "有子文件的文件夹行显示 ›")
-
-        openFolderAt(0)
+        openActiveFolder()
         compare(backend.openCount, 1)
         compare(backend.openedKey, "1:folder")
         compare(page.detailActive, true, "后端激活详情")
@@ -626,10 +719,11 @@ TestCase {
         })])
         wait(50)
 
-        var hint = controlAt(0, "openDetailsHint")
-        verify(hint === null || !hint.visible, "没有子文件时不显示 ›")
-        var header = controlAt(0, "rowHeader")
-        verify(header !== null && !header.enabled, "没有子文件时第一行不可点")
+        compare(mainModel().count, 0)
+        var title = findChild(activeSummary(), "activeSummaryTitle")
+        verify(title !== null, "准备中的文件夹仍有摘要")
+        mouseClick(title)
+        wait(40)
         compare(backend.openCount, 0)
     }
 
@@ -686,7 +780,7 @@ TestCase {
         })], detail)
         wait(100)
 
-        openFolderAt(0)
+        openActiveFolder()
         var list = detailList()
         verify(list !== null, "找不到详情页列表")
         list.contentY = 300
@@ -850,7 +944,7 @@ TestCase {
             childRecord("1:1", "queued", "b.mkv")
         ])
         wait(60)
-        openFolderAt(0)
+        openActiveFolder()
         compare(page.detailActive, true)
 
         page.focusSource("src-2:0")
@@ -860,7 +954,7 @@ TestCase {
         compare(page.highlightedKey, "2:0")
     }
 
-    // 实时进度按 key 贴到行上：主列表的文件夹父行与详情页的子行各取各的。
+    // 实时进度按 key 贴到摘要 lane 与详情页子行。
     function test_live_progress_reaches_folder_and_detail_rows() {
         var folder = folderRecord("1:folder", "running", {
             childCount: 50,
@@ -887,12 +981,12 @@ TestCase {
         ]
         wait(80)
 
-        var bar = controlAt(0, "rowProgress")
-        verify(bar !== null && bar.visible, "文件夹行显示聚合进度条")
-        compare(Math.round(bar.value), 62, "父行取 transferLive 里的聚合进度")
-        compare(controlAt(0, "sizeText").text, "62 MB / 100 MB")
+        var bar = activeLaneControl("1:0", "activeLaneProgress")
+        verify(bar !== null && bar.visible, "摘要 lane 显示当前文件进度")
+        compare(Math.round(bar.value), 42, "lane 按自己的 key 取进度")
+        compare(activeLaneControl("1:0", "activeLaneSize").text, "4 MB / 10 MB")
 
-        openFolderAt(0)
+        openActiveFolder()
         wait(80)
         var childBar = detailControlAt(0, "rowProgress")
         verify(childBar !== null && childBar.visible, "详情页当前文件显示进度条")
@@ -916,19 +1010,19 @@ TestCase {
         ]
         wait(80)
 
-        compare(Math.round(controlAt(0, "rowProgress").value), 20,
-                "第一行只吃自己的进度")
-        compare(Math.round(controlAt(1, "rowProgress").value), 70,
-                "第二行也要实时刷新，不能停在开始时的值")
-        compare(controlAt(0, "sizeText").text, "2 MB / 10 MB")
-        compare(controlAt(1, "sizeText").text, "7 MB / 10 MB")
-        compare(controlAt(0, "rateText").text, "1 MB/s")
-        compare(controlAt(1, "rateText").text, "2 MB/s")
+        compare(Math.round(activeLaneControl("1:0", "activeLaneProgress").value), 20,
+                "第一条 lane 只吃自己的进度")
+        compare(Math.round(activeLaneControl("1:1", "activeLaneProgress").value), 70,
+                "第二条 lane 也要实时刷新")
+        compare(activeLaneControl("1:0", "activeLaneSize").text, "2 MB / 10 MB")
+        compare(activeLaneControl("1:1", "activeLaneSize").text, "7 MB / 10 MB")
+        compare(activeLaneControl("1:0", "activeLaneRate").text, "1 MB/s")
+        compare(activeLaneControl("1:1", "activeLaneRate").text, "2 MB/s")
     }
 
     // —— 速度 / 剩余时间 / 卡住 / 重试说明（2026-10-27）——
 
-    // 主列表文件夹父行显示整批速度 + ETA；详情页头部也显示整批速度。
+    // 文件夹摘要 lane 显示当前文件速度 + ETA；详情页头部显示整批速度。
     function test_folder_row_and_detail_header_show_batch_rate() {
         var folder = folderRecord("1:folder", "running", {
             childCount: 50,
@@ -954,12 +1048,11 @@ TestCase {
         ]
         wait(80)
 
-        var rate = controlAt(0, "rateText")
-        verify(rate !== null && rate.visible, "下载中的文件夹行速度列可见")
-        compare(rate.text, "3.7 MB/s · 剩 2 分 30 秒", "父行显示整批速度 + ETA")
-        compare(controlAt(0, "openDetailsHint").visible, true, "运行中的文件夹行保留下钻提示")
+        var rate = activeLaneControl("1:1", "activeLaneRate")
+        verify(rate !== null && rate.visible, "摘要 lane 显示当前文件速度")
+        compare(rate.text, "3.7 MB/s · 剩 1 分 30 秒")
 
-        openFolderAt(0)
+        openActiveFolder()
         wait(80)
         var header = findChild(page, "folderRateText")
         verify(header !== null && header.visible, "详情页头部显示整批速度")
@@ -978,7 +1071,7 @@ TestCase {
     function test_stall_text_replaces_speed_without_touching_progress() {
         publish([record("1:0", "running")])
         wait(60)
-        var stateLabel = controlAt(0, "stateText")
+        var badge = findChild(activeSummary(), "activeSummaryBadge")
 
         backend.transferLive = [
             { key: "1:0", progress: 41, progressText: "41%",
@@ -987,13 +1080,15 @@ TestCase {
         ]
         wait(60)
 
-        var rate = controlAt(0, "rateText")
+        var rate = activeLaneControl("1:0", "activeLaneRate")
         verify(rate !== null && rate.visible)
         compare(rate.text, "已卡住 7 秒", "卡住时只报卡住")
-        compare(controlAt(0, "rowProgress").value, 41, "进度条不动")
-        compare(controlAt(0, "sizeText").text, "4 MB / 10 MB", "大小列不动")
-        compare(controlAt(0, "stateText").text, "下载中", "状态列不变色、不改字")
-        verify(controlAt(0, "stateText") === stateLabel, "状态文字还是同一个控件")
+        compare(activeLaneControl("1:0", "activeLaneProgress").value, 41,
+                "进度条不动")
+        compare(activeLaneControl("1:0", "activeLaneSize").text, "4 MB / 10 MB",
+                "大小列不动")
+        compare(findChild(activeSummary(), "activeSummaryBadge") === badge, true,
+                "并发徽标控件不重建")
 
         // 恢复后切回速度
         backend.transferLive = [
@@ -1002,7 +1097,8 @@ TestCase {
               rateText: "3.7 MB/s · 剩 2 秒", noteText: "" }
         ]
         wait(60)
-        compare(controlAt(0, "rateText").text, "3.7 MB/s · 剩 2 秒")
+        compare(activeLaneControl("1:0", "activeLaneRate").text,
+                "3.7 MB/s · 剩 2 秒")
     }
 
     // 重试说明出现在第二行；进度条仍然可见；说明为空时占位高度不变。
@@ -1028,15 +1124,14 @@ TestCase {
         ]
         wait(60)
 
-        var note = controlAt(0, "noteText")
-        verify(note !== null && note.visible, "下载中的行显示重试说明")
-        compare(note.text, "3 秒后从 45 MB 继续（1/3）")
-        var bar = controlAt(0, "rowProgress")
+        var meta = activeLaneControl("1:0", "activeLaneRate")
+        verify(meta !== null && meta.visible, "lane 显示速度 / 说明")
+        compare(meta.text, "已卡住 7 秒 · 3 秒后从 45 MB 继续（1/3）")
+        var bar = activeLaneControl("1:0", "activeLaneProgress")
         verify(bar !== null && bar.visible, "说明出现时进度条仍在")
-        compare(controlAt(0, "rateText").text, "已卡住 7 秒", "卡住与重试说明可以共存")
 
-        // 说明过期（Rust 给空串）：标签消失、行高不变
-        var heightBefore = rowAt(0).height
+        // 说明过期（Rust 给空串）：恢复只显示速度
+        var heightBefore = activeLane("1:0").height
         backend.transferLive = [
             { key: "1:folder", progress: 45, progressText: "45% · 13/30",
               sizeText: "900 MB / 2.1 GB",
@@ -1046,9 +1141,9 @@ TestCase {
               rateText: "3.7 MB/s · 剩 1 分", noteText: "" }
         ]
         wait(60)
-        var gone = controlAt(0, "noteText")
-        verify(gone === null || !gone.visible, "说明过期后消失")
-        compare(rowAt(0).height, heightBefore, "第二行槽位固定，行高不变")
+        compare(activeLaneControl("1:0", "activeLaneRate").text,
+                "3.7 MB/s · 剩 1 分", "说明过期后只留速度")
+        compare(activeLane("1:0").height, heightBefore, "lane 高度不变")
     }
 
     // 排队 / 完成 / 失败行：不显示速度、卡住、说明（说明仍走原 detail）。
@@ -1159,102 +1254,101 @@ TestCase {
         compare(mainModel().count, 1)
     }
 
-    // —— 日期分组行（2026-10-28 下载历史落盘）——
+    // —— 进行中摘要 / 队列 / 历史（2026-10-29 传输页重排）——
 
-    function dayGroup(key, label) {
-        return { key: key, label: label }
-    }
-
-    /// 按 key 取分组行里的日子药丸（每个日子一个固定 objectName）。
-    function dayPill(day) {
-        var row = findChild(page, "historyDayRow")
-        if (!row)
-            return null
-        return findChild(row, "dayPill-" + day)
-    }
-
-    function pillTexts() {
-        return page.inlineDayGroups.map(function (group) {
-            var pill = dayPill(group.key)
-            return pill ? pill.text : "<missing>"
-        })
-    }
-
-    function test_day_row_lists_recent_days_and_folds_the_rest() {
-        backend.historyDays = [
-            dayGroup("2026-10-28", "今天"),
-            dayGroup("2026-10-27", "昨天"),
-            dayGroup("2026-10-26", "10-26"),
-            dayGroup("2026-10-25", "10-25"),
-            dayGroup("2026-10-24", "10-24"),
-            dayGroup("2026-09-30", "09-30")
-        ]
+    function test_date_controls_and_automatic_day_grouping_are_gone() {
         publish([record("1:0", "done")])
         wait(60)
 
-        var row = findChild(page, "historyDayRow")
-        verify(row !== null && row.visible, "有历史时显示日期分组行")
-        compare(pillTexts().join(","), "今天,昨天,10-26,10-25",
-                "只直接列出最近四天")
-
-        var earlier = findChild(page, "earlierDaysLink")
-        verify(earlier !== null && earlier.visible, "剩下的收进「更早」")
-        compare(earlier.text, "更早 ▾")
+        verify(findChild(page, "historyDayRow") === null, "不再有日期分组行")
+        verify(findChild(page, "earlierDaysLink") === null, "不再有「更早」菜单")
+        verify(findChild(page, "dayPill-2026-10-29") === null, "不再有日期药丸")
+        compare(mainModel().get(0).sectionKey, "history",
+                "历史直接进统一分区，不再按天拆")
     }
 
-    function test_day_row_is_hidden_without_history() {
-        publish([record("1:0", "running")])
-        wait(60)
-        var row = findChild(page, "historyDayRow")
-        verify(row === null || !row.visible, "没有历史记录时不显示分组行")
+    function test_three_independent_files_get_a_generic_summary_title() {
+        publish([
+            record("1:0", "running"),
+            record("2:0", "running"),
+            record("3:0", "running"),
+            record("4:0", "queued")
+        ])
+        wait(80)
+
+        compare(findChild(activeSummary(), "activeSummaryTitle").text,
+                "正在下载 3 个文件",
+                "不同来源不能拿第一个文件名伪装成文件夹标题")
+        verify(activeLane("1:0") !== null, "第一个独立文件有 lane")
+        verify(activeLane("2:0") !== null, "第二个独立文件有 lane")
+        verify(activeLane("3:0") !== null, "第三个独立文件有 lane")
+        compare(mainModel().count, 1, "进行中不进主列表")
+        compare(dump(), "4:0:queued", "等待队列保留后面的文件")
     }
 
-    function test_clicking_a_day_asks_the_backend_to_filter() {
-        backend.historyDays = [
-            dayGroup("2026-10-28", "今天"),
-            dayGroup("2026-10-27", "昨天")
-        ]
-        publish([record("1:0", "done")])
+    function test_queue_and_history_are_separate_in_join_order() {
+        publish([
+            record("1:0", "done"),
+            record("2:0", "queued"),
+            record("3:0", "failed"),
+            record("4:0", "queued")
+        ])
         wait(60)
 
-        var first = dayPill("2026-10-28")
-        var second = dayPill("2026-10-27")
-        verify(first !== null && second !== null, "两天都有按钮")
-        mouseClick(second)
-        wait(40)
-        compare(backend.historyDay, "2026-10-27", "点「昨天」交给 Rust 过滤")
-        compare(page.selectedDay, "2026-10-27")
-        compare(second.font.bold, true, "选中的日子加粗")
-        compare(first.font.bold, false)
+        compare(page.queueCount, 2)
+        compare(page.historyCount, 2)
+        compare(dump(), "2:0:queued,4:0:queued,3:0:failed,1:0:done",
+                "等待队列按加入顺序，历史按新到旧")
+        compare(mainModel().get(0).sectionKey, "queue")
+        compare(mainModel().get(1).sectionKey, "queue")
+        compare(mainModel().get(2).sectionKey, "history")
+        compare(mainModel().get(3).sectionKey, "history")
     }
 
-    function test_today_is_highlighted_by_default() {
-        backend.historyDays = [
-            dayGroup("2026-10-28", "今天"),
-            dayGroup("2026-10-27", "昨天")
-        ]
-        publish([record("1:0", "done")])
+    function test_interrupted_history_uses_recency_not_special_priority() {
+        publish([
+            record("1:0", "interrupted"),
+            record("2:0", "done"),
+            record("3:0", "cancelled")
+        ])
         wait(60)
 
-        compare(page.selectedDay, "2026-10-28", "默认的「今天」换算成具体日期")
-        compare(dayPill("2026-10-28").font.bold, true, "启动后「今天」加粗")
-        compare(dayPill("2026-10-27").font.bold, false)
+        compare(dump(), "3:0:cancelled,2:0:done,1:0:interrupted",
+                "已中断不单独置顶，历史统一按批次新到旧")
+        var meta = findChild(page, "historySectionMeta")
+        verify(meta !== null, "历史分组标题存在")
+        compare(meta.text, "最近记录在前 · 3 项")
     }
 
-    function test_empty_day_shows_its_own_hint() {
-        backend.historyDays = [
-            dayGroup("2026-10-28", "今天"),
-            dayGroup("2026-10-27", "昨天")
-        ]
-        backend.historyDay = "2026-10-27"
-        page.selectedDay = "2026-10-27"
-        publish([])
+    function test_active_lane_progress_and_speed_follow_live_updates() {
+        publish([
+            record("1:0", "running"),
+            record("2:0", "running"),
+            record("3:0", "running")
+        ])
         wait(60)
 
-        var hint = findChild(page, "emptyHint")
-        verify(hint !== null && hint.visible)
-        verify(hint.text.indexOf("这一天没有下载记录") >= 0,
-               "按日期看时提示这一天没有记录：" + hint.text)
+        var live = []
+        for (var i = 1; i <= 3; i++) {
+            live.push({
+                key: i + ":0",
+                progress: i * 20,
+                progressText: (i * 20) + "%",
+                sizeText: (i * 10) + " MB / 100 MB",
+                rateText: i + ".0 MB/s",
+                noteText: ""
+            })
+        }
+        backend.transferLive = live
+        wait(60)
+
+        for (var lane = 1; lane <= 3; lane++) {
+            compare(Math.round(activeLaneControl(lane + ":0",
+                                                 "activeLaneProgress").value),
+                    lane * 20)
+            compare(activeLaneControl(lane + ":0", "activeLaneRate").text,
+                    lane + ".0 MB/s")
+        }
     }
 
     // —— 已中断的行 ——
@@ -1311,7 +1405,7 @@ TestCase {
         verify(hint !== null && hint.visible, "已中断的文件夹仍可点进详情")
     }
 
-    // —— 清空已完成记录：二次确认 ——
+    // —— 清空历史：二次确认 ——
 
     function test_clear_button_asks_for_confirmation_first() {
         backend.transferHasFinished = true
@@ -1325,8 +1419,8 @@ TestCase {
 
         var dialog = findChild(page, "clearConfirmDialog")
         verify(dialog !== null && dialog.opened, "点了清空先弹确认")
-        verify(page.clearConfirmMessage.indexOf("全部历史") >= 0,
-               "说明清的是全部历史")
+        verify(page.clearConfirmMessage.indexOf("所有已结束的记录") >= 0,
+               "说明清的是所有已结束记录")
         verify(page.clearConfirmMessage.indexOf("已中断") >= 0,
                "说明已中断的记录会保留")
         compare(backend.clearCount, 0, "确认之前不清")
@@ -1346,19 +1440,17 @@ TestCase {
         var button = findChild(page, "clearFinishedButton")
         verify(button !== null)
         compare(button.enabled, false, "只有进行中 / 已中断时清空不可点")
+        compare(button.visible, false, "没有可清理记录时不显示清空")
     }
 
-    // 清空看的是全部历史：当前这天只有进行中的行，别的日子有已结束的行也要能点。
-    function test_clear_button_follows_whole_history_not_the_selected_day() {
+    function test_clear_button_lives_in_history_section_header() {
         backend.transferHasFinished = true
-        backend.historyDays = [
-            dayGroup("2026-10-28", "今天"),
-            dayGroup("2026-10-27", "昨天")
-        ]
-        publish([record("1:0", "running")])
+        publish([record("1:0", "done")])
         wait(60)
+        var header = findChild(page, "historySectionHeader")
         var button = findChild(page, "clearFinishedButton")
-        verify(button !== null && button.enabled,
-               "别的日子有已结束记录时按钮仍可用")
+        verify(header !== null, "历史分组标题存在")
+        verify(button !== null && button.visible && button.enabled,
+               "清空入口属于历史分组，不再占用页头工具条")
     }
 }

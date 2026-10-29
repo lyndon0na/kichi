@@ -11,9 +11,8 @@ use kichi_core::EntryKind;
 
 use super::*;
 use crate::cxxqt_object::transfers_view::{
-    batch_stats, build_detail_snapshot, build_history_snapshot, build_snapshot, day_key,
-    history_days, live_map, notice_map, ordered, parent_live_map, percent_of, record_map,
-    QVariantMap, HISTORY_DAY_ALL, MAX_ROWS,
+    batch_stats, build_detail_snapshot, build_snapshot, live_map, notice_map, ordered,
+    parent_live_map, percent_of, record_map, QVariantMap, MAX_ROWS,
 };
 use crate::cxxqt_object::QVariantList;
 
@@ -143,6 +142,25 @@ fn finished_rows_are_newest_first() {
     let ordered = ordered(&records);
     let names: Vec<String> = ordered.iter().map(|record| record.display_name()).collect();
     assert_eq!(names, vec!["new", "old"]);
+}
+
+#[test]
+fn interrupted_rows_use_history_recency_order() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["old-interrupted"]);
+    add_batch(&mut records, 2, &["new-done"]);
+    add_batch(&mut records, 3, &["newest-cancelled"]);
+    set(&mut records, 1, 0, TransferState::Interrupted);
+    set(&mut records, 2, 0, TransferState::Done);
+    set(&mut records, 3, 0, TransferState::Cancelled);
+
+    let ordered = ordered(&records);
+    let names: Vec<String> = ordered.iter().map(|record| record.display_name()).collect();
+    assert_eq!(
+        names,
+        vec!["newest-cancelled", "new-done", "old-interrupted"],
+        "已中断不单独置顶，历史统一新 → 旧"
+    );
 }
 
 #[test]
@@ -958,7 +976,7 @@ fn failed_empty_batch_has_no_path() {
     assert_eq!(int_of(&map, "progress"), 0);
 }
 
-// —— 已中断 / 日期分组 / 清空全部（2026-10-28 下载历史落盘）——
+// —— 已中断 / 清空全部（2026-10-28 下载历史落盘）——
 
 #[test]
 fn interrupted_state_text_and_name() {
@@ -1027,73 +1045,6 @@ fn clear_all_keeps_interrupted_and_active_batches() {
     assert!(records.iter().all(|record| record.batch != 1));
     assert!(records.iter().any(|record| record.batch == 2), "已中断保留");
     assert!(records.iter().any(|record| record.batch == 3), "进行中保留");
-}
-
-#[test]
-fn history_days_lists_newest_first_with_labels() {
-    let now = 1_790_000_000;
-    let day = 24 * 3600;
-    let mut records = Vec::new();
-    for (batch, age) in [(1u64, 0i64), (2, day), (3, 3 * day)] {
-        let mut row = row_from(batch, 0, "src", &job("a.mkv"), now - age, 1);
-        row.state = TransferState::Done;
-        records.push(row);
-    }
-    let days = history_days(&records, now);
-    let keys: Vec<&str> = days.iter().map(|(key, _)| key.as_str()).collect();
-    assert_eq!(keys.len(), 3);
-    assert_eq!(keys[0], day_key(now), "新 → 旧");
-    assert_eq!(days[0].1, "今天");
-    assert_eq!(days[1].1, "昨天");
-    assert!(days[2].1.len() <= 5, "更早的只显示月-日：{}", days[2].1);
-}
-
-#[test]
-fn history_snapshot_filters_by_day_but_keeps_active_rows() {
-    let now = 1_790_000_000;
-    let day = 24 * 3600;
-    let mut records = Vec::new();
-
-    let mut old_done = row_from(1, 0, "src", &job("old.mkv"), now - 3 * day, 1);
-    old_done.state = TransferState::Done;
-    records.push(old_done);
-
-    let mut today_done = row_from(2, 0, "src", &job("today.mkv"), now, 1);
-    today_done.state = TransferState::Done;
-    records.push(today_done);
-
-    let mut interrupted = row_from(3, 0, "src", &job("bg.mkv"), now - 5 * day, 1);
-    interrupted.state = TransferState::Interrupted;
-    records.push(interrupted);
-
-    let mut running = row_from(4, 0, "src", &job("run.mkv"), now - 5 * day, 1);
-    running.state = TransferState::Running;
-    records.push(running);
-
-    let (list, active) = build_history_snapshot(&records, &day_key(now));
-    let names: Vec<String> = (0..list.len())
-        .map(|index| text_of(&map_at(&list, index), "name"))
-        .collect();
-    assert!(
-        names.iter().any(|name| name == "today.mkv"),
-        "今天完成的可见"
-    );
-    assert!(
-        !names.iter().any(|name| name == "old.mkv"),
-        "三天前的不在「今天」"
-    );
-    assert!(
-        names.iter().any(|name| name == "bg.mkv"),
-        "已中断不受日期过滤"
-    );
-    assert!(
-        names.iter().any(|name| name == "run.mkv"),
-        "进行中不受日期过滤"
-    );
-    assert_eq!(active, 1);
-
-    let (all, _) = build_history_snapshot(&records, HISTORY_DAY_ALL);
-    assert_eq!(all.len(), 4, "「全部」不过滤");
 }
 
 #[test]

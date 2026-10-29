@@ -2,46 +2,30 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 传输任务页：下载记录（排队 / 准备中 / 下载中 / 完成 / 失败 / 取消 / 已中断）。
+// 传输任务页：顶部一张进行中摘要，下面依次是等待队列与历史。
 //
-// 主列表一个下载批次一行：文件夹批次是文件夹名，单文件批次是文件名。
-// 点有子文件的文件夹行进入 TransferFolderPage（独立详情页），返回时主列表
-// 保持原滚动位置——所以两个页面都常驻在 StackLayout 里，绝不用 Loader 重建。
-//
-// 记录跨重启保留（`docs/adr/0014-download-history-on-disk.md`）：工具条下面
-// 一行日期分组（今天 / 昨天 / 更早 ▾），默认只看今天；进行中 / 排队 / 已中断
-// 的行不受日期过滤，永远排最上面。
-//
-// 数据全部来自 backend.transfers（Rust 侧已排好序并已按日期过滤），
-// 本页只负责显示与操作入口。
+// 独立文件共享「正在下载 N 个文件」摘要，不伪造文件夹标题；真实文件夹批次
+// 用文件夹名作摘要标题。日期筛选与自动「今天 / 昨天」分组已移除，历史固定
+// 新 → 旧。文件夹详情仍走 TransferFolderPage，两个页面常驻 StackLayout，
+// 返回时主列表保持原滚动位置。
 Item {
     id: page
 
     property var backend: null
 
     /// 记录的结构版本：Rust 只在结构变化时 +1。
-    /// 进度节拍只更新 transferLive（见 below），不碰列表。
+    /// 进度节拍只更新 transferLive / transferActiveGroup，不碰列表。
     property int revision: -1
 
     /// 要定位到的来源条目 id（由 main.qml 在下载时写入）。
     property string focusSourceId: ""
 
-    /// 当前高亮的行 key（约 1.2 秒后淡出）
+    /// 当前高亮的行 / 摘要 lane key（约 1.2 秒后淡出）
     property string highlightedKey: ""
 
-    /// 选中的日期分组（`YYYY-MM-DD`）；由 Rust 侧保存与过滤。
-    /// 初值只是刷新前的占位，`refreshDays()` 会换成 Rust 换算好的具体日子
-    property string selectedDay: "today"
-
-    /// 历史上出现过的日子：[{ key, label }]，新 → 旧
-    property var dayGroups: []
-
-    /// 分组行里直接列出的日子数（再早的收进「更早 ▾」）
-    property int inlineDays: 4
-    /// 直接列出的日子（最多 inlineDays 个）
-    readonly property var inlineDayGroups: page.dayGroups.slice(0, page.inlineDays)
-    /// 收进「更早 ▾」的日子
-    readonly property var earlierDayGroups: page.dayGroups.slice(page.inlineDays)
+    /// 队列与历史条数（只统计真正显示的行，不含提示行）
+    property int queueCount: 0
+    property int historyCount: 0
 
     /// 文件夹详情是否打开（Rust 侧选中状态）
     readonly property bool detailActive: page.backend !== null
@@ -51,18 +35,25 @@ Item {
     property string detailKey: ""
     property var detailFolder: null
 
-    // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    /// 0 或 1 个进行中分组；QML 只消费 Rust 映射，不在界面里猜批次结构。
+    readonly property var activeGroup: {
+        if (!page.backend)
+            return null
+        var groups = page.backend.transferActiveGroup
+        return groups && groups.length > 0 ? groups[0] : null
+    }
+    readonly property bool hasActiveGroup: page.activeGroup !== null
+
     UiMetrics {
         id: metrics
     }
 
     KTheme { id: theme }
 
-    // —— 列表模型 ——
-    // ⚠ 不能用「每次拿一个新数组赋给 ListView.model」：那会让 ListView 整表
-    // 重灌，滚动位置被冲回顶部；即便事后把位置放回去，中间也会闪一帧列表顶部
-    // （那里正是「正在下载」那条的进度条，2026-10-27 用户实测看到闪框）。
-    // 这里用 ListModel 就地做差异：移动 / 改字段 / 增删，列表不重建。
+    // —— 列表模型：只放排队 / 历史，进行中在顶部摘要里 ——
+    //
+    // ⚠ 不能用「每次拿一个新数组赋给 ListView.model」：那会整表重灌并把
+    // 滚动位置冲回顶部。这里继续按 key 就地 move / set / remove。
     ListModel {
         id: rows
     }
@@ -73,71 +64,19 @@ Item {
         function onChanged() {
             if (!page.backend)
                 return
-            // 记录被清空 / 淘汰 / 登出 / 子行全部被重试：Rust 已清掉选中
+            // 记录被清空 / 淘汰 / 子行全部被重试：Rust 已清掉选中
             if (!page.backend.transferDetailActive && page.detailKey.length > 0) {
                 page.detailKey = ""
                 page.detailFolder = null
             }
             if (page.backend.transferRevision !== page.revision) {
                 page.revision = page.backend.transferRevision
-                page.refreshDays()
                 page.syncRows()
             }
         }
     }
 
-    Component.onCompleted: {
-        page.refreshDays()
-        syncRows()
-    }
-
-    // —— 日期分组 ——
-
-    /// 向 Rust 要一次「历史上有哪些日子」。
-    ///
-    /// 选中的分组由本页保存（`selectedDay`，默认今天）：它是显示状态，
-    /// Rust 只负责按它过滤。按钮按具体日期建 key，所以每次刷新都把 Rust 那边
-    /// 换算好的日子取回来（「今天」→ `YYYY-MM-DD`），高亮才对得上；跨过午夜后
-    /// 也由下一次刷新自然指向新的一天。
-    function refreshDays() {
-        if (!page.backend)
-            return
-        var days = page.backend.transferHistoryDays()
-        // 复制成纯 JS 数组：QVariantList 是 array-like，直接 slice 不一定可用
-        var copy = []
-        for (var i = 0; i < days.length; i++)
-            copy.push({ key: days[i].key, label: days[i].label })
-        page.dayGroups = copy
-        page.selectedDay = page.backend.transferHistoryDay()
-    }
-
-    /// 选中一个日期分组（Rust 侧按它过滤后重新发 transfers）。
-    function selectDay(day) {
-        if (!page.backend || day.length === 0)
-            return
-        page.selectedDay = day
-        page.backend.setTransferHistoryDay(day)
-        page.refreshDays()
-    }
-
-    /// 「更早 ▾」里的月份分隔文字（跨月时插一个，按年-月分组）。
-    function monthLabel(day) {
-        var parts = String(day).split("-")
-        if (parts.length < 2)
-            return ""
-        return qsTr("%1 年 %2 月").arg(parts[0]).arg(Number(parts[1]))
-    }
-
-    /// 下一个分组是不是换月了（决定菜单里要不要插月份标题）。
-    function monthChangedBefore(index) {
-        if (index <= 0)
-            return true
-        var previous = page.earlierDayGroups[index - 1]
-        var current = page.earlierDayGroups[index]
-        if (!previous || !current)
-            return false
-        return String(previous.key).slice(0, 7) !== String(current.key).slice(0, 7)
-    }
+    Component.onCompleted: syncRows()
 
     // —— 文件夹详情：下钻与返回 ——
 
@@ -147,7 +86,6 @@ Item {
         page.detailKey = key
         page.backend.openTransferFolder(key)
         page.refreshDetailFolder()
-        // 无效 key（排队中 / 空文件夹）不会激活详情，清掉避免残留
         if (!page.backend.transferDetailActive) {
             page.detailKey = ""
             page.detailFolder = null
@@ -161,15 +99,17 @@ Item {
             page.backend.closeTransferFolder()
     }
 
-    /// 从主列表复制当前文件夹行给详情页头部（每次结构变化后刷新）。
+    /// 从 Rust 的完整记录里复制当前文件夹总账行。进行中的文件夹不在 rows 里，
+    /// 所以不能从当前可见模型反查。
     function refreshDetailFolder() {
         if (!page.backend || page.detailKey.length === 0) {
             page.detailFolder = null
             return
         }
-        for (var i = 0; i < rows.count; i++) {
-            var candidate = rows.get(i)
-            if (candidate.key === page.detailKey) {
+        var source = page.backend.transfers || []
+        for (var i = 0; i < source.length; i++) {
+            var candidate = source[i]
+            if (candidate.key === page.detailKey && candidate.folder === true) {
                 page.detailFolder = page.folderSnapshot(candidate)
                 return
             }
@@ -182,7 +122,7 @@ Item {
             key: row.key,
             name: row.name,
             sourceId: row.sourceId,
-            phase: row.phase,
+            phase: row.state,
             stateText: row.stateText,
             running: row.running,
             progress: row.progress,
@@ -196,18 +136,7 @@ Item {
         }
     }
 
-    // —— 定位：点已占用的条目时跳过来看（main.qml 收到 locateTransfer 后调用）——
-    // 用直接调用而非监听属性：同一条目连点两次时属性值不变、changed 不会再来；
-    // 记录可能刚变，等一帧（Qt.callLater 在 syncRows 之后跑）。
-    function focusSource(sourceId) {
-        if (sourceId.length === 0)
-            return
-        // 详情页开着时先回主列表，否则定位会把用户留在详情页
-        if (page.detailActive)
-            page.closeFolder()
-        page.focusSourceId = sourceId
-        Qt.callLater(page.locate)
-    }
+    // —— 定位：点已占用的条目时跳过来看 ——
 
     Timer {
         id: highlightTimer
@@ -216,10 +145,36 @@ Item {
         onTriggered: page.highlightedKey = ""
     }
 
-    /// 滚到 focusSourceId 对应的第一条进行中行并短暂高亮。
+    function focusSource(sourceId) {
+        if (sourceId.length === 0)
+            return
+        if (page.detailActive)
+            page.closeFolder()
+        page.focusSourceId = sourceId
+        Qt.callLater(page.locate)
+    }
+
     function locate() {
         if (page.focusSourceId.length === 0)
             return
+
+        // 进行中条目已经离开 rows，直接高亮摘要里的 lane / 分组。
+        var group = page.activeGroup
+        if (group !== null) {
+            if (group.sourceId === page.focusSourceId) {
+                page.highlightedKey = group.groupKey
+                highlightTimer.restart()
+                return
+            }
+            for (var lane = 0; lane < group.lanes.length; lane++) {
+                if (group.lanes[lane].sourceId === page.focusSourceId) {
+                    page.highlightedKey = group.lanes[lane].key
+                    highlightTimer.restart()
+                    return
+                }
+            }
+        }
+
         page.syncRows()
         for (var i = 0; i < rows.count; i++) {
             var row = rows.get(i)
@@ -247,53 +202,56 @@ Item {
         return phase === "queued" || phase === "preparing" || phase === "running"
     }
 
-    /// 把 Rust 的快照贴到 ListModel 上（只动差异，不整表重灌）。
-    ///
-    /// 关键一：一次结构变化只做**最少几次** move。逐格挪会把 `ListView` 的内部
-    /// 行位置搅乱，随后被强制重排、跳到别处（2026-10-27 用户实测：滚到中间，
-    /// 每完成一项就往下跳一次）。一条记录完成时，它要从「进行中」段挪到
-    /// 「已完成」段——正向扫描会把它一格一格往后推（一次完成 = 几十次 move），
-    /// 所以这里**从尾往前**对齐：位置正确的行一次都不动，一条完成最多一次 move。
-    ///
-    /// 关键二：**move 的目标位置必须小于当前 count**，等于 count 会被 Qt 判
-    /// `move: out of range` 并直接丢弃（不是 clamp）——游标不前进就是死循环。
-    /// 从尾往前时 `target` 只会小于 count，天然不会踩到。
-    ///
-    /// 做法（每一步都不会越界）：
-    /// 1. 倒序删掉不在快照里的行；
-    /// 2. 快照里有、模型里没有的行先追加到末尾（位置交给第 3 步修正）；
-    /// 3. 从尾往前逐位对：对不上就把这一行从**前面**移过来（后面的位置都已固定，
-    ///    所以它必然在前面）；
-    /// 4. 多出来的行删掉。
-    ///
-    /// 角色名不能叫 `state`（`Item` 自带同名属性，qmllint 报 property-override，
-    /// 运行时也读不到角色值），因此统一映射成 `phase`。
+    /// 把 Rust 快照贴到 ListModel 上，只动差异，不整表重灌。
     function syncRows() {
         if (!page.backend)
             return
-        var wanted = page.backend.transfers
-        var wantedKeys = {}
-        for (var i = 0; i < wanted.length; i++)
-            wantedKeys[wanted[i].key] = true
 
-        // 1. 倒序删：边删边倒着走，下标才不会错位
+        var source = page.backend.transfers || []
+        var queue = []
+        var history = []
+        var historyItems = 0
+        for (var i = 0; i < source.length; i++) {
+            var item = source[i]
+            // 进行中在顶部摘要；排队中留在等待队列。
+            if (item.state === "running" || item.state === "preparing")
+                continue
+            var normalized = page.normalize(item)
+            normalized.sectionKey = item.state === "queued" ? "queue" : "history"
+            if (normalized.sectionKey === "queue") {
+                queue.push(normalized)
+            } else {
+                history.push(normalized)
+                if (item.state !== "notice")
+                    historyItems++
+            }
+        }
+        var wanted = queue.concat(history)
+        page.queueCount = queue.length
+        page.historyCount = historyItems
+
+        var wantedKeys = {}
+        for (var w = 0; w < wanted.length; w++)
+            wantedKeys[wanted[w].key] = true
+
+        // 1. 倒序删掉不在快照里的行。
         for (var stale = rows.count - 1; stale >= 0; stale--) {
             if (wantedKeys[rows.get(stale).key] === undefined)
                 rows.remove(stale)
         }
 
-        // 2. 缺的行先追加到末尾，保证下一步 count 与快照一致
+        // 2. 缺的行先追加到末尾。
         var present = {}
         for (var p = 0; p < rows.count; p++)
             present[rows.get(p).key] = true
         for (var add = 0; add < wanted.length; add++) {
             if (present[wanted[add].key] === undefined) {
-                rows.append(normalize(wanted[add]))
+                rows.append(wanted[add])
                 present[wanted[add].key] = true
             }
         }
 
-        // 3. 从尾往前对齐：后面的位置已固定，故这一步要的行一定在前面
+        // 3. 从尾往前对齐，完成一行最多 move 一次。
         for (var target = wanted.length - 1; target >= 0 && target < rows.count; target--) {
             var key = wanted[target].key
             if (rows.get(target).key === key)
@@ -309,17 +267,16 @@ Item {
                 rows.move(from, target, 1)
         }
 
-        // 4. 理论上不会有多出来的行；防御性删掉，避免残留
         while (rows.count > wanted.length)
             rows.remove(rows.count - 1)
 
-        // 位置对上了，再补字段差异（状态 / 大小 / 说明）
+        // 4. 位置对齐后再补字段差异。
         for (var at = 0; at < wanted.length && at < rows.count; at++) {
-            var item = normalize(wanted[at])
+            var next = wanted[at]
             var current = rows.get(at)
-            for (var field in item) {
-                if (current[field] !== item[field])
-                    rows.setProperty(at, field, item[field])
+            for (var field in next) {
+                if (current[field] !== next[field])
+                    rows.setProperty(at, field, next[field])
             }
         }
 
@@ -342,33 +299,43 @@ Item {
             path: item.path || "",
             folder: item.folder === true,
             childCount: item.childCount || 0,
-            failedCount: item.failedCount || 0
+            failedCount: item.failedCount || 0,
+            sectionKey: "history"
         }
     }
 
-    /// 有没有可清的已结束记录（按钮据此置灰）。
-    ///
-    /// 看**全部历史**而不是当前这一天：清空清的是全部历史里的已结束批次。
     readonly property bool hasFinished: page.backend !== null
                                        && page.backend.transferHasFinished
 
-    /// 清空确认框的正文（测试也读这一份，文案只有一处）
     readonly property string clearConfirmMessage: qsTr(
-        "将清空全部历史里所有已结束的记录（完成 / 失败 / 已取消），"
-        + "不限于当前选中的日期。\n"
+        "将清空所有已结束的记录（完成 / 失败 / 已取消）。\n"
         + "进行中、排队与已中断的记录会保留。确定清空？")
 
-    /// 二次确认「确定」之后：清全部历史里所有已结束的整批（不按日期收窄）。
     function confirmClear() {
         if (page.backend)
             page.backend.clearFinishedTransfers()
     }
 
-    /// 进行中条数（排队 + 准备中 + 下载中；一个文件夹算 1）
     readonly property int activeCount: page.backend ? page.backend.downloadActive : 0
+    readonly property int queuedCount: page.backend ? page.backend.downloadQueued : 0
 
-    /// 实时进度按 key 索引：主列表的文件夹父行与详情页的子行都从这里取。
-    /// 结构变化时它也会并进 transfers / transferDetail 模型。
+    readonly property string statusText: {
+        if (page.activeGroup !== null) {
+            if (page.activeGroup.state === "preparing")
+                return qsTr("正在准备文件夹")
+            if (page.activeGroup.kind === "folder") {
+                return qsTr("%1 个文件正在下载 · %2 项等待")
+                    .arg(page.activeGroup.runningCount).arg(page.queuedCount)
+            }
+            return qsTr("%1 个文件正在下载 · %2 项等待")
+                .arg(page.activeGroup.runningCount).arg(page.queuedCount)
+        }
+        if (page.queuedCount > 0)
+            return qsTr("%1 项等待开始").arg(page.queuedCount)
+        return qsTr("没有进行中的传输")
+    }
+
+    /// 实时进度按 key 索引（文件夹详情页用）。
     readonly property var liveByKey: page.liveMapOf(
         page.backend ? page.backend.transferLive : [])
 
@@ -381,33 +348,23 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        // 右边不留：列表要铺到窗口右缘，让滚动条贴边；
-        // 工具条 / 分隔线自己补右边距，列表内容宽度减去车道
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapMd
 
-        // —— 工具条：进行中条数 + 三个操作 ——
         RowLayout {
             Layout.fillWidth: true
-            // 工具条不吃滚动条车道，右缘留普通页边距（视觉位置与以前一致）
             Layout.rightMargin: metrics.pageMargin
             spacing: theme.gapSm
 
             Label {
                 Layout.fillWidth: true
-                text: {
-                    if (page.activeCount === 0)
-                        return qsTr("没有进行中的传输")
-                    var queued = page.backend ? page.backend.downloadQueued : 0
-                    return queued > 0
-                        ? qsTr("%1 个进行中 · %2 批排队").arg(page.activeCount).arg(queued)
-                        : qsTr("%1 个进行中").arg(page.activeCount)
-                }
-                color: page.activeCount > 0 ? theme.textPrimary : theme.textMuted
-                font.pixelSize: theme.fontBody
-                font.weight: page.activeCount > 0 ? Font.DemiBold : Font.Normal
+                text: page.statusText
+                color: page.activeGroup !== null || page.queuedCount > 0
+                       ? theme.textSecondary : theme.textMuted
+                font.pixelSize: theme.fontMeta
+                elide: Text.ElideRight
             }
 
             KButton {
@@ -418,152 +375,25 @@ Item {
             }
 
             KButton {
-                text: qsTr("取消下载")
+                text: qsTr("取消全部")
                 variant: "secondary"
                 implicitHeight: 32
                 enabled: page.activeCount > 0
                 onClicked: if (page.backend) page.backend.cancelDownloads()
             }
-
-            KButton {
-                objectName: "clearFinishedButton"
-                text: qsTr("清空已完成记录")
-                variant: "ghost"
-                implicitHeight: 32
-                enabled: page.backend !== null && page.hasFinished
-                onClicked: clearDialog.open()
-            }
         }
 
-        // —— 日期分组行：今天 · 昨天 · 10-26 · 10-25 · 更早 ▾ ——
-        //
-        // 「今天 / 昨天」由 Rust 侧的日期文案给出；更早的日子只列月-日，
-        // 超出本行能放下的部分收进「更早 ▾」（跨月时菜单里插月份标题）。
-        RowLayout {
-            objectName: "historyDayRow"
+        TransferActiveSummary {
+            objectName: "transferActiveSummary"
             Layout.fillWidth: true
-            Layout.rightMargin: metrics.pageMargin
-            spacing: theme.gapSm
-            visible: page.dayGroups.length > 0
-
-            Repeater {
-                model: page.inlineDayGroups
-
-                // 日期分组做成圆角药丸：选中态是淡强调色底 + 强调色文字，
-                // 和侧栏 / 文件列表的选中语言一致；不再是一行下划线链接。
-                delegate: Item {
-                    id: pill
-
-                    required property var modelData
-                    objectName: "dayPill-" + modelData.key
-                    property string dayKey: modelData.key
-                    readonly property bool selected: page.selectedDay === dayKey
-                    // 测试按 .font.bold 读选中态
-                    property alias font: pillLabel.font
-                    property alias text: pillLabel.text
-
-                    implicitWidth: pillLabel.implicitWidth + 20
-                    implicitHeight: 26
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: theme.radiusSmall
-                        color: pill.selected ? theme.accentSoft
-                             : pillMouse.containsMouse ? theme.surfaceHover
-                             : theme.surfaceClear
-                        border.width: pill.selected ? 1 : 0
-                        border.color: theme.softTint(theme.accent, 0.35)
-                    }
-
-                    Label {
-                        id: pillLabel
-                        anchors.centerIn: parent
-                        text: pill.modelData.label
-                        font.pixelSize: theme.fontMeta
-                        font.bold: pill.selected
-                        color: pill.selected ? theme.accent : theme.textSecondary
-                    }
-
-                    MouseArea {
-                        id: pillMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: page.selectDay(pill.dayKey)
-                    }
-                }
-            }
-
-            KButton {
-                id: moreDaysMenuButton
-
-                objectName: "earlierDaysLink"
-                visible: page.earlierDayGroups.length > 0
-                text: qsTr("更早 ▾")
-                variant: "ghost"
-                implicitHeight: 26
-                leftPadding: 10
-                rightPadding: 10
-                // 选中的日子在「更早」里时保持强调色
-                font.weight: page.earlierDayGroups.some(function (group) {
-                    return group.key === page.selectedDay
-                }) ? Font.DemiBold : Font.Normal
-
-                onClicked: {
-                    // 菜单挂在 overlay 上，坐标先换算成窗口坐标再赋值（踩坑第 10 / 11 条）
-                    var point = moreDaysMenuButton.mapToItem(null, 0,
-                                                            moreDaysMenuButton.height)
-                    moreDaysMenu.x = point.x
-                    moreDaysMenu.y = point.y
-                    moreDaysMenu.open()
-                }
-
-                Menu {
-                    id: moreDaysMenu
-                    // 菜单一律挂在 overlay 上，坐标才与窗口一致（踩坑第 10 条）
-                    parent: Overlay.overlay
-                    width: 160
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-                    Repeater {
-                        model: page.earlierDayGroups
-
-                        delegate: MenuItem {
-                            required property int index
-                            required property var modelData
-                            text: page.monthChangedBefore(index)
-                                  ? page.monthLabel(modelData.key) + " · " + modelData.label
-                                  : modelData.label
-                            checkable: true
-                            checked: page.selectedDay === modelData.key
-                            onTriggered: page.selectDay(modelData.key)
-                        }
-                    }
-                }
-            }
-
-            Item {
-                Layout.fillWidth: true
-            }
-
-            Label {
-                objectName: "historyHint"
-                visible: page.dayGroups.length > 1
-                text: qsTr("记录按天分组，进行中与已中断的始终显示")
-                font.pixelSize: theme.fontMeta
-                verticalAlignment: Text.AlignVCenter
-                color: theme.textMuted
+            Layout.rightMargin: metrics.scrollBarSlot
+            group: page.activeGroup
+            highlightedKey: page.highlightedKey
+            onOpenDetailsRequested: function(folderKey) {
+                page.openFolder(folderKey)
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            Layout.rightMargin: metrics.pageMargin
-            color: theme.divider
-        }
-
-        // 主列表与详情页都常驻：返回时主列表 contentY 不受影响。
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -572,35 +402,86 @@ Item {
             Item {
                 ListView {
                     id: list
+
                     objectName: "transferList"
                     anchors.fill: parent
                     clip: true
-                    spacing: 10
+                    spacing: 8
                     model: rows
                     boundsBehavior: Flickable.StopAtBounds
                     cacheBuffer: 400
 
-                    // 列表铺到窗口右缘，条画在右侧 10px 车道里
+                    section.property: "sectionKey"
+                    section.delegate: Item {
+                        objectName: section === "queue"
+                                   ? "queueSectionHeader" : "historySectionHeader"
+                        width: list.width - metrics.scrollBarSlot
+                        height: 28
+
+                        RowLayout {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 2
+                            spacing: theme.gapSm
+
+                            Label {
+                                text: section === "queue" ? qsTr("等待队列") : qsTr("历史")
+                                font.pixelSize: theme.fontSection
+                                font.weight: Font.DemiBold
+                                color: theme.textPrimary
+                            }
+
+                            Label {
+                                objectName: section === "queue"
+                                            ? "queueSectionMeta" : "historySectionMeta"
+                                Layout.fillWidth: true
+                                text: section === "queue"
+                                    ? qsTr("%1 个批次 · 按加入顺序开始").arg(page.queueCount)
+                                    : qsTr("最近记录在前 · %1 项").arg(page.historyCount)
+                                font.pixelSize: theme.fontCaption
+                                color: theme.textMuted
+                                elide: Text.ElideRight
+                            }
+
+                            KButton {
+                                objectName: "clearFinishedButton"
+                                visible: section === "history"
+                                         && page.backend !== null && page.hasFinished
+                                text: qsTr("清空")
+                                variant: "ghost"
+                                implicitHeight: 24
+                                leftPadding: 8
+                                rightPadding: 8
+                                topPadding: 2
+                                bottomPadding: 2
+                                font.pixelSize: theme.fontMeta
+                                Layout.alignment: Qt.AlignVCenter
+                                enabled: page.backend !== null && page.hasFinished
+                                ToolTip.text: qsTr("清空可清理的历史记录")
+                                ToolTip.visible: hovered
+                                ToolTip.delay: 400
+                                onClicked: clearDialog.open()
+                            }
+                        }
+                    }
+
                     ScrollBar.vertical: KScrollBar {}
 
-                    delegate: TransferRow {
-                        id: row
+                    delegate: TransferMainRow {
                         width: list.width - metrics.scrollBarSlot
-                        flash: row.key === page.highlightedKey
-                        live: page.liveByKey
+                        flash: key === page.highlightedKey
                         backend: page.backend
-                        onOpenDetailsRequested: function(key) {
-                            page.openFolder(key)
+                        onOpenDetailsRequested: function(folderKey) {
+                            page.openFolder(folderKey)
                         }
                     }
 
                     Label {
                         objectName: "emptyHint"
                         anchors.centerIn: parent
-                        visible: list.count === 0
-                        text: page.dayGroups.length === 0
-                              ? qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
-                              : qsTr("这一天没有下载记录\n可以点上面的日期看更早的记录")
+                        visible: list.count === 0 && !page.hasActiveGroup
+                        text: qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
                         horizontalAlignment: Text.AlignHCenter
                         color: theme.textMuted
                         font.pixelSize: theme.fontBody
@@ -620,14 +501,11 @@ Item {
         }
     }
 
-    // 清空已完成记录：二次确认（清全部历史，不按日期收窄）。
-    // 挂在页面根节点而不是 ColumnLayout 里：Popup 不是 Item，放进布局会用 anchors
-    // 被判「被布局管理的项不能用 anchors」。
     KDialog {
         id: clearDialog
         objectName: "clearConfirmDialog"
         parent: Overlay.overlay
-        title: qsTr("清空已完成记录")
+        title: qsTr("清空历史")
         modal: true
         anchors.centerIn: Overlay.overlay
         footer: StandardDialogFooter {
