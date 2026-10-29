@@ -8,8 +8,19 @@ Item {
     id: page
 
     property var backend: null
+    /// 页面被侧栏切到前台：首次进入立即刷新，之后由 Rust 冷却与轮询合并请求。
+    property bool active: false
     property string pendingDeleteId: ""
     property string pendingDeleteName: ""
+
+    readonly property bool tasksLoading: backend ? backend.tasksLoading : false
+    readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
+    readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
+
+    onActiveChanged: {
+        if (active && backend)
+            backend.refreshTasks()
+    }
 
     // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
     UiMetrics {
@@ -82,6 +93,7 @@ Item {
                 text: qsTr("刷新")
                 variant: "secondary"
                 implicitHeight: 36
+                enabled: page.backend ? !page.tasksLoading : false
                 onClicked: page.backend.refreshTasks()
             }
         }
@@ -121,12 +133,36 @@ Item {
             }
 
             Label {
+                objectName: "tasksEmptyState"
                 anchors.centerIn: parent
-                visible: list.count === 0
+                visible: page.showEmptyState
                 text: qsTr("暂无离线任务\n把磁力链接或下载地址粘到上方即可开始")
                 horizontalAlignment: Text.AlignHCenter
                 color: theme.textMuted
                 font.pixelSize: theme.fontBody
+            }
+
+            Column {
+                objectName: "tasksLoadingState"
+                anchors.centerIn: parent
+                width: 240
+                spacing: theme.gapSm
+                visible: page.showLoadingState
+
+                BusyIndicator {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 30
+                    height: 30
+                    running: parent.visible
+                }
+
+                Label {
+                    width: parent.width
+                    text: qsTr("正在加载离线任务…")
+                    horizontalAlignment: Text.AlignHCenter
+                    color: theme.textMuted
+                    font.pixelSize: theme.fontBody
+                }
             }
         }
     }

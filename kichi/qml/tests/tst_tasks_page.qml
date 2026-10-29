@@ -25,11 +25,13 @@ TestCase {
         id: backend
 
         property var tasks: []
+        property bool tasksLoading: false
 
         signal changed()
 
         property int submitted: 0
         property string deletedId: ""
+        property int refreshCalls: 0
 
         function addTask(url) {
             submitted += 1
@@ -37,7 +39,9 @@ TestCase {
         function deleteTask(id) {
             deletedId = id
         }
-        function refreshTasks() {}
+        function refreshTasks() {
+            refreshCalls += 1
+        }
     }
 
     TasksPage {
@@ -50,6 +54,13 @@ TestCase {
     // 主列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
     property var list: findChild(page, "tasksList")
     property var model: list ? list.model : null
+
+    function init() {
+        page.active = false
+        backend.tasksLoading = false
+        backend.refreshCalls = 0
+        push([])
+    }
 
     /// 造一条与 Rust `task_map` 同形状的任务
     function task(id, phase, progress) {
@@ -78,6 +89,33 @@ TestCase {
         compare(model.count, 2)
         compare(model.get(0).key, "t1")
         compare(model.get(1).key, "t2")
+    }
+
+    function test_activation_refreshes_tasks() {
+        compare(backend.refreshCalls, 0)
+
+        page.active = true
+        tryCompare(backend, "refreshCalls", 1)
+
+        page.active = false
+        page.active = true
+        tryCompare(backend, "refreshCalls", 2)
+    }
+
+    function test_loading_state_replaces_empty_message() {
+        compare(list.count, 0)
+        compare(backend.tasksLoading, false)
+        compare(page.tasksLoading, false)
+        compare(page.showEmptyState, true)
+        compare(page.showLoadingState, false)
+
+        backend.tasksLoading = true
+        compare(page.showLoadingState, true)
+        compare(page.showEmptyState, false)
+
+        backend.tasksLoading = false
+        compare(page.showLoadingState, false)
+        compare(page.showEmptyState, true)
     }
 
     function test_field_change_patches_in_place_and_keeps_scroll() {

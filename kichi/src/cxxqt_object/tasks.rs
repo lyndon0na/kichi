@@ -9,8 +9,8 @@
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
@@ -19,7 +19,7 @@ use kichi_core::{OfflineTask, TaskPhase};
 use super::actions::{format_size, run_in_background};
 use super::qobject;
 use super::QVariantList;
-use crate::session::{has_active, Failure, Session};
+use crate::session::{has_active, Failure};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -29,6 +29,8 @@ const POLL_ACTIVE: Duration = Duration::from_secs(10);
 const POLL_IDLE: Duration = Duration::from_secs(5 * 60);
 /// 后台轮询线程检查「是否该停」的粒度。
 const TICK: Duration = Duration::from_secs(1);
+/// 手动 / 切页刷新的短冷却：避免来回切页把请求打成连续 GET。
+const REFRESH_COOLDOWN: Duration = Duration::from_secs(3);
 
 /// 轮询线程的全局开关（进程内唯一）。
 fn poll_running() -> &'static AtomicBool {
@@ -47,12 +49,6 @@ fn poll_generation() -> &'static AtomicU64 {
     GENERATION.get_or_init(|| AtomicU64::new(0))
 }
 
-/// 登出代数：后台线程与在途结果都用它判断自己是否已过时。
-fn epoch() -> &'static AtomicU64 {
-    static EPOCH: OnceLock<AtomicU64> = OnceLock::new();
-    EPOCH.get_or_init(|| AtomicU64::new(0))
-}
-
 /// 下一次该等多久（单测直接测这个纯函数）。
 fn next_interval(tasks: &[OfflineTask]) -> Duration {
     if has_active(tasks) {
@@ -62,28 +58,51 @@ fn next_interval(tasks: &[OfflineTask]) -> Duration {
     }
 }
 
+/// 距离上次任务刷新够不够久；`None` 表示本次会话还没拉过。
+fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
+    match last {
+        Some(last) => now.saturating_duration_since(last) >= REFRESH_COOLDOWN,
+        None => true,
+    }
+}
+
 impl qobject::Kichi {
-    /// 重新读取任务列表（登录完成、提交成功、删除成功、刷新按钮都走这里）。
+    /// 按需读取任务列表（刷新按钮、进入页面都走这里）。
     pub fn refresh_tasks(mut self: Pin<&mut Self>) {
-        if self.tasks_loading {
-            return;
-        }
+        self.as_mut().refresh_tasks_inner(false);
+    }
+
+    /// 提交 / 删除后的强制刷新：绕过短冷却，但仍只允许一轮请求在途。
+    fn refresh_tasks_force(mut self: Pin<&mut Self>) {
+        self.as_mut().refresh_tasks_inner(true);
+    }
+
+    fn refresh_tasks_inner(mut self: Pin<&mut Self>, force: bool) {
         let session = self.backend.session.clone();
         let my_epoch = {
+            let now = Instant::now();
             let mut rust = self.as_mut().rust_mut();
+            if rust.tasks_loading || (!force && !refresh_due(rust.task_refresh_at, now)) {
+                return;
+            }
             rust.tasks_loading = true;
+            rust.task_refresh_at = Some(now);
             rust.tasks_epoch
         };
+        // 加载态要立刻显示，不能等网络回来才通知 QML。
+        self.as_mut().notify();
         run_in_background(
             move || session.offline_tasks(),
             move |mut qichi, result| {
                 if qichi.as_ref().rust().tasks_epoch != my_epoch {
                     return;
                 }
-                qichi.as_mut().rust_mut().tasks_loading = false;
                 match result {
                     Ok(tasks) => qichi.as_mut().show_tasks(tasks, true),
-                    Err(err) => qichi.as_mut().on_tasks_failure(err),
+                    Err(err) => {
+                        qichi.as_mut().rust_mut().tasks_loading = false;
+                        qichi.as_mut().on_tasks_failure(err);
+                    }
                 }
             },
         );
@@ -112,7 +131,7 @@ impl qobject::Kichi {
                             .as_mut()
                             .set_message(&format!("已提交：{}", task.name), false);
                         qichi.as_mut().clear_task_input();
-                        qichi.as_mut().refresh_tasks();
+                        qichi.as_mut().refresh_tasks_force();
                     }
                     Err(err) => qichi.as_mut().on_tasks_failure(err),
                 }
@@ -140,7 +159,7 @@ impl qobject::Kichi {
                         qichi
                             .as_mut()
                             .set_message("任务已删除（云端文件保留）", false);
-                        qichi.as_mut().refresh_tasks();
+                        qichi.as_mut().refresh_tasks_force();
                     }
                     Err(err) => qichi.as_mut().on_tasks_failure(err),
                 }
@@ -154,12 +173,11 @@ impl qobject::Kichi {
     pub(crate) fn start_task_polling(&self) {
         let generation = poll_generation().fetch_add(1, Ordering::SeqCst) + 1;
         poll_running().store(true, Ordering::SeqCst);
-        // 新一轮从活动间隔起步：别沿用上个会话退避出来的 5 分钟，登录后要尽快出数据
-        poll_wait().store(POLL_ACTIVE.as_secs(), Ordering::SeqCst);
-        let session = self.backend.session.clone();
+        // 进入页面 / 手动刷新会立即拉取；这里只安排下一次后台轮询。
+        schedule_poll_wait(POLL_ACTIVE);
         let spawned = std::thread::Builder::new()
             .name("kichi-poll".into())
-            .spawn(move || poll_loop(session, generation));
+            .spawn(move || poll_loop(generation));
         if let Err(err) = spawned {
             // 起不来就别让开关停在 true：下一次登录还会再试
             poll_running().store(false, Ordering::SeqCst);
@@ -181,12 +199,12 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.tasks_epoch = rust.tasks_epoch.wrapping_add(1);
             rust.tasks_loading = false;
+            rust.task_refresh_at = None;
             rust.tasks = QVariantList::default();
             rust.task_list.clear();
             rust.notified.clear();
             rust.task_input = QString::default();
         }
-        epoch().fetch_add(1, Ordering::SeqCst);
         self.as_mut().notify();
     }
 
@@ -246,12 +264,15 @@ impl qobject::Kichi {
         }
         let active = tasks.iter().filter(|t| !t.phase.is_settled()).count();
         let total = tasks.len();
+        let next_wait = next_interval(&tasks);
         {
             let mut rust = self.as_mut().rust_mut();
             rust.tasks = list;
             rust.task_list = tasks;
             rust.tasks_loading = false;
+            rust.task_refresh_at = Some(Instant::now());
         }
+        schedule_poll_wait(next_wait);
         let summary = if total == 0 {
             "暂无离线任务".to_owned()
         } else if active == 0 {
@@ -277,57 +298,66 @@ impl qobject::Kichi {
 
 /// 后台轮询循环：按间隔拉列表，结果回投到主线程。
 ///
-/// 间隔由「上一轮结果」决定，因此写在一个只被本线程读写的局部变量里；
-/// 每 TICK 醒来一次检查是否该退出（登出）。
-fn poll_loop(session: Arc<Session>, generation: u64) {
+/// 所有请求都回到主线程调用 [`qobject::Kichi::refresh_tasks`]，与切页 / 手动刷新
+/// 共用 `tasks_loading` 单飞保护。每 TICK 醒来一次检查退出或间隔变化。
+fn poll_loop(generation: u64) {
     loop {
         let interval = poll_wait().load(Ordering::SeqCst);
-        if !sleep_interruptible(Duration::from_secs(interval), generation) {
-            return;
+        let revision = poll_wait_revision().load(Ordering::SeqCst);
+        match wait_for_poll(Duration::from_secs(interval), generation, revision) {
+            PollWait::Stopped => return,
+            PollWait::Rescheduled => continue,
+            PollWait::Due => {}
         }
-        let my_epoch = epoch().load(Ordering::SeqCst);
-        let session = Arc::clone(&session);
-        run_in_background(
-            move || session.offline_tasks(),
-            move |mut qichi, result| {
-                if qichi.as_ref().rust().tasks_epoch != my_epoch {
-                    return;
-                }
-                match result {
-                    Ok(tasks) => {
-                        // 下一轮的间隔由这一轮结果决定（在主线程算，避免再开共享状态）
-                        let next = next_interval(&tasks);
-                        poll_wait().store(next.as_secs(), Ordering::SeqCst);
-                        qichi.as_mut().show_tasks(tasks, true);
-                    }
-                    // 轮询失败只在状态栏提示，不打断正在浏览文件的用户
-                    Err(err) => qichi
-                        .as_mut()
-                        .set_message(&format!("任务刷新失败：{err}"), false),
-                }
-            },
-        );
+        super::actions::enqueue_ui(move |mut qichi| {
+            if still_polling(generation) {
+                qichi.as_mut().refresh_tasks();
+            }
+        });
     }
 }
 
-/// 下一轮轮询的间隔（秒）；初值 = 活动间隔，保证登录后尽快出数据。
+/// 下一轮轮询的间隔（秒）；成功刷新后会按任务状态重新设置。
 fn poll_wait() -> &'static AtomicU64 {
     static WAIT: OnceLock<AtomicU64> = OnceLock::new();
     WAIT.get_or_init(|| AtomicU64::new(POLL_ACTIVE.as_secs()))
 }
 
-/// 睡 `total`，期间每 [`TICK`] 检查一次是否该停；返回 `false` 表示要退出。
-fn sleep_interruptible(total: Duration, generation: u64) -> bool {
+/// 轮询间隔版本：成功刷新后重置倒计时，手动刷新发现活动任务时也能尽快切回 10 秒。
+fn poll_wait_revision() -> &'static AtomicU64 {
+    static REVISION: OnceLock<AtomicU64> = OnceLock::new();
+    REVISION.get_or_init(|| AtomicU64::new(0))
+}
+
+fn schedule_poll_wait(interval: Duration) {
+    poll_wait().store(interval.as_secs(), Ordering::SeqCst);
+    poll_wait_revision().fetch_add(1, Ordering::SeqCst);
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum PollWait {
+    Due,
+    Rescheduled,
+    Stopped,
+}
+
+/// 等到下一轮该拉取，或因为间隔变化 / 登出提前结束。
+fn wait_for_poll(total: Duration, generation: u64, revision: u64) -> PollWait {
     let mut slept = Duration::ZERO;
-    while slept < total {
+    loop {
         if !still_polling(generation) {
-            return false;
+            return PollWait::Stopped;
+        }
+        if poll_wait_revision().load(Ordering::SeqCst) != revision {
+            return PollWait::Rescheduled;
+        }
+        if slept >= total {
+            return PollWait::Due;
         }
         let step = TICK.min(total - slept);
         std::thread::sleep(step);
         slept += step;
     }
-    still_polling(generation)
 }
 
 /// 这条轮询线程还算数吗：开关还开着，而且没被新一代顶掉。
@@ -442,15 +472,18 @@ mod tests {
         let second = poll_generation().fetch_add(1, Ordering::SeqCst) + 1;
         assert!(!still_polling(first), "被新一代顶掉的线程要退出");
         assert!(still_polling(second), "新登录的线程继续轮询");
+        let revision = poll_wait_revision().load(Ordering::SeqCst);
         assert!(
-            !sleep_interruptible(Duration::from_secs(5), first),
+            matches!(
+                wait_for_poll(Duration::from_secs(5), first, revision),
+                PollWait::Stopped
+            ),
             "旧代际不睡满"
         );
 
         // 登出：开关关掉，谁都不再算数
         poll_running().store(false, Ordering::SeqCst);
         assert!(!still_polling(second));
-        poll_running().store(true, Ordering::SeqCst);
     }
 
     #[test]
@@ -463,6 +496,18 @@ mod tests {
         assert_eq!(next_interval(&[task("c", TaskPhase::Running)]), POLL_ACTIVE);
         assert_eq!(next_interval(&[task("d", TaskPhase::Pending)]), POLL_ACTIVE);
         assert_eq!(next_interval(&[task("e", TaskPhase::Paused)]), POLL_ACTIVE);
+    }
+
+    #[test]
+    fn manual_refresh_has_a_short_cooldown() {
+        let now = Instant::now();
+        assert!(refresh_due(None, now), "首次刷新不受冷却限制");
+        assert!(
+            !refresh_due(Some(now), now + Duration::from_secs(2)),
+            "冷却期内不重复请求"
+        );
+        assert_eq!(REFRESH_COOLDOWN, Duration::from_secs(3));
+        assert!(refresh_due(Some(now), now + REFRESH_COOLDOWN));
     }
 
     #[test]

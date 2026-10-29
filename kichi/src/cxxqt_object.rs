@@ -52,6 +52,8 @@ pub mod qobject {
         #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
+        /// 有一轮离线任务列表请求在途：QML 据此显示加载态
+        #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
         #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
@@ -520,6 +522,8 @@ pub struct KichiRust {
     pub(crate) task_input: QString,
     /// 有任务请求在途
     pub(crate) tasks_loading: bool,
+    /// 最近一次任务列表请求开始 / 成功刷新的时刻：手动 / 切页刷新据此做短冷却
+    pub(crate) task_refresh_at: Option<std::time::Instant>,
     /// 任务请求代数：退出登录 / 重登后旧结果作废
     pub(crate) tasks_epoch: u64,
     /// 上一轮仍在进行中的任务（用于识别「刚结束」并只通知一次）
@@ -668,6 +672,7 @@ impl Default for KichiRust {
             task_list: Vec::new(),
             task_input: QString::default(),
             tasks_loading: false,
+            task_refresh_at: None,
             tasks_epoch: 0,
             known_running: std::collections::HashMap::new(),
             notified: std::collections::HashSet::new(),

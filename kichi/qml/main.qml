@@ -503,6 +503,7 @@ ApplicationWindow {
 
                     TasksPage {
                         backend: backend
+                        active: root.currentPage === 2
                     }
 
                     SettingsPage {
