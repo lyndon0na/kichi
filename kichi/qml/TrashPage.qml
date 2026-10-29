@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 回收站表格：查看 / 批量还原 / 彻底删除 / 清空。
+// 回收站表格：查看 / 批量还原 / 彻底删除。
 // 普通文件页不暴露彻底删除，危险操作只能从这里进入。
 Item {
     id: page
@@ -46,12 +46,6 @@ Item {
         dialogs.openDelete(entry, selection.idList())
     }
 
-    function clearAll() {
-        if (!backend || busy || entries.length === 0)
-            return
-        dialogs.openClear(entries.length)
-    }
-
     function openContext(point) {
         contextMenu.popup(point)
     }
@@ -87,61 +81,6 @@ Item {
         anchors.fill: parent
         anchors.topMargin: metrics.pageMargin
         spacing: 8
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: metrics.pageMargin
-            Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
-            Layout.preferredHeight: 34
-            spacing: 8
-
-            Label {
-                objectName: "trashSelectionSummary"
-                Layout.fillWidth: true
-                text: page.selectedCount > 0
-                      ? qsTr("已选择 %1 项").arg(page.selectedCount)
-                      : qsTr("共 %1 项").arg(page.entries.length)
-                color: page.selectedCount > 0 ? theme.textPrimary : theme.textMuted
-                font.pixelSize: theme.fontBody
-                verticalAlignment: Text.AlignVCenter
-            }
-
-            KIconButton {
-                iconName: "refresh"
-                iconSize: 14
-                iconOpacity: 0.65
-                enabled: !page.busy
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("刷新")
-                onClicked: page.backend.refreshTrash()
-            }
-
-            KButton {
-                objectName: "trashRestoreButton"
-                text: qsTr("还原")
-                iconName: "restore"
-                variant: "primary"
-                enabled: page.selectedCount > 0 && !page.busy
-                onClicked: page.restoreSelected()
-            }
-
-            KButton {
-                objectName: "trashDeleteButton"
-                text: qsTr("彻底删除")
-                iconName: "trash"
-                variant: "dangerOutline"
-                enabled: page.selectedCount > 0 && !page.busy
-                onClicked: page.deleteSelected()
-            }
-
-            KButton {
-                objectName: "trashClearButton"
-                text: qsTr("清空回收站")
-                variant: "dangerOutline"
-                enabled: page.entries.length > 0 && !page.busy
-                onClicked: page.clearAll()
-            }
-        }
 
         Label {
             objectName: "trashError"
@@ -296,7 +235,7 @@ Item {
         }
 
         function onFileActionDone(action, ok) {
-            if (ok && (action === "untrash" || action === "trashDelete" || action === "trashClear"))
+            if (ok && (action === "untrash" || action === "trashDelete"))
                 selection.clear()
         }
     }

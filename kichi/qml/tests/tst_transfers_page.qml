@@ -59,8 +59,15 @@ TestCase {
 
         signal changed()
 
-        function cancelDownloads() {}
-        function openDownloadDir() {}
+        property int cancelCount: 0
+        property int openDirCount: 0
+
+        function cancelDownloads() {
+            cancelCount += 1
+        }
+        function openDownloadDir() {
+            openDirCount += 1
+        }
         function clearFinishedTransfers() {
             clearCount += 1
         }
@@ -187,7 +194,13 @@ TestCase {
         TransfersPage {}
     }
 
+    Component {
+        id: headerComponent
+        TransferHeaderControls {}
+    }
+
     property var page: null
+    property var header: null
 
     function init() {
         backend.transfers = []
@@ -198,6 +211,8 @@ TestCase {
         backend.transferDetail = []
         backend.transferDetailActive = false
         backend.transferHasFinished = false
+        backend.cancelCount = 0
+        backend.openDirCount = 0
         backend.detailData = []
         backend.clearCount = 0
         backend.revealCount = 0
@@ -222,7 +237,10 @@ TestCase {
     function cleanup() {
         if (page)
             page.destroy()
+        if (header)
+            header.destroy()
         page = null
+        header = null
     }
 
     // —— 假记录（字段取自 transfers_view.rs 的快照）——
@@ -396,6 +414,33 @@ TestCase {
         for (var i = 0; i < model.count; i++)
             out.push(model.get(i).key + ":" + model.get(i).phase)
         return out.join(",")
+    }
+
+    function test_header_shows_status_and_wires_global_actions() {
+        page.visible = false
+        backend.downloadActive = 1
+        backend.downloadQueued = 2
+        header = headerComponent.createObject(parent, {
+            width: 900,
+            target: page
+        })
+        verify(header !== null, "TransferHeaderControls 创建失败")
+        wait(20)
+
+        var status = findChild(header, "transferHeaderStatus")
+        verify(status !== null)
+        compare(status.text, "2 项等待开始")
+        verify(findChild(page, "cancelAllTransfersButton") === null,
+               "全局操作不再占用页面正文工具条")
+
+        mouseClick(findChild(header, "openDownloadDirButton"))
+        compare(backend.openDirCount, 1)
+        mouseClick(findChild(header, "cancelAllTransfersButton"))
+        compare(backend.cancelCount, 1)
+
+        backend.downloadActive = 0
+        wait(20)
+        compare(findChild(header, "cancelAllTransfersButton").enabled, false)
     }
 
     function dumpDetail() {

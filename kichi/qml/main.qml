@@ -206,7 +206,8 @@ ApplicationWindow {
                     // 撑开物：页名靠左，搜索框和目录操作靠右
                     Item {
                         Layout.fillWidth: true
-                        visible: root.currentPage !== 1
+                        visible: root.currentPage !== 1 && root.currentPage !== 2
+                                 && root.currentPage !== 4
                     }
 
                     ShareHeaderControls {
@@ -215,6 +216,20 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
                         target: sharesPage
+                    }
+
+                    TransferHeaderControls {
+                        visible: root.currentPage === 2
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        target: transfersPage
+                    }
+
+                    TrashHeaderControls {
+                        visible: root.currentPage === 4
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        target: trashPage
                     }
 
                     RowLayout {
@@ -522,6 +537,7 @@ ApplicationWindow {
                     }
 
                     TrashPage {
+                        id: trashPage
                         backend: backend
                     }
 

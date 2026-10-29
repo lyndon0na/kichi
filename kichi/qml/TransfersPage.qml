@@ -353,36 +353,6 @@ Item {
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapMd
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.rightMargin: metrics.pageMargin
-            spacing: theme.gapSm
-
-            Label {
-                Layout.fillWidth: true
-                text: page.statusText
-                color: page.activeGroup !== null || page.queuedCount > 0
-                       ? theme.textSecondary : theme.textMuted
-                font.pixelSize: theme.fontMeta
-                elide: Text.ElideRight
-            }
-
-            KButton {
-                text: qsTr("打开下载目录")
-                variant: "secondary"
-                implicitHeight: 32
-                onClicked: if (page.backend) page.backend.openDownloadDir()
-            }
-
-            KButton {
-                text: qsTr("取消全部")
-                variant: "secondary"
-                implicitHeight: 32
-                enabled: page.activeCount > 0
-                onClicked: if (page.backend) page.backend.cancelDownloads()
-            }
-        }
-
         TransferActiveSummary {
             objectName: "transferActiveSummary"
             Layout.fillWidth: true

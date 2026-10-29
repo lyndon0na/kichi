@@ -52,6 +52,8 @@ const QML_FILES: &[&str] = &[
     "qml/TrashActionDialogs.qml",
     "qml/SharesPage.qml",
     "qml/ShareHeaderControls.qml",
+    "qml/TransferHeaderControls.qml",
+    "qml/TrashHeaderControls.qml",
     "qml/ShareTableHeader.qml",
     "qml/ShareRow.qml",
     "qml/TransfersPage.qml",

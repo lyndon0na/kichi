@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 回收站的两个不可恢复操作。确认后等待后台结果，失败时保留原因。
+// 回收站的彻底删除确认。确认后等待后台结果，失败时保留原因。
 Item {
     id: root
 
@@ -12,8 +12,6 @@ Item {
     property var targetIds: []
     property string targetName: ""
     property bool targetIsFolder: false
-    property int clearCount: 0
-
     readonly property int dialogWidth: 400
 
     KTheme { id: theme }
@@ -73,62 +71,6 @@ Item {
         }
     }
 
-    KDialog {
-        id: clearDialog
-        objectName: "trashClearDialog"
-        title: qsTr("清空回收站")
-        modal: true
-        parent: Overlay.overlay
-        anchors.centerIn: Overlay.overlay
-        width: root.dialogWidth + leftPadding + rightPadding
-
-        property string errorText: ""
-
-        footer: DialogFooter {
-            outerMargin: clearDialog.padding
-            okText: qsTr("清空回收站")
-            okVariant: "danger"
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
-            cancelEnabled: okEnabled
-            onOkClicked: root.submitClear()
-            onCancelClicked: clearDialog.close()
-        }
-
-        onOpened: errorText = ""
-
-        ColumnLayout {
-            width: root.dialogWidth
-            spacing: 8
-
-            Label {
-                objectName: "trashClearMessage"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                text: qsTr("确定清空回收站中的 %1 项吗？\n文件夹及其中内容会一并彻底删除，此操作无法恢复。")
-                      .arg(root.clearCount)
-            }
-
-            Label {
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                font.pixelSize: theme.fontMeta
-                color: theme.textMuted
-                visible: root.backend && root.backend.fileActionRunning
-                text: root.backend ? root.backend.statusMessage : ""
-            }
-
-            Label {
-                objectName: "trashClearError"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                font.pixelSize: theme.fontMeta
-                color: theme.danger
-                visible: text.length > 0
-                text: clearDialog.errorText
-            }
-        }
-    }
-
     function openDelete(entry, ids) {
         if (!entry || !root.backend)
             return
@@ -136,13 +78,6 @@ Item {
         targetIsFolder = entry.kind === "folder"
         targetIds = ids && ids.length > 0 ? ids.slice() : [entry.id]
         deleteDialog.open()
-    }
-
-    function openClear(count) {
-        if (!root.backend || count <= 0)
-            return
-        clearCount = count
-        clearDialog.open()
     }
 
     function deleteMessage() {
@@ -164,13 +99,6 @@ Item {
         root.backend.deleteTrashEntries(root.targetIds)
     }
 
-    function submitClear() {
-        if (!root.backend)
-            return
-        clearDialog.errorText = ""
-        root.backend.clearTrash()
-    }
-
     Connections {
         target: root.backend
 
@@ -180,11 +108,6 @@ Item {
                     deleteDialog.close()
                 else
                     deleteDialog.errorText = message
-            } else if (action === "trashClear" && clearDialog.visible) {
-                if (ok)
-                    clearDialog.close()
-                else
-                    clearDialog.errorText = message
             }
         }
     }

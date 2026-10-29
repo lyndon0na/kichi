@@ -3,7 +3,7 @@ import QtTest
 import ".."
 
 // 回收站表格与危险操作的组件测试。
-// 重点锁住：批量选择、还原调用、彻底删除/清空必须二次确认，失败时弹窗不消失。
+// 重点锁住：批量选择、还原调用、彻底删除必须二次确认，失败时弹窗不消失。
 TestCase {
     name: "TrashPage"
     when: windowShown
@@ -25,8 +25,6 @@ TestCase {
         property int refreshCount: 0
         property var lastUntrashIds: []
         property var lastDeleteIds: []
-        property int clearCount: 0
-
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
 
@@ -41,11 +39,6 @@ TestCase {
 
         function deleteTrashEntries(ids) {
             lastDeleteIds = ids.slice()
-            fileActionRunning = true
-        }
-
-        function clearTrash() {
-            clearCount += 1
             fileActionRunning = true
         }
 
@@ -64,7 +57,13 @@ TestCase {
         }
     }
 
+    Component {
+        id: headerComponent
+        TrashHeaderControls {}
+    }
+
     property var page: null
+    property var header: null
     property var list: null
     property var selection: null
 
@@ -80,13 +79,19 @@ TestCase {
         backend.refreshCount = 0
         backend.lastUntrashIds = []
         backend.lastDeleteIds = []
-        backend.clearCount = 0
-
         page = pageComponent.createObject(parent, {
             visible: true,
             backend: backend
         })
         verify(page !== null, "TrashPage 创建失败")
+        // 页头在 main.qml 的标题行里；单独摆到页面右侧，避免盖住左侧列表的点击区。
+        header = headerComponent.createObject(parent, {
+            x: 520,
+            y: 0,
+            width: 460,
+            target: page
+        })
+        verify(header !== null, "TrashHeaderControls 创建失败")
         list = findChild(page, "trashList")
         selection = findChild(page, "trashSelection")
         verify(list !== null, "缺少回收站列表")
@@ -98,7 +103,10 @@ TestCase {
     function cleanup() {
         if (page)
             page.destroy()
+        if (header)
+            header.destroy()
         page = null
+        header = null
         list = null
         selection = null
     }
@@ -164,10 +172,10 @@ TestCase {
         selection.selectAll(backend.trashFiles)
         compare(selection.count, 3)
 
-        var summary = findChild(page, "trashSelectionSummary")
+        var summary = findChild(header, "trashSelectionSummary")
         verify(summary.text.indexOf("3") >= 0, summary.text)
 
-        mouseClick(findChild(page, "trashRestoreButton"))
+        mouseClick(findChild(header, "trashRestoreButton"))
         wait(20)
         compare(backend.lastUntrashIds.length, 3)
         verify(backend.lastUntrashIds.indexOf("a") >= 0)
@@ -179,7 +187,7 @@ TestCase {
         publish([entry("a", false), entry("b", false)])
         selection.selectAll(backend.trashFiles)
 
-        mouseClick(findChild(page, "trashDeleteButton"))
+        mouseClick(findChild(header, "trashDeleteButton"))
         wait(40)
         compare(backend.lastDeleteIds.length, 0, "确认之前不能请求彻底删除")
 
@@ -212,7 +220,7 @@ TestCase {
     function test_failed_delete_stays_open_with_reason() {
         publish([entry("a", false)])
         selection.selectAll(backend.trashFiles)
-        mouseClick(findChild(page, "trashDeleteButton"))
+        mouseClick(findChild(header, "trashDeleteButton"))
         wait(40)
 
         var dialog = findChild(page, "trashDeleteDialog")
@@ -226,22 +234,17 @@ TestCase {
         compare(error.text, "file_not_found")
     }
 
-    function test_clear_requires_confirmation() {
+    function test_header_puts_text_refresh_last_and_has_no_clear_entry() {
         publish([entry("a", false), entry("b", true), entry("c", false)])
-        mouseClick(findChild(page, "trashClearButton"))
-        wait(40)
-        compare(backend.clearCount, 0, "确认之前不能清空")
+        var refresh = findChild(header, "trashRefreshButton")
+        var deleteButton = findChild(header, "trashDeleteButton")
+        verify(refresh !== null && refresh.visible && refresh.enabled)
+        compare(refresh.text, "刷新")
+        verify(refresh.x > deleteButton.x, "刷新按钮应在最右侧")
+        verify(findChild(header, "trashClearButton") === null, "回收站不再提供清空入口")
 
-        var dialog = findChild(page, "trashClearDialog")
-        verify(dialog !== null && dialog.opened)
-        var message = findChild(dialog, "trashClearMessage")
-        verify(message.text.indexOf("3 项") >= 0, message.text)
-        verify(message.text.indexOf("无法恢复") >= 0, message.text)
-
-        mouseClick(findChild(dialog, "dialogFooterOk"))
+        mouseClick(refresh)
         wait(20)
-        compare(backend.clearCount, 1)
-        backend.finish("trashClear", true, "回收站已清空")
-        tryCompare(dialog, "opened", false)
+        compare(backend.refreshCount, 1)
     }
 }
