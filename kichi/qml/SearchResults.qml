@@ -149,17 +149,20 @@ Item {
                         Layout.fillWidth: true
                         spacing: 10
 
-                        Label {
-                            text: root.iconFor(modelData)
-                            font.pixelSize: root.iconPixelSize
-                            color: row.highlighted ? palette.highlightedText : palette.text
+                        FileIcon {
+                            Layout.preferredWidth: root.iconPixelSize
+                            Layout.preferredHeight: root.iconPixelSize
+                            Layout.alignment: Qt.AlignVCenter
+                            kind: modelData.kind
+                            fileName: modelData.name
+                            color: palette.text
+                            opacity: modelData.kind === "folder" ? 0.95 : 0.55
                         }
 
                         // 类型标签：长列表里一眼分出「文件夹 / 文件」
                         Label {
                             text: modelData.kind === "folder" ? qsTr("文件夹") : qsTr("文件")
-                            color: row.highlighted ? palette.highlightedText
-                                 : modelData.kind === "folder" ? "#3c7dd9"
+                            color: modelData.kind === "folder" ? palette.link
                                  : palette.placeholderText
                             font.pixelSize: root.metaPixelSize
                         }
@@ -269,23 +272,6 @@ Item {
                 }
             }
         }
-    }
-
-    // 图标按扩展名猜（📁 🎬 🎵 🖼️ 📄）。与 FileRow 同一套规则；
-    // 内联而不 `import "...js"`：外部脚本不进 qrc（实测打包后 404）。
-    function iconFor(entry) {
-        if (!entry)
-            return "📄"
-        if (entry.kind === "folder")
-            return "📁"
-        const name = String(entry.name || "").toLowerCase()
-        if (/\.(mp4|mkv|avi|mov|webm|ts|m2ts|flv|wmv|rmvb)$/.test(name))
-            return "🎬"
-        if (/\.(mp3|flac|wav|m4a|ogg|opus|aac|ape)$/.test(name))
-            return "🎵"
-        if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(name))
-            return "🖼️"
-        return "📄"
     }
 
 }

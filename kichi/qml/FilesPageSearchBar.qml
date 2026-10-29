@@ -49,7 +49,7 @@ Item {
         anchors.fill: parent
         placeholderText: qsTr("按名字筛选当前文件夹… 回车 = 全盘搜索")
         selectByMouse: true
-        // 右边给内嵌的 ✕ / 🔍 让位，文字不钻到按钮底下
+        // 右边给内嵌的清空 / 搜索按钮让位，文字不钻到按钮底下
         rightPadding: buttonRow.width + 8
 
         onTextEdited: bar.applyLocalFilter()
@@ -87,14 +87,22 @@ Item {
 
             width: size
             height: size
-            text: qsTr("✕")
-            font.pixelSize: 11
             padding: 0
             flat: true
             visible: searchField.text.length > 0
             ToolTip.visible: hovered
             ToolTip.text: qsTr("清空关键词，回到当前文件夹")
             onClicked: bar.clearAndExit()
+
+            contentItem: Item {
+                NavIcon {
+                    width: 11
+                    height: 11
+                    anchors.centerIn: parent
+                    name: "x"
+                    color: palette.placeholderText
+                }
+            }
         }
 
         // 全盘搜索：内嵌在输入框里，唯一会发请求的按钮
@@ -105,13 +113,24 @@ Item {
 
             width: size
             height: size
-            text: qsTr("🔍")
-            font.pixelSize: 11
             padding: 0
             enabled: searchField.text.trim().length > 0 && !bar.scanning
             ToolTip.visible: hovered
             ToolTip.text: qsTr("遍历整个网盘按名字查找（逐页请求官方列表，条目多时要等一会儿）")
             onClicked: bar.startFullScan()
+
+            // 线稿放大镜，不用 emoji 🔍：emoji 是彩色字形，尺寸不受控，
+            // 和输入框里的文字也不是一套
+            contentItem: Item {
+                NavIcon {
+                    width: 16
+                    height: 16
+                    anchors.centerIn: parent
+                    name: "search"
+                    color: palette.placeholderText
+                    opacity: searchButton.enabled ? 1 : 0.4
+                }
+            }
         }
     }
 

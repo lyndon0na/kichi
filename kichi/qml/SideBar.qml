@@ -138,7 +138,7 @@ Rectangle {
                             anchors.centerIn: parent
                             text: parent.count > 99 ? "99+" : String(parent.count)
                             color: palette.highlightedText
-                            font.pixelSize: 10
+                            font.pixelSize: 11
                             font.bold: true
                         }
                     }
@@ -210,7 +210,7 @@ Rectangle {
                         anchors.centerIn: parent
                         text: qsTr("会员")
                         color: palette.windowText
-                        font.pixelSize: 10
+                        font.pixelSize: 11
                     }
                 }
             }

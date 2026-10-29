@@ -146,13 +146,22 @@ ItemDelegate {
                 anchors.fill: parent
                 spacing: 10
 
-                Label {
+                // 图标列固定 22：与文件列表用的是同一个 FileIcon，
+                // 传输记录只有路径、没有条目类型，所以只按扩展名判断
+                Item {
                     visible: !row.notice
-                    text: row.folder ? "📁" : row.iconFor(row.name)
-                    font.pixelSize: 18
                     Layout.preferredWidth: 22
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    Layout.preferredHeight: 20
+
+                    FileIcon {
+                        width: 18
+                        height: 18
+                        anchors.centerIn: parent
+                        kind: row.folder ? "folder" : ""
+                        fileName: row.name
+                        color: palette.text
+                        opacity: row.folder ? 0.95 : 0.55
+                    }
                 }
 
                 Label {
@@ -209,7 +218,7 @@ ItemDelegate {
                     objectName: "openDetailsHint"
                     visible: row.canOpenDetails
                     text: "›"
-                    font.pixelSize: 16
+                    font.pixelSize: 14
                     Layout.preferredWidth: 12
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
@@ -348,17 +357,5 @@ ItemDelegate {
                 }
             }
         }
-    }
-
-    /// 按扩展名给行配图标：传输记录只有路径，没有条目类型
-    function iconFor(name) {
-        var lower = String(name || "").toLowerCase()
-        if (/\.(mp4|mkv|avi|mov|webm|ts|m2ts|flv|wmv|rmvb)$/.test(lower))
-            return "🎬"
-        if (/\.(mp3|flac|wav|m4a|ogg|opus|aac|ape)$/.test(lower))
-            return "🎵"
-        if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(lower))
-            return "🖼️"
-        return "📄"
     }
 }

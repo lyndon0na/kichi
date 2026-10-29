@@ -41,12 +41,14 @@ Item {
         id: metrics
     }
 
-    function crumbCount() {
-        return page.backend ? page.backend.breadcrumb.length : 0
+    // 面包屑在页头（main.qml）里，不是本页的一行：这里只提供跳转入口。
+    // 以前本页顶部还有一行「↑ 全部文件」，和页头各成一条，看着是几块拼的。
+    function goUp() {
+        interaction.goParent()
     }
 
-    function isCurrentCrumb(index) {
-        return index === page.crumbCount() - 1
+    function goCrumb(index) {
+        interaction.goCrumb(index)
     }
 
     // —— 搜索入口 ——
@@ -87,66 +89,9 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: 10
-
-        // —— 导航条：上一级（图标）+ 面包屑 ——
-        // 正在加载的那一级名字后面跟着转圈，其余位置不放指示器。
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 6
-
-            ToolButton {
-                text: qsTr("↑")
-                enabled: page.backend !== null && !page.backend.busy && page.crumbCount() > 1
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("上一级（回到上级目录）")
-                onClicked: interaction.goParent()
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 2
-
-                Repeater {
-                    model: page.backend ? page.backend.breadcrumb : []
-
-                    delegate: RowLayout {
-                        spacing: 2
-
-                        Label {
-                            text: "›"
-                            visible: index > 0
-                            color: palette.placeholderText
-                        }
-
-                        Label {
-                            text: modelData
-                            font.bold: page.isCurrentCrumb(index)
-                            color: page.isCurrentCrumb(index) ? palette.text : palette.link
-                            elide: Text.ElideMiddle
-                            Layout.maximumWidth: 220
-
-                            MouseArea {
-                                anchors.fill: parent
-                                enabled: !page.isCurrentCrumb(index)
-                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: interaction.goCrumb(index)
-                            }
-                        }
-
-                        // 加载中转圈：只跟在当前目录名后面
-                        BusyIndicator {
-                            visible: page.isCurrentCrumb(index)
-                                     && page.backend !== null && page.backend.busy
-                            running: visible
-                            Layout.preferredWidth: 18
-                            Layout.preferredHeight: 18
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                    }
-                }
-            }
-        }
+        // 与传输 / 离线 / 设置页同一个上边距：换页时内容不在纵向上跳一下
+        anchors.topMargin: metrics.pageMargin
+        spacing: 8
 
         // —— 列表（当前目录 / 搜索结果共用这块区域）——
         // 不用 Frame：它的边框画在外层，会被盖住的上下两条边吃掉，
@@ -234,6 +179,7 @@ Item {
                         columnSpacing: density.columnSpacing
                         rowHeight: density.rowHeight
                         textPixelSize: density.namePixelSize
+                        metaPixelSize: density.metaPixelSize
                         iconPixelSize: density.iconPixelSize
                         // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
                         highlighted: !!entry && selection.isSelected(entry.id)

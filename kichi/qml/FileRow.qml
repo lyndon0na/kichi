@@ -19,18 +19,20 @@ ItemDelegate {
     /// 在列表里的下标（Shift 区间选择用）
     property int rowIndex: -1
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
-    property int iconColumnWidth: 30
-    property int sizeColumnWidth: 126
-    property int modifiedColumnWidth: 165
-    property int columnSpacing: 10
+    property int iconColumnWidth: 20
+    property int sizeColumnWidth: 96
+    property int modifiedColumnWidth: 150
+    property int columnSpacing: 12
     // 行高 / 字号 / 图标大小同样由页面给出（列表密度集中在 FilesPage.qml）
-    property int rowHeight: 52
-    property int textPixelSize: 16
-    property int iconPixelSize: 24
+    property int rowHeight: 44
+    property int textPixelSize: 14
+    // 大小 / 时间用次级字号：和表头一致，也让文件名在一行里有主次
+    property int metaPixelSize: 12
+    property int iconPixelSize: 16
     // 水平内边距固定：表头按同一个数值摆位。不依赖控件风格的默认 padding，
     // 否则换风格（这里实测是 8 而不是 Qt 默认的 12）表头就和行错开。
-    leftPadding: 8
-    rightPadding: 8
+    leftPadding: 12
+    rightPadding: 12
 
     // 行高显式写死：ItemDelegate 自己算的是「文字高度 + 上下 padding」，
     // 跟着字号漂，和表头对不齐。这里由页面给一个确定值。
@@ -45,24 +47,6 @@ ItemDelegate {
     signal selectRequested(int modifiers, int index)
     // 双击文件夹：交给页面先记滚动位置再进目录
     signal folderOpenRequested(string id)
-
-    // 图标按扩展名猜（📁 🎬 🎵 🖼️ 📄）。
-    // 不用 `import "...js"`：外部脚本不进 qrc（实测打包后 404），
-    // 图标逻辑很小，直接内联。
-    function iconFor(entry) {
-        if (!entry)
-            return "📄"
-        if (entry.kind === "folder")
-            return "📁"
-        const name = String(entry.name || "").toLowerCase()
-        if (/\.(mp4|mkv|avi|mov|webm|ts|m2ts|flv|wmv|rmvb)$/.test(name))
-            return "🎬"
-        if (/\.(mp3|flac|wav|m4a|ogg|opus|aac|ape)$/.test(name))
-            return "🎵"
-        if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(name))
-            return "🖼️"
-        return "📄"
-    }
 
     icon.name: ""
     icon.source: ""
@@ -85,6 +69,8 @@ ItemDelegate {
         // 盖在 contentItem 之上，保证整行都可点
         z: 1
         acceptedButtons: Qt.LeftButton | Qt.RightButton
+        // 悬停底色要用 containsMouse，必须开 hoverEnabled（默认关闭）
+        hoverEnabled: true
         cursorShape: row.entry && row.entry.kind === "folder"
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
@@ -120,27 +106,51 @@ ItemDelegate {
         row.backend.downloadEntry(row.entry.id)
     }
 
-    // 选中态用主题高亮色；未选中时透明，让列表背景透出来。
-    // 不用 ItemDelegate 默认 background：Basic 风格的 highlighted 只画一圈边框，
-    // 在长列表里几乎看不出来选中了哪行。
+    // 选中态：高亮色只铺一层很淡的底，左侧再点一根 3px 竖条。
+    // 不用 ItemDelegate 默认 background（Basic 风格只画一圈边框，长列表里看不出选中），
+    // 也不整行铺满 palette.highlight——饱和色块会把文件名压得发灰，而屏幕上真正
+    // 「选中」的通常只有一行，代价却铺满整行。
     background: Rectangle {
         radius: 4
-        color: row.highlighted ? palette.highlight
-             : mouseArea.pressed ? palette.mid
-             : "transparent"
+        color: row.highlighted
+               ? Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.22)
+               : mouseArea.pressed
+                 ? Qt.rgba(palette.text.r, palette.text.g, palette.text.b, 0.10)
+                 : mouseArea.containsMouse
+                   ? Qt.rgba(palette.text.r, palette.text.g, palette.text.b, 0.05)
+                   : "transparent"
+
+        Rectangle {
+            visible: row.highlighted
+            width: 3
+            height: parent.height - 14
+            radius: 1.5
+            anchors.left: parent.left
+            anchors.leftMargin: 1
+            anchors.verticalCenter: parent.verticalCenter
+            color: palette.highlight
+        }
     }
 
     contentItem: RowLayout {
         spacing: row.columnSpacing
 
-        // 固定宽度：图标宽度随 emoji 字形变，表头的「名称」就对不上文件名了
-        Label {
-            text: row.iconFor(row.entry)
-            font.pixelSize: row.iconPixelSize
+        // 固定宽度：表头的「名称」要和文件名左边缘对齐，图标宽度由
+        // FileListDensity 统一给（emoji 时代这个宽度还得迁就字形，现在不用了）
+        Item {
             Layout.preferredWidth: row.iconColumnWidth
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            color: row.highlighted ? palette.highlightedText : palette.text
+            Layout.fillHeight: true
+
+            FileIcon {
+                width: Math.min(row.iconPixelSize, row.iconColumnWidth)
+                height: width
+                anchors.centerIn: parent
+                kind: row.entry ? row.entry.kind : ""
+                fileName: row.entry ? row.entry.name : ""
+                color: palette.text
+                // 文件夹比普通文件实一点：一眼分出「能进」和「只能下」
+                opacity: row.entry && row.entry.kind === "folder" ? 0.95 : 0.55
+            }
         }
 
         Label {
@@ -149,7 +159,7 @@ ItemDelegate {
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
             Layout.fillWidth: true
-            color: row.highlighted ? palette.highlightedText : palette.text
+            color: palette.text
         }
 
         Label {
@@ -157,15 +167,14 @@ ItemDelegate {
             visible: row.entry ? row.entry.auditFlag : false
             font.pixelSize: row.textPixelSize
             verticalAlignment: Text.AlignVCenter
-            color: row.highlighted ? palette.highlightedText : "#c0392b"
+            color: "#c0392b"
         }
 
         Label {
             text: row.entry ? row.entry.sizeText : ""
-            font.pixelSize: row.textPixelSize
+            font.pixelSize: row.metaPixelSize
             verticalAlignment: Text.AlignVCenter
-            color: row.highlighted ? palette.highlightedText : palette.placeholderText
-            opacity: row.highlighted ? 0.8 : 1
+            color: palette.placeholderText
             horizontalAlignment: Text.AlignRight
             Layout.preferredWidth: row.sizeColumnWidth
         }
@@ -174,10 +183,9 @@ ItemDelegate {
         // 大小列跟着右移，表头就对不齐了
         Label {
             text: row.entry ? row.entry.modifiedText : ""
-            font.pixelSize: row.textPixelSize
+            font.pixelSize: row.metaPixelSize
             verticalAlignment: Text.AlignVCenter
-            color: row.highlighted ? palette.highlightedText : palette.placeholderText
-            opacity: row.highlighted ? 0.8 : 1
+            color: palette.placeholderText
             horizontalAlignment: Text.AlignRight
             Layout.preferredWidth: row.modifiedColumnWidth
         }

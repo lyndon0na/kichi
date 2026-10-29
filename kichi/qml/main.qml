@@ -17,7 +17,8 @@ ApplicationWindow {
     width: 1000
     height: 640
     visible: true
-    color: palette.window
+    // 窗口底色 = 内容「白纸」色：页头、列表共用一块面，靠侧栏的浅灰区分出外壳
+    color: palette.base
 
     // 会话对象：构造时自动恢复 KWallet 里的登录态
     Kichi {
@@ -168,68 +169,322 @@ ApplicationWindow {
                 onSignOutRequested: signOutDialog.open()
             }
 
+            // 侧栏与内容之间的细线：两边的底色只差一点点，没有线就看不出边界
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.fillHeight: true
+                color: palette.mid
+            }
+
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 0
 
-                // 页标题条：左边页名、中间搜索框（仅文件页）、右边目录操作。
-                // 不用 Frame（Fusion 样式自带一圈边框），这里只要留白 + 文字。
-                // 两侧各放一个撑开的空白，搜索框落在标题和按钮之间居中。
+                // 页头两行，和列表同一块底色（页头是内容的一部分，不单独成栏）：
+                //   上行 页名 + 搜索框 + 目录操作
+                //   下行 面包屑（只有文件页有）
                 RowLayout {
                     Layout.fillWidth: true
-                    Layout.leftMargin: 14
-                    Layout.rightMargin: 12
-                    Layout.topMargin: 11
-                    Layout.bottomMargin: 11
+                    // 左边对齐列表行的图标列（行内边距 12），右边对齐「修改时间」的右边缘
+                    // （滚动条车道 10 + 行内边距 12）——页头和列表共用两条竖轴，
+                    // 换页时内容不会横向错开
+                    Layout.leftMargin: metrics.pageMargin
+                    Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+                    Layout.topMargin: 8
+                    Layout.preferredHeight: 34
                     spacing: 8
 
                     Label {
-                        id: titleLabel
                         text: root.pageTitle()
-                        font.pixelSize: 20
-                        font.bold: true
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                        color: palette.text
+                        Layout.alignment: Qt.AlignVCenter
                     }
 
+                    // 撑开物：页名靠左，搜索框和目录操作靠右
                     Item {
                         Layout.fillWidth: true
                     }
 
                     FilesPageSearchBar {
                         id: searchBar
+
                         visible: root.currentPage === 0
-                        Layout.preferredWidth: 330
+
+                        Layout.fillWidth: true
                         Layout.minimumWidth: 160
-                        Layout.maximumWidth: 330
+                        Layout.preferredWidth: 420
+                        Layout.maximumWidth: 420
                         Layout.alignment: Qt.AlignVCenter
                         backend: backend
                     }
 
-                    Item {
-                        Layout.fillWidth: true
-                    }
-
-                    // 目录操作：只对文件页有意义。搜索视图里置灰（它们作用的是
-                    // 当前目录，不是搜索结果），但保留占位，免得搜索框左右跳。
+                    // 目录操作：图标按钮 + 悬停提示。搜索视图里置灰
+                    // （它们作用的是当前目录，不是搜索结果），但保留占位，免得布局左右跳。
                     RowLayout {
                         visible: root.currentPage === 0
-                        spacing: 5
+                        spacing: 2
 
                         ToolButton {
-                            text: qsTr("刷新")
+                            id: refreshButton
+
+                            padding: 6
                             enabled: !filesPage.searching && !backend.busy
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("刷新")
                             onClicked: filesPage.refreshFiles()
+
+                            contentItem: NavIcon {
+                                implicitWidth: 14
+                                implicitHeight: 14
+                                name: "refresh"
+                                color: palette.text
+                                opacity: refreshButton.enabled ? 0.65 : 0.25
+                            }
                         }
 
                         ToolButton {
-                            text: qsTr("＋ 新建文件夹")
+                            id: newFolderButton
+
+                            padding: 6
                             enabled: !filesPage.searching && !backend.busy
                                      && !backend.fileActionRunning
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("新建文件夹")
                             onClicked: filesPage.beginNewFolder()
+
+                            contentItem: NavIcon {
+                                implicitWidth: 14
+                                implicitHeight: 14
+                                name: "plus"
+                                color: palette.text
+                                opacity: newFolderButton.enabled ? 0.65 : 0.25
+                            }
                         }
                     }
                 }
 
+                // —— 下行：面包屑 ——
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: metrics.pageMargin
+                    Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+                    Layout.topMargin: metrics.pageMargin
+                    // 下边距交给内容自己的 topMargin（同样是 pageMargin）：
+                    // 面包屑到表头的距离 = 页名到面包屑的距离
+                    Layout.bottomMargin: 0
+                    Layout.preferredHeight: 30
+                    visible: root.currentPage === 0
+                    spacing: 4
+
+                    // 面包屑：上一级 + 各级目录，可点着往回跳。
+                    // 独占一行，宽度全归自己；放不下时由 plan 决定显示哪几级，
+                    // clip 兜底，只会截断末尾，不会盖住旁边。
+                    Item {
+                        id: crumbBar
+
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        // 不写 Layout.fillHeight：布局里的 fillHeight 子项会把整行撑到
+                        // 占满剩余高度（实测页头涨成 900px、列表被挤到底部）。
+                        // 内容本来就靠 verticalCenter 居中，不需要它。
+                        Layout.preferredHeight: 30
+                        clip: true
+
+                        // 字号比页名（16）小一级，和文件名同档：面包屑是路径，
+                        // 不该和页标题一样重
+                        readonly property int crumbPixelSize: 14
+                        // 一级目录名最多占多宽；超过就中间截断（名字末尾常是版本号，
+                        // 掐中间留得住「漫威合集...PTer」）
+                        readonly property int nameMaxWidth: 220
+                        // 「›」+ 间距，估算每一级额外的固定开销
+                        readonly property int separatorWidth: 13
+                        // 「...」标记占的宽度（含前面的「›」）
+                        readonly property int ellipsisWidth: 23
+                        // 中间某一级读不全会截断时，最少留给它这么宽
+                        // （约五个汉字：够认出是哪一层）
+                        readonly property int minCrumbWidth: 76
+
+                        // 量文字宽度：当前级是 DemiBold，宽度和普通级不一样，得分开量。
+                        // 这两个 TextMetrics 只用来算布局，不显示。
+                        TextMetrics {
+                            id: normalMetrics
+                            font.pixelSize: crumbBar.crumbPixelSize
+                        }
+
+                        TextMetrics {
+                            id: boldMetrics
+                            font.pixelSize: crumbBar.crumbPixelSize
+                            font.weight: Font.DemiBold
+                        }
+
+                        function crumbWidth(text, bold) {
+                            var m = bold ? boldMetrics : normalMetrics
+                            m.text = text
+                            return Math.min(crumbBar.nameMaxWidth, m.advanceWidth)
+                        }
+
+                        // 要显示哪几级 + 每一级给多宽：{ i: 目录下标（-1 = 省略号）, w: 宽度 }。
+                        //
+                        // 为什么要自己算，不交给布局压缩：QtQuick 布局在宽度不够时，
+                        // 是让「每一级」按各自的收缩余地等比变窄——四级目录平摊下来
+                        // 「全部文件」会被截成「全...件」、「Movie」只剩「M...e」，
+                        // 屏幕上全是碎片，一个名字也读不出来。
+                        //
+                        // 现在的规则：
+                        // 1. 当前目录优先占满（最多 nameMaxWidth）；
+                        // 2. 第一级永远显示（「全部文件」）；
+                        // 3. 中间几级从最靠近当前的那级往回带：整级放得下就整级显示，
+                        //    只差一点就截断到剩余宽度（≥ minCrumbWidth），再早的折掉；
+                        // 4. 有级别被折掉时，第一级后面补一个「...」。
+                        // 名字因此只有「完整」和「整段截断」两种，不会碎成几个字。
+                        readonly property var plan: {
+                            var names = root.crumbs
+                            var n = names.length
+                            if (n === 0)
+                                return []
+                            if (n === 1)
+                                return [{ i: 0, w: crumbBar.crumbWidth(names[0], true) }]
+
+                            var sep = crumbBar.separatorWidth
+                            var widths = []
+                            for (var i = 0; i < n; ++i)
+                                widths.push(crumbBar.crumbWidth(names[i], i === n - 1))
+
+                            // 当前级优先占位；容器窄到连它都放不下时也让它让一点，
+                            // 免得名字被截在容器外面
+                            var currentWidth = widths[n - 1]
+                            var avail = crumbBar.width - upButton.width - sep
+                                    - widths[0] - sep
+                            if (currentWidth > avail)
+                                currentWidth = Math.max(120, avail)
+                            avail -= currentWidth
+
+                            var items = [{ i: 0, w: widths[0] }]
+                            var middle = []
+                            for (var j = n - 2; j >= 1; --j) {
+                                // 更早的层级还没显示时，中间要留「...」的位置
+                                var reserve = (j > 1 ? crumbBar.ellipsisWidth : 0) + sep
+                                var room = avail - reserve
+                                if (room >= widths[j]) {
+                                    middle.unshift({ i: j, w: widths[j] })
+                                    avail -= widths[j] + sep
+                                } else if (room >= crumbBar.minCrumbWidth) {
+                                    middle.unshift({ i: j, w: room })
+                                    break
+                                } else {
+                                    break
+                                }
+                            }
+
+                            // 中间有级别被折掉：第一级后面标「...」
+                            var firstShownMiddle = middle.length > 0 ? middle[0].i : n - 1
+                            if (firstShownMiddle > 1)
+                                items.push({ i: -1, w: crumbBar.ellipsisWidth })
+                            items = items.concat(middle)
+                            items.push({ i: n - 1, w: currentWidth })
+                            return items
+                        }
+
+                        RowLayout {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            // 「›」两侧各留 4px：贴住名字会读成一个字
+                            spacing: 4
+
+                            ToolButton {
+                                id: upButton
+
+                                padding: 6
+                                enabled: !backend.busy && root.crumbs.length > 1
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("上一级（回到上级目录）")
+                                onClicked: filesPage.goUp()
+
+                                // 线稿图标，不用文字字形「↑」：字形随字体变，和侧栏图标也不是一家人
+                                contentItem: NavIcon {
+                                    implicitWidth: 14
+                                    implicitHeight: 14
+                                    name: "arrow-up"
+                                    color: palette.text
+                                    opacity: upButton.enabled ? 0.65 : 0.25
+                                }
+                            }
+
+                            Repeater {
+                                model: crumbBar.plan
+
+                                delegate: RowLayout {
+                                    id: crumb
+
+                                    // 目录下标；-1 是省略号
+                                    readonly property int crumbIndex: modelData.i
+                                    readonly property bool ellipsis: crumbIndex < 0
+                                    readonly property bool current: crumbIndex === root.crumbs.length - 1
+
+                                    spacing: 4
+
+                                    Label {
+                                        text: "›"
+                                        visible: index > 0
+                                        font.pixelSize: crumbBar.crumbPixelSize
+                                        color: palette.placeholderText
+                                    }
+
+                                    // 省略号：表示中间还有目录，不响应点击
+                                    Label {
+                                        visible: crumb.ellipsis
+                                        text: "..."
+                                        font.pixelSize: crumbBar.crumbPixelSize
+                                        color: palette.placeholderText
+                                    }
+
+                                    Label {
+                                        id: crumbName
+
+                                        visible: !crumb.ellipsis
+                                        text: crumb.ellipsis ? "" : root.crumbs[crumb.crumbIndex]
+                                        font.pixelSize: crumbBar.crumbPixelSize
+                                        // 当前目录半粗 + 正文色，前几级普通字重 + 弱化色：
+                                        // 整行不跟页名抢，又看得出哪一级是「现在这里」
+                                        font.weight: crumb.current
+                                                     ? Font.DemiBold : Font.Normal
+                                        color: crumb.current
+                                               ? palette.text
+                                               : Qt.rgba(palette.text.r, palette.text.g,
+                                                         palette.text.b, 0.7)
+                                        elide: Text.ElideMiddle
+                                        // 宽度由 plan 算好，不再交给布局压缩：
+                                        // 布局压缩会按比例切短名字（见 plan 处的说明）
+                                        Layout.preferredWidth: crumb.ellipsis ? 0 : modelData.w
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: !crumb.current
+                                            cursorShape: enabled ? Qt.PointingHandCursor
+                                                                 : Qt.ArrowCursor
+                                            onClicked: filesPage.goCrumb(crumb.crumbIndex)
+                                        }
+                                    }
+
+                                    // 加载中转圈：只跟在当前目录名后面
+                                    BusyIndicator {
+                                        visible: crumb.current && backend.busy
+                                        running: visible
+                                        Layout.preferredWidth: 18
+                                        Layout.preferredHeight: 18
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                }
+
+                // 内容区：与页头同一块底色（窗口色就是 palette.base），中间不画分隔线
                 StackLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -296,6 +551,15 @@ ApplicationWindow {
     }
 
     property int currentPage: 0
+
+    /// 面包屑的各级目录名。模板里的 model / 长度 / 折叠判断都从这里取，
+    // 保证三者永远是同一份数据（分开读后端时，改一处容易忘另一处）
+    readonly property var crumbs: backend ? backend.breadcrumb : []
+
+    // 页面级尺寸常量（滚动条车道 / 页边距），与各页共用同一套数字
+    UiMetrics {
+        id: metrics
+    }
 
     function pageTitle() {
         if (root.currentPage === 1)

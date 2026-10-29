@@ -13,14 +13,14 @@ Item {
     property var backend: null
     // 列宽 / 水平内边距与 FileRow 一致：实际数值由 FilesPage 同时下发，
     // 这里的默认值只是兜底（和 FileRow 的默认值保持相同）。
-    property int iconColumnWidth: 30
-    property int sizeColumnWidth: 126
-    property int modifiedColumnWidth: 165
-    property int contentPadding: 8
-    property int columnSpacing: 10
+    property int iconColumnWidth: 20
+    property int sizeColumnWidth: 96
+    property int modifiedColumnWidth: 150
+    property int contentPadding: 12
+    property int columnSpacing: 12
     // 表头行高与字号：和列表行同一套密度，由 FilesPage 下发
-    property int headerRowHeight: 36
-    property int headerPixelSize: 13
+    property int headerRowHeight: 32
+    property int headerPixelSize: 12
 
     // 表头本身铺满整个列表区（含滚动条车道）：行宽已减去车道，
     // 右侧再补一个车道宽度，列才会和行对齐
@@ -46,11 +46,20 @@ Item {
         header.backend.setSorting(field, ascending)
     }
 
-    // 列名后面挂方向箭头（只在当前排序列出现）
+    // 列名。左对齐的「名称」把箭头直接接在文字后面（左边缘不动，不会跳）；
+    // 右对齐的两列由 caret() 单独画在固定槽位里，否则切换排序时整段文字会左右平移。
     function label(base, field) {
-        if (!header.backend || header.backend.sortField !== field)
+        if (field !== "name")
             return base
-        return base + (header.backend.sortAscending ? " ▲" : " ▼")
+        var mark = header.caret(field)
+        return mark.length > 0 ? base + " " + mark : base
+    }
+
+    // 排序箭头：这一列不是当前排序列时返回空串（槽位仍然占着）
+    function caret(field) {
+        if (!header.backend || header.backend.sortField !== field)
+            return ""
+        return header.backend.sortAscending ? "▲" : "▼"
     }
 
     ColumnLayout {
@@ -109,6 +118,19 @@ Item {
                 Layout.preferredWidth: header.sizeColumnWidth
                 Layout.fillHeight: true
 
+                // 列与列之间的细分隔线：表头里画就够，行里不画
+                // （行里也画会变成网格，反而更乱）。
+                // 只占表头中间一段，不顶到上下的横线——连起来就成网格了，
+                // 那是表格软件的样子，不是文件列表
+                Rectangle {
+                    width: 1
+                    height: Math.round(header.headerRowHeight * 0.45)
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: palette.mid
+                    opacity: 0.6
+                }
+
                 HoverHandler {
                     id: sizeHover
                     cursorShape: Qt.PointingHandCursor
@@ -116,12 +138,24 @@ Item {
 
                 Label {
                     anchors.fill: parent
+                    // 右侧留出固定的箭头槽位，排序切换时表头文字不左右跳
+                    anchors.rightMargin: 14
                     text: header.label(qsTr("大小"), sizeCell.field)
                     color: palette.placeholderText
                     font.pixelSize: header.headerPixelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
+                }
+
+                Label {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14
+                    text: header.caret(sizeCell.field)
+                    color: palette.placeholderText
+                    font.pixelSize: header.headerPixelSize
+                    horizontalAlignment: Text.AlignRight
                 }
 
                 TapHandler {
@@ -138,6 +172,17 @@ Item {
                 Layout.preferredWidth: header.modifiedColumnWidth
                 Layout.fillHeight: true
 
+                // 只占表头中间一段，不顶到上下的横线——连起来就成网格了，
+                // 那是表格软件的样子，不是文件列表
+                Rectangle {
+                    width: 1
+                    height: Math.round(header.headerRowHeight * 0.45)
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: palette.mid
+                    opacity: 0.6
+                }
+
                 HoverHandler {
                     id: modifiedHover
                     cursorShape: Qt.PointingHandCursor
@@ -145,12 +190,23 @@ Item {
 
                 Label {
                     anchors.fill: parent
+                    anchors.rightMargin: 14
                     text: header.label(qsTr("修改时间"), modifiedCell.field)
                     color: palette.placeholderText
                     font.pixelSize: header.headerPixelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
+                }
+
+                Label {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14
+                    text: header.caret(modifiedCell.field)
+                    color: palette.placeholderText
+                    font.pixelSize: header.headerPixelSize
+                    horizontalAlignment: Text.AlignRight
                 }
 
                 TapHandler {
