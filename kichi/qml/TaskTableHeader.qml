@@ -8,9 +8,10 @@ Item {
     id: header
 
     property int rowHeight: 34
-    property int statusColumnWidth: 88
+    property int iconColumnWidth: 22
+    property int statusColumnWidth: 100
     property int progressColumnWidth: 150
-    property int actionColumnWidth: 64
+    property int actionColumnWidth: 96
     property int columnSpacing: 12
     property int contentPadding: 12
 
@@ -25,6 +26,11 @@ Item {
         anchors.leftMargin: header.contentPadding
         anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
         spacing: header.columnSpacing
+
+        Item {
+            Layout.preferredWidth: header.iconColumnWidth
+            Layout.minimumWidth: header.iconColumnWidth
+        }
 
         Label {
             Layout.fillWidth: true

@@ -207,7 +207,7 @@ ApplicationWindow {
                     Item {
                         Layout.fillWidth: true
                         visible: root.currentPage !== 1 && root.currentPage !== 2
-                                 && root.currentPage !== 4
+                                 && root.currentPage !== 3 && root.currentPage !== 4
                     }
 
                     ShareHeaderControls {
@@ -223,6 +223,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
                         target: transfersPage
+                    }
+
+                    TaskHeaderControls {
+                        visible: root.currentPage === 3
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        target: tasksPage
                     }
 
                     TrashHeaderControls {
@@ -297,28 +304,6 @@ ApplicationWindow {
                         }
                     }
 
-                    RowLayout {
-                        visible: root.currentPage === 3
-                        Layout.alignment: Qt.AlignVCenter
-                        spacing: theme.gapXs
-
-                        KButton {
-                            objectName: "newTaskButton"
-                            text: qsTr("新任务")
-                            iconName: "plus"
-                            variant: "primary"
-                            onClicked: tasksPage.openNewTaskDialog()
-                        }
-
-                        KButton {
-                            objectName: "tasksRefreshButton"
-                            text: qsTr("刷新")
-                            iconName: "refresh"
-                            variant: "ghost"
-                            enabled: !backend.tasksLoading
-                            onClicked: backend.refreshTasks()
-                        }
-                    }
                 }
 
                 // —— 下行：面包屑 ——

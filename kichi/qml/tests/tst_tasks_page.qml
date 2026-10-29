@@ -53,6 +53,13 @@ TestCase {
         height: 600
     }
 
+    TaskHeaderControls {
+        id: taskHeader
+        y: 620
+        width: 700
+        target: page
+    }
+
     // 主列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
     property var list: findChild(page, "tasksList")
     property var model: list ? list.model : null
@@ -111,10 +118,39 @@ TestCase {
         compare(row.implicitHeight, 56)
         compare(row.name, "t1.mkv")
         compare(row.phaseText, "running")
+        compare(row.iconColumnWidth, 22)
+        compare(row.statusColumnWidth, 100)
+        compare(row.actionColumnWidth, 96)
+
+        var typeIcon = findChild(row, "taskTypeIcon")
+        verify(typeIcon)
+        compare(typeIcon.iconName, "video")
+
+        var nameText = findChild(row, "taskNameText")
+        var metaText = findChild(row, "taskMetaText")
+        verify(nameText)
+        verify(metaText)
+        compare(nameText.font.pixelSize, 13)
+        compare(metaText.font.pixelSize, 11)
 
         var progressHeader = findChild(header, "tasksProgressHeader")
         verify(progressHeader)
         compare(progressHeader.horizontalAlignment, Text.AlignHCenter)
+    }
+
+    function test_header_controls_show_task_counts() {
+        compare(findChild(taskHeader, "tasksHeaderStatus").text, "")
+
+        push([
+            task("active", "running", 42),
+            task("done", "completed", 100)
+        ])
+        compare(taskHeader.activeCount, 1)
+        compare(taskHeader.taskCount, 2)
+        compare(findChild(taskHeader, "tasksHeaderStatus").text,
+                "1 条任务进行中 · 共 2 条")
+        verify(findChild(taskHeader, "newTaskButton"))
+        verify(findChild(taskHeader, "tasksRefreshButton"))
     }
 
     function test_new_task_dialog_submits_multiline_text() {

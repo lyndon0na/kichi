@@ -19,9 +19,10 @@ ItemDelegate {
     required property bool settled
 
     property int rowHeight: 56
-    property int statusColumnWidth: 88
+    property int iconColumnWidth: 22
+    property int statusColumnWidth: 100
     property int progressColumnWidth: 150
-    property int actionColumnWidth: 64
+    property int actionColumnWidth: 96
     property int columnSpacing: 12
     property int contentPadding: 12
 
@@ -101,6 +102,21 @@ ItemDelegate {
         spacing: row.columnSpacing
 
         Item {
+            Layout.preferredWidth: row.iconColumnWidth
+            Layout.minimumWidth: row.iconColumnWidth
+            Layout.fillHeight: true
+
+            FileIcon {
+                objectName: "taskTypeIcon"
+                width: 18
+                height: 18
+                anchors.centerIn: parent
+                fileName: row.name
+                color: theme.textSecondary
+            }
+        }
+
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
@@ -114,20 +130,22 @@ ItemDelegate {
                 spacing: 2
 
                 Label {
+                    objectName: "taskNameText"
                     width: parent.width
                     text: row.name
                     color: theme.textPrimary
-                    font.pixelSize: theme.fontSection
+                    font.pixelSize: theme.fontBody
                     font.weight: Font.DemiBold
                     elide: Text.ElideMiddle
                 }
 
                 Label {
+                    objectName: "taskMetaText"
                     width: parent.width
                     visible: text.length > 0
                     text: row.metaText
                     color: row.phase === "error" ? theme.danger : theme.textMuted
-                    font.pixelSize: theme.fontMeta
+                    font.pixelSize: theme.fontCaption
                     elide: Text.ElideRight
                 }
             }

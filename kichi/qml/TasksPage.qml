@@ -16,17 +16,19 @@ Item {
     readonly property bool tasksLoading: backend ? backend.tasksLoading : false
     readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
     readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
+    readonly property int taskCount: taskRows.count
     readonly property int tableHeaderHeight: 34
     readonly property int tableRowHeight: 56
-    readonly property int statusColumnWidth: 88
+    readonly property int iconColumnWidth: 22
+    readonly property int statusColumnWidth: 100
     readonly property int progressColumnWidth: 150
-    readonly property int actionColumnWidth: 64
+    readonly property int actionColumnWidth: 96
     readonly property int tableColumnSpacing: 12
     readonly property int tableContentPadding: 12
 
     onActiveChanged: {
-        if (active && backend)
-            backend.refreshTasks()
+        if (active)
+            page.refresh()
     }
 
     // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -66,25 +68,17 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        // 右边不留：列表铺到窗口右缘，滚动条贴边；
-        // 状态行自己补右边距
+        // 右边不留：列表铺到窗口右缘，滚动条贴边
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapSm
 
-        Label {
-            visible: page.activeCount > 0
-            Layout.rightMargin: metrics.pageMargin
-            text: qsTr("%1 条任务进行中，列表每 10 秒自动刷新").arg(page.activeCount)
-            color: theme.textMuted
-            font.pixelSize: theme.fontMeta
-        }
-
         TaskTableHeader {
             Layout.fillWidth: true
             Layout.preferredHeight: page.tableHeaderHeight
             rowHeight: page.tableHeaderHeight
+            iconColumnWidth: page.iconColumnWidth
             statusColumnWidth: page.statusColumnWidth
             progressColumnWidth: page.progressColumnWidth
             actionColumnWidth: page.actionColumnWidth
@@ -108,6 +102,7 @@ Item {
                 // 行宽减去滚动条车道，右边不会压到条
                 width: list.width - metrics.scrollBarSlot
                 rowHeight: page.tableRowHeight
+                iconColumnWidth: page.iconColumnWidth
                 statusColumnWidth: page.statusColumnWidth
                 progressColumnWidth: page.progressColumnWidth
                 actionColumnWidth: page.actionColumnWidth
@@ -162,6 +157,11 @@ Item {
     function openNewTaskDialog() {
         if (page.backend)
             newTaskDialog.open()
+    }
+
+    function refresh() {
+        if (page.backend && !page.tasksLoading)
+            page.backend.refreshTasks()
     }
 
     /// 把 Rust 推来的任务列表同步进 ListModel：增删 / 移位 / 改字段都就地做，
