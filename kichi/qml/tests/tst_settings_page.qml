@@ -29,6 +29,7 @@ TestCase {
         property bool closeToTray: false
         property string storageBackend: "KWallet"
         property string settingsPath: "/tmp/kichi-settings.toml"
+        property int chooseDownloadDirCalls: 0
 
         // SettingsPlayback 监听后端的 `changed`（设置从别处刷新时同步控件）
         signal changed()
@@ -41,6 +42,7 @@ TestCase {
         }
         function resetPlayer() {}
         function setDownloadDir(value) { downloadDir = value }
+        function chooseDownloadDir() { chooseDownloadDirCalls += 1 }
         function openDownloadDir() {}
         function setNotifyEnabled(value) { notifyEnabled = value }
         function setCloseToTray(value) { closeToTray = value }
@@ -83,5 +85,48 @@ TestCase {
         mouseClick(btn)
         wait(40)
         compare(fired, 1, "点一次只发一次退出登录请求")
+    }
+
+    function test_advanced_player_is_collapsed_until_clicked() {
+        var row = findChild(page, "settingsAdvancedPlayer")
+        var body = findChild(page, "settingsPlayerAdvancedBody")
+        verify(row !== null, "有高级播放器设置行")
+        verify(body !== null, "有高级播放器设置内容")
+        verify(!body.visible, "高级播放器设置默认收起")
+
+        mouseClick(row)
+        wait(40)
+        verify(body.visible, "点高级播放器设置后展开")
+    }
+
+    function test_download_dir_commits_when_editing_finishes() {
+        var field = findChild(page, "settingsDownloadDir")
+        verify(field !== null, "有下载目录输入框")
+
+        field.text = "/tmp/kichi-downloads"
+        field.editingFinished()
+        compare(backend.downloadDir, "/tmp/kichi-downloads")
+    }
+
+    function test_quality_ask_label_is_compact() {
+        var box = findChild(page, "settingsQuality")
+        verify(box !== null, "有默认清晰度下拉框")
+        compare(box.textAt(0), "每次询问")
+    }
+
+    function test_settings_path_is_right_aligned() {
+        var path = findChild(page, "settingsPath")
+        verify(path !== null, "有设置文件路径")
+        compare(path.horizontalAlignment, Text.AlignRight)
+    }
+
+    function test_directory_picker_uses_backend() {
+        var choose = findChild(page, "settingsChooseDownloadDir")
+        verify(choose !== null, "有选择目录按钮")
+
+        mouseClick(choose)
+        wait(40)
+
+        compare(backend.chooseDownloadDirCalls, 1, "点一次只请求一次系统选择器")
     }
 }

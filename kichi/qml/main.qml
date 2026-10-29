@@ -208,6 +208,26 @@ ApplicationWindow {
                         Layout.fillWidth: true
                     }
 
+                    RowLayout {
+                        visible: root.currentPage === 3
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: theme.gapXs
+
+                        NavIcon {
+                            implicitWidth: 14
+                            implicitHeight: 14
+                            name: "check"
+                            color: theme.textMuted
+                            opacity: 0.8
+                        }
+
+                        Label {
+                            text: qsTr("更改会自动保存")
+                            font.pixelSize: theme.fontMeta
+                            color: theme.textMuted
+                        }
+                    }
+
                     FilesPageSearchBar {
                         id: searchBar
 

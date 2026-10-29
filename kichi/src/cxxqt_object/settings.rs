@@ -144,6 +144,44 @@ impl qobject::Kichi {
         });
     }
 
+    /// 调起系统原生目录选择器，选中后走正常的下载目录保存流程。
+    pub fn choose_download_dir(mut self: Pin<&mut Self>) {
+        let start = self.settings.download_dir_path();
+        let spawned = std::thread::Builder::new()
+            .name("kichi-folder-picker".into())
+            .spawn(move || match super::folder_picker::choose(&start) {
+                Ok(Some(path)) => match path.to_str() {
+                    Some(path) => {
+                        let path = path.to_owned();
+                        super::actions::enqueue_ui(move |mut kichi| {
+                            kichi
+                                .as_mut()
+                                .set_download_dir(QString::from(path.as_str()));
+                        });
+                    }
+                    None => {
+                        let reason = format!(
+                            "系统选择器返回的目录不是有效 UTF-8，无法保存：{}",
+                            path.display()
+                        );
+                        super::actions::enqueue_ui(move |mut kichi| {
+                            kichi.as_mut().set_message(&reason, false);
+                        });
+                    }
+                },
+                Ok(None) => {}
+                Err(reason) => {
+                    super::actions::enqueue_ui(move |mut kichi| {
+                        kichi.as_mut().set_message(&reason, false);
+                    });
+                }
+            });
+        if let Err(err) = spawned {
+            self.as_mut()
+                .set_message(&format!("无法启动系统目录选择器：{err}"), false);
+        }
+    }
+
     /// 统一的设置改动出口：先改内存、同步属性、再落盘。
     pub(crate) fn update_settings(mut self: Pin<&mut Self>, change: impl FnOnce(&mut Settings)) {
         let snapshot = {

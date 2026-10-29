@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ashpd = "0.11"
 base64 = "0.22"
 chrono = "0.4"
 cxx = "1"

@@ -13,6 +13,7 @@ import QtQuick.Layouts
 // - "primary"：系统强调色实底，用于每个视图里唯一的主操作（登录 / 应用 / 提交）
 // - "ghost"：无底，仅悬停时出现淡淡一层，用于「恢复默认」「删除」等次要操作
 // - "danger"：危险操作
+// - "dangerOutline"：低强调危险操作，保留危险语义但不抢页面视觉重心
 Button {
     id: control
 
@@ -46,6 +47,12 @@ Button {
                     return Qt.darker(theme.danger, 1.08)
                 return control.hovered ? Qt.lighter(theme.danger, 1.08) : theme.danger
             }
+            if (control.variant === "dangerOutline") {
+                if (control.down)
+                    return theme.softTint(theme.danger, 0.14)
+                return control.hovered ? theme.softTint(theme.danger, 0.08)
+                                       : theme.surfaceClear
+            }
             if (control.variant === "ghost") {
                 if (control.down)
                     return theme.surfacePressed
@@ -55,8 +62,12 @@ Button {
                 return theme.surfacePressed
             return control.hovered ? theme.surfaceHover : theme.surfaceRaised
         }
-        border.width: control.variant === "secondary" ? 1 : 0
-        border.color: control.visualFocus ? theme.accent : theme.hairline
+        border.width: control.variant === "secondary"
+                      || control.variant === "dangerOutline" ? 1 : 0
+        border.color: control.visualFocus ? theme.accent
+                    : control.variant === "dangerOutline"
+                      ? theme.softTint(theme.danger, 0.34)
+                    : theme.hairline
     }
 
     contentItem: RowLayout {
@@ -73,6 +84,8 @@ Button {
                     return theme.onAccent
                 if (control.variant === "danger")
                     return theme.onDanger
+                if (control.variant === "dangerOutline")
+                    return theme.danger
                 return control.variant === "ghost" ? theme.textSecondary : theme.textPrimary
             }
             opacity: control.variant === "ghost" ? 0.8 : 1
@@ -90,6 +103,8 @@ Button {
                     return theme.onAccent
                 if (control.variant === "danger")
                     return theme.onDanger
+                if (control.variant === "dangerOutline")
+                    return theme.danger
                 return control.variant === "ghost" ? theme.textSecondary : theme.textPrimary
             }
         }

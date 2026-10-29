@@ -56,8 +56,10 @@ Item {
         "arrow-up": "M12 5l0 14 M18 11l-6 -6l-6 6",
         search: "M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0 M21 21l-6 -6",
         x: "M18 6l-12 12 M6 6l12 12",
+        check: "M5 12l5 5l9 -9",
         // 下拉框箭头
-        "chevron-down": "M6 9l6 6l6 -6"
+        "chevron-down": "M6 9l6 6l6 -6",
+        "chevron-right": "M9 6l6 6l-6 6"
     })
 
     Shape {

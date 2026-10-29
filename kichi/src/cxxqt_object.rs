@@ -325,6 +325,11 @@ pub mod qobject {
         #[cxx_name = "setDownloadDir"]
         fn set_download_dir(self: Pin<&mut Self>, path: QString);
 
+        /// 通过 XDG Desktop Portal 调起系统原生目录选择器
+        #[qinvokable]
+        #[cxx_name = "chooseDownloadDir"]
+        fn choose_download_dir(self: Pin<&mut Self>);
+
         /// 给条目改名（成功后自动刷新当前目录）
         #[qinvokable]
         #[cxx_name = "renameEntry"]
@@ -453,6 +458,7 @@ mod downloads;
 mod file_actions;
 mod file_targets;
 mod files;
+mod folder_picker;
 mod notifications;
 mod play;
 mod play_subtitles;

@@ -36,6 +36,8 @@ const QML_FILES: &[&str] = &[
     "qml/KComboBox.qml",
     "qml/KStatusBadge.qml",
     "qml/KSectionTitle.qml",
+    "qml/KSettingsGroup.qml",
+    "qml/KSettingsRow.qml",
     "qml/KDialog.qml",
     "qml/TasksPage.qml",
     "qml/TaskCard.qml",
