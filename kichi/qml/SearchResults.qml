@@ -27,6 +27,8 @@ Item {
         id: metrics
     }
 
+    KTheme { id: theme }
+
     // 右键：条目本身 + 结果行内的位置（页面换算到菜单坐标系）
     signal contextMenu(var entry, point position)
     // 双击媒体文件：条目 id + 本视图内的锚点（页面再换算到页面坐标系）
@@ -50,8 +52,8 @@ Item {
         // —— 状态行（扫描中多一个「停止」）——
         RowLayout {
             Layout.fillWidth: true
-            Layout.margins: 8
-            spacing: 8
+            Layout.margins: theme.gapMd
+            spacing: theme.gapSm
 
             BusyIndicator {
                 running: root.scanning
@@ -78,9 +80,11 @@ Item {
 
             // 扫描中才是「停止」；结束时这里不出现按钮——
             // 想重来就改关键词或再点搜索框（同名按钮并排会让人不知道点哪个）
-            Button {
+            KButton {
                 text: qsTr("停止")
                 visible: root.scanning
+                variant: "ghost"
+                implicitHeight: 28
                 onClicked: root.backend.stopSearch()
             }
         }
@@ -96,6 +100,8 @@ Item {
             Layout.leftMargin: 8
             Layout.bottomMargin: 8
             clip: true
+            // 行间留 2px：圆角悬停底不连成一片（与文件列表一致）
+            spacing: 2
             model: root.backend ? root.backend.searchResults : []
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: KScrollBar {}
@@ -136,10 +142,23 @@ Item {
                 }
 
                 background: Rectangle {
-                    radius: 4
-                    color: row.highlighted ? palette.highlight
-                         : row.down ? palette.mid
-                         : "transparent"
+                    radius: theme.radiusCard
+                    // 选中只铺很淡的强调色 + 左侧竖条（与文件列表同一套语言），
+                    // 不整行铺满饱和色，文件名对比度才保得住
+                    color: row.highlighted ? theme.accentSoft
+                         : row.hovered ? theme.surfaceHover
+                         : theme.surfaceClear
+
+                    Rectangle {
+                        visible: row.highlighted
+                        width: 3
+                        height: parent.height - 16
+                        radius: 1.5
+                        anchors.left: parent.left
+                        anchors.leftMargin: 1
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: theme.accent
+                    }
                 }
 
                 contentItem: ColumnLayout {
@@ -162,9 +181,10 @@ Item {
                         // 类型标签：长列表里一眼分出「文件夹 / 文件」
                         Label {
                             text: modelData.kind === "folder" ? qsTr("文件夹") : qsTr("文件")
-                            color: modelData.kind === "folder" ? palette.link
-                                 : palette.placeholderText
+                            color: modelData.kind === "folder" ? theme.accent
+                                 : theme.textMuted
                             font.pixelSize: root.metaPixelSize
+                            font.weight: Font.DemiBold
                         }
 
                         Label {
@@ -172,21 +192,20 @@ Item {
                             font.pixelSize: root.textPixelSize
                             elide: Text.ElideRight
                             Layout.fillWidth: true
-                            color: row.highlighted ? palette.highlightedText : palette.text
+                            color: theme.textPrimary
                         }
 
                         Label {
                             text: qsTr("违规")
                             visible: modelData.auditFlag
                             font.pixelSize: root.textPixelSize
-                            color: row.highlighted ? palette.highlightedText : "#c0392b"
+                            color: theme.danger
                         }
 
                         Label {
                             text: modelData.sizeText
                             font.pixelSize: root.textPixelSize
-                            color: row.highlighted ? palette.highlightedText : palette.placeholderText
-                            opacity: row.highlighted ? 0.8 : 1
+                            color: theme.textMuted
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.sizeColumnWidth
                         }
@@ -195,18 +214,21 @@ Item {
                             text: modelData.modifiedText
                             visible: modelData.modifiedText.length > 0
                             font.pixelSize: root.textPixelSize
-                            color: row.highlighted ? palette.highlightedText : palette.placeholderText
-                            opacity: row.highlighted ? 0.8 : 1
+                            color: theme.textMuted
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.modifiedColumnWidth
                         }
 
                         // 文件夹：直接「进入」（面包屑变成真实层级）
-                        ToolButton {
+                        KButton {
                             readonly property bool isFolder: modelData.kind === "folder"
                             text: qsTr("进入")
+                            variant: "ghost"
                             visible: isFolder
                             enabled: root.backend !== null
+                            implicitHeight: 26
+                            leftPadding: 10
+                            rightPadding: 10
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("进入这个文件夹，面包屑会显示它在网盘里的真实位置")
                             onClicked: root.backend.searchOpenFolder(modelData.id)
@@ -217,9 +239,8 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         text: qsTr("所在文件夹：%1").arg(modelData.folderText)
-                        color: row.highlighted ? palette.highlightedText
-                             : modelData.folderId && modelData.folderId.length > 0
-                               ? palette.link : palette.placeholderText
+                        color: modelData.folderId && modelData.folderId.length > 0
+                               ? theme.accent : theme.textMuted
                         font.pixelSize: root.metaPixelSize
                         elide: Text.ElideMiddle
 

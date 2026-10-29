@@ -13,25 +13,29 @@ ColumnLayout {
     property bool commandDirty: false
     property bool argsDirty: false
 
-    spacing: 16
+    KTheme { id: theme }
 
-    Label {
+    spacing: theme.gapMd
+
+    KSectionTitle {
         text: qsTr("播放")
-        font.bold: true
+        Layout.fillWidth: true
     }
 
     RowLayout {
         Layout.fillWidth: true
-        spacing: 12
+        spacing: theme.gapMd
 
         Label {
             text: qsTr("默认清晰度")
-            Layout.preferredWidth: 110
+            Layout.preferredWidth: 96
+            font.pixelSize: theme.fontBody
+            color: theme.textPrimary
         }
 
-        ComboBox {
+        KComboBox {
             id: qualityBox
-            Layout.preferredWidth: 220
+            Layout.preferredWidth: 240
             model: [
                 { "value": "ask", "label": qsTr("每次询问（弹出档位菜单）") },
                 { "value": "original", "label": qsTr("原画") },
@@ -69,8 +73,8 @@ ColumnLayout {
     Label {
         Layout.fillWidth: true
         wrapMode: Text.Wrap
-        color: palette.placeholderText
-        font.pixelSize: 12
+        color: theme.textMuted
+        font.pixelSize: theme.fontMeta
         text: qsTr("选具体档位后直接开播；该文件没有这一档就播放原画。「每次询问」的菜单固定列出 原画 / 1080P / 720P / 480P，没有的档位会写明。")
     }
 
@@ -86,22 +90,24 @@ ColumnLayout {
     Label {
         Layout.fillWidth: true
         wrapMode: Text.Wrap
-        color: palette.placeholderText
-        font.pixelSize: 12
+        color: theme.textMuted
+        font.pixelSize: theme.fontMeta
         text: qsTr("同名优先（如 Movie.mkv 配 Movie.zh.srt）；目录里只有一条字幕时也会加载，多条时默认选中文。最多等 2 秒，超时先开播。只对 mpv 生效。")
     }
 
     GridLayout {
         Layout.fillWidth: true
         columns: 3
-        columnSpacing: 12
-        rowSpacing: 8
+        columnSpacing: theme.gapMd
+        rowSpacing: theme.gapSm
 
         Label {
             text: qsTr("播放器命令")
-            Layout.preferredWidth: 110
+            Layout.preferredWidth: 96
+            font.pixelSize: theme.fontBody
+            color: theme.textPrimary
         }
-        TextField {
+        KTextField {
             id: commandField
             Layout.fillWidth: true
             selectByMouse: true
@@ -114,9 +120,11 @@ ColumnLayout {
 
         Label {
             text: qsTr("附加参数")
-            Layout.preferredWidth: 110
+            Layout.preferredWidth: 96
+            font.pixelSize: theme.fontBody
+            color: theme.textPrimary
         }
-        TextField {
+        KTextField {
             id: argsField
             Layout.fillWidth: true
             selectByMouse: true
@@ -126,16 +134,19 @@ ColumnLayout {
             onEditingFinished: playback.applyPlayer()
         }
         RowLayout {
-            spacing: 6
+            spacing: theme.gapSm
 
-            Button {
+            KButton {
                 text: qsTr("应用")
+                variant: "primary"
+                implicitHeight: 32
                 enabled: playback.commandDirty || playback.argsDirty
                 onClicked: playback.applyPlayer()
             }
-            Button {
+            KButton {
                 text: qsTr("恢复默认")
-                flat: true
+                variant: "ghost"
+                implicitHeight: 32
                 onClicked: {
                     playback.commandDirty = false
                     playback.argsDirty = false
@@ -149,8 +160,8 @@ ColumnLayout {
     Label {
         Layout.fillWidth: true
         wrapMode: Text.Wrap
-        color: palette.placeholderText
-        font.pixelSize: 12
+        color: theme.textMuted
+        font.pixelSize: theme.fontMeta
         text: qsTr("默认：%1 %2。留空表示使用默认；文件名用 {title} 占位，直链走临时清单不进命令行。")
                 .arg(playback.backend ? playback.backend.playerDefaultCommand : "")
                 .arg(playback.backend ? playback.backend.playerDefaultArgs : "")

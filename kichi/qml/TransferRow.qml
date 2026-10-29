@@ -47,6 +47,8 @@ ItemDelegate {
     /// 页面把 Kichi 后端传进来（本组件不直接引 backend 单例）
     property var backend: null
 
+    KTheme { id: theme }
+
     readonly property bool notice: row.phase === "notice"
     readonly property bool failed: row.phase === "failed"
     /// 上次退出时没跑完（读回的历史行）：给「重试」，不给「打开位置」
@@ -113,24 +115,34 @@ ItemDelegate {
         return row.liveField("noteText", "")
     }
 
-    // 行高写死（与文件列表同一做法）：交给控件自己算会让各状态高低不一
-    implicitHeight: 60
-    padding: 8
-    leftPadding: 10
-    rightPadding: 10
+    // 行高写死（与文件列表同一做法）：交给控件自己算会让各状态高低不一。
+    // 68 = 上下 12 + 第一行 22 + 间距 2 + 第二行 20（12 的上下留白正好是
+    // 「行内上下 12px」的规范）。
+    implicitHeight: 72
+    padding: 12
+    leftPadding: 14
+    rightPadding: 14
 
     background: Rectangle {
-        radius: 4
-        // 定位高亮：约 1.2 秒后淡出（页面的 Timer 清掉 flash）
-        color: row.flash
-               ? Qt.rgba(palette.highlight.r, palette.highlight.g,
-                         palette.highlight.b, 0.30)
-               : row.hovered ? Qt.rgba(palette.windowText.r, palette.windowText.g,
-                                       palette.windowText.b, 0.05)
-               : "transparent"
+        radius: theme.radiusCard
+        // 每行是一张浅色卡片：轻微表面差 + 极浅描边，取代原来的硬边框。
+        // 悬停即时生效；「定位到这一条」的高亮单独一层淡入淡出，
+        // 免得两种状态混在一个动画里互相拖慢。
+        color: row.hovered ? theme.surfaceHover : theme.surfaceRaised
+        border.width: 1
+        border.color: theme.hairline
 
-        Behavior on color {
-            ColorAnimation { duration: 260 }
+        Rectangle {
+            anchors.fill: parent
+            radius: parent.radius
+            color: theme.accentSoft
+            border.width: 1
+            border.color: theme.softTint(theme.accent, 0.45)
+            opacity: row.flash ? 1 : 0
+
+            Behavior on opacity {
+                NumberAnimation { duration: 180 }
+            }
         }
     }
 
@@ -140,7 +152,7 @@ ItemDelegate {
         // 第一行整行可点：文件夹且有子文件时进详情页
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 20
+            Layout.preferredHeight: 22
 
             RowLayout {
                 anchors.fill: parent
@@ -160,7 +172,7 @@ ItemDelegate {
                         kind: row.folder ? "folder" : ""
                         fileName: row.name
                         color: palette.text
-                        opacity: row.folder ? 0.95 : 0.55
+                        opacity: row.folder ? 1.0 : 0.6
                     }
                 }
 
@@ -169,8 +181,8 @@ ItemDelegate {
                     text: row.name
                     elide: Text.ElideMiddle
                     verticalAlignment: Text.AlignVCenter
-                    font.bold: row.folder
-                    color: row.notice ? palette.placeholderText : palette.text
+                    font.weight: row.folder ? Font.DemiBold : Font.Normal
+                    color: row.notice ? theme.textMuted : theme.textPrimary
                 }
 
                 // 速度 / 剩余时间 / 卡住：在名称与状态之间固定占位。
@@ -180,9 +192,9 @@ ItemDelegate {
                     objectName: "rateText"
                     visible: row.running
                     text: row.liveRateText()
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.placeholderText
+                    color: theme.textMuted
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
                     Layout.preferredWidth: 190
@@ -190,25 +202,24 @@ ItemDelegate {
                     Layout.maximumWidth: 190
                 }
 
-                Label {
+                KStatusBadge {
                     objectName: "stateText"
                     visible: !row.notice
                     text: row.stateText
-                    font.pixelSize: 12
-                    verticalAlignment: Text.AlignVCenter
-                    color: row.failed ? "#c0392b"
-                         : row.interrupted ? "#b9770e"
-                         : row.phase === "done" ? "#3c9d5a"
-                         : palette.placeholderText
+                    tone: row.failed ? "danger"
+                        : row.interrupted ? "warning"
+                        : row.phase === "done" ? "success"
+                        : row.running ? "accent"
+                        : "neutral"
                 }
 
                 Label {
                     visible: !row.notice
                     objectName: "sizeText"
                     text: row.liveSizeText(row.sizeText)
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.placeholderText
+                    color: theme.textMuted
                     horizontalAlignment: Text.AlignRight
                     Layout.preferredWidth: 150
                 }
@@ -222,7 +233,7 @@ ItemDelegate {
                     Layout.preferredWidth: 12
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.placeholderText
+                    color: theme.textMuted
                 }
             }
 
@@ -263,9 +274,9 @@ ItemDelegate {
 
                 Label {
                     text: row.liveProgressText(row.progressText)
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.placeholderText
+                    color: theme.textMuted
                 }
 
                 // 重试 / 续传说明：以前只在快照 detail 里、被下载中的第二行隐藏，
@@ -274,9 +285,9 @@ ItemDelegate {
                     objectName: "noteText"
                     visible: text.length > 0
                     text: row.liveNoteText()
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.placeholderText
+                    color: theme.textMuted
                     elide: Text.ElideMiddle
                     Layout.maximumWidth: 320
                 }
@@ -296,12 +307,12 @@ ItemDelegate {
                     Layout.fillWidth: true
                     // 准备中 / 聚合说明都由 Rust 给；文件夹部分失败补一句可点提示
                     text: row.detail + (row.hasFailedChildren ? qsTr("（点开可重试）") : "")
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideMiddle
-                    color: row.failed || row.hasFailedChildren ? "#c0392b"
-                         : row.interrupted ? "#b9770e"
-                         : palette.placeholderText
+                    color: row.failed || row.hasFailedChildren ? theme.danger
+                         : row.interrupted ? theme.warning
+                         : theme.textMuted
                     font.underline: detailMouse.containsMouse
                                     && row.canReveal && !row.folder
 
@@ -319,9 +330,9 @@ ItemDelegate {
                     objectName: "revealLink"
                     visible: row.canReveal
                     text: qsTr("打开位置")
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.link
+                    color: theme.accent
                     font.underline: revealMouse.containsMouse
 
                     MouseArea {
@@ -337,9 +348,9 @@ ItemDelegate {
                     objectName: "retryLink"
                     visible: row.canRetry
                     text: qsTr("重试")
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontMeta
                     verticalAlignment: Text.AlignVCenter
-                    color: palette.link
+                    color: theme.accent
                     font.underline: retryMouse.containsMouse
 
                     // 已中断行：说清断点前提（改过下载目录 = 从头下，ADR 0011 / 0014）

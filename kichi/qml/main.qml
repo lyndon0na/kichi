@@ -166,14 +166,13 @@ ApplicationWindow {
                 onPageRequested: function (index) {
                     root.currentPage = index
                 }
-                onSignOutRequested: signOutDialog.open()
             }
 
             // 侧栏与内容之间的细线：两边的底色只差一点点，没有线就看不出边界
             Rectangle {
                 Layout.preferredWidth: 1
                 Layout.fillHeight: true
-                color: palette.mid
+                color: theme.hairline
             }
 
             ColumnLayout {
@@ -191,15 +190,16 @@ ApplicationWindow {
                     // 换页时内容不会横向错开
                     Layout.leftMargin: metrics.pageMargin
                     Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
-                    Layout.topMargin: 8
-                    Layout.preferredHeight: 34
+                    Layout.topMargin: 10
+                    Layout.preferredHeight: 38
                     spacing: 8
 
                     Label {
                         text: root.pageTitle()
-                        font.pixelSize: 16
-                        font.weight: Font.DemiBold
-                        color: palette.text
+                        // 一级标题：18px Bold，和正文（13）拉开层级（docs/ui.md）
+                        font.pixelSize: theme.fontTitle
+                        font.weight: Font.Bold
+                        color: theme.textPrimary
                         Layout.alignment: Qt.AlignVCenter
                     }
 
@@ -227,41 +227,29 @@ ApplicationWindow {
                         visible: root.currentPage === 0
                         spacing: 2
 
-                        ToolButton {
+                        KIconButton {
                             id: refreshButton
 
-                            padding: 6
+                            iconName: "refresh"
+                            iconSize: 14
+                            iconOpacity: 0.65
                             enabled: !filesPage.searching && !backend.busy
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("刷新")
                             onClicked: filesPage.refreshFiles()
-
-                            contentItem: NavIcon {
-                                implicitWidth: 14
-                                implicitHeight: 14
-                                name: "refresh"
-                                color: palette.text
-                                opacity: refreshButton.enabled ? 0.65 : 0.25
-                            }
                         }
 
-                        ToolButton {
+                        KIconButton {
                             id: newFolderButton
 
-                            padding: 6
+                            iconName: "plus"
+                            iconSize: 14
+                            iconOpacity: 0.65
                             enabled: !filesPage.searching && !backend.busy
                                      && !backend.fileActionRunning
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("新建文件夹")
                             onClicked: filesPage.beginNewFolder()
-
-                            contentItem: NavIcon {
-                                implicitWidth: 14
-                                implicitHeight: 14
-                                name: "plus"
-                                color: palette.text
-                                opacity: newFolderButton.enabled ? 0.65 : 0.25
-                            }
                         }
                     }
                 }
@@ -293,9 +281,9 @@ ApplicationWindow {
                         Layout.preferredHeight: 30
                         clip: true
 
-                        // 字号比页名（16）小一级，和文件名同档：面包屑是路径，
+                        // 字号比页名（18）小两级，和正文同档：面包屑是路径，
                         // 不该和页标题一样重
-                        readonly property int crumbPixelSize: 14
+                        readonly property int crumbPixelSize: 13
                         // 一级目录名最多占多宽；超过就中间截断（名字末尾常是版本号，
                         // 掐中间留得住「漫威合集...PTer」）
                         readonly property int nameMaxWidth: 220
@@ -394,23 +382,16 @@ ApplicationWindow {
                             // 「›」两侧各留 4px：贴住名字会读成一个字
                             spacing: 4
 
-                            ToolButton {
+                            KIconButton {
                                 id: upButton
 
-                                padding: 6
+                                iconName: "arrow-up"
+                                iconSize: 14
+                                iconOpacity: 0.65
                                 enabled: !backend.busy && root.crumbs.length > 1
                                 ToolTip.visible: hovered
                                 ToolTip.text: qsTr("上一级（回到上级目录）")
                                 onClicked: filesPage.goUp()
-
-                                // 线稿图标，不用文字字形「↑」：字形随字体变，和侧栏图标也不是一家人
-                                contentItem: NavIcon {
-                                    implicitWidth: 14
-                                    implicitHeight: 14
-                                    name: "arrow-up"
-                                    color: palette.text
-                                    opacity: upButton.enabled ? 0.65 : 0.25
-                                }
                             }
 
                             Repeater {
@@ -506,6 +487,7 @@ ApplicationWindow {
 
                     SettingsPage {
                         backend: backend
+                        onSignOutRequested: signOutDialog.open()
                     }
                 }
             }
@@ -520,19 +502,48 @@ ApplicationWindow {
         backend: backend
     }
 
-    // 状态消息（错误 / 进度 / 提示）
-    footer: Frame {
+    // 状态栏：不再用 Frame（Breeze 下是一块贴底的浅色面板，像被切断的表格）。
+    // 改成与内容同底、顶部一根极浅分隔线的细条，提示文字 12px 次要色，
+    // 没有消息时整条高度为 0、不占位。
+    footer: Item {
+        readonly property int barHeight: 32
+
+        implicitHeight: visible ? barHeight : 0
         visible: backend.statusMessage.length > 0
-        padding: 10
+
+        Rectangle {
+            anchors.fill: parent
+            color: theme.surfaceRaised
+        }
+
+        // 顶部细线：与内容自然过渡，不用硬边框
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            implicitHeight: 1
+            color: theme.hairline
+        }
 
         Label {
+            anchors.fill: parent
+            anchors.leftMargin: metrics.pageMargin
+            anchors.rightMargin: metrics.pageMargin
             text: backend.statusMessage
-            wrapMode: Text.Wrap
-            width: parent.width
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+            color: theme.textSecondary
+            font.pixelSize: theme.fontMeta
+            ToolTip.visible: statusHover.hovered
+            ToolTip.text: backend.statusMessage
+
+            HoverHandler {
+                id: statusHover
+            }
         }
     }
 
-    Dialog {
+    KDialog {
         id: signOutDialog
         title: qsTr("退出登录")
         modal: true
@@ -559,6 +570,11 @@ ApplicationWindow {
     // 页面级尺寸常量（滚动条车道 / 页边距），与各页共用同一套数字
     UiMetrics {
         id: metrics
+    }
+
+    // 全局视觉令牌（圆角 / 间距 / 字号 / 表面色）
+    KTheme {
+        id: theme
     }
 
     function pageTitle() {

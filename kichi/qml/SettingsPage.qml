@@ -10,6 +10,9 @@ Item {
 
     property var backend: null
 
+    /// 退出登录：设置页只负责发信号，确认框与清令牌在 main.qml / backend 那边
+    signal signOutRequested()
+
     // 下载目录输入框在编辑中时不要被 backend 的刷新覆盖（否则打字会被打断）
     property bool downloadDirty: false
 
@@ -17,6 +20,8 @@ Item {
     UiMetrics {
         id: metrics
     }
+
+    KTheme { id: theme }
 
     Flickable {
         id: scroller
@@ -37,7 +42,7 @@ Item {
             id: body
             // 内容宽度减去滚动条车道：文字停在条左边
             width: scroller.width - metrics.scrollBarSlot
-            spacing: 16
+            spacing: theme.gapMd
 
             // ── 播放（内容在 SettingsPlayback.qml） ────────────
             SettingsPlayback {
@@ -46,21 +51,24 @@ Item {
             }
 
             // ── 下载 ───────────────────────────────────────────
-            Label {
+            KSectionTitle {
                 text: qsTr("下载")
-                font.bold: true
+                Layout.fillWidth: true
+                Layout.topMargin: theme.gapMd
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 12
+                spacing: theme.gapMd
 
                 Label {
                     text: qsTr("下载目录")
-                    Layout.preferredWidth: 110
+                    Layout.preferredWidth: 96
+                    font.pixelSize: theme.fontBody
+                    color: theme.textPrimary
                 }
 
-                TextField {
+                KTextField {
                     id: downloadField
                     Layout.fillWidth: true
                     selectByMouse: true
@@ -71,16 +79,19 @@ Item {
                 }
 
                 RowLayout {
-                    spacing: 6
+                    spacing: theme.gapSm
 
-                    Button {
+                    KButton {
                         text: qsTr("应用")
+                        variant: "primary"
+                        implicitHeight: 32
                         enabled: page.downloadDirty
                         onClicked: page.applyDownloadDir()
                     }
-                    Button {
+                    KButton {
                         text: qsTr("打开目录")
-                        flat: true
+                        variant: "ghost"
+                        implicitHeight: 32
                         onClicked: {
                             if (page.backend)
                                 page.backend.openDownloadDir()
@@ -90,18 +101,21 @@ Item {
             }
 
             // ── 通知 ───────────────────────────────────────────
-            Label {
+            KSectionTitle {
                 text: qsTr("通知")
-                font.bold: true
+                Layout.fillWidth: true
+                Layout.topMargin: theme.gapMd
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 12
+                spacing: theme.gapMd
 
                 Label {
                     text: qsTr("任务结束通知")
-                    Layout.preferredWidth: 110
+                    Layout.preferredWidth: 96
+                    font.pixelSize: theme.fontBody
+                    color: theme.textPrimary
                 }
                 CheckBox {
                     text: qsTr("下载或离线任务结束时弹出系统通知")
@@ -115,18 +129,21 @@ Item {
             }
 
             // ── 窗口 ───────────────────────────────────────────
-            Label {
+            KSectionTitle {
                 text: qsTr("窗口")
-                font.bold: true
+                Layout.fillWidth: true
+                Layout.topMargin: theme.gapMd
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 12
+                spacing: theme.gapMd
 
                 Label {
                     text: qsTr("关闭窗口")
-                    Layout.preferredWidth: 110
+                    Layout.preferredWidth: 96
+                    font.pixelSize: theme.fontBody
+                    color: theme.textPrimary
                 }
                 CheckBox {
                     text: qsTr("最小化到托盘（任务轮询与通知继续）")
@@ -139,9 +156,40 @@ Item {
                 Item { Layout.fillWidth: true }
             }
 
+            // ── 账号 ───────────────────────────────────────────
+            // 退出登录放这里而不是侧栏账号卡：低频、不可逆，离日常操作远一点
+            // （2026-10-29 用户要求）。
+            KSectionTitle {
+                text: qsTr("账号")
+                Layout.fillWidth: true
+                Layout.topMargin: theme.gapMd
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: theme.gapMd
+
+                Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: qsTr("退出后本机保存的登录令牌会被清除，下次需要重新输入账号密码。")
+                    font.pixelSize: theme.fontMeta
+                    color: theme.textMuted
+                }
+
+                KButton {
+                    objectName: "settingsSignOut"
+                    text: qsTr("退出登录")
+                    variant: "danger"
+                    implicitHeight: 32
+                    onClicked: page.signOutRequested()
+                }
+            }
+
             // ── 存储信息（只读；内容在 SettingsAbout.qml） ──────
             SettingsAbout {
                 Layout.fillWidth: true
+                Layout.topMargin: theme.gapMd
                 backend: page.backend
             }
 

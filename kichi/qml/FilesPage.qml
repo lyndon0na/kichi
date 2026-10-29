@@ -125,6 +125,9 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
+                    // 行与行之间留 2px：圆角悬停底不会连成一条色带。
+                    // 文件页是带表头的表格，间距再大列就会和表头对不上。
+                    spacing: 2
                     // 搜索视图显示结果；否则显示当前目录
                     visible: !page.searching
                     model: page.backend ? page.backend.files : []
@@ -177,6 +180,7 @@ Item {
                         sizeColumnWidth: density.sizeColumnWidth
                         modifiedColumnWidth: density.modifiedColumnWidth
                         columnSpacing: density.columnSpacing
+                        contentPadding: density.rowPadding
                         rowHeight: density.rowHeight
                         textPixelSize: density.namePixelSize
                         metaPixelSize: density.metaPixelSize

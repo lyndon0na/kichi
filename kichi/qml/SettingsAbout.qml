@@ -9,39 +9,45 @@ ColumnLayout {
 
     property var backend: null
 
-    spacing: 16
+    KTheme { id: theme }
 
-    Label {
+    spacing: theme.gapMd
+
+    KSectionTitle {
         text: qsTr("关于")
-        font.bold: true
+        Layout.fillWidth: true
     }
 
     GridLayout {
         Layout.fillWidth: true
         columns: 2
-        columnSpacing: 12
-        rowSpacing: 6
+        columnSpacing: theme.gapMd
+        rowSpacing: theme.gapSm
 
         Label {
             text: qsTr("令牌存储")
-            color: palette.placeholderText
+            color: theme.textMuted
+            font.pixelSize: theme.fontBody
         }
         Label {
             text: about.backend ? about.backend.storageBackend : ""
             Layout.fillWidth: true
             wrapMode: Text.Wrap
+            font.pixelSize: theme.fontBody
         }
 
         Label {
             text: qsTr("设置文件")
-            color: palette.placeholderText
+            color: theme.textMuted
+            font.pixelSize: theme.fontBody
         }
         Label {
             text: about.backend ? about.backend.settingsPath : ""
             Layout.fillWidth: true
             wrapMode: Text.WrapAnywhere
             font.family: "monospace"
-            font.pixelSize: 12
+            font.pixelSize: theme.fontMeta
+            color: theme.textSecondary
         }
     }
 }

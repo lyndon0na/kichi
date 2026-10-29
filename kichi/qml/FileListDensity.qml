@@ -10,9 +10,10 @@ import QtQuick
 // font.pixelSize 为 -1，退回 13，正是 10pt 在 96dpi 下的实际像素。
 // 要整体放大 / 缩小只改 densityScale。
 //
-// 字号只有三档：文件名 14、次要信息 12、图标 16。
+// 字号只有三档：文件名 14、次要信息 12、图标 18。
 // 原来文件名 16 而其它全是 12，屏幕上每样东西差不多大，看不出主次。
-// 行高 44 / 表头 32：52 和 36 那套一屏只能放十行出头，空得发慌。
+// 行高 48 / 表头 34：比旧版（44 / 32）多一点纵向呼吸，又仍然一屏能看十几行；
+// 行内左右内边距统一到 12，和页头的左边距对齐。
 //
 // 本身不可见、不占位：它只是一个装着数值的组件，顺带带一个隐藏 Text
 // 用来读应用默认字体。
@@ -33,14 +34,14 @@ Item {
 
     readonly property int namePixelSize: Math.round(baseFontSize * 1.08 * densityScale)
     readonly property int metaPixelSize: Math.round(baseFontSize * 0.92 * densityScale)
-    readonly property int iconPixelSize: Math.round(baseFontSize * 1.23 * densityScale)
+    readonly property int iconPixelSize: Math.round(baseFontSize * 1.38 * densityScale)
 
-    readonly property int rowHeight: Math.round(baseFontSize * 3.4 * densityScale)
-    readonly property int headerRowHeight: Math.round(baseFontSize * 2.46 * densityScale)
+    readonly property int rowHeight: Math.round(baseFontSize * 3.7 * densityScale)
+    readonly property int headerRowHeight: Math.round(baseFontSize * 2.6 * densityScale)
 
     // 图标列 = 图标边长 + 左右各 2px：线稿图标不像 emoji 那样自带内边距，
     // 列宽只要比图标略宽一点，文件名就不会贴上去
-    readonly property int iconColumnWidth: Math.round(20 * densityScale)
+    readonly property int iconColumnWidth: Math.round(22 * densityScale)
     readonly property int sizeColumnWidth: Math.round(96 * densityScale)
     readonly property int modifiedColumnWidth: Math.round(150 * densityScale)
 

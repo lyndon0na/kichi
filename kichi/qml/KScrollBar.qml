@@ -26,6 +26,5 @@ ScrollBar {
         // 跟主题走：浅色 / 深色下都自动换成 windowText，不写死色值
         color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b,
                        bar.pressed ? 0.55 : bar.hovered ? 0.40 : 0.26)
-        Behavior on color { ColorAnimation { duration: 90 } }
     }
 }

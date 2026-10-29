@@ -16,6 +16,8 @@ Item {
         id: metrics
     }
 
+    KTheme { id: theme }
+
     // —— 列表模型 ——
     // ⚠ 不能把 `backend.tasks` 直接当 ListView.model：每次轮询都是一个新数组，
     // ListView 会整表重灌，用户滚到哪都会被甩回顶部（2026-10-28）。
@@ -51,14 +53,14 @@ Item {
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
-        spacing: 8
+        spacing: theme.gapSm
 
         RowLayout {
             Layout.fillWidth: true
             Layout.rightMargin: metrics.pageMargin
-            spacing: 8
+            spacing: theme.gapSm
 
-            TextField {
+            KTextField {
                 id: urlField
                 Layout.fillWidth: true
                 placeholderText: qsTr("粘贴磁力链接或下载地址，回车提交")
@@ -68,14 +70,18 @@ Item {
                 onTextEdited: if (page.backend) page.backend.taskInput = text
             }
 
-            Button {
+            KButton {
                 text: qsTr("提交")
+                variant: "primary"
+                implicitHeight: 36
                 enabled: urlField.text.trim().length > 0
                 onClicked: page.submit()
             }
 
-            Button {
+            KButton {
                 text: qsTr("刷新")
+                variant: "secondary"
+                implicitHeight: 36
                 onClicked: page.backend.refreshTasks()
             }
         }
@@ -84,8 +90,8 @@ Item {
             visible: page.activeCount > 0
             Layout.rightMargin: metrics.pageMargin
             text: qsTr("%1 条任务进行中，列表每 10 秒自动刷新").arg(page.activeCount)
-            color: palette.placeholderText
-            font.pixelSize: 12
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
         }
 
         ListView {
@@ -94,99 +100,23 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 8
+            spacing: 10
             model: taskRows
 
             // 列表铺到窗口右缘，条画在右侧 10px 车道里
             ScrollBar.vertical: KScrollBar {}
 
-            delegate: Frame {
-                id: card
+            delegate: TaskCard {
                 // 卡片宽度减去滚动条车道，右边不会压到条
                 width: list.width - metrics.scrollBarSlot
-                padding: 12
-
-                readonly property bool isActive: !model.settled
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 6
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: model.name
-                            elide: Text.ElideMiddle
-                            font.bold: true
-                        }
-
-                        Label {
-                            text: model.phaseText
-                            color: model.phase === "error" ? "#d9534f"
-                                 : model.phase === "completed" ? "#3c9d5a"
-                                 : palette.text
-                            font.pixelSize: 12
-                        }
-
-                        Button {
-                            text: qsTr("删除")
-                            flat: true
-                            onClicked: {
-                                page.pendingDeleteId = model.key
-                                page.pendingDeleteName = model.name
-                                deleteDialog.open()
-                            }
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-                        visible: card.isActive || model.phase === "error"
-
-                        KProgressBar {
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 100
-                            value: model.progress
-                            indeterminate: model.phase === "pending"
-                        }
-
-                        Label {
-                            text: model.progressText
-                            font.pixelSize: 12
-                            color: palette.placeholderText
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 12
-
-                        Label {
-                            text: model.sizeText
-                            font.pixelSize: 12
-                            color: palette.placeholderText
-                        }
-
-                        Label {
-                            text: model.createdText
-                            font.pixelSize: 12
-                            color: palette.placeholderText
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: model.detail
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
-                            color: model.phase === "error"
-                                   ? "#d9534f" : palette.placeholderText
-                        }
-                    }
+                // ⚠ 这里**不要**再写 `key: model.key ?? ""` 这类绑定：TaskCard 的字段
+                // 都是 required property，ListView 会按同名角色自动注入；一旦手写
+                // `model.xxx` 覆盖上去，自动注入就被顶掉，而 ListModel 的 `model`
+                // 对象在这里读不到这些角色 → 整张卡片字段全空（只剩空壳和删除按钮）。
+                onDeleteRequested: function (key, name) {
+                    page.pendingDeleteId = key
+                    page.pendingDeleteName = name
+                    deleteDialog.open()
                 }
             }
 
@@ -195,7 +125,8 @@ Item {
                 visible: list.count === 0
                 text: qsTr("暂无离线任务\n把磁力链接或下载地址粘到上方即可开始")
                 horizontalAlignment: Text.AlignHCenter
-                color: palette.placeholderText
+                color: theme.textMuted
+                font.pixelSize: theme.fontBody
             }
         }
     }
@@ -279,7 +210,7 @@ Item {
         }
     }
 
-    Dialog {
+    KDialog {
         id: deleteDialog
         title: qsTr("删除任务")
         modal: true

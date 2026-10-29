@@ -9,10 +9,9 @@ import QtQuick.Layouts
 // 纯 QML 自绘（docs/pitfalls.md：不能构造 QWidget / 不能用原生目录选择框）。
 // 只列文件夹；源文件夹在列表里置灰、不可进入——这样结构上就到不了
 // 「把文件夹移进它自己的子目录」。目标等于源目录时确定键也置灰。
-Dialog {
+KDialog {
     id: picker
     objectName: "movePickerDialog"
-
     property var backend: null
     /// "move" | "copy"
     property string mode: "move"
@@ -30,6 +29,9 @@ Dialog {
     property string actionError: ""
 
     property int seenRevision: -1
+
+    // 主题令牌来自 KDialog 的 `theme` 属性（见 KDialog.qml 的说明：
+    // 不能再写一个 `KTheme { }` 子项，否则弹窗正文会塌成 0 高）。
 
     readonly property string targetId: path.length > 0 ? path[path.length - 1].id : ""
     readonly property string targetLabel: path.length > 0 ? path[path.length - 1].name
@@ -191,9 +193,11 @@ Dialog {
             Layout.fillWidth: true
             spacing: 6
 
-            Button {
+            KButton {
                 objectName: "movePickerUp"
                 text: qsTr("↑ 上一级")
+                variant: "secondary"
+                implicitHeight: 30
                 enabled: picker.backend !== null
                          && !picker.backend.moveTargetsLoading
                          && picker.path.length > 1
@@ -220,8 +224,8 @@ Dialog {
         Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            font.pixelSize: 12
-            color: palette.placeholderText
+            font.pixelSize: theme.fontMeta
+            color: theme.textMuted
             visible: picker.targetId === picker.sourceParentId
             text: qsTr("这里就是源目录；请进入其它文件夹或点「上一级」。")
         }
@@ -233,6 +237,7 @@ Dialog {
             Layout.fillWidth: true
             Layout.preferredHeight: 260
             clip: true
+            spacing: 2
             model: foldersModel
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: KScrollBar {}
@@ -269,14 +274,16 @@ Dialog {
                 objectName: "movePickerListError"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                font.pixelSize: 12
-                color: "#d9534f"
+                font.pixelSize: theme.fontMeta
+                color: theme.danger
                 text: picker.backend ? picker.backend.moveTargetsError : ""
             }
 
-            Button {
+            KButton {
                 objectName: "movePickerRetry"
                 text: qsTr("重试")
+                variant: "secondary"
+                implicitHeight: 28
                 onClicked: picker.reload()
             }
         }
@@ -285,8 +292,8 @@ Dialog {
             objectName: "movePickerActionError"
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            font.pixelSize: 12
-            color: "#d9534f"
+            font.pixelSize: theme.fontMeta
+            color: theme.danger
             visible: picker.actionError.length > 0
             text: picker.actionError
         }

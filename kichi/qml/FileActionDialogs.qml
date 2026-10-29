@@ -16,6 +16,8 @@ Item {
 
     property var backend: null
 
+    KTheme { id: theme }
+
     readonly property int dialogWidth: 380
 
     // 当前操作对象。多选时 target 是右键点到的那一条，targetIds 是全部。
@@ -26,7 +28,7 @@ Item {
     property var targetIds: []
 
     // —— 重命名 ——
-    Dialog {
+    KDialog {
         id: renameDialog
         objectName: "renameDialog"
 
@@ -70,7 +72,7 @@ Item {
                 elide: Text.ElideMiddle
             }
 
-            TextField {
+            KTextField {
                 id: nameField
                 objectName: "renameNameField"
                 Layout.fillWidth: true
@@ -83,7 +85,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.pixelSize: 12
-                color: "#d9534f"
+                color: theme.danger
                 visible: text.length > 0
                 text: renameDialog.errorText
             }
@@ -91,7 +93,7 @@ Item {
     }
 
     // —— 新建文件夹 ——
-    Dialog {
+    KDialog {
         id: folderDialog
         objectName: "folderDialog"
 
@@ -120,7 +122,7 @@ Item {
             width: root.dialogWidth
             spacing: 8
 
-            TextField {
+            KTextField {
                 id: folderField
                 objectName: "folderNameField"
                 Layout.fillWidth: true
@@ -134,7 +136,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.pixelSize: 12
-                color: "#d9534f"
+                color: theme.danger
                 visible: text.length > 0
                 text: folderDialog.errorText
             }
@@ -142,7 +144,7 @@ Item {
     }
 
     // —— 移入回收站（可恢复，批量）——
-    Dialog {
+    KDialog {
         id: trashDialog
         objectName: "trashDialog"
 
@@ -180,7 +182,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.pixelSize: 12
-                color: "#d9534f"
+                color: theme.danger
                 visible: text.length > 0
                 text: trashDialog.errorText
             }

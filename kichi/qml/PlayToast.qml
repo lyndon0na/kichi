@@ -28,15 +28,17 @@ Rectangle {
     property bool shown: false
     visible: shown
 
+    KTheme { id: theme }
+
     // 浮在页面之上，但只占自己那一块
     z: 50
-    radius: 6
-    color: toast.palette.alternateBase
+    radius: theme.radiusCard
+    color: theme.surfaceRaised
     border.width: 1
-    border.color: toast.palette.mid
+    border.color: theme.hairline
 
     /// 内容四周留白（也是内部 RowLayout 的边距）
-    property int padding: 10
+    property int padding: 12
 
     // 内容宽度上限：长文件名只把文字截断，不能把窗口撑变形
     readonly property int maxTextWidth: 420
@@ -159,6 +161,8 @@ Rectangle {
             Layout.maximumWidth: toast.maxTextWidth
             Layout.alignment: Qt.AlignVCenter
             elide: Text.ElideRight
+            font.pixelSize: theme.fontMeta
+            color: toast.failed ? theme.danger : theme.textPrimary
             // 文件名与错误文案都是外部数据：按纯文本渲染，不当富文本
             textFormat: Text.PlainText
             text: toast.failed ? toast.backend.playError
@@ -167,11 +171,13 @@ Rectangle {
                   : ""
         }
 
-        Button {
+        KButton {
             objectName: "playToastAction"
             Layout.alignment: Qt.AlignVCenter
             visible: toast.loading || toast.failed
             text: toast.loading ? qsTr("取消") : qsTr("关闭")
+            variant: "secondary"
+            implicitHeight: 28
             onClicked: toast.activate()
         }
     }

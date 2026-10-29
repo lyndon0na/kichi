@@ -51,16 +51,18 @@ Item {
 
         // 顺序跟系统标准按钮一致：确定在左、取消在右（KDE 默认）。
         // 两套页脚的「最右一个」都是取消，避免同一个位置在两类弹窗里做不同的事。
-        Button {
+        KButton {
             objectName: "dialogFooterOk"
             text: footer.okText
+            variant: "primary"
             enabled: footer.okEnabled
             onClicked: footer.okClicked()
         }
 
-        Button {
+        KButton {
             objectName: "dialogFooterCancel"
             text: qsTr("取消")
+            variant: "secondary"
             enabled: footer.cancelEnabled
             onClicked: footer.cancelClicked()
         }

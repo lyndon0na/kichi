@@ -56,6 +56,8 @@ Item {
         id: metrics
     }
 
+    KTheme { id: theme }
+
     // —— 列表模型 ——
     // ⚠ 不能用「每次拿一个新数组赋给 ListView.model」：那会让 ListView 整表
     // 重灌，滚动位置被冲回顶部；即便事后把位置放回去，中间也会闪一帧列表顶部
@@ -384,14 +386,14 @@ Item {
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
-        spacing: 8
+        spacing: theme.gapMd
 
         // —— 工具条：进行中条数 + 三个操作 ——
         RowLayout {
             Layout.fillWidth: true
             // 工具条不吃滚动条车道，右缘留普通页边距（视觉位置与以前一致）
             Layout.rightMargin: metrics.pageMargin
-            spacing: 8
+            spacing: theme.gapSm
 
             Label {
                 Layout.fillWidth: true
@@ -403,24 +405,31 @@ Item {
                         ? qsTr("%1 个进行中 · %2 批排队").arg(page.activeCount).arg(queued)
                         : qsTr("%1 个进行中").arg(page.activeCount)
                 }
-                color: page.activeCount > 0 ? palette.text : palette.placeholderText
-                font.pixelSize: 12
+                color: page.activeCount > 0 ? theme.textPrimary : theme.textMuted
+                font.pixelSize: theme.fontBody
+                font.weight: page.activeCount > 0 ? Font.DemiBold : Font.Normal
             }
 
-            Button {
+            KButton {
                 text: qsTr("打开下载目录")
+                variant: "secondary"
+                implicitHeight: 32
                 onClicked: if (page.backend) page.backend.openDownloadDir()
             }
 
-            Button {
+            KButton {
                 text: qsTr("取消下载")
+                variant: "secondary"
+                implicitHeight: 32
                 enabled: page.activeCount > 0
                 onClicked: if (page.backend) page.backend.cancelDownloads()
             }
 
-            Button {
+            KButton {
                 objectName: "clearFinishedButton"
                 text: qsTr("清空已完成记录")
+                variant: "ghost"
+                implicitHeight: 32
                 enabled: page.backend !== null && page.hasFinished
                 onClicked: clearDialog.open()
             }
@@ -434,57 +443,79 @@ Item {
             objectName: "historyDayRow"
             Layout.fillWidth: true
             Layout.rightMargin: metrics.pageMargin
-            spacing: 12
+            spacing: theme.gapSm
             visible: page.dayGroups.length > 0
 
             Repeater {
                 model: page.inlineDayGroups
 
-                delegate: Label {
+                // 日期分组做成圆角药丸：选中态是淡强调色底 + 强调色文字，
+                // 和侧栏 / 文件列表的选中语言一致；不再是一行下划线链接。
+                delegate: Item {
+                    id: pill
+
                     required property var modelData
                     objectName: "dayPill-" + modelData.key
                     property string dayKey: modelData.key
-                    text: modelData.label
-                    font.pixelSize: 12
-                    verticalAlignment: Text.AlignVCenter
-                    color: page.selectedDay === dayKey ? palette.text : palette.link
-                    font.bold: page.selectedDay === dayKey
-                    font.underline: pillMouse.containsMouse
+                    readonly property bool selected: page.selectedDay === dayKey
+                    // 测试按 .font.bold 读选中态
+                    property alias font: pillLabel.font
+                    property alias text: pillLabel.text
+
+                    implicitWidth: pillLabel.implicitWidth + 20
+                    implicitHeight: 26
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: theme.radiusSmall
+                        color: pill.selected ? theme.accentSoft
+                             : pillMouse.containsMouse ? theme.surfaceHover
+                             : theme.surfaceClear
+                        border.width: pill.selected ? 1 : 0
+                        border.color: theme.softTint(theme.accent, 0.35)
+                    }
+
+                    Label {
+                        id: pillLabel
+                        anchors.centerIn: parent
+                        text: pill.modelData.label
+                        font.pixelSize: theme.fontMeta
+                        font.bold: pill.selected
+                        color: pill.selected ? theme.accent : theme.textSecondary
+                    }
 
                     MouseArea {
                         id: pillMouse
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: page.selectDay(dayKey)
+                        onClicked: page.selectDay(pill.dayKey)
                     }
                 }
             }
 
-            Label {
+            KButton {
+                id: moreDaysMenuButton
+
                 objectName: "earlierDaysLink"
                 visible: page.earlierDayGroups.length > 0
                 text: qsTr("更早 ▾")
-                font.pixelSize: 12
-                verticalAlignment: Text.AlignVCenter
-                color: palette.link
-                font.bold: page.earlierDayGroups.some(function (group) {
+                variant: "ghost"
+                implicitHeight: 26
+                leftPadding: 10
+                rightPadding: 10
+                // 选中的日子在「更早」里时保持强调色
+                font.weight: page.earlierDayGroups.some(function (group) {
                     return group.key === page.selectedDay
-                })
-                font.underline: earlierMouse.containsMouse
+                }) ? Font.DemiBold : Font.Normal
 
-                MouseArea {
-                    id: earlierMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
+                onClicked: {
                     // 菜单挂在 overlay 上，坐标先换算成窗口坐标再赋值（踩坑第 10 / 11 条）
-                    onClicked: {
-                        var point = earlierMouse.mapToItem(null, 0, earlierMouse.height)
-                        moreDaysMenu.x = point.x
-                        moreDaysMenu.y = point.y
-                        moreDaysMenu.open()
-                    }
+                    var point = moreDaysMenuButton.mapToItem(null, 0,
+                                                            moreDaysMenuButton.height)
+                    moreDaysMenu.x = point.x
+                    moreDaysMenu.y = point.y
+                    moreDaysMenu.open()
                 }
 
                 Menu {
@@ -519,9 +550,9 @@ Item {
                 objectName: "historyHint"
                 visible: page.dayGroups.length > 1
                 text: qsTr("记录按天分组，进行中与已中断的始终显示")
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
-                color: palette.placeholderText
+                color: theme.textMuted
             }
         }
 
@@ -529,7 +560,7 @@ Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 1
             Layout.rightMargin: metrics.pageMargin
-            color: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.10)
+            color: theme.divider
         }
 
         // 主列表与详情页都常驻：返回时主列表 contentY 不受影响。
@@ -544,7 +575,7 @@ Item {
                     objectName: "transferList"
                     anchors.fill: parent
                     clip: true
-                    spacing: 2
+                    spacing: 10
                     model: rows
                     boundsBehavior: Flickable.StopAtBounds
                     cacheBuffer: 400
@@ -571,7 +602,8 @@ Item {
                               ? qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
                               : qsTr("这一天没有下载记录\n可以点上面的日期看更早的记录")
                         horizontalAlignment: Text.AlignHCenter
-                        color: palette.placeholderText
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontBody
                     }
                 }
             }
@@ -591,7 +623,7 @@ Item {
     // 清空已完成记录：二次确认（清全部历史，不按日期收窄）。
     // 挂在页面根节点而不是 ColumnLayout 里：Popup 不是 Item，放进布局会用 anchors
     // 被判「被布局管理的项不能用 anchors」。
-    Dialog {
+    KDialog {
         id: clearDialog
         objectName: "clearConfirmDialog"
         parent: Overlay.overlay

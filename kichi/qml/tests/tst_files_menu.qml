@@ -183,6 +183,24 @@ TestCase {
                "垂直居中于窗口（实际 " + dialogCenterY + "，期望 " + (height / 2) + "）")
     }
 
+    function test_dialog_content_does_not_collapse_under_the_footer() {
+        // 回归：KDialog 里曾用一个普通子项 `KTheme { id: theme }` 取色。Dialog 的
+        // 默认 contentItem 只在「恰好一个子项」时认内容，多一个不可见子项正文就
+        // 塌成 0 高——外壳照常居中，输入框被挤没了，页脚按钮压在它上面
+        // （2026-10-29 用户截图：所有弹窗都这样）。见 docs/pitfalls.md 第 36 条。
+        var dialog = startRename()
+        var field = findChild(dialog, "renameNameField")
+        verify(field !== null, "重命名输入框存在")
+        verify(field.height > 20,
+               "输入框不能被正文塌陷挤没（实际高 " + field.height + "）")
+        var ci = dialog.contentItem
+        verify(ci !== null, "弹窗有正文容器")
+        var contentBottom = ci.y + ci.height
+        verify(dialog.footer.y >= contentBottom,
+               "页脚不能压在正文上（正文底 " + contentBottom
+               + "，页脚顶 " + dialog.footer.y + "）")
+    }
+
     function test_batch_trash_shows_count_and_keeps_reason() {
         menu.openTrash({ id: "id-1", name: "a.mkv", kind: "file" },
                        ["id-1", "id-2"])

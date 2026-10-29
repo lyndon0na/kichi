@@ -22,12 +22,14 @@ import QtQuick.Controls
 ProgressBar {
     id: bar
 
+    KTheme { id: theme }
+
     // 虚线段长（与 breeze 的 14px 一致）
     readonly property int segment: 14
 
-    // 填充色：高亮色 55%（breeze 的观感），描边用高亮色本身
-    readonly property color fillColor: Qt.rgba(bar.palette.highlight.r, bar.palette.highlight.g,
-                                               bar.palette.highlight.b, 0.55)
+    // 填充色：系统强调色 —— 圆角实条，不再描一圈比槽更深的边
+    readonly property color fillColor: Qt.rgba(theme.accent.r, theme.accent.g,
+                                               theme.accent.b, 0.85)
 
     contentItem: Item {
         implicitWidth: 200
@@ -44,8 +46,6 @@ ProgressBar {
             width: Math.max(0, bar.position) * parent.width
             radius: height / 2
             color: bar.fillColor
-            border.width: 1
-            border.color: bar.palette.highlight
         }
 
         // —— 不确定进度：一条虚线向左滚动 ——
@@ -73,8 +73,6 @@ ProgressBar {
                         height: marquee.height
                         radius: height / 2
                         color: bar.fillColor
-                        border.width: 1
-                        border.color: bar.palette.highlight
                     }
                 }
             }

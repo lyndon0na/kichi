@@ -33,6 +33,8 @@ Item {
         id: metrics
     }
 
+    KTheme { id: theme }
+
     ListModel {
         id: detailRows
     }
@@ -145,7 +147,7 @@ Item {
         anchors.leftMargin: 0
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: 0
-        spacing: 8
+        spacing: theme.gapSm
 
         // —— 头部第一行：返回 / 文件夹名 / 文件数 / 聚合状态 ——
         RowLayout {
@@ -156,8 +158,8 @@ Item {
             Label {
                 objectName: "backLink"
                 text: qsTr("‹ 返回传输任务")
-                color: palette.link
-                font.pixelSize: 12
+                color: theme.accent
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
                 font.underline: backMouse.containsMouse
 
@@ -173,27 +175,27 @@ Item {
             Label {
                 Layout.fillWidth: true
                 text: page.folderValue("name", "")
-                font.bold: true
+                font.pixelSize: theme.fontSection
+                font.weight: Font.DemiBold
+                color: theme.textPrimary
                 elide: Text.ElideMiddle
                 verticalAlignment: Text.AlignVCenter
             }
 
             Label {
                 text: qsTr("%1 个文件").arg(page.folderValue("childCount", 0))
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
-                color: palette.placeholderText
+                color: theme.textMuted
             }
 
-            Label {
+            KStatusBadge {
                 objectName: "detailStateText"
                 text: page.folderValue("stateText", "")
-                font.pixelSize: 12
-                verticalAlignment: Text.AlignVCenter
-                color: page.folderValue("phase", "") === "failed" ? "#c0392b"
-                     : page.folderValue("phase", "") === "interrupted" ? "#b9770e"
-                     : page.folderValue("phase", "") === "done" ? "#3c9d5a"
-                     : palette.placeholderText
+                tone: page.folderValue("phase", "") === "failed" ? "danger"
+                    : page.folderValue("phase", "") === "interrupted" ? "warning"
+                    : page.folderValue("phase", "") === "done" ? "success"
+                    : "neutral"
             }
         }
 
@@ -216,9 +218,9 @@ Item {
             Label {
                 visible: page.folderValue("running", false)
                 text: page.liveProgressText
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
-                color: palette.placeholderText
+                color: theme.textMuted
             }
 
             // 整批速度 + ETA / 卡住：紧跟百分比，窄窗口省略
@@ -226,9 +228,9 @@ Item {
                 objectName: "folderRateText"
                 visible: page.folderValue("running", false) && text.length > 0
                 text: page.folderRateText
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
-                color: palette.placeholderText
+                color: theme.textMuted
                 elide: Text.ElideRight
                 Layout.maximumWidth: 260
             }
@@ -237,28 +239,28 @@ Item {
                 visible: !page.folderValue("running", false)
                 Layout.fillWidth: true
                 text: page.folderValue("detail", "")
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 elide: Text.ElideMiddle
                 verticalAlignment: Text.AlignVCenter
-                color: page.folderValue("phase", "") === "failed" ? "#c0392b"
-                     : palette.placeholderText
+                color: page.folderValue("phase", "") === "failed" ? theme.danger
+                     : theme.textMuted
             }
 
             Label {
                 objectName: "detailSizeText"
                 text: page.liveSizeText
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
-                color: palette.placeholderText
+                color: theme.textMuted
             }
 
             Label {
                 objectName: "revealFolderLink"
                 visible: page.folderValue("path", "").length > 0
                 text: qsTr("打开位置")
-                font.pixelSize: 12
+                font.pixelSize: theme.fontMeta
                 verticalAlignment: Text.AlignVCenter
-                color: palette.link
+                color: theme.accent
                 font.underline: revealMouse.containsMouse
 
                 MouseArea {
@@ -278,8 +280,7 @@ Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 1
             Layout.rightMargin: metrics.pageMargin
-            color: Qt.rgba(palette.windowText.r, palette.windowText.g,
-                           palette.windowText.b, 0.10)
+            color: theme.divider
         }
 
         ListView {
@@ -288,7 +289,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 2
+            spacing: 10
             model: detailRows
             boundsBehavior: Flickable.StopAtBounds
             cacheBuffer: 400
@@ -308,7 +309,8 @@ Item {
                 anchors.centerIn: parent
                 visible: list.count === 0
                 text: qsTr("没有可显示的文件")
-                color: palette.placeholderText
+                color: theme.textMuted
+                font.pixelSize: theme.fontBody
             }
         }
     }

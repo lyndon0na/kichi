@@ -28,6 +28,8 @@ Item {
         id: metrics
     }
 
+    KTheme { id: theme }
+
     // 表头行 + 底部 1px 分隔线
     implicitHeight: header.headerRowHeight + 1
 
@@ -97,8 +99,9 @@ Item {
                 Label {
                     anchors.fill: parent
                     text: header.label(qsTr("名称"), nameCell.field)
-                    color: palette.placeholderText
+                    color: theme.textMuted
                     font.pixelSize: header.headerPixelSize
+                    font.weight: Font.DemiBold
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignLeft
                     elide: Text.ElideRight
@@ -127,8 +130,8 @@ Item {
                     height: Math.round(header.headerRowHeight * 0.45)
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    color: palette.mid
-                    opacity: 0.6
+                    color: theme.divider
+                    opacity: 1
                 }
 
                 HoverHandler {
@@ -141,8 +144,9 @@ Item {
                     // 右侧留出固定的箭头槽位，排序切换时表头文字不左右跳
                     anchors.rightMargin: 14
                     text: header.label(qsTr("大小"), sizeCell.field)
-                    color: palette.placeholderText
+                    color: theme.textMuted
                     font.pixelSize: header.headerPixelSize
+                    font.weight: Font.DemiBold
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
@@ -153,8 +157,10 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 14
                     text: header.caret(sizeCell.field)
-                    color: palette.placeholderText
+                    color: header.backend && header.backend.sortField === sizeCell.field
+                           ? theme.accent : theme.textMuted
                     font.pixelSize: header.headerPixelSize
+                    font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignRight
                 }
 
@@ -179,8 +185,8 @@ Item {
                     height: Math.round(header.headerRowHeight * 0.45)
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    color: palette.mid
-                    opacity: 0.6
+                    color: theme.divider
+                    opacity: 1
                 }
 
                 HoverHandler {
@@ -192,8 +198,9 @@ Item {
                     anchors.fill: parent
                     anchors.rightMargin: 14
                     text: header.label(qsTr("修改时间"), modifiedCell.field)
-                    color: palette.placeholderText
+                    color: theme.textMuted
                     font.pixelSize: header.headerPixelSize
+                    font.weight: Font.DemiBold
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
@@ -204,8 +211,10 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 14
                     text: header.caret(modifiedCell.field)
-                    color: palette.placeholderText
+                    color: header.backend && header.backend.sortField === modifiedCell.field
+                           ? theme.accent : theme.textMuted
                     font.pixelSize: header.headerPixelSize
+                    font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignRight
                 }
 
@@ -219,7 +228,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 1
-            color: palette.mid
+            color: theme.hairline
         }
     }
 }

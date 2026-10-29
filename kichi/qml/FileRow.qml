@@ -31,8 +31,12 @@ ItemDelegate {
     property int iconPixelSize: 16
     // 水平内边距固定：表头按同一个数值摆位。不依赖控件风格的默认 padding，
     // 否则换风格（这里实测是 8 而不是 Qt 默认的 12）表头就和行错开。
-    leftPadding: 12
-    rightPadding: 12
+    // 数值由页面从 FileListDensity 下发，与表头共用同一个 contentPadding。
+    property int contentPadding: 12
+    leftPadding: contentPadding
+    rightPadding: contentPadding
+
+    KTheme { id: theme }
 
     // 行高显式写死：ItemDelegate 自己算的是「文字高度 + 上下 padding」，
     // 跟着字号漂，和表头对不齐。这里由页面给一个确定值。
@@ -106,29 +110,31 @@ ItemDelegate {
         row.backend.downloadEntry(row.entry.id)
     }
 
-    // 选中态：高亮色只铺一层很淡的底，左侧再点一根 3px 竖条。
-    // 不用 ItemDelegate 默认 background（Basic 风格只画一圈边框，长列表里看不出选中），
-    // 也不整行铺满 palette.highlight——饱和色块会把文件名压得发灰，而屏幕上真正
-    // 「选中」的通常只有一行，代价却铺满整行。
+    // 选中态：强调色只铺一层很淡的底，左侧再点一根 3px 竖条。
+    // 不整行铺满 palette.highlight——饱和色块会把文件名的对比度压下去，
+    // 而屏幕上真正「选中」的通常只有一行，代价却铺满整行。
+    // 圆角 8 + 行间 2px 缝（FilesPage 的 spacing）让悬停 / 选中看起来是
+    // 一张张独立的卡片，而不是一张大表格里的色块。
     background: Rectangle {
-        radius: 4
+        radius: theme.radiusControl
         color: row.highlighted
-               ? Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.22)
+               ? theme.accentSoft
                : mouseArea.pressed
-                 ? Qt.rgba(palette.text.r, palette.text.g, palette.text.b, 0.10)
+                 ? theme.surfacePressed
                  : mouseArea.containsMouse
-                   ? Qt.rgba(palette.text.r, palette.text.g, palette.text.b, 0.05)
-                   : "transparent"
+                   ? theme.surfaceHover
+                   : theme.surfaceClear
+
 
         Rectangle {
             visible: row.highlighted
             width: 3
-            height: parent.height - 14
+            height: parent.height - 20
             radius: 1.5
             anchors.left: parent.left
             anchors.leftMargin: 1
             anchors.verticalCenter: parent.verticalCenter
-            color: palette.highlight
+            color: theme.accent
         }
     }
 
@@ -149,7 +155,7 @@ ItemDelegate {
                 fileName: row.entry ? row.entry.name : ""
                 color: palette.text
                 // 文件夹比普通文件实一点：一眼分出「能进」和「只能下」
-                opacity: row.entry && row.entry.kind === "folder" ? 0.95 : 0.55
+                opacity: row.entry && row.entry.kind === "folder" ? 1.0 : 0.6
             }
         }
 
@@ -167,7 +173,7 @@ ItemDelegate {
             visible: row.entry ? row.entry.auditFlag : false
             font.pixelSize: row.textPixelSize
             verticalAlignment: Text.AlignVCenter
-            color: "#c0392b"
+            color: theme.danger
         }
 
         Label {
