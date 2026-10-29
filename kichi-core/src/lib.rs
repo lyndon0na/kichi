@@ -13,6 +13,7 @@ pub(crate) mod http;
 pub mod manage;
 pub mod media;
 pub mod search;
+pub mod share;
 pub mod subtitles;
 pub mod tasks;
 pub mod types;
@@ -24,6 +25,7 @@ pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
 pub use media::{FileInfo, NoLinkReason};
 pub use search::FileHit;
+pub use share::{CreateShareOptions, CreatedShare, MyShare};
 pub use types::{
     EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TrashEntry,
 };

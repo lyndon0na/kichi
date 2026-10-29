@@ -23,6 +23,8 @@ Item {
     property bool okEnabled: true
     /// 「取消」能不能点（请求进行中时也禁用，避免界面说「已取消」但请求还在跑）
     property bool cancelEnabled: true
+    /// 成功结果页可能只剩「完成」，不需要取消按钮
+    property bool cancelVisible: true
     /// 「确定」的文案
     property string okText: qsTr("确定")
     /// 「确定」的按钮语义（危险操作传 danger）
@@ -66,6 +68,7 @@ Item {
             text: qsTr("取消")
             variant: "secondary"
             enabled: footer.cancelEnabled
+            visible: footer.cancelVisible
             onClicked: footer.cancelClicked()
         }
     }

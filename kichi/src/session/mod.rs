@@ -12,6 +12,7 @@ pub mod partials;
 pub mod paths;
 pub mod search;
 mod shards;
+mod shares;
 mod store;
 pub mod subtitle_cache;
 pub mod subtitles;

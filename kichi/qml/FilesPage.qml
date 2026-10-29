@@ -274,12 +274,20 @@ Item {
         onCopyRequested: function (entry, ids) {
             movePicker.openForCopy(entry, ids, interaction.folderIdsFor(ids))
         }
+        onShareRequested: function (entry, ids) {
+            shareDialog.openFor(entry, ids)
+        }
         onRefreshRequested: interaction.refreshFiles()
     }
 
     // —— 移动 / 复制目标选择器 ——
     MovePickerDialog {
         id: movePicker
+        backend: page.backend
+    }
+
+    ShareDialog {
+        id: shareDialog
         backend: page.backend
     }
 

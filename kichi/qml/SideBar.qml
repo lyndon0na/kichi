@@ -27,6 +27,7 @@ Rectangle {
         Repeater {
             model: [
                 { "label": qsTr("我的文件"), "icon": "folder" },
+                { "label": qsTr("分享"), "icon": "share" },
                 { "label": qsTr("传输任务"), "icon": "transfer" },
                 { "label": qsTr("离线任务"), "icon": "download" },
                 { "label": qsTr("回收站"), "icon": "trash" },

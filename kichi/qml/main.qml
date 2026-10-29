@@ -123,7 +123,7 @@ ApplicationWindow {
         // 第一次下载不发这个信号——不打断用户正在浏览的目录。
         // 窗口最小化 / 在托盘时照常切页，但不主动把窗口弹出来（现状）。
         function onLocateTransfer(sourceId) {
-            root.currentPage = 1
+            root.currentPage = 2
             transfersPage.focusSource(sourceId)
         }
     }
@@ -209,7 +209,7 @@ ApplicationWindow {
                     }
 
                     RowLayout {
-                        visible: root.currentPage === 4
+                        visible: root.currentPage === 5
                         Layout.alignment: Qt.AlignVCenter
                         spacing: theme.gapXs
 
@@ -496,6 +496,11 @@ ApplicationWindow {
                         backend: backend
                     }
 
+                    SharesPage {
+                        backend: backend
+                        active: root.currentPage === 1
+                    }
+
                     TransfersPage {
                         id: transfersPage
                         backend: backend
@@ -503,7 +508,7 @@ ApplicationWindow {
 
                     TasksPage {
                         backend: backend
-                        active: root.currentPage === 2
+                        active: root.currentPage === 3
                     }
 
                     TrashPage {
@@ -604,12 +609,14 @@ ApplicationWindow {
 
     function pageTitle() {
         if (root.currentPage === 1)
-            return qsTr("传输任务")
+            return qsTr("分享")
         if (root.currentPage === 2)
-            return qsTr("离线任务")
+            return qsTr("传输任务")
         if (root.currentPage === 3)
-            return qsTr("回收站")
+            return qsTr("离线任务")
         if (root.currentPage === 4)
+            return qsTr("回收站")
+        if (root.currentPage === 5)
             return qsTr("设置")
         return qsTr("我的文件")
     }

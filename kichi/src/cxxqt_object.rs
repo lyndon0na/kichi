@@ -65,6 +65,14 @@ pub mod qobject {
         /// 有一轮离线任务列表请求在途：QML 据此显示加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
         #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
+        #[qproperty(QVariantList, shares, READ, NOTIFY = changed)]
+        #[qproperty(bool, shares_loading, cxx_name = "sharesLoading", READ, NOTIFY = changed)]
+        /// 有创建或撤销分享的写请求在途
+        #[qproperty(bool, share_action_running, cxx_name = "shareActionRunning", READ, NOTIFY = changed)]
+        /// 刚创建成功的分享结果（QML 弹窗切到成功态后读取）
+        #[qproperty(QString, share_created_url, cxx_name = "shareCreatedUrl", READ, NOTIFY = changed)]
+        #[qproperty(QString, share_created_pass_code, cxx_name = "shareCreatedPassCode", READ, NOTIFY = changed)]
+        #[qproperty(QString, share_created_expiration, cxx_name = "shareCreatedExpiration", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
         /// 取链或等 mpv 窗口出现：底部浮动提示条据此显示「正在加载…」
@@ -138,6 +146,11 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "fileActionDone"]
         fn file_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
+
+        /// 分享创建 / 撤销结束：`action` 为 `create` 或 `revoke`
+        #[qsignal]
+        #[cxx_name = "shareActionDone"]
+        fn share_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
 
         /// 请求界面跳到传输任务页并定位这个条目的那一行（只对已占用的条目发）
         #[qsignal]
@@ -215,6 +228,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "deleteTask"]
         fn delete_task(self: Pin<&mut Self>, id: QString);
+
+        /// 读取分享管理页列表（进入页面 / 手动刷新）
+        #[qinvokable]
+        #[cxx_name = "refreshShares"]
+        fn refresh_shares(self: Pin<&mut Self>);
+
+        /// 创建一个可包含多个文件 / 文件夹的分享。
+        #[qinvokable]
+        #[cxx_name = "createShare"]
+        fn create_share(
+            self: Pin<&mut Self>,
+            file_ids: QStringList,
+            expiration_days: i32,
+            need_password: bool,
+        );
+
+        /// 批量撤销分享记录（不删除源文件）。
+        #[qinvokable]
+        #[cxx_name = "revokeShares"]
+        fn revoke_shares(self: Pin<&mut Self>, share_ids: QStringList);
 
         #[qinvokable]
         #[cxx_name = "requestPlay"]
@@ -485,6 +518,7 @@ mod queue_worker;
 mod reveal;
 mod search;
 mod settings;
+mod shares;
 mod tasks;
 mod transfers;
 mod transfers_actions;
@@ -558,6 +592,24 @@ pub struct KichiRust {
     pub(crate) task_refresh_at: Option<std::time::Instant>,
     /// 任务请求代数：退出登录 / 重登后旧结果作废
     pub(crate) tasks_epoch: u64,
+    /// 分享管理列表（QML 直接当 model 用）
+    pub(crate) shares: QVariantList,
+    /// 分享列表请求在途
+    pub(crate) shares_loading: bool,
+    /// 列表在途时又要求强制刷新（创建 / 撤销完成）：本轮结束后补一次
+    pub(crate) share_refresh_pending: bool,
+    /// 分享列表短冷却（切页 / 手动刷新合并请求）
+    pub(crate) share_refresh_at: Option<std::time::Instant>,
+    /// 分享列表请求代数：退出登录 / 重登后旧结果作废
+    pub(crate) shares_epoch: u64,
+    /// 创建 / 撤销分享的写请求在途（防连点）
+    pub(crate) share_action_running: bool,
+    /// 分享写请求代数：退出登录后旧结果作废
+    pub(crate) share_action_epoch: u64,
+    /// 最近一次创建成功的链接 / 密码 / 有效期文案
+    pub(crate) share_created_url: QString,
+    pub(crate) share_created_pass_code: QString,
+    pub(crate) share_created_expiration: QString,
     /// 上一轮仍在进行中的任务（用于识别「刚结束」并只通知一次）
     pub(crate) known_running: std::collections::HashMap<String, bool>,
     /// 已经通知过的任务 id
@@ -717,6 +769,16 @@ impl Default for KichiRust {
             tasks_loading: false,
             task_refresh_at: None,
             tasks_epoch: 0,
+            shares: QVariantList::default(),
+            shares_loading: false,
+            share_refresh_pending: false,
+            share_refresh_at: None,
+            shares_epoch: 0,
+            share_action_running: false,
+            share_action_epoch: 0,
+            share_created_url: QString::default(),
+            share_created_pass_code: QString::default(),
+            share_created_expiration: QString::default(),
             known_running: std::collections::HashMap::new(),
             notified: std::collections::HashSet::new(),
             play_menu: QVariantList::default(),

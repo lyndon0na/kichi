@@ -21,6 +21,7 @@ TestCase {
         id: backend
         property bool busy: false
         property bool fileActionRunning: false
+        property bool shareActionRunning: false
         property var playMenu: []
         property var pending: []
         property int singleCount: 0
@@ -109,5 +110,23 @@ TestCase {
         backend.pending = ["a"]
         var item = openMenu(["a"])
         compare(item.text, qsTr("已在下载队列中，去查看"))
+    }
+
+    function test_share_keeps_the_whole_multi_selection() {
+        var ids = ["a", "b", "c"]
+        openMenu(ids)
+        var item = findChild(menu, "shareItem")
+        verify(item !== null, "菜单里有分享项")
+        verify(item.text.indexOf("3 项") >= 0, "文案带条数，实际：" + item.text)
+
+        var spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'shareRequested' }",
+            menu)
+        spy.target = menu
+        mouseClick(item)
+        wait(40)
+        compare(spy.count, 1)
+        compare(spy.signalArguments[0][1].length, 3)
+        spy.destroy()
     }
 }

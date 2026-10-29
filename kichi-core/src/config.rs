@@ -39,6 +39,8 @@ pub const PATH_FILES: &str = "/drive/v1/files";
 pub const PATH_TASKS: &str = "/drive/v1/tasks";
 /// 创建分享链接
 pub const PATH_SHARE: &str = "/drive/v1/share";
+/// 分享列表
+pub const PATH_SHARE_LIST: &str = "/drive/v1/share/list";
 
 /// `KICHI_*` 环境变量名。
 pub mod env_key {
@@ -151,6 +153,13 @@ impl Config {
     pub fn share_url(&self) -> String {
         join(&self.drive_base, PATH_SHARE)
     }
+    pub fn share_list_url(&self) -> String {
+        join(&self.drive_base, PATH_SHARE_LIST)
+    }
+    /// 分享写操作（如 `batchDelete`）拼在 `/drive/v1/share:<action>`。
+    pub fn share_action_url(&self, action: &str) -> String {
+        format!("{}:{action}", self.share_url())
+    }
 }
 
 /// 读取非空环境变量。
@@ -189,6 +198,14 @@ mod tests {
             format!("{files}:batchTrash")
         );
         assert_eq!(cfg.trash_empty_url(), format!("{files}/trash:empty"));
+        assert_eq!(
+            cfg.share_list_url(),
+            "https://api-drive.mypikpak.com/drive/v1/share/list"
+        );
+        assert_eq!(
+            cfg.share_action_url("batchDelete"),
+            "https://api-drive.mypikpak.com/drive/v1/share:batchDelete"
+        );
     }
 
     #[test]

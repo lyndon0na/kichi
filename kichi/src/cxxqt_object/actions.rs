@@ -80,6 +80,7 @@ impl qobject::Kichi {
                 self.as_mut().reset_play();
                 self.as_mut().reset_downloads();
                 self.as_mut().reset_search();
+                self.as_mut().reset_shares();
                 self.as_mut().stop_task_polling();
             }
             Err(err) => self

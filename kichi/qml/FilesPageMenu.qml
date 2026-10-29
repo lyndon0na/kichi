@@ -38,6 +38,7 @@ Item {
     signal playRequested(point anchor)
     signal moveRequested(var entry, var ids)
     signal copyRequested(var entry, var ids)
+    signal shareRequested(var entry, var ids)
     // 空白菜单的「刷新」交给页面：页面要先记住滚动位置
     signal refreshRequested()
 
@@ -102,6 +103,16 @@ Item {
                 else
                     root.backend.downloadEntry(root.targetId)
             }
+        }
+
+        MenuItem {
+            objectName: "shareItem"
+            text: root.targetCount > 1
+                  ? qsTr("分享选中的 %1 项…").arg(root.targetCount)
+                  : qsTr("分享…")
+            enabled: root.backend !== null && !root.backend.fileActionRunning
+                     && !root.backend.shareActionRunning
+            onTriggered: root.shareRequested(root.target, root.targetIds)
         }
 
         MenuSeparator {

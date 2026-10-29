@@ -11,7 +11,7 @@ import QtQuick.Shapes
 Item {
     id: icon
 
-    /// folder / transfer / download / trash / settings / logout
+    /// folder / share / transfer / download / trash / settings / logout
     /// 以及文件类型：file / video / music / photo
     property string name: ""
     property color color: "transparent"
@@ -25,6 +25,10 @@ Item {
                   + " M12 13v8 M9 18l3 3l3 -3",
         // Tabler「arrows-exchange」：左右双箭头，和云朵下载区分开
         transfer: "M7 10h14l-4 -4 M17 14h-14l4 4",
+        share: "M6 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"
+               + " M18 6m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"
+               + " M18 18m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"
+               + " M8.7 10.7l6.6 -3.4 M8.7 13.3l6.6 3.4",
         settings: "M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066"
                   + "c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35"
                   + "a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37"
