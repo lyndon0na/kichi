@@ -49,7 +49,7 @@ ApplicationWindow {
 
     onWidthChanged: saveGeometryTimer.restart()
     onHeightChanged: saveGeometryTimer.restart()
-    onVisibilityChanged: {
+    onVisibilityChanged: function (visibility) {
         if (visibility === Window.Maximized || visibility === Window.FullScreen)
             isMaximized = true
         else if (visibility === Window.Windowed)
@@ -316,13 +316,14 @@ ApplicationWindow {
                         readonly property int minCrumbWidth: 76
 
                         // 量文字宽度：当前级是 DemiBold，宽度和普通级不一样，得分开量。
-                        // 这两个 TextMetrics 只用来算布局，不显示。
-                        TextMetrics {
+                        // 用 FontMetrics 的纯测宽函数，不在 plan 绑定里改 TextMetrics.text；
+                        // 后者会让 plan 读到自己在计算过程中改写的依赖，触发绑定循环。
+                        FontMetrics {
                             id: normalMetrics
                             font.pixelSize: crumbBar.crumbPixelSize
                         }
 
-                        TextMetrics {
+                        FontMetrics {
                             id: boldMetrics
                             font.pixelSize: crumbBar.crumbPixelSize
                             font.weight: Font.DemiBold
@@ -330,8 +331,7 @@ ApplicationWindow {
 
                         function crumbWidth(text, bold) {
                             var m = bold ? boldMetrics : normalMetrics
-                            m.text = text
-                            return Math.min(crumbBar.nameMaxWidth, m.advanceWidth)
+                            return Math.min(crumbBar.nameMaxWidth, m.advanceWidth(text))
                         }
 
                         // 要显示哪几级 + 每一级给多宽：{ i: 目录下标（-1 = 省略号）, w: 宽度 }。
