@@ -114,6 +114,30 @@ TestCase {
         compare(box.textAt(0), "每次询问")
     }
 
+    function test_quality_combo_opens_from_a_click() {
+        var box = findChild(page, "settingsQuality")
+        verify(box !== null, "有默认清晰度下拉框")
+        verify(!box.popup.visible, "默认清晰度弹层初始收起")
+
+        var pressed = 0
+        box.pressedChanged.connect(function () {
+            if (box.pressed)
+                pressed += 1
+        })
+        mouseClick(box)
+        wait(50)
+
+        var center = box.mapToItem(null, box.width / 2, box.height / 2)
+        compare(pressed, 1, "点击确实到达默认清晰度控件（center="
+                + center + "，size=" + box.width + "×" + box.height
+                + "，visible=" + box.visible + "，enabled=" + box.enabled
+                + "，opacity=" + box.opacity + "）")
+        verify(box.popup.visible, "点默认清晰度后弹层打开（down=" + box.down
+               + "，visible=" + box.visible + "，enabled=" + box.enabled
+               + "，popup=" + box.popup + "）")
+        box.popup.close()
+    }
+
     function test_settings_path_is_right_aligned() {
         var path = findChild(page, "settingsPath")
         verify(path !== null, "有设置文件路径")

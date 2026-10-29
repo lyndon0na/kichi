@@ -13,8 +13,9 @@ Dialog {
     // Dialog 的默认 contentItem 只在「恰好一个子项」时才认内容，多一个不可见
     // 子项正文就整个塌成 0——弹窗外壳照常居中，输入框被挤成 0 高，页脚按钮
     // 直接压在它上面（2026-10-29 用户截图：所有弹窗都这样）。
-    // 同源问题见 docs/pitfalls.md 第 36 条（Frame）。子类直接写 `theme.xxx` 即可。
-    readonly property KTheme theme: KTheme { }
+    // 同源问题见 docs/pitfalls.md 第 36 条（Frame）。Popup 自身不是 Item；
+    // 挂 background 可以实时继承弹窗 palette，又不参与正文 / 页脚布局或 overlay 事件。
+    readonly property KTheme theme: KTheme { parent: control.background }
 
     padding: 18
 

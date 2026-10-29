@@ -8,7 +8,7 @@ ColumnLayout {
 
     property var backend: null
 
-    readonly property KTheme theme: KTheme { }
+    readonly property KTheme theme: KTheme { parent: about }
 
     spacing: 0
 

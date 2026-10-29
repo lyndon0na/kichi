@@ -199,6 +199,14 @@ TestCase {
         verify(dialog.footer.y >= contentBottom,
                "页脚不能压在正文上（正文底 " + contentBottom
                + "，页脚顶 " + dialog.footer.y + "）")
+
+        var ok = findChild(dialog.footer, "dialogFooterOk")
+        verify(ok !== null, "页脚有确定按钮")
+        var fieldBottom = field.mapToItem(dialog.background, 0, field.height).y
+        var okTop = ok.mapToItem(dialog.background, 0, 0).y
+        verify(fieldBottom <= okTop,
+               "确定按钮不能压住输入框（输入框底 " + fieldBottom
+               + "，按钮顶 " + okTop + "）")
     }
 
     function test_batch_trash_shows_count_and_keeps_reason() {

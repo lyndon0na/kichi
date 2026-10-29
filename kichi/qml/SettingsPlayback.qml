@@ -9,7 +9,7 @@ ColumnLayout {
     property var backend: null
     property bool advancedOpen: false
 
-    readonly property KTheme theme: KTheme { }
+    readonly property KTheme theme: KTheme { parent: playback }
 
     spacing: 0
 

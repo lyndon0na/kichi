@@ -17,7 +17,7 @@ Item {
 
     default property alias controlContent: controlHost.data
 
-    readonly property KTheme theme: KTheme { }
+    readonly property KTheme theme: KTheme { parent: row }
     readonly property bool hovered: rowMouse.containsMouse && row.interactive
 
     Layout.fillWidth: true

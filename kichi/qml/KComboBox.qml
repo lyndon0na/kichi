@@ -25,6 +25,9 @@ ComboBox {
         rightPadding: control.indicator.width + 8
         text: control.displayText
         readOnly: true
+        // 非编辑态必须禁用文本输入层，否则它会吞掉点击，ComboBox 永远收不到按下事件。
+        // Qt 自带 ComboBox 和 org.kde.desktop 都使用 enabled: editable。
+        enabled: control.editable
         selectByMouse: false
         activeFocusOnTab: false
         color: control.enabled ? theme.textPrimary : theme.textMuted

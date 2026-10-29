@@ -10,7 +10,7 @@ ColumnLayout {
     property string title: ""
     default property alias content: body.data
 
-    readonly property KTheme theme: KTheme { }
+    readonly property KTheme theme: KTheme { parent: group }
 
     spacing: theme.gapSm
 
