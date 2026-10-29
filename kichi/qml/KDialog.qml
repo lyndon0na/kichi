@@ -19,6 +19,13 @@ Dialog {
 
     padding: 18
 
+    // org.kde.desktop 的 Dialog 样式会把 contentItem 固定成一个空 Item。
+    // 空 Item 不会把子项高度汇总给弹窗，长正文就会溢出到页脚下面。
+    // 宽度由各弹窗显式给出；这里只汇总高度，避免和 Dialog.implicitWidth 互相绑定。
+    contentItem: Item {
+        implicitHeight: childrenRect.height
+    }
+
     background: Rectangle {
         radius: theme.radiusSurface
         color: theme.surfaceSheet

@@ -578,6 +578,7 @@ ApplicationWindow {
         title: qsTr("退出登录")
         modal: true
         anchors.centerIn: parent
+        width: 360 + leftPadding + rightPadding
         footer: StandardDialogFooter {
             dialog: signOutDialog
         }

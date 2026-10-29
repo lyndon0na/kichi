@@ -251,6 +251,7 @@ Item {
         title: qsTr("删除任务")
         modal: true
         anchors.centerIn: parent
+        width: 380 + leftPadding + rightPadding
         footer: StandardDialogFooter {
             dialog: deleteDialog
         }

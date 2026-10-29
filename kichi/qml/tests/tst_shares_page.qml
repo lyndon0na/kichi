@@ -15,7 +15,8 @@ TestCase {
         property bool sharesLoading: false
         property bool shareActionRunning: false
         property int refreshCalls: 0
-        property var revokedIds: []
+        property int revokeCalls: 0
+        property var lastRevokeIds: []
 
         signal changed()
         signal shareActionDone(string action, bool ok, string message)
@@ -25,7 +26,8 @@ TestCase {
         }
 
         function revokeShares(ids) {
-            revokedIds = ids.slice()
+            revokeCalls += 1
+            lastRevokeIds = ids.slice()
             shareActionRunning = true
         }
 
@@ -43,7 +45,6 @@ TestCase {
     property var page: null
     property var list: page ? findChild(page, "sharesList") : null
     property var model: list ? list.model : null
-    property var revokeDialog: page ? findChild(page, "revokeSharesDialog") : null
 
     function init() {
         page = pageComponent.createObject(parent, {
@@ -54,15 +55,12 @@ TestCase {
         verify(page !== null, "SharesPage 创建失败")
         list = findChild(page, "sharesList")
         model = list ? list.model : null
-        revokeDialog = findChild(page, "revokeSharesDialog")
         page.active = false
-        page.clearSelection()
         backend.sharesLoading = false
         backend.shareActionRunning = false
         backend.refreshCalls = 0
-        backend.revokedIds = []
-        if (revokeDialog.visible)
-            revokeDialog.close()
+        backend.revokeCalls = 0
+        backend.lastRevokeIds = []
         push([])
     }
 
@@ -72,7 +70,6 @@ TestCase {
         page = null
         list = null
         model = null
-        revokeDialog = null
     }
 
     function share(id) {
@@ -96,20 +93,17 @@ TestCase {
         backend.changed()
     }
 
-    function test_rows_follow_backend_and_prune_selection() {
+    function test_rows_follow_backend_order() {
         push([share("a"), share("b")])
         compare(model.count, 2)
-        page.selectIds(["a", "b"])
-        compare(page.selectedCount, 2)
+        compare(model.get(0).key, "a")
 
         push([share("b")])
         compare(model.count, 1)
         compare(model.get(0).key, "b")
-        compare(page.selectedCount, 1)
-        compare(page.isSelected("b"), true)
     }
 
-    function test_rows_reorder_when_a_share_is_removed_and_titles_change() {
+    function test_rows_reorder_when_a_share_is_removed() {
         push([share("a"), share("b"), share("c")])
         push([share("c"), share("b")])
         compare(model.count, 2)
@@ -125,55 +119,135 @@ TestCase {
         tryCompare(backend, "refreshCalls", 2)
     }
 
-    function test_batch_revoke_uses_every_selected_id() {
-        push([share("a"), share("b"), share("c")])
-        page.selectIds(["a", "c"])
-        page.openRevoke(page.selectedIds())
-        tryCompare(revokeDialog, "visible", true)
-        page.submitRevoke()
+    function test_table_has_file_icon_and_selection_actions_without_checkboxes() {
+        push([share("a")])
+        waitForRendering(list)
 
-        compare(backend.revokedIds.length, 2)
-        verify(backend.revokedIds.indexOf("a") >= 0)
-        verify(backend.revokedIds.indexOf("c") >= 0)
+        verify(findChild(page, "sharesTableHeader"))
+        verify(findChild(page, "revokeSelectedShares"))
+        verify(findChild(page, "revokeSelectedShares").enabled === false)
 
-        backend.finishRevoke(true, "done")
-        tryCompare(revokeDialog, "visible", false)
-        compare(page.selectedCount, 0)
+        const row = list.itemAtIndex(0)
+        verify(row)
+        verify(findChild(row, "shareTypeIcon"))
+        verify(findChild(row, "shareSelectCheckBox") === null)
     }
 
-    function test_checkbox_click_and_external_selection_stay_in_sync() {
-        push([share("a"), share("b")])
+    function test_copy_button_copies_link_and_password_together() {
+        push([share("a")])
         waitForRendering(list)
 
         const row = list.itemAtIndex(0)
         verify(row)
-        const checkbox = findChild(row, "shareSelectCheckBox")
-        verify(checkbox)
+        const button = findChild(row, "shareCopyButton")
+        const editor = findChild(page, "clipboardEditor")
+        verify(button)
+        verify(editor)
 
-        let toggles = 0
-        checkbox.toggled.connect(function () { toggles += 1 })
-        mouseClick(checkbox)
-        wait(50)
-        compare(toggles, 1, "复选框应收到点击（size=" + checkbox.width + "×"
-                + checkbox.height + "，visible=" + checkbox.visible
-                + "，row=" + row.width + "×" + row.height
-                + "，list=" + list.width + "×" + list.height
-                + "，pageVisible=" + page.visible + "）")
-        tryCompare(page, "selectedCount", 1)
-        page.clearSelection()
-        tryCompare(checkbox, "checked", false)
-        page.toggleSelectAll()
-        tryCompare(checkbox, "checked", true)
-        compare(page.selectedCount, 2)
+        mouseClick(button)
+        compare(editor.text, "https://mypikpak.com/s/a\n访问密码：pa")
+        compare(page.copyNotice, "链接和密码已复制")
+        compare(page.selectedCount, 0, "点行内复制按钮不应顺带选中整行")
     }
 
-    function test_revoke_failure_keeps_dialog_open() {
+    function test_ctrl_shift_click_selects_rows() {
+        push([share("a"), share("b"), share("c")])
+        waitForRendering(list)
+
+        mouseClick(list.itemAtIndex(0), 20, 20, Qt.LeftButton)
+        compare(page.selectedIdsInOrder().join(","), "a")
+        mouseClick(list.itemAtIndex(2), 20, 20, Qt.LeftButton, Qt.ControlModifier)
+        compare(page.selectedIdsInOrder().join(","), "a,c")
+        mouseClick(list.itemAtIndex(1), 20, 20, Qt.LeftButton, Qt.ShiftModifier)
+        compare(page.selectedIdsInOrder().join(","), "b,c")
+    }
+
+    function test_right_click_narrows_to_unselected_row() {
+        push([share("a"), share("b"), share("c")])
+        waitForRendering(list)
+        page.selectRow("a", 0, Qt.NoModifier)
+        page.selectRow("c", 2, Qt.ControlModifier)
+
+        page.openRowMenu("b", Qt.point(100, 100))
+        compare(page.selectedIdsInOrder().join(","), "b")
+        compare(page.shareMenu.targetIds.join(","), "b")
+        page.shareMenu.menu.close()
+    }
+
+    function test_row_right_click_keeps_a_selected_multi_selection() {
+        push([share("a"), share("b"), share("c")])
+        waitForRendering(list)
+        mouseClick(list.itemAtIndex(0), 20, 20, Qt.LeftButton)
+        mouseClick(list.itemAtIndex(2), 20, 20, Qt.LeftButton, Qt.ControlModifier)
+
+        mouseClick(list.itemAtIndex(0), 20, 20, Qt.RightButton)
+        compare(page.selectedIdsInOrder().join(","), "a,c")
+        compare(page.shareMenu.targetIds.join(","), "a,c")
+        page.shareMenu.menu.close()
+    }
+
+    function test_context_menu_has_only_copy_and_revoke() {
         push([share("a")])
-        page.selectIds(["a"])
-        page.openRevoke(["a"])
-        page.submitRevoke()
-        backend.finishRevoke(false, "撤销失败")
-        compare(revokeDialog.visible, true)
-        compare(revokeDialog.errorText, "撤销失败")
+        waitForRendering(list)
+        page.openRowMenu("a", Qt.point(100, 100))
+
+        verify(findChild(page.shareMenu.menu, "shareCopyLinkItem"))
+        verify(findChild(page.shareMenu.menu, "shareRevokeItem"))
+        verify(findChild(page.shareMenu.menu, "shareExpirationItem") === null)
+        page.shareMenu.menu.close()
+    }
+
+    function test_batch_copy_keeps_table_order_and_password() {
+        push([share("a"), share("b"), share("c")])
+        waitForRendering(list)
+
+        page.copyShares(["c", "a"])
+        const editor = findChild(page, "clipboardEditor")
+        verify(editor)
+        compare(editor.text,
+                "https://mypikpak.com/s/a\n访问密码：pa\n\n"
+                + "https://mypikpak.com/s/c\n访问密码：pc")
+        compare(page.copyNotice, "已复制 2 个分享链接")
+    }
+
+    function test_revoke_selected_uses_confirmation_and_clears_after_success() {
+        push([share("a"), share("b")])
+        waitForRendering(list)
+        page.selectRow("a", 0, Qt.NoModifier)
+        page.selectRow("b", 1, Qt.ControlModifier)
+
+        const revokeButton = findChild(page, "revokeSelectedShares")
+        verify(revokeButton && revokeButton.enabled)
+        mouseClick(revokeButton)
+        verify(page.revokeDialog.dialog.opened)
+        compare(backend.revokeCalls, 0)
+
+        const ok = findChild(page.revokeDialog.dialog, "dialogFooterOk")
+        verify(ok)
+        mouseClick(ok)
+        compare(backend.revokeCalls, 1)
+        compare(backend.lastRevokeIds.join(","), "a,b")
+
+        backend.finishRevoke(true, "已取消")
+        tryCompare(page.revokeDialog.dialog, "opened", false)
+        compare(page.selectedCount, 0)
+        compare(page.copyNotice, "已取消 2 个分享")
+    }
+
+    function test_revoke_failure_keeps_confirmation_open() {
+        push([share("a")])
+        waitForRendering(list)
+        page.selectRow("a", 0, Qt.NoModifier)
+        page.openRevoke(page.selectedIdsInOrder())
+
+        const ok = findChild(page.revokeDialog.dialog, "dialogFooterOk")
+        verify(ok)
+        mouseClick(ok)
+        backend.finishRevoke(false, "取消分享失败")
+
+        compare(page.revokeDialog.dialog.opened, true)
+        compare(findChild(page.revokeDialog.dialog, "shareRevokeError").text,
+                "取消分享失败")
+        page.revokeDialog.dialog.close()
     }
 }

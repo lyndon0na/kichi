@@ -508,6 +508,7 @@ Item {
         title: qsTr("清空历史")
         modal: true
         anchors.centerIn: Overlay.overlay
+        width: 380 + leftPadding + rightPadding
         footer: StandardDialogFooter {
             objectName: "clearConfirmBox"
             dialog: clearDialog

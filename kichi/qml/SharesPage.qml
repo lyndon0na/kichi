@@ -2,22 +2,29 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 分享管理页：服务端列表、复制链接 / 密码、批量撤销。
+// 分享管理页：服务端列表按表格展示，支持行内复制、Ctrl/Shift 多选和批量取消分享。
 Item {
     id: page
 
     property var backend: null
     property bool active: false
-    property var selectedMap: ({})
-    property var pendingIds: []
     property string copyNotice: ""
 
     readonly property bool loading: backend ? backend.sharesLoading : false
     readonly property bool actionRunning: backend ? backend.shareActionRunning : false
-    readonly property int selectedCount: Object.keys(selectedMap).length
-    readonly property bool allSelected: shareRows.count > 0 && selectedCount === shareRows.count
+    readonly property int selectedCount: selection.count
     readonly property bool showEmptyState: shareRows.count === 0 && !loading
     readonly property bool showLoadingState: shareRows.count === 0 && loading
+
+    readonly property int contentPadding: 12
+    readonly property int columnSpacing: 12
+    readonly property int iconColumnWidth: 22
+    readonly property int statusColumnWidth: 100
+    readonly property int expirationColumnWidth: 64
+    readonly property int createdColumnWidth: 120
+    readonly property int actionColumnWidth: 96
+    readonly property int headerRowHeight: 34
+    readonly property int rowHeight: 56
 
     onActiveChanged: {
         if (active && backend)
@@ -27,6 +34,27 @@ Item {
     UiMetrics { id: metrics }
     KTheme { id: theme }
     ClipboardHelper { id: clipboard }
+    FileSelection { id: selection }
+
+    ShareContextMenu {
+        id: shareMenuView
+        backend: page.backend
+        onCopyRequested: function (ids) {
+            page.copyShares(ids)
+        }
+        onRevokeRequested: function (ids) {
+            page.openRevoke(ids)
+        }
+    }
+
+    ShareRevokeDialog {
+        id: revokeDialogView
+        backend: page.backend
+        onRevoked: page.onRevoked()
+    }
+
+    property alias shareMenu: shareMenuView
+    property alias revokeDialog: revokeDialogView
 
     Timer {
         id: copyNoticeTimer
@@ -41,17 +69,6 @@ Item {
 
         function onChanged() {
             page.syncRows()
-        }
-
-        function onShareActionDone(action, ok, message) {
-            if (action !== "revoke" || !revokeDialog.visible)
-                return
-            if (ok) {
-                page.clearSelection()
-                revokeDialog.close()
-            } else {
-                revokeDialog.errorText = message
-            }
         }
     }
 
@@ -71,40 +88,47 @@ Item {
 
             Label {
                 Layout.fillWidth: true
-                text: {
-                    if (page.copyNotice.length > 0)
-                        return page.copyNotice
-                    if (page.selectedCount > 0)
-                        return qsTr("已选择 %1 个分享").arg(page.selectedCount)
-                    return shareRows.count > 0
-                        ? qsTr("共 %1 个分享链接").arg(shareRows.count) : ""
-                }
+                text: page.copyNotice.length > 0
+                      ? page.copyNotice
+                      : page.selectedCount > 0
+                        ? qsTr("已选择 %1 个分享").arg(page.selectedCount)
+                        : shareRows.count > 0
+                          ? qsTr("共 %1 个分享链接").arg(shareRows.count) : ""
                 color: page.copyNotice.length > 0 ? theme.success : theme.textMuted
                 font.pixelSize: theme.fontMeta
                 elide: Text.ElideRight
             }
 
             KButton {
-                text: page.allSelected ? qsTr("取消全选") : qsTr("全选")
-                variant: "ghost"
-                enabled: shareRows.count > 0 && !page.actionRunning
-                onClicked: page.toggleSelectAll()
-            }
-
-            KButton {
                 objectName: "revokeSelectedShares"
-                text: qsTr("撤销选中（%1）").arg(page.selectedCount)
+                text: page.selectedCount > 1
+                      ? qsTr("取消分享（%1）").arg(page.selectedCount)
+                      : qsTr("取消分享")
                 variant: "dangerOutline"
                 enabled: page.selectedCount > 0 && !page.actionRunning
-                onClicked: page.openRevoke(page.selectedIds())
+                onClicked: page.openRevoke(page.selectedIdsInOrder())
             }
 
             KButton {
                 text: qsTr("刷新")
+                iconName: "refresh"
                 variant: "ghost"
                 enabled: !page.loading
                 onClicked: page.backend.refreshShares()
             }
+        }
+
+        ShareTableHeader {
+            Layout.fillWidth: true
+            Layout.preferredHeight: page.headerRowHeight
+            rowHeight: page.headerRowHeight
+            iconColumnWidth: page.iconColumnWidth
+            statusColumnWidth: page.statusColumnWidth
+            expirationColumnWidth: page.expirationColumnWidth
+            createdColumnWidth: page.createdColumnWidth
+            actionColumnWidth: page.actionColumnWidth
+            columnSpacing: page.columnSpacing
+            contentPadding: page.contentPadding
         }
 
         ListView {
@@ -113,30 +137,37 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 8
+            spacing: 2
             model: shareRows
             ScrollBar.vertical: KScrollBar {}
 
             delegate: ShareRow {
+                id: row
                 width: list.width - metrics.scrollBarSlot
-                selected: page.isSelected(key)
-                actionRunning: page.actionRunning
-                onSelectionToggled: function (checked) {
-                    page.setSelected(key, checked)
+                highlighted: selection.isSelected(key)
+                rowHeight: page.rowHeight
+                iconColumnWidth: page.iconColumnWidth
+                statusColumnWidth: page.statusColumnWidth
+                expirationColumnWidth: page.expirationColumnWidth
+                createdColumnWidth: page.createdColumnWidth
+                actionColumnWidth: page.actionColumnWidth
+                columnSpacing: page.columnSpacing
+                contentPadding: page.contentPadding
+
+                onSelectRequested: function (modifiers, index) {
+                    page.selectRow(key, index, modifiers)
                 }
-                onCopyLinkRequested: {
-                    if (clipboard.copyText(url)) {
-                        page.copyNotice = qsTr("链接已复制")
-                        copyNoticeTimer.restart()
-                    }
+                onContextMenu: function (point) {
+                    page.openRowMenu(key, row.mapToItem(null, point.x, point.y))
                 }
-                onCopyPasswordRequested: {
-                    if (clipboard.copyText(passCode)) {
-                        page.copyNotice = qsTr("密码已复制")
-                        copyNoticeTimer.restart()
-                    }
+                onCopyRequested: function (text) {
+                    if (!clipboard.copyText(text))
+                        return
+                    page.copyNotice = text.indexOf("\n") >= 0
+                            ? qsTr("链接和密码已复制")
+                            : qsTr("链接已复制")
+                    copyNoticeTimer.restart()
                 }
-                onRevokeRequested: page.openRevoke([key])
             }
 
             Label {
@@ -170,51 +201,6 @@ Item {
                     color: theme.textMuted
                     font.pixelSize: theme.fontBody
                 }
-            }
-        }
-    }
-
-    KDialog {
-        id: revokeDialog
-        objectName: "revokeSharesDialog"
-        title: qsTr("撤销分享")
-        modal: true
-        parent: Overlay.overlay
-        anchors.centerIn: Overlay.overlay
-        width: 400 + leftPadding + rightPadding
-        closePolicy: page.actionRunning ? Popup.NoAutoClose : Popup.CloseOnEscape
-
-        property string errorText: ""
-
-        footer: DialogFooter {
-            outerMargin: revokeDialog.padding
-            okText: qsTr("撤销分享")
-            okEnabled: !page.actionRunning
-            cancelEnabled: !page.actionRunning
-            onOkClicked: page.submitRevoke()
-            onCancelClicked: revokeDialog.close()
-        }
-
-        onOpened: errorText = ""
-
-        ColumnLayout {
-            width: 400
-            spacing: 8
-
-            Label {
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                text: qsTr("确定撤销选中的 %1 个分享链接吗？\n链接会立即失效，但不会删除网盘里的源文件。")
-                    .arg(page.pendingIds.length)
-            }
-
-            Label {
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                visible: text.length > 0
-                text: revokeDialog.errorText
-                font.pixelSize: theme.fontMeta
-                color: theme.danger
             }
         }
     }
@@ -266,7 +252,88 @@ Item {
                     shareRows.setProperty(at, field, item[field])
             }
         }
-        page.pruneSelection(wantedIds)
+        selection.prune(wanted)
+    }
+
+    function shareForId(id) {
+        const shares = page.backend && page.backend.shares ? page.backend.shares : []
+        for (let i = 0; i < shares.length; i++) {
+            if (shares[i].id === id)
+                return shares[i]
+        }
+        return null
+    }
+
+    function selectRow(id, index, modifiers) {
+        const shares = page.backend && page.backend.shares ? page.backend.shares : []
+        selection.click(id, index, modifiers, shares)
+    }
+
+    function selectedIdsInOrder() {
+        const result = []
+        const shares = page.backend && page.backend.shares ? page.backend.shares : []
+        for (let i = 0; i < shares.length; i++) {
+            if (selection.isSelected(shares[i].id))
+                result.push(shares[i].id)
+        }
+        return result
+    }
+
+    function copyShares(ids) {
+        const wanted = ({})
+        for (let i = 0; i < (ids ? ids.length : 0); i++)
+            wanted[ids[i]] = true
+
+        const parts = []
+        let hasPassword = false
+        const shares = page.backend && page.backend.shares ? page.backend.shares : []
+        for (let i = 0; i < shares.length; i++) {
+            const share = shares[i]
+            if (!wanted[share.id])
+                continue
+            const text = clipboard.shareText(share.url, share.passCode)
+            if (text.length === 0)
+                continue
+            parts.push(text)
+            if (share.passCode && String(share.passCode).length > 0)
+                hasPassword = true
+        }
+        if (parts.length === 0 || !clipboard.copyText(parts.join("\n\n")))
+            return
+
+        if (parts.length > 1) {
+            page.copyNotice = qsTr("已复制 %1 个分享链接").arg(parts.length)
+        } else {
+            page.copyNotice = hasPassword
+                    ? qsTr("链接和密码已复制")
+                    : qsTr("链接已复制")
+        }
+        copyNoticeTimer.restart()
+    }
+
+    function openRowMenu(id, point) {
+        const share = shareForId(id)
+        if (!share)
+            return
+        selection.ensureSelected(share)
+        shareMenu.openFor(selectedIdsInOrder(), point)
+    }
+
+    function openRevoke(ids) {
+        if (!page.backend || !ids || ids.length === 0 || page.actionRunning)
+            return
+        const share = ids.length === 1 ? shareForId(ids[0]) : null
+        const title = share ? share.title : ""
+        revokeDialog.openFor(ids, title)
+    }
+
+    function onRevoked() {
+        const count = revokeDialog.shareCount
+        selection.clear()
+        page.copyNotice = count > 1
+                ? qsTr("已取消 %1 个分享").arg(count)
+                : qsTr("分享已取消")
+        copyNoticeTimer.restart()
     }
 
     function normalize(share) {
@@ -274,6 +341,7 @@ Item {
             key: share.id,
             title: share.title,
             url: share.url,
+            copyText: clipboard.shareText(share.url, share.passCode),
             passCode: share.passCode,
             hasPassword: share.hasPassword,
             accessText: share.accessText,
@@ -283,80 +351,5 @@ Item {
             statusText: share.statusText,
             statusTone: share.statusTone
         }
-    }
-
-    function isSelected(id) {
-        return !!id && selectedMap[id] === true
-    }
-
-    function setSelected(id, checked) {
-        if (!id)
-            return
-        const next = ({})
-        const ids = Object.keys(selectedMap)
-        for (let i = 0; i < ids.length; i++) {
-            if (ids[i] !== id)
-                next[ids[i]] = true
-        }
-        if (checked)
-            next[id] = true
-        selectedMap = next
-    }
-
-    function selectIds(ids) {
-        const next = ({})
-        for (let i = 0; i < (ids ? ids.length : 0); i++) {
-            if (ids[i])
-                next[ids[i]] = true
-        }
-        selectedMap = next
-    }
-
-    function clearSelection() {
-        selectedMap = ({})
-    }
-
-    function selectedIds() {
-        return Object.keys(selectedMap)
-    }
-
-    function toggleSelectAll() {
-        if (allSelected) {
-            clearSelection()
-            return
-        }
-        const ids = []
-        for (let i = 0; i < shareRows.count; i++)
-            ids.push(shareRows.get(i).key)
-        selectIds(ids)
-    }
-
-    function pruneSelection(present) {
-        const next = ({})
-        let changed = false
-        const ids = Object.keys(selectedMap)
-        for (let i = 0; i < ids.length; i++) {
-            if (present[ids[i]])
-                next[ids[i]] = true
-            else
-                changed = true
-        }
-        if (changed)
-            selectedMap = next
-    }
-
-    function openRevoke(ids) {
-        if (!backend || !ids || ids.length === 0 || actionRunning)
-            return
-        pendingIds = ids.slice()
-        revokeDialog.errorText = ""
-        revokeDialog.open()
-    }
-
-    function submitRevoke() {
-        if (!backend || pendingIds.length === 0 || actionRunning)
-            return
-        revokeDialog.errorText = ""
-        backend.revokeShares(pendingIds.slice())
     }
 }

@@ -4,8 +4,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 弹窗页脚：左「确定」、右「取消」（异步操作的弹窗共用；顺序与系统标准按钮一致，
-// 两套页脚的「最右一个」都是取消，同一个位置做的事相同）。
+// 弹窗页脚：左侧可带状态提示，右侧依次「确定」「取消」（异步操作的弹窗共用；
+// 顺序与系统标准按钮一致，两套页脚的「最右一个」都是取消）。
 //
 // 为什么不用 `standardButtons`：QQC2 的 Dialog 点在 Ok（AcceptRole）上会自己
 // `close()`，而这两个操作都是异步请求——失败原因回来时对话框已经不可见，
@@ -23,17 +23,27 @@ Item {
     property bool okEnabled: true
     /// 「取消」能不能点（请求进行中时也禁用，避免界面说「已取消」但请求还在跑）
     property bool cancelEnabled: true
-    /// 成功结果页可能只剩「完成」，不需要取消按钮
+    /// 某些弹窗不需要取消 / 关闭按钮
     property bool cancelVisible: true
+    /// 左侧状态提示；为空时只显示右侧按钮
+    property string statusText: ""
+    property color statusColor: "transparent"
     /// 「确定」的文案
     property string okText: qsTr("确定")
     /// 「确定」的按钮语义（危险操作传 danger）
     property string okVariant: "primary"
+    property string okObjectName: "dialogFooterOk"
+    /// 「取消」的文案
+    property string cancelText: qsTr("取消")
+    property string cancelVariant: "secondary"
+    property string cancelObjectName: "dialogFooterCancel"
     /// 按钮离弹窗左 / 右 / 下边缘的距离：传所在 Dialog 的 `padding`
     property int outerMargin: 12
 
     signal okClicked()
     signal cancelClicked()
+
+    KTheme { id: theme }
 
     // 上边距交给 Dialog 的 spacing（正文和页脚之间本就有间隔），这里只补三边
     implicitWidth: row.implicitWidth + footer.outerMargin * 2
@@ -49,14 +59,27 @@ Item {
 
         spacing: 8
 
+        Label {
+            objectName: "dialogFooterStatus"
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            visible: footer.statusText.length > 0
+            text: footer.statusText
+            color: footer.statusColor
+            font.pixelSize: theme.fontMeta
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+        }
+
         Item {
             Layout.fillWidth: true
+            visible: footer.statusText.length === 0
         }
 
         // 顺序跟系统标准按钮一致：确定在左、取消在右（KDE 默认）。
         // 两套页脚的「最右一个」都是取消，避免同一个位置在两类弹窗里做不同的事。
         KButton {
-            objectName: "dialogFooterOk"
+            objectName: footer.okObjectName
             text: footer.okText
             variant: footer.okVariant
             enabled: footer.okEnabled
@@ -64,9 +87,9 @@ Item {
         }
 
         KButton {
-            objectName: "dialogFooterCancel"
-            text: qsTr("取消")
-            variant: "secondary"
+            objectName: footer.cancelObjectName
+            text: footer.cancelText
+            variant: footer.cancelVariant
             enabled: footer.cancelEnabled
             visible: footer.cancelVisible
             onClicked: footer.cancelClicked()

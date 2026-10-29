@@ -21,6 +21,11 @@ Item {
             ? qsTr("「%1」").arg(target.name)
             : qsTr("选中的条目")
     }
+    readonly property string shareCreatedText: backend
+        ? clipboard.shareText(backend.shareCreatedUrl, backend.shareCreatedPassCode)
+        : ""
+    readonly property bool shareHasPassword: backend
+        && backend.shareCreatedPassCode.length > 0
 
     KTheme { id: theme }
     ClipboardHelper { id: clipboard }
@@ -39,6 +44,7 @@ Item {
         parent: Overlay.overlay
         anchors.centerIn: Overlay.overlay
         width: 420 + leftPadding + rightPadding
+        spacing: theme.gapLg
         closePolicy: root.running ? Popup.NoAutoClose : Popup.CloseOnEscape
 
         property string stage: "form"
@@ -47,13 +53,28 @@ Item {
 
         footer: DialogFooter {
             outerMargin: shareDialog.padding
-            okText: shareDialog.stage === "success" ? qsTr("完成") : qsTr("创建链接")
-            okEnabled: shareDialog.stage === "success" || !root.running
+            statusText: shareDialog.stage !== "success"
+                        ? ""
+                        : shareDialog.copyNotice.length > 0
+                          ? shareDialog.copyNotice
+                          : root.shareHasPassword
+                            ? qsTr("点击复制会同时带上访问密码。")
+                            : qsTr("点击复制链接。")
+            statusColor: shareDialog.copyNotice.length > 0
+                         ? theme.success : theme.textMuted
+            okObjectName: shareDialog.stage === "success"
+                          ? "shareCopyLink" : "dialogFooterOk"
+            okText: shareDialog.stage === "success" ? qsTr("复制链接") : qsTr("创建链接")
+            okEnabled: shareDialog.stage === "success"
+                       ? root.shareCreatedText.length > 0
+                       : !root.running
+            cancelObjectName: shareDialog.stage === "success"
+                              ? "shareDoneButton" : "dialogFooterCancel"
+            cancelText: shareDialog.stage === "success" ? qsTr("完成") : qsTr("取消")
             cancelEnabled: !root.running
-            cancelVisible: shareDialog.stage !== "success"
             onOkClicked: {
                 if (shareDialog.stage === "success")
-                    shareDialog.close()
+                    root.copyCreatedShare()
                 else
                     root.submit()
             }
@@ -184,103 +205,13 @@ Item {
                 }
             }
 
-            ColumnLayout {
+            ShareResultPane {
                 visible: shareDialog.stage === "success"
                 Layout.fillWidth: true
-                spacing: 10
-
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("%1的分享链接已创建，有效期：%2。")
-                        .arg(root.itemLabel)
-                        .arg(root.backend ? root.backend.shareCreatedExpiration : "")
-                    wrapMode: Text.Wrap
-                    font.pixelSize: theme.fontBody
-                    color: theme.textPrimary
-                }
-
-                Label {
-                    text: qsTr("分享链接")
-                    font.pixelSize: theme.fontMeta
-                    color: theme.textMuted
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-
-                    KTextField {
-                        objectName: "shareCreatedUrl"
-                        Layout.fillWidth: true
-                        readOnly: true
-                        selectByMouse: true
-                        text: root.backend ? root.backend.shareCreatedUrl : ""
-                    }
-
-                    KButton {
-                        objectName: "shareCopyLink"
-                        text: qsTr("复制链接")
-                        onClicked: {
-                            if (clipboard.copyText(shareDialog.stage === "success"
-                                                   ? root.backend.shareCreatedUrl : "")) {
-                                shareDialog.copyNotice = qsTr("链接已复制")
-                                copyNoticeTimer.restart()
-                            }
-                        }
-                    }
-                }
-
-                ColumnLayout {
-                    visible: root.backend && root.backend.shareCreatedPassCode.length > 0
-                    Layout.fillWidth: true
-                    spacing: 8
-
-                    Label {
-                        text: qsTr("访问密码")
-                        font.pixelSize: theme.fontMeta
-                        color: theme.textMuted
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-
-                        KTextField {
-                            objectName: "shareCreatedPassword"
-                            Layout.fillWidth: true
-                            readOnly: true
-                            selectByMouse: true
-                            text: root.backend ? root.backend.shareCreatedPassCode : ""
-                        }
-
-                        KButton {
-                            objectName: "shareCopyPassword"
-                            text: qsTr("复制密码")
-                            onClicked: {
-                                if (clipboard.copyText(root.backend.shareCreatedPassCode)) {
-                                    shareDialog.copyNotice = qsTr("密码已复制")
-                                    copyNoticeTimer.restart()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("链接不会自动复制。请按需点击上方按钮。")
-                    wrapMode: Text.Wrap
-                    font.pixelSize: theme.fontMeta
-                    color: theme.textMuted
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    visible: shareDialog.copyNotice.length > 0
-                    text: shareDialog.copyNotice
-                    font.pixelSize: theme.fontMeta
-                    color: theme.success
-                }
+                itemLabel: root.itemLabel
+                expirationText: root.backend ? root.backend.shareCreatedExpiration : ""
+                shareText: root.shareCreatedText
+                hasPassword: root.shareHasPassword
             }
         }
     }
@@ -308,6 +239,15 @@ Item {
         }
         shareDialog.errorText = ""
         backend.createShare(root.targetIds, days, passwordBox.checked)
+    }
+
+    function copyCreatedShare() {
+        if (!clipboard.copyText(root.shareCreatedText))
+            return
+        shareDialog.copyNotice = root.shareHasPassword
+                ? qsTr("链接和密码已复制")
+                : qsTr("链接已复制")
+        copyNoticeTimer.restart()
     }
 
     Connections {
