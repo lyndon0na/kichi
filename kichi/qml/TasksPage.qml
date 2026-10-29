@@ -225,6 +225,7 @@ Item {
         return {
             key: task.id,
             name: task.name,
+            kind: task.kind,
             phase: task.phase,
             phaseText: task.phaseText,
             progress: task.progress,

@@ -90,6 +90,7 @@ TestCase {
         return {
             id: id,
             title: id + " 的分享",
+            kind: "",
             url: "https://mypikpak.com/s/" + id,
             passCode: "p" + id,
             hasPassword: true,
@@ -147,6 +148,32 @@ TestCase {
         verify(row)
         verify(findChild(row, "shareTypeIcon"))
         verify(findChild(row, "shareSelectCheckBox") === null)
+    }
+
+    function test_shared_folder_uses_api_kind_for_icon() {
+        var folder = share("folder")
+        folder.title = "电影合集"
+        folder.kind = "folder"
+        push([folder])
+        waitForRendering(list)
+
+        const row = list.itemAtIndex(0)
+        const typeIcon = findChild(row, "shareTypeIcon")
+        verify(typeIcon)
+        compare(typeIcon.iconName, "folder")
+    }
+
+    function test_missing_kind_still_uses_extension_for_icon() {
+        var video = share("video")
+        video.title = "电影.mkv"
+        video.kind = ""
+        push([video])
+        waitForRendering(list)
+
+        const row = list.itemAtIndex(0)
+        const typeIcon = findChild(row, "shareTypeIcon")
+        verify(typeIcon)
+        compare(typeIcon.iconName, "video")
     }
 
     function test_row_hover_stays_visible_across_content() {

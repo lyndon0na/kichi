@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
-use kichi_core::MyShare;
+use kichi_core::{EntryKind, MyShare};
 
 use super::actions::run_in_background;
 use super::qobject;
@@ -293,6 +293,11 @@ fn expiration_label(days: i64) -> String {
 
 fn share_map(share: &MyShare) -> QVariantMap {
     let text = |value: &str| QVariant::from(&QString::from(value));
+    let kind = match share.kind {
+        Some(EntryKind::Folder) => "folder",
+        Some(EntryKind::File) => "file",
+        None => "",
+    };
     let title = if share.title.trim().is_empty() {
         if share.file_count > 0 {
             format!("分享的 {} 个文件", share.file_count)
@@ -324,6 +329,7 @@ fn share_map(share: &MyShare) -> QVariantMap {
     let mut map = QVariantMap::default();
     map.insert_clone(&QString::from("id"), &text(&share.share_id));
     map.insert_clone(&QString::from("title"), &text(&title));
+    map.insert_clone(&QString::from("kind"), &text(kind));
     map.insert_clone(&QString::from("url"), &text(&share.share_url));
     map.insert_clone(&QString::from("passCode"), &text(&share.pass_code));
     map.insert_clone(
@@ -352,6 +358,37 @@ fn share_map(share: &MyShare) -> QVariantMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn share(kind: Option<EntryKind>) -> MyShare {
+        MyShare {
+            share_id: "S1".to_owned(),
+            share_url: "https://mypikpak.com/s/S1".to_owned(),
+            title: "电影合集".to_owned(),
+            pass_code: String::new(),
+            share_to: "publiclink".to_owned(),
+            created_at: None,
+            expiration_days: 7,
+            view_count: 0,
+            restore_count: 0,
+            file_count: 1,
+            status: "OK".to_owned(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn share_map_exposes_kind_with_empty_fallback() {
+        let read = |share: &MyShare| {
+            share_map(share)
+                .get(&QString::from("kind"))
+                .and_then(|v| v.value::<QString>())
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        };
+        assert_eq!(read(&share(Some(EntryKind::Folder))), "folder");
+        assert_eq!(read(&share(Some(EntryKind::File))), "file");
+        assert_eq!(read(&share(None)), "");
+    }
 
     #[test]
     fn expiration_labels_match_ui_options() {

@@ -79,6 +79,7 @@ TestCase {
         return {
             id: id,
             name: id + ".mkv",
+            kind: "",
             phase: phase,
             phaseText: phase,
             progress: progress,
@@ -136,6 +137,22 @@ TestCase {
         var progressHeader = findChild(header, "tasksProgressHeader")
         verify(progressHeader)
         compare(progressHeader.horizontalAlignment, Text.AlignHCenter)
+    }
+
+    function test_api_folder_kind_wins_over_name_fallback() {
+        var folder = task("folder", "completed", 100)
+        folder.name = "电影合集"
+        folder.kind = "folder"
+        push([folder])
+
+        var row = null
+        tryVerify(function () {
+            row = findChild(list, "taskRow_folder")
+            return row !== null
+        })
+        var typeIcon = findChild(row, "taskTypeIcon")
+        verify(typeIcon)
+        compare(typeIcon.iconName, "folder")
     }
 
     function test_header_controls_show_task_counts() {

@@ -31,6 +31,17 @@ pub enum EntryKind {
     File,
 }
 
+impl EntryKind {
+    /// API 的 `drive#folder` / `drive#file`；未知或缺失值留给调用方兜底。
+    pub(crate) fn from_api_kind(kind: &str) -> Option<Self> {
+        match kind.trim() {
+            "drive#folder" => Some(Self::Folder),
+            "drive#file" => Some(Self::File),
+            _ => None,
+        }
+    }
+}
+
 /// 文件或文件夹（列表项）。
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -94,6 +105,8 @@ pub struct OfflineTask {
     pub file_id: Option<String>,
     /// 产物大小（字节）；官方给字符串，缺失按 0 处理
     pub file_size: u64,
+    /// 产物类别；列表未带 `reference_resource` 时为 `None`
+    pub kind: Option<EntryKind>,
 }
 
 /// 网盘配额与会员状态。

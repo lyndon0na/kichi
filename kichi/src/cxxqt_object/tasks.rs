@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
-use kichi_core::{OfflineTask, TaskPhase};
+use kichi_core::{EntryKind, OfflineTask, TaskPhase};
 
 use super::actions::{format_size, run_in_background};
 use super::qobject;
@@ -397,6 +397,11 @@ fn notify_finished(task: &OfflineTask, enabled: bool) {
 /// 一条任务 → QML 用的小 map（只带界面要显示的字段）。
 fn task_map(task: &OfflineTask) -> QVariantMap {
     let text = |value: &str| QVariant::from(&QString::from(value));
+    let kind = match task.kind {
+        Some(EntryKind::Folder) => "folder",
+        Some(EntryKind::File) => "file",
+        None => "",
+    };
     let (phase, phase_text) = match task.phase {
         TaskPhase::Pending => ("pending", "排队中"),
         TaskPhase::Running => ("running", "下载中"),
@@ -423,6 +428,7 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
     let mut map = QVariantMap::default();
     map.insert_clone(&QString::from("id"), &text(&task.id));
     map.insert_clone(&QString::from("name"), &text(&task.name));
+    map.insert_clone(&QString::from("kind"), &text(kind));
     map.insert_clone(&QString::from("phase"), &text(phase));
     map.insert_clone(&QString::from("phaseText"), &text(phase_text));
     map.insert_clone(
@@ -457,6 +463,7 @@ mod tests {
             created_at: None,
             file_id: None,
             file_size: 0,
+            kind: None,
         }
     }
 
@@ -514,6 +521,7 @@ mod tests {
         t.name = "电影.mkv".to_owned();
         t.progress = 42;
         t.file_size = 123_456;
+        t.kind = Some(EntryKind::Folder);
         let map = task_map(&t);
         let get = |key: &str| {
             map.get(&QString::from(key))
@@ -524,6 +532,7 @@ mod tests {
         assert_eq!(get("phase"), "running");
         assert_eq!(get("progressText"), "42%");
         assert_eq!(get("name"), "电影.mkv");
+        assert_eq!(get("kind"), "folder");
         assert_eq!(get("sizeText"), "121 KB");
     }
 

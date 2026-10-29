@@ -324,6 +324,7 @@ Item {
         return {
             key: share.id,
             title: share.title,
+            kind: share.kind,
             url: share.url,
             copyText: clipboard.shareText(share.url, share.passCode),
             passCode: share.passCode,

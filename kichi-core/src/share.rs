@@ -5,6 +5,8 @@
 //! - `expiration_days = -1` 表示永久，正数表示有效天数；
 //! - 需要密码时由服务端生成密码，客户端不能自定义；
 //! - 列表和批量撤销分别走 `/share/list` 与 `/share:batchDelete`。
+//!
+//! 列表的 `file_kind` 由 pikpak-kotlin（MIT）的真实响应记录补充。
 
 use std::collections::BTreeSet;
 
@@ -12,6 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer};
 
 use crate::drive::DriveClient;
+use crate::types::EntryKind;
 use crate::Error;
 
 /// 分享列表单页请求条数。
@@ -52,6 +55,8 @@ pub struct MyShare {
     pub restore_count: u64,
     pub file_count: u64,
     pub status: String,
+    /// 分享首项是文件还是文件夹；旧响应没有该字段时为 `None`
+    pub kind: Option<EntryKind>,
 }
 
 impl MyShare {
@@ -171,6 +176,8 @@ struct ShareDto {
     #[serde(default, deserialize_with = "lenient_u64")]
     file_num: u64,
     #[serde(default, deserialize_with = "lenient_string")]
+    file_kind: String,
+    #[serde(default, deserialize_with = "lenient_string")]
     share_status: String,
 }
 
@@ -188,6 +195,7 @@ impl ShareDto {
             restore_count: self.restore_count,
             file_count: self.file_num,
             status: self.share_status,
+            kind: EntryKind::from_api_kind(&self.file_kind),
         }
     }
 }
@@ -372,13 +380,19 @@ mod tests {
                 "view_count": "12",
                 "restore_count": 3,
                 "file_num": "5",
+                "file_kind": "drive#folder",
                 "share_status": "OK"
             }, {
                 "share_id": "S2",
                 "share_url": "https://mypikpak.com/s/S2",
                 "create_time": "",
                 "expiration_days": -1,
-                "view_count": null
+                "view_count": null,
+                "file_kind": "drive#file"
+            }, {
+                "share_id": "S3",
+                "share_url": "https://mypikpak.com/s/S3",
+                "expiration_days": 30
             }],
             "next_page_token": "next"
         }"#;
@@ -389,6 +403,7 @@ mod tests {
         assert_eq!(shares[0].view_count, 12);
         assert_eq!(shares[0].restore_count, 3);
         assert_eq!(shares[0].file_count, 5);
+        assert_eq!(shares[0].kind, Some(EntryKind::Folder));
         assert!(shares[0].has_password());
         assert_eq!(
             shares[0].created_at.map(|time| time.timestamp()),
@@ -396,7 +411,9 @@ mod tests {
         );
         assert_eq!(shares[1].expiration_days, -1);
         assert_eq!(shares[1].created_at, None);
+        assert_eq!(shares[1].kind, Some(EntryKind::File));
         assert!(!shares[1].has_password());
+        assert_eq!(shares[2].kind, None, "缺 file_kind 时应交给后缀兜底");
     }
 
     #[test]

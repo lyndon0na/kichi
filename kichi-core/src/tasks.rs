@@ -3,6 +3,7 @@
 //! 端点行为已对照两个实现核对（均为可借用许可）：
 //! - rclone `backend/pikpak`（MIT）实现了创建、单任务查询、删除，没有列表；
 //! - pikpaktui `src/pikpak/offline.rs`（Apache-2.0）给出了列表的参数形态。
+//! - pikpak-kotlin（MIT）记录了列表的 `with=reference_resource` 参数。
 //!
 //! 创建任务走的是 **文件**端点（`POST /drive/v1/files`），不是任务端点。
 
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::drive::DriveClient;
 use crate::http::Body;
-use crate::types::{OfflineTask, TaskPhase};
+use crate::types::{EntryKind, OfflineTask, TaskPhase};
 use crate::Error;
 
 mod task_wait;
@@ -72,8 +73,16 @@ struct TaskDto {
     file_size: Option<String>,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    reference_resource: Option<ReferenceResourceDto>,
     #[serde(default, deserialize_with = "lenient_time")]
     created_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Deserialize)]
+struct ReferenceResourceDto {
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 impl TaskDto {
@@ -84,6 +93,11 @@ impl TaskDto {
             .as_deref()
             .and_then(|size| size.trim().parse::<u64>().ok())
             .unwrap_or(0);
+        let kind = self
+            .reference_resource
+            .as_ref()
+            .and_then(|resource| resource.kind.as_deref())
+            .and_then(EntryKind::from_api_kind);
         OfflineTask {
             id: self.id,
             name: self.name,
@@ -93,6 +107,7 @@ impl TaskDto {
             created_at: self.created_time,
             file_id: self.file_id.filter(|id| !id.is_empty()),
             file_size,
+            kind,
         }
     }
 }
@@ -190,6 +205,7 @@ fn task_list_query(page_token: Option<&str>) -> Vec<(String, String)> {
         ("thumbnail_size".to_owned(), "SIZE_SMALL".to_owned()),
         ("limit".to_owned(), TASK_LIST_LIMIT.to_string()),
         ("filters".to_owned(), filters),
+        ("with".to_owned(), "reference_resource".to_owned()),
     ];
     if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
         query.push(("page_token".to_owned(), token.to_owned()));
@@ -224,6 +240,7 @@ mod tests {
         assert_eq!(get("type"), Some("offline"));
         assert_eq!(get("thumbnail_size"), Some("SIZE_SMALL"));
         assert_eq!(get("limit"), Some("500"));
+        assert_eq!(get("with"), Some("reference_resource"));
         assert!(get("page_token").is_none());
         let filters = get("filters").unwrap_or_default();
         assert!(filters.starts_with(r#"{"phase":{"in":"#));
@@ -240,9 +257,13 @@ mod tests {
             "tasks": [
                 {"id":"T1","name":"电影","phase":"PHASE_TYPE_RUNNING","progress":42,
                  "file_size":"123456","file_id":"F1","message":"downloading",
+                 "reference_resource":{"kind":"drive#folder"},
                  "created_time":"2026-10-20T12:34:56.789+08:00"},
                 {"id":"T2","name":"done.zip","phase":"PHASE_TYPE_COMPLETE",
-                 "progress":100,"file_size":null,"message":""}
+                 "progress":100,"file_size":null,"message":"",
+                 "reference_resource":{"kind":"drive#file"}},
+                {"id":"T3","name":"unknown","phase":"PHASE_TYPE_COMPLETE",
+                 "progress":100,"file_size":"0"}
             ],
             "next_page_token": "tok"
         }"#;
@@ -255,6 +276,7 @@ mod tests {
         assert_eq!(tasks[0].file_size, 123_456, "字符串 file_size 应可解析");
         assert_eq!(tasks[0].file_id.as_deref(), Some("F1"));
         assert_eq!(tasks[0].message.as_deref(), Some("downloading"));
+        assert_eq!(tasks[0].kind, Some(EntryKind::Folder));
         assert_eq!(
             tasks[0].created_at.map(|t| t.timestamp()),
             Some(1_792_470_896)
@@ -264,6 +286,8 @@ mod tests {
         assert_eq!(tasks[1].file_size, 0);
         assert_eq!(tasks[1].message, None, "空说明应为 None");
         assert_eq!(tasks[1].created_at, None);
+        assert_eq!(tasks[1].kind, Some(EntryKind::File));
+        assert_eq!(tasks[2].kind, None, "缺 reference_resource 时应兜底");
     }
 
     #[test]

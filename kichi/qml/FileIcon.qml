@@ -9,7 +9,7 @@ import QtQuick
 Item {
     id: icon
 
-    /// 条目类型："folder" 是文件夹，其余（file / 空）按扩展名判断
+    /// API 类型："folder" 是文件夹；"file"、未知或空时继续按扩展名细分
     property string kind: ""
     /// 文件名（只看扩展名）；传输记录只有路径，传 basename 也行
     property string fileName: ""

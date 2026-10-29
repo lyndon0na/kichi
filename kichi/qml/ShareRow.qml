@@ -9,6 +9,7 @@ ItemDelegate {
 
     required property string key
     required property string title
+    required property string kind
     required property string url
     required property string copyText
     required property string expirationText
@@ -119,6 +120,7 @@ ItemDelegate {
                     width: 18
                     height: 18
                     anchors.centerIn: parent
+                    kind: row.kind
                     fileName: row.title
                     color: theme.textSecondary
                 }
