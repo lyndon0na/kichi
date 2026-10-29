@@ -30,11 +30,13 @@ TestCase {
         signal changed()
 
         property int submitted: 0
+        property string submittedText: ""
         property string deletedId: ""
         property int refreshCalls: 0
 
         function addTask(url) {
             submitted += 1
+            submittedText = url
         }
         function deleteTask(id) {
             deletedId = id
@@ -59,6 +61,8 @@ TestCase {
         page.active = false
         backend.tasksLoading = false
         backend.refreshCalls = 0
+        backend.submitted = 0
+        backend.submittedText = ""
         push([])
     }
 
@@ -107,6 +111,30 @@ TestCase {
         compare(row.implicitHeight, 56)
         compare(row.name, "t1.mkv")
         compare(row.phaseText, "running")
+
+        var progressHeader = findChild(header, "tasksProgressHeader")
+        verify(progressHeader)
+        compare(progressHeader.horizontalAlignment, Text.AlignHCenter)
+    }
+
+    function test_new_task_dialog_submits_multiline_text() {
+        page.openNewTaskDialog()
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+
+        var input = findChild(dialog, "newTaskInput")
+        verify(input)
+        var text = "magnet:?xt=urn:btih:first\n\nhttps://example.com/second.zip"
+        input.text = text
+        dialog.submit()
+
+        compare(backend.submitted, 1)
+        compare(backend.submittedText, text)
+        compare(dialog.opened, false)
     }
 
     function test_activation_refreshes_tasks() {

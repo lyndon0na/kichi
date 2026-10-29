@@ -64,7 +64,6 @@ pub mod qobject {
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         /// 有一轮离线任务列表请求在途：QML 据此显示加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
-        #[qproperty(QString, task_input, cxx_name = "taskInput", READ, WRITE, NOTIFY = changed)]
         #[qproperty(QVariantList, shares, READ, NOTIFY = changed)]
         #[qproperty(bool, shares_loading, cxx_name = "sharesLoading", READ, NOTIFY = changed)]
         /// 有创建或撤销分享的写请求在途
@@ -520,6 +519,7 @@ mod search;
 mod settings;
 mod shares;
 mod tasks;
+mod tasks_submit;
 mod transfers;
 mod transfers_actions;
 mod transfers_active;
@@ -584,8 +584,6 @@ pub struct KichiRust {
     pub(crate) tasks: QVariantList,
     /// 当前任务的领域对象（通知判断、删除确认用）
     pub(crate) task_list: Vec<kichi_core::OfflineTask>,
-    /// 任务页输入框内容（QML 双向绑定，提交成功后由 Rust 清空）
-    pub(crate) task_input: QString,
     /// 有任务请求在途
     pub(crate) tasks_loading: bool,
     /// 最近一次任务列表请求开始 / 成功刷新的时刻：手动 / 切页刷新据此做短冷却
@@ -765,7 +763,6 @@ impl Default for KichiRust {
             list_epoch: 0,
             tasks: QVariantList::default(),
             task_list: Vec::new(),
-            task_input: QString::default(),
             tasks_loading: false,
             task_refresh_at: None,
             tasks_epoch: 0,

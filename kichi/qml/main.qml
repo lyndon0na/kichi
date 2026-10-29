@@ -296,6 +296,29 @@ ApplicationWindow {
                             onClicked: filesPage.beginNewFolder()
                         }
                     }
+
+                    RowLayout {
+                        visible: root.currentPage === 3
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: theme.gapXs
+
+                        KButton {
+                            objectName: "newTaskButton"
+                            text: qsTr("新任务")
+                            iconName: "plus"
+                            variant: "primary"
+                            onClicked: tasksPage.openNewTaskDialog()
+                        }
+
+                        KButton {
+                            objectName: "tasksRefreshButton"
+                            text: qsTr("刷新")
+                            iconName: "refresh"
+                            variant: "ghost"
+                            enabled: !backend.tasksLoading
+                            onClicked: backend.refreshTasks()
+                        }
+                    }
                 }
 
                 // —— 下行：面包屑 ——
@@ -532,6 +555,7 @@ ApplicationWindow {
                     }
 
                     TasksPage {
+                        id: tasksPage
                         backend: backend
                         active: root.currentPage === 3
                     }

@@ -55,11 +55,13 @@ Item {
             Layout.minimumWidth: header.progressColumnWidth
 
             Label {
+                objectName: "tasksProgressHeader"
                 anchors.fill: parent
                 text: qsTr("进度")
                 color: theme.textMuted
                 font.pixelSize: theme.fontMeta
                 font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }
         }

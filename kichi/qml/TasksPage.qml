@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 离线任务页：粘贴磁力/URL 回车提交，列表由后台轮询自动刷新。
+// 离线任务页：任务表格由后台轮询自动刷新；新任务从页头按钮打开弹窗添加。
 // 顶层用 Item 而非 Page：Page 自带 header/footer，放进 StackLayout 容易撑爆高度。
 Item {
     id: page
@@ -67,43 +67,11 @@ Item {
     ColumnLayout {
         anchors.fill: parent
         // 右边不留：列表铺到窗口右缘，滚动条贴边；
-        // 输入行和状态行自己补右边距
+        // 状态行自己补右边距
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapSm
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.rightMargin: metrics.pageMargin
-            spacing: theme.gapSm
-
-            KTextField {
-                id: urlField
-                Layout.fillWidth: true
-                placeholderText: qsTr("粘贴磁力链接或下载地址，回车提交")
-                selectByMouse: true
-                text: page.backend ? page.backend.taskInput : ""
-                onAccepted: page.submit()
-                onTextEdited: if (page.backend) page.backend.taskInput = text
-            }
-
-            KButton {
-                text: qsTr("提交")
-                variant: "primary"
-                implicitHeight: 36
-                enabled: urlField.text.trim().length > 0
-                onClicked: page.submit()
-            }
-
-            KButton {
-                text: qsTr("刷新")
-                variant: "secondary"
-                implicitHeight: 36
-                enabled: page.backend ? !page.tasksLoading : false
-                onClicked: page.backend.refreshTasks()
-            }
-        }
 
         Label {
             visible: page.activeCount > 0
@@ -160,7 +128,7 @@ Item {
                 objectName: "tasksEmptyState"
                 anchors.centerIn: parent
                 visible: page.showEmptyState
-                text: qsTr("暂无离线任务\n把磁力链接或下载地址粘到上方即可开始")
+                text: qsTr("暂无离线任务\n点击右上角「新任务」添加磁力链接或下载地址")
                 horizontalAlignment: Text.AlignHCenter
                 color: theme.textMuted
                 font.pixelSize: theme.fontBody
@@ -191,11 +159,9 @@ Item {
         }
     }
 
-    function submit() {
-        var url = urlField.text.trim()
-        if (url.length === 0)
-            return
-        page.backend.addTask(url)
+    function openNewTaskDialog() {
+        if (page.backend)
+            newTaskDialog.open()
     }
 
     /// 把 Rust 推来的任务列表同步进 ListModel：增删 / 移位 / 改字段都就地做，
@@ -288,5 +254,10 @@ Item {
         }
 
         onAccepted: page.backend.deleteTask(page.pendingDeleteId)
+    }
+
+    NewTaskDialog {
+        id: newTaskDialog
+        backend: page.backend
     }
 }

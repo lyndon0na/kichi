@@ -18,6 +18,7 @@ use kichi_core::{OfflineTask, TaskPhase};
 
 use super::actions::{format_size, run_in_background};
 use super::qobject;
+use super::tasks_submit::{parse_urls, submit, summary};
 use super::QVariantList;
 use crate::session::{has_active, Failure};
 
@@ -108,33 +109,37 @@ impl qobject::Kichi {
         );
     }
 
-    /// 提交离线下载（磁力 / ed2k / URL）。
-    pub fn add_task(mut self: Pin<&mut Self>, url: QString) {
-        let url = url.to_string();
-        let url = url.trim();
-        if url.is_empty() {
+    /// 提交离线下载（磁力 / ed2k / URL），支持一行一个链接。
+    pub fn add_task(mut self: Pin<&mut Self>, text: QString) {
+        let urls = parse_urls(&text.to_string());
+        if urls.is_empty() {
             return;
         }
-        let url = url.to_owned();
+        let count = urls.len();
         let session = self.backend.session.clone();
         let my_epoch = self.tasks_epoch;
-        self.as_mut().set_message("正在提交离线任务……", true);
+        self.as_mut()
+            .set_message(&format!("正在提交 {count} 条离线任务……"), true);
         run_in_background(
-            move || session.add_offline_task(&url),
+            move || Ok::<_, Failure>(submit(&session, &urls)),
             move |mut qichi, result| {
                 if qichi.as_ref().rust().tasks_epoch != my_epoch {
                     return;
                 }
-                match result {
-                    Ok(task) => {
-                        qichi
-                            .as_mut()
-                            .set_message(&format!("已提交：{}", task.name), false);
-                        qichi.as_mut().clear_task_input();
-                        qichi.as_mut().refresh_tasks_force();
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        qichi.as_mut().on_tasks_failure(err);
+                        return;
                     }
-                    Err(err) => qichi.as_mut().on_tasks_failure(err),
+                };
+                let text = summary(&outcome);
+                if let Some(failure) = outcome.auth_failure {
+                    qichi.as_mut().on_tasks_failure(failure);
+                    return;
                 }
+                qichi.as_mut().set_message(&text, false);
+                qichi.as_mut().refresh_tasks_force();
             },
         );
     }
@@ -203,7 +208,6 @@ impl qobject::Kichi {
             rust.tasks = QVariantList::default();
             rust.task_list.clear();
             rust.notified.clear();
-            rust.task_input = QString::default();
         }
         self.as_mut().notify();
     }
@@ -287,12 +291,6 @@ impl qobject::Kichi {
         for task in finished_now {
             notify_finished(&task, notify_enabled);
         }
-    }
-
-    /// 清空输入框（属性 setter 由 cxx-qt 生成，这里换个名字避免撞车）。
-    fn clear_task_input(mut self: Pin<&mut Self>) {
-        self.as_mut().rust_mut().task_input = QString::default();
-        self.as_mut().notify();
     }
 }
 
