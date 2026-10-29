@@ -39,6 +39,19 @@ if [[ -n "$rawbar" ]]; then
     exit 1
 fi
 
+# —— 规则：QML 暴露名不能冲突 ——
+# qproperty 与 qinvokable 共用 QML 命名空间；重名时属性会遮住同名方法，
+# 构建和静态检查仍然通过，直到用户点击才报 "not a function"。
+duplicate_cxx_names="$(grep -oE 'cxx_name = "[^"]+"' kichi/src/cxxqt_object.rs \
+    | sed -E 's/cxx_name = "(.*)"/\1/' | sort | uniq -d)"
+if [[ -n "$duplicate_cxx_names" ]]; then
+    echo "qml-lint: kichi/src/cxxqt_object.rs 存在重复的 QML 暴露名：" >&2
+    while IFS= read -r name; do
+        grep -nF "cxx_name = \"$name\"" kichi/src/cxxqt_object.rs >&2
+    done <<<"$duplicate_cxx_names"
+    exit 1
+fi
+
 # qmllint 常在 /usr/lib64/qt6/bin，该系统目录默认不在 PATH
 LINT="$(command -v qmllint || true)"
 if [[ -z "$LINT" ]]; then

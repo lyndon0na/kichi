@@ -47,6 +47,17 @@ pub struct FileEntry {
     pub media: bool,
 }
 
+/// 回收站条目：普通文件字段 + 原父目录与删除时间。
+#[derive(Debug, Clone)]
+pub struct TrashEntry {
+    pub entry: FileEntry,
+    /// 删除前所在目录；根目录为空串。仅作原始元数据保留，
+    /// `batchUntrash` 的实际还原位置由 PikPak 决定，不能据此向用户保证原目录。
+    pub parent_id: String,
+    /// 官方返回的删除时间；缺失时界面显示空值。
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
 /// 离线任务阶段。
 ///
 /// 官方的 `PHASE_TYPE_*` 集合并不能穷举（实测还有 `PAUSED` 与拼写为

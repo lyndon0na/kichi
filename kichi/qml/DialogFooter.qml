@@ -25,6 +25,8 @@ Item {
     property bool cancelEnabled: true
     /// 「确定」的文案
     property string okText: qsTr("确定")
+    /// 「确定」的按钮语义（危险操作传 danger）
+    property string okVariant: "primary"
     /// 按钮离弹窗左 / 右 / 下边缘的距离：传所在 Dialog 的 `padding`
     property int outerMargin: 12
 
@@ -54,7 +56,7 @@ Item {
         KButton {
             objectName: "dialogFooterOk"
             text: footer.okText
-            variant: "primary"
+            variant: footer.okVariant
             enabled: footer.okEnabled
             onClicked: footer.okClicked()
         }

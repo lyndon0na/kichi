@@ -1,15 +1,18 @@
-//! 网盘侧写操作：重命名 / 新建文件夹 / 移动 / 复制 / 移入回收站。
+//! 网盘侧写操作：重命名 / 新建文件夹 / 移动 / 复制 / 回收站恢复与永久删除。
 //!
 //! 读操作在 `drive.rs`，这里只放会改云端数据的部分。
 //! 单独成文件：一是职责清晰，二是将来越界操作（彻底删除等）好扩展。
 //!
-//! **删除语义**：PikPak 的删除是「移入回收站」（`batchTrash`），官方回收站
-//! 有保留期，空间不会立刻归还，但可以恢复。不可恢复的 `batchDelete`
-//! 这里不提供——误删代价太大，界面上也不该有这条路径。
+//! **删除语义**：普通文件页的删除只调 `batchTrash`（移入回收站）。
+//! 回收站页可显式调用 `batchUntrash` 或 `batchDelete`；后者不可恢复，
+//! 只能由回收站专用界面在二次确认后调用。
 
 use std::collections::BTreeSet;
 
+use serde::Deserialize;
+
 use crate::drive::DriveClient;
+use crate::http::Body;
 use crate::{Config, Error};
 
 /// 文件名的最大字节数（官方按 UTF-8 字节算，超出直接拒绝）。
@@ -20,6 +23,12 @@ const MAX_BATCH: usize = 100;
 /// 批量移动 / 复制的动作名，拼在 files URL 后面（`…/files:batchMove`）。
 const ACTION_MOVE: &str = "batchMove";
 const ACTION_COPY: &str = "batchCopy";
+
+#[derive(Deserialize)]
+struct BatchTaskAck {
+    #[serde(default)]
+    task_id: String,
+}
 
 impl DriveClient {
     /// 给文件或文件夹改名。
@@ -83,20 +92,41 @@ impl DriveClient {
         self.post_ids("batchTrash", &ids)
     }
 
-    /// 从回收站恢复条目（暂未在界面上开放，留给后续）。
+    /// 从回收站恢复条目。
+    ///
+    /// rclone 明确指出 `batchUntrash` **不保证**回到删除前的原目录，撞名时
+    /// PikPak 还可能自动追加编号。界面因此只承诺“还原”，不承诺落点。
     pub fn untrash(&self, ids: &[&str]) -> Result<(), Error> {
         let ids = normalize_ids(ids)?;
         self.post_ids("batchUntrash", &ids)
     }
 
+    /// 从回收站永久删除条目。不可恢复，仅供回收站页在确认后调用。
+    pub fn delete_permanently(&self, ids: &[&str]) -> Result<(), Error> {
+        let ids = normalize_ids(ids)?;
+        self.post_ids("batchDelete", &ids)
+    }
+
+    /// 一次性清空整个账号的回收站。服务端返回后台任务，完成后才返回成功。
+    pub fn empty_trash(&self) -> Result<(), Error> {
+        let response: BatchTaskAck = self.request(
+            reqwest::Method::PATCH,
+            &Config::trash_empty_url(self.config()),
+            &[],
+            Body::Empty,
+        )?;
+        self.wait_task(&response.task_id)
+    }
+
     fn post_ids(&self, action: &str, ids: &[String]) -> Result<(), Error> {
         let body = serde_json::json!({ "ids": ids });
-        self.request_no_response_body(
+        let response: BatchTaskAck = self.request(
             reqwest::Method::POST,
             &Config::file_action_url(self.config(), action),
             &[],
-            &body,
-        )
+            Body::Json(&body),
+        )?;
+        self.wait_task(&response.task_id)
     }
 }
 
@@ -230,5 +260,12 @@ mod tests {
         let ids: Vec<String> = (0..101).map(|i| format!("id{i}")).collect();
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         assert!(batch_body(&refs, "x").is_err(), "超过 100 个要挡");
+    }
+
+    #[test]
+    fn batch_task_ack_uses_rclone_shape() {
+        let response: BatchTaskAck =
+            serde_json::from_str(r#"{"task_id":"task-123"}"#).expect("任务确认应可解析");
+        assert_eq!(response.task_id, "task-123");
     }
 }

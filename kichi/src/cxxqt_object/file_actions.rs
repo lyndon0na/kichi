@@ -100,8 +100,9 @@ impl qobject::Kichi {
                 Ok(()) => {
                     qichi.as_mut().end_file_action(
                         "trash",
-                        &format!("{subject}已移入回收站（可在官方客户端恢复）"),
+                        &format!("{subject}已移入回收站（可在回收站页恢复）"),
                     );
+                    qichi.as_mut().mark_trash_stale();
                     qichi.as_mut().refresh_files();
                 }
                 Err(err) => qichi.as_mut().fail_file_action("trash", err),
@@ -225,7 +226,7 @@ impl qobject::Kichi {
     }
 
     /// 抢占「文件操作进行中」标志；已在操作中返回 false（防止连点重复提交）。
-    fn begin_file_action(mut self: Pin<&mut Self>) -> bool {
+    pub(crate) fn begin_file_action(mut self: Pin<&mut Self>) -> bool {
         if self.as_ref().rust().file_action_running {
             return false;
         }

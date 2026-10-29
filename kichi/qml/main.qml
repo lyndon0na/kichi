@@ -209,7 +209,7 @@ ApplicationWindow {
                     }
 
                     RowLayout {
-                        visible: root.currentPage === 3
+                        visible: root.currentPage === 4
                         Layout.alignment: Qt.AlignVCenter
                         spacing: theme.gapXs
 
@@ -506,6 +506,10 @@ ApplicationWindow {
                         active: root.currentPage === 2
                     }
 
+                    TrashPage {
+                        backend: backend
+                    }
+
                     SettingsPage {
                         backend: backend
                         onSignOutRequested: signOutDialog.open()
@@ -604,6 +608,8 @@ ApplicationWindow {
         if (root.currentPage === 2)
             return qsTr("离线任务")
         if (root.currentPage === 3)
+            return qsTr("回收站")
+        if (root.currentPage === 4)
             return qsTr("设置")
         return qsTr("我的文件")
     }

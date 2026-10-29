@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::captcha::CaptchaSource;
 use crate::http::{Body, HttpClient};
-use crate::types::{EntryKind, FileEntry, Quota};
+use crate::types::{EntryKind, FileEntry, Quota, TrashEntry};
 use crate::{Config, Error};
 
 /// 单页最多返回的条目数（rclone 的 `ListLimit`）。
@@ -21,6 +21,9 @@ pub(crate) const LIST_LIMIT: u32 = 500;
 /// 文件列表只取已完成、未进回收站的条目。
 pub(crate) const LIST_FILTERS: &str =
     r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#;
+/// 回收站不按完成阶段收窄；`parent_id=*` 才能看到所有目录里删掉的条目。
+pub(crate) const TRASH_FILTERS: &str = r#"{"trashed":{"eq":true}}"#;
+pub(crate) const TRASH_PARENT_ID: &str = "*";
 
 /// 已登录的网盘客户端（内部令牌由调用方的 `Session` 提供）。
 pub struct DriveClient {
@@ -183,7 +186,7 @@ impl DriveClient {
 
     /// 同 [`DriveClient::request`]，但带 JSON 请求体、且不解析响应。
     ///
-    /// 写操作（改名 / 新建 / 批量移入回收站）成功时官方不一定回 JSON，
+    /// 写操作（改名 / 新建 / 移动 / 复制）成功时官方不一定回 JSON，
     /// 解析反而会把成功当失败。
     pub(crate) fn request_no_response_body(
         &self,
@@ -333,6 +336,31 @@ impl DriveClient {
         let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
         Ok((files, next))
     }
+
+    /// 列出全账号回收站（自动包含各个子目录里的条目）。
+    ///
+    /// 必须同时使用 `parent_id=*` 和 `trashed=true`：只带后者时官方只返回
+    /// 根目录下直接删除的条目。
+    pub fn list_trash(
+        &self,
+        page_token: Option<&str>,
+    ) -> Result<(Vec<TrashEntry>, Option<String>), Error> {
+        let query = trash_query(page_token);
+        let response: FileListResponse = self.get_with_query(&self.config.files_url(), &query)?;
+        if !response.kind.is_empty() && response.kind != "drive#fileList" {
+            return Err(Error::ApiChanged(format!(
+                "回收站返回了意外的类型：{}",
+                response.kind
+            )));
+        }
+        let files = response
+            .files
+            .into_iter()
+            .map(FileDto::into_trash_entry)
+            .collect();
+        let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
+        Ok((files, next))
+    }
 }
 
 /// 文件列表的查询参数（单独成函数便于单测）。
@@ -346,6 +374,21 @@ fn list_query(parent_id: Option<&str>, page_token: Option<&str>) -> Vec<(String,
     if let Some(parent) = parent_id.map(str::trim).filter(|id| !id.is_empty()) {
         query.push(("parent_id".to_owned(), parent.to_owned()));
     }
+    if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
+        query.push(("page_token".to_owned(), token.to_owned()));
+    }
+    query
+}
+
+/// 回收站查询参数。单独成函数，测试能直接锁住这两个容易漏的条件。
+fn trash_query(page_token: Option<&str>) -> Vec<(String, String)> {
+    let mut query = vec![
+        ("limit".to_owned(), LIST_LIMIT.to_string()),
+        ("thumbnail_size".to_owned(), "SIZE_MEDIUM".to_owned()),
+        ("with_audit".to_owned(), "true".to_owned()),
+        ("filters".to_owned(), TRASH_FILTERS.to_owned()),
+        ("parent_id".to_owned(), TRASH_PARENT_ID.to_owned()),
+    ];
     if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
         query.push(("page_token".to_owned(), token.to_owned()));
     }
@@ -377,6 +420,8 @@ pub(crate) struct FileDto {
     size: u64,
     #[serde(default, deserialize_with = "lenient_time")]
     modified_time: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "lenient_time")]
+    delete_time: Option<DateTime<Utc>>,
     #[serde(default)]
     md5_checksum: String,
     #[serde(default)]
@@ -431,6 +476,17 @@ impl FileDto {
             md5: (!self.md5_checksum.is_empty()).then_some(self.md5_checksum),
             audit_flagged: self.audit.is_some_and(|audit| audit_flagged(&audit.status)),
             media,
+        }
+    }
+
+    /// 转换成回收站条目：保留原父目录与删除时间。
+    pub(crate) fn into_trash_entry(self) -> TrashEntry {
+        let parent_id = self.parent_id.trim().to_owned();
+        let deleted_at = self.delete_time;
+        TrashEntry {
+            entry: self.into_entry(),
+            parent_id,
+            deleted_at,
         }
     }
 
@@ -599,6 +655,24 @@ mod tests {
     }
 
     #[test]
+    fn trash_query_covers_all_directories_and_excludes_active_files() {
+        let query = trash_query(Some("next"));
+        let get = |key: &str| {
+            query
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("parent_id"), Some("*"), "必须列全账号，不只根目录");
+        assert_eq!(
+            get("filters"),
+            Some(r#"{"trashed":{"eq":true}}"#),
+            "回收站只按 trashed 过滤，不要求 phase=complete"
+        );
+        assert_eq!(get("page_token"), Some("next"));
+    }
+
+    #[test]
     fn file_list_parses_lenient_fields() {
         let json = r#"{
             "kind": "drive#fileList",
@@ -645,6 +719,29 @@ mod tests {
         assert_eq!(hits[0].parent_id, "season-3");
         assert_eq!(hits[0].entry.name, "第 1 集.mkv");
         assert_eq!(hits[1].parent_id, "", "官方没给 parent_id 按根目录处理");
+    }
+
+    #[test]
+    fn trash_entry_keeps_parent_and_delete_time() {
+        let json = r#"{"files":[
+            {"id":"f1","name":"旧文件.mkv","kind":"drive#file","size":"42",
+             "parent_id":"folder-7","delete_time":"2026-10-28T09:10:11+08:00"},
+            {"id":"f2","name":"旧目录","kind":"drive#folder","delete_time":null}
+        ]}"#;
+        let parsed: FileListResponse = serde_json::from_str(json).expect("回收站应可解析");
+        let trash: Vec<TrashEntry> = parsed
+            .files
+            .into_iter()
+            .map(FileDto::into_trash_entry)
+            .collect();
+        assert_eq!(trash[0].entry.id, "f1");
+        assert_eq!(trash[0].parent_id, "folder-7");
+        assert_eq!(
+            trash[0].deleted_at.map(|time| time.timestamp()),
+            Some(1_793_149_811)
+        );
+        assert_eq!(trash[1].parent_id, "", "缺 parent_id 按根目录处理");
+        assert_eq!(trash[1].deleted_at, None, "空删除时间应可解析");
     }
 
     /// 用 2026-10-26 真实账号抓到的 `about` 响应结构做样本。

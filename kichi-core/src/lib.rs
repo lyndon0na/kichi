@@ -24,4 +24,6 @@ pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
 pub use media::{FileInfo, NoLinkReason};
 pub use search::FileHit;
-pub use types::{EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair};
+pub use types::{
+    EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TrashEntry,
+};

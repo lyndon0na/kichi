@@ -76,6 +76,7 @@ impl qobject::Kichi {
                     rust.busy = false;
                 }
                 self.as_mut().reset_files();
+                self.as_mut().reset_trash();
                 self.as_mut().reset_play();
                 self.as_mut().reset_downloads();
                 self.as_mut().reset_search();

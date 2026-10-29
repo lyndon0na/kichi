@@ -39,7 +39,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use client_cache::ClientCache;
-use kichi_core::{auth, captcha, Config, DriveClient, FileEntry, Quota, REFRESH_MARGIN};
+use kichi_core::{
+    auth, captcha, Config, DriveClient, FileEntry, Quota, TrashEntry, REFRESH_MARGIN,
+};
 
 /// 目录最多翻 40 页（20,000 条），防止异常分页把内存打满。
 const MAX_LIST_PAGES: usize = 40;
@@ -401,6 +403,27 @@ impl Session {
         )))
     }
 
+    /// 读取全账号回收站（自动翻页；阻塞）。
+    pub fn list_trash(&self) -> Result<Vec<TrashEntry>, Failure> {
+        let client = self.drive()?;
+        let mut entries = Vec::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES {
+            let (mut page, next) = client
+                .list_trash(page_token.as_deref())
+                .map_err(Failure::from)?;
+            entries.append(&mut page);
+            match next {
+                Some(token) => page_token = Some(token),
+                None => return Ok(entries),
+            }
+        }
+        Err(Failure::Other(format!(
+            "回收站条目超过 {} 条，暂不支持完整显示",
+            MAX_LIST_PAGES * LIST_PAGE_SIZE
+        )))
+    }
+
     /// 取当前用户并回填身份（阻塞）。
     pub fn refresh_identity(&self) -> Result<(), Failure> {
         let client = self.drive()?;
@@ -421,10 +444,28 @@ impl Session {
         client.create_folder(parent_id, name).map_err(Failure::from)
     }
 
-    /// 把条目移入回收站（阻塞）。只做回收站，不做彻底删除。
+    /// 把普通文件页的条目移入回收站（阻塞）。
     pub fn trash_entries(&self, ids: &[&str]) -> Result<(), Failure> {
         let client = self.drive()?;
         client.trash(ids).map_err(Failure::from)
+    }
+
+    /// 从回收站恢复条目（阻塞）。
+    pub fn untrash_entries(&self, ids: &[&str]) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.untrash(ids).map_err(Failure::from)
+    }
+
+    /// 从回收站彻底删除一批条目（阻塞）。调用方负责按 core 上限分批。
+    pub fn delete_entries_permanently(&self, ids: &[&str]) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.delete_permanently(ids).map_err(Failure::from)
+    }
+
+    /// 一次性清空回收站（阻塞，内部等待官方异步任务完成）。
+    pub fn clear_trash(&self) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.empty_trash().map_err(Failure::from)
     }
 
     /// 把条目移动到目标文件夹（阻塞）。`None` / 空串表示根目录。

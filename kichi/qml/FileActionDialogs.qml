@@ -223,13 +223,13 @@ Item {
     function trashMessage() {
         const count = root.targetIds.length
         if (count > 1) {
-            return qsTr("确定把选中的 %1 项移入回收站吗？\n条目可以在 PikPak 官方客户端里恢复；文件夹里的内容会一起移走。")
+            return qsTr("确定把选中的 %1 项移入回收站吗？\n条目可以在 kichi 的回收站页恢复；文件夹里的内容会一起移走。")
                 .arg(count)
         }
         return root.targetIsFolder
-            ? qsTr("确定把文件夹「%1」移入回收站吗？\n里面的所有文件和子文件夹都会一起移走。可以在 PikPak 官方客户端里恢复。")
+            ? qsTr("确定把文件夹「%1」移入回收站吗？\n里面的所有文件和子文件夹都会一起移走。可以在 kichi 的回收站页恢复。")
                 .arg(root.targetName)
-            : qsTr("确定把「%1」移入回收站吗？\n可以在 PikPak 官方客户端里恢复。")
+            : qsTr("确定把「%1」移入回收站吗？\n可以在 kichi 的回收站页恢复。")
                 .arg(root.targetName)
     }
 

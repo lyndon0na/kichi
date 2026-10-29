@@ -51,6 +51,16 @@ pub mod qobject {
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
         #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
+        /// 回收站表格（QML 直接当 model 用）。
+        /// 不能叫 `trashEntries`：这个名字已被下面的移入回收站 invokable 占用。
+        #[qproperty(QVariantList, trash_rows, cxx_name = "trashFiles", READ, NOTIFY = changed)]
+        #[qproperty(bool, trash_loading, cxx_name = "trashLoading", READ, NOTIFY = changed)]
+        #[qproperty(bool, trash_loaded, cxx_name = "trashLoaded", READ, NOTIFY = changed)]
+        #[qproperty(QString, trash_error, cxx_name = "trashError", READ, NOTIFY = changed)]
+        /// 回收站列表真正替换时 +1；选择清理与滚动位置恢复据此触发
+        #[qproperty(i32, trash_revision, cxx_name = "trashRevision", READ, NOTIFY = changed)]
+        /// 有云端条目从回收站还原，下次显示文件页时需要重新拉取
+        #[qproperty(bool, files_stale, cxx_name = "filesStale", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         /// 有一轮离线任务列表请求在途：QML 据此显示加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
@@ -162,6 +172,25 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshFiles"]
         fn refresh_files(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "refreshTrash"]
+        fn refresh_trash(self: Pin<&mut Self>);
+
+        /// 从回收站还原选中条目（支持超过一批的数量，会按 100 条分批）
+        #[qinvokable]
+        #[cxx_name = "untrashEntries"]
+        fn untrash_entries(self: Pin<&mut Self>, ids: QStringList);
+
+        /// 从回收站彻底删除选中条目，不可恢复
+        #[qinvokable]
+        #[cxx_name = "deleteTrashEntries"]
+        fn delete_trash_entries(self: Pin<&mut Self>, ids: QStringList);
+
+        /// 彻底清空当前账号回收站
+        #[qinvokable]
+        #[cxx_name = "clearTrash"]
+        fn clear_trash(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "openDir"]
@@ -464,6 +493,7 @@ mod transfers_detail;
 mod transfers_history;
 mod transfers_rate;
 mod transfers_view;
+mod trash;
 mod tray;
 mod tray_icon;
 
@@ -487,6 +517,21 @@ pub struct KichiRust {
     pub(crate) current_dir_id: QString,
     /// 每次成功列目录 +1：界面据此做一次性滚动恢复
     pub(crate) files_revision: i32,
+    /// 回收站表格（QML 直接当 model 用）
+    pub(crate) trash_rows: QVariantList,
+    /// 回收站领域对象：保留完整列表与总数，不依赖 QML 传来的显示数据
+    pub(crate) trash_list: Vec<kichi_core::TrashEntry>,
+    pub(crate) trash_loading: bool,
+    pub(crate) trash_loaded: bool,
+    pub(crate) trash_error: QString,
+    /// 回收站列表真正替换时才 +1
+    pub(crate) trash_revision: i32,
+    /// 回收站请求代数：退出登录后旧结果作废
+    pub(crate) trash_epoch: u64,
+    /// 分批还原 / 彻底删除的进度状态
+    pub(crate) trash_action: Option<trash::TrashActionState>,
+    /// 文件页有恢复操作完成，下次显示时重新拉取当前目录
+    pub(crate) files_stale: bool,
     /// 面包屑显示名（根 → 当前）
     pub(crate) breadcrumb: QStringList,
     /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
@@ -650,6 +695,15 @@ impl Default for KichiRust {
             files: QVariantList::default(),
             current_dir_id: QString::default(),
             files_revision: 0,
+            trash_rows: QVariantList::default(),
+            trash_list: Vec::new(),
+            trash_loading: false,
+            trash_loaded: false,
+            trash_error: QString::default(),
+            trash_revision: 0,
+            trash_epoch: 0,
+            trash_action: None,
+            files_stale: false,
             breadcrumb,
             entries: Vec::new(),
             crumbs: vec![Crumb::root()],

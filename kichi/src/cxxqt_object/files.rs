@@ -216,6 +216,7 @@ impl qobject::Kichi {
             rust.busy = false;
             // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
             rust.files_revision = rust.files_revision.wrapping_add(1);
+            rust.files_stale = false;
             rust.status_message = QString::from(format!("「{folder}」共 {count} 项"));
         }
         self.as_mut().notify();

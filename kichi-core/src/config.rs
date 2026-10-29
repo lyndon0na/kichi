@@ -131,6 +131,10 @@ impl Config {
     pub fn files_url(&self) -> String {
         join(&self.drive_base, PATH_FILES)
     }
+    /// 服务端一次性清空回收站（返回异步 `task_id`）。
+    pub fn trash_empty_url(&self) -> String {
+        format!("{}/trash:empty", self.files_url())
+    }
     pub fn file_url(&self, id: &str) -> String {
         format!("{}/{}", self.files_url(), id)
     }
@@ -184,6 +188,7 @@ mod tests {
             cfg.file_action_url("batchTrash"),
             format!("{files}:batchTrash")
         );
+        assert_eq!(cfg.trash_empty_url(), format!("{files}/trash:empty"));
     }
 
     #[test]

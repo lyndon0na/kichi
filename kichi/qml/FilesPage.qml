@@ -81,6 +81,8 @@ Item {
                 page.backend.exitSearch()
             return
         }
+        if (page.backend && page.backend.filesStale)
+            page.backend.refreshFiles()
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
         if (fileList && !page.searching)

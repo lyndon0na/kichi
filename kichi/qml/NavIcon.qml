@@ -11,7 +11,7 @@ import QtQuick.Shapes
 Item {
     id: icon
 
-    /// folder / transfer / download / settings / logout
+    /// folder / transfer / download / trash / settings / logout
     /// 以及文件类型：file / video / music / photo
     property string name: ""
     property color color: "transparent"
@@ -34,6 +34,9 @@ Item {
                   + "a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37"
                   + "c1 .608 2.296 .07 2.572 -1.065z"
                   + " M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+        trash: "M4 7l16 0 M10 11l0 6 M14 11l0 6 M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"
+               + " M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3",
+        restore: "M9 14l-4 -4l4 -4 M5 10h11a4 4 0 1 1 0 8h-1",
         logout: "M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2"
                 + " M9 12h12 M18 15l3 -3l-3 -3",
         // 普通文件：右上角折角
