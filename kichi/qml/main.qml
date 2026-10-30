@@ -186,7 +186,9 @@ ApplicationWindow {
                 // 页头两行，和列表同一块底色（页头是内容的一部分，不单独成栏）：
                 //   上行 页名 + 搜索框 + 目录操作
                 //   下行 面包屑（只有文件页有）
-                RowLayout {
+                Item {
+                    id: titleRow
+
                     Layout.fillWidth: true
                     // 左边对齐列表行的图标列（行内边距 12），右边对齐「修改时间」的右边缘
                     // （滚动条车道 10 + 行内边距 12）——页头和列表共用两条竖轴，
@@ -195,56 +197,61 @@ ApplicationWindow {
                     Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
                     Layout.topMargin: 10
                     Layout.preferredHeight: 38
-                    spacing: 8
 
                     Label {
+                        id: pageTitleLabel
+
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
                         text: root.pageTitle()
                         // 一级标题：18px Bold，和正文（13）拉开层级（docs/ui.md）
                         font.pixelSize: theme.fontTitle
                         font.weight: Font.Bold
                         color: theme.textPrimary
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-
-                    // 撑开物：页名靠左，搜索框和目录操作靠右
-                    Item {
-                        Layout.fillWidth: true
-                        visible: root.currentPage !== 1 && root.currentPage !== 2
-                                 && root.currentPage !== 3 && root.currentPage !== 4
                     }
 
                     ShareHeaderControls {
                         id: shareHeaderControls
+
                         visible: root.currentPage === 1
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                        anchors.left: pageTitleLabel.right
+                        anchors.leftMargin: theme.gapSm
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
                         target: sharesPage
                     }
 
                     TransferHeaderControls {
                         visible: root.currentPage === 2
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                        anchors.left: pageTitleLabel.right
+                        anchors.leftMargin: theme.gapSm
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
                         target: transfersPage
                     }
 
                     TaskHeaderControls {
                         visible: root.currentPage === 3
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                        anchors.left: pageTitleLabel.right
+                        anchors.leftMargin: theme.gapSm
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
                         target: tasksPage
                     }
 
                     TrashHeaderControls {
                         visible: root.currentPage === 4
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                        anchors.left: pageTitleLabel.right
+                        anchors.leftMargin: theme.gapSm
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
                         target: trashPage
                     }
 
                     RowLayout {
                         visible: root.currentPage === 5
-                        Layout.alignment: Qt.AlignVCenter
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
                         spacing: theme.gapXs
 
                         NavIcon {
@@ -266,58 +273,31 @@ ApplicationWindow {
                         id: searchBar
 
                         visible: root.currentPage === 0
-
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 160
-                        Layout.preferredWidth: 420
-                        Layout.maximumWidth: 420
-                        Layout.alignment: Qt.AlignVCenter
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.verticalCenter: parent.verticalCenter
+                        // 真正居中，同时按左右标题 / 操作区的剩余空间收窄，避免重叠。
+                        width: {
+                            const center = titleRow.width / 2
+                            const leftEdge = pageTitleLabel.x + pageTitleLabel.width
+                                            + theme.gapMd
+                            const rightEdge = filesHeaderActions.x - theme.gapMd
+                            const available = 2 * Math.min(center - leftEdge,
+                                                           rightEdge - center)
+                            return Math.max(160, Math.min(420, available))
+                        }
                         backend: backend
                     }
 
-                    // 目录操作：图标按钮 + 悬停提示。搜索视图里置灰
-                    // （它们作用的是当前目录，不是搜索结果），但保留占位，免得布局左右跳。
-                    RowLayout {
+                    // 目录操作带文字；刷新固定排在最后。
+                    FilesPageHeaderActions {
+                        id: filesHeaderActions
+
                         visible: root.currentPage === 0
-                        spacing: 2
-
-                        KIconButton {
-                            id: refreshButton
-
-                            iconName: "refresh"
-                            iconSize: 14
-                            iconOpacity: 0.65
-                            enabled: !filesPage.searching && !backend.filesLoading
-                                     && !backend.fileActionRunning
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("刷新")
-                            onClicked: filesPage.refreshFiles()
-                        }
-
-                        KIconButton {
-                            id: newFolderButton
-
-                            iconName: "plus"
-                            iconSize: 14
-                            iconOpacity: 0.65
-                            enabled: !filesPage.searching && !backend.filesLoading
-                                     && !backend.fileActionRunning
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("新建文件夹")
-                            onClicked: filesPage.beginNewFolder()
-                        }
-
-                        FilesPageViewMenu {
-                            id: fileViewMenu
-
-                            Layout.alignment: Qt.AlignVCenter
-                            backend: backend
-                            onViewRequested: function (view) {
-                                filesPage.setFileView(view)
-                            }
-                        }
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        backend: backend
+                        target: filesPage
                     }
-
                 }
 
                 // —— 下行：面包屑 ——

@@ -46,8 +46,9 @@ Item {
     KTextField {
         id: searchField
 
+        objectName: "filesSearchField"
         anchors.fill: parent
-        placeholderText: qsTr("按名字筛选当前文件夹… 回车 = 全盘搜索")
+        placeholderText: qsTr("搜索当前文件夹，回车全盘搜索")
         selectByMouse: true
         // 右边给内嵌的清空 / 搜索按钮让位，文字不钻到按钮底下
         rightPadding: buttonRow.width + 8

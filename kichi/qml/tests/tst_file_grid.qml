@@ -45,6 +45,8 @@ TestCase {
         property string playLoadingId: ""
         property var playingIds: []
         property int cancelPlayCalls: 0
+        property int newFolderCalls: 0
+        property int refreshCalls: 0
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
@@ -73,7 +75,12 @@ TestCase {
         function openParent() {}
         function openCrumb(index) {}
         function clearStatusMessage() {}
-        function refreshFiles() {}
+        function refreshFiles() {
+            refreshCalls += 1
+        }
+        function beginNewFolder() {
+            newFolderCalls += 1
+        }
         function exitSearch() {}
         function searchLocal(text) {}
         function searchAll() {}
@@ -114,19 +121,42 @@ TestCase {
     }
 
     Component {
-        id: viewMenuComponent
+        id: searchBarComponent
 
-        FilesPageViewMenu {
-            width: 84
-            height: 30
+        FilesPageSearchBar {
+            width: 360
+            height: 34
             backend: fakeBackend
+        }
+    }
+
+    Component {
+        id: viewToggleComponent
+
+        FilesPageViewToggle {
+            width: 100
+            height: 34
+            backend: fakeBackend
+        }
+    }
+
+    Component {
+        id: headerActionsComponent
+
+        FilesPageHeaderActions {
+            width: 280
+            height: 34
+            backend: fakeBackend
+            target: fakeBackend
         }
     }
 
     property var density: null
     property var gridItem: null
     property var page: null
-    property var viewMenu: null
+    property var searchBar: null
+    property var viewToggle: null
+    property var headerActions: null
 
     function entry(index, kind) {
         return {
@@ -156,12 +186,18 @@ TestCase {
             gridItem.destroy()
         if (density)
             density.destroy()
-        if (viewMenu)
-            viewMenu.destroy()
+        if (searchBar)
+            searchBar.destroy()
+        if (viewToggle)
+            viewToggle.destroy()
+        if (headerActions)
+            headerActions.destroy()
         page = null
         gridItem = null
         density = null
-        viewMenu = null
+        searchBar = null
+        viewToggle = null
+        headerActions = null
         fakeBackend.files = []
         fakeBackend.fileView = "list"
         fakeBackend.searchActive = false
@@ -171,6 +207,8 @@ TestCase {
         fakeBackend.playLoadingId = ""
         fakeBackend.playingIds = []
         fakeBackend.cancelPlayCalls = 0
+        fakeBackend.newFolderCalls = 0
+        fakeBackend.refreshCalls = 0
     }
 
     function test_grid_item_uses_three_by_two_thumbnail_and_two_line_name() {
@@ -486,26 +524,32 @@ TestCase {
                 pageDensity.gridThumbnailRadius(page.gridItemWidth))
     }
 
-    function test_header_menu_requests_grid_and_disables_during_search() {
+    function test_search_placeholder_explains_scope_and_enter_action() {
+        searchBar = searchBarComponent.createObject(parent, { visible: true })
+        verify(searchBar !== null)
+        wait(20)
+
+        const field = findChild(searchBar, "filesSearchField")
+        verify(field !== null)
+        compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索")
+    }
+
+    function test_view_toggle_switches_with_one_click_and_disables_during_search() {
         fakeBackend.fileView = "list"
-        viewMenu = viewMenuComponent.createObject(parent, { visible: true })
-        verify(viewMenu !== null)
+        viewToggle = viewToggleComponent.createObject(parent, { visible: true })
+        verify(viewToggle !== null)
         wait(30)
 
-        const button = findChild(viewMenu, "viewMenuButton")
-        verify(button !== null)
+        const button = viewToggle
+        compare(button.objectName, "viewToggleButton")
         compare(button.text, qsTr("列表"))
         compare(button.enabled, true)
 
         const spy = Qt.createQmlObject(
             "import QtTest; SignalSpy { signalName: 'viewRequested' }",
-            viewMenu)
-        spy.target = viewMenu
+            viewToggle)
+        spy.target = viewToggle
         mouseClick(button)
-        wait(30)
-        const gridOption = findChild(viewMenu, "viewGridOption")
-        verify(gridOption !== null)
-        mouseClick(gridOption)
         wait(30)
         compare(spy.count, 1)
         compare(spy.signalArguments[0][0], "grid")
@@ -515,5 +559,34 @@ TestCase {
         compare(button.text, qsTr("网格"))
         compare(button.enabled, false)
         spy.destroy()
+    }
+
+    function test_header_actions_show_text_and_keep_refresh_last() {
+        fakeBackend.fileView = "list"
+        headerActions = headerActionsComponent.createObject(parent, { visible: true })
+        verify(headerActions !== null)
+        wait(30)
+
+        const newFolder = findChild(headerActions, "filesNewFolderButton")
+        const toggle = findChild(headerActions, "viewToggleButton")
+        const refresh = findChild(headerActions, "filesRefreshButton")
+        verify(newFolder !== null && toggle !== null && refresh !== null)
+        compare(newFolder.text, qsTr("新建文件夹"))
+        compare(toggle.text, qsTr("列表"))
+        compare(refresh.text, qsTr("刷新"))
+        verify(newFolder.x < toggle.x)
+        verify(toggle.x < refresh.x, "刷新按钮应在最右侧")
+
+        mouseClick(newFolder)
+        wait(20)
+        compare(fakeBackend.newFolderCalls, 1)
+
+        mouseClick(toggle)
+        wait(20)
+        compare(fakeBackend.fileView, "grid")
+
+        mouseClick(refresh)
+        wait(20)
+        compare(fakeBackend.refreshCalls, 1)
     }
 }
