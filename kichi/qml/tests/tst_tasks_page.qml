@@ -179,6 +179,18 @@ TestCase {
             return dialog.opened
         })
 
+        var headerBottom = dialog.header.mapToItem(
+                    dialog.background, 0, dialog.header.height).y
+        var contentTop = dialog.contentItem.mapToItem(
+                    dialog.background, 0, 0).y
+        compare(contentTop - headerBottom, dialog.spacing,
+                "标题和正文之间只保留 Dialog.spacing")
+
+        var footerStatus = findChild(dialog, "dialogFooterStatus")
+        verify(footerStatus.visible)
+        compare(footerStatus.text,
+                "支持磁力、ed2k 和 HTTP 下载地址；空行会自动忽略。")
+
         var input = findChild(dialog, "newTaskInput")
         verify(input)
         var text = "magnet:?xt=urn:btih:first\n\nhttps://example.com/second.zip"

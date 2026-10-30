@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import org.kde.kirigami.dialogs as KDialogs
 
 // 统一弹窗外观：大圆角、弹窗表面色、极浅描边。
 //
@@ -18,6 +19,19 @@ Dialog {
     readonly property KTheme theme: KTheme { parent: control.background }
 
     padding: 18
+    // 标题 / 正文 / 页脚统一使用同一档间隔；各弹窗有特殊需要时再覆盖。
+    spacing: theme.gapMd
+    // 标题栏自己已有上方留白；正文不要再从 topPadding 叠一层。
+    // 无标题的防御分支仍保留正常上边距。
+    topPadding: title.length > 0 ? 0 : padding
+
+    header: KDialogs.DialogHeader {
+        dialog: control
+        visible: control.title.length > 0
+        padding: control.padding
+        // 只保留 Dialog.spacing 这一道标题 / 正文间隔。
+        bottomPadding: 0
+    }
 
     // org.kde.desktop 的 Dialog 样式会把 contentItem 固定成一个空 Item。
     // 空 Item 不会把子项高度汇总给弹窗，长正文就会溢出到页脚下面。

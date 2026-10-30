@@ -209,6 +209,18 @@ TestCase {
                + "，按钮顶 " + okTop + "）")
     }
 
+    function test_default_dialog_spacing_keeps_title_and_content_apart() {
+        var dialog = startRename()
+        compare(dialog.spacing, 12, "KDialog 默认标题 / 正文间隔应为 12px")
+
+        var headerBottom = dialog.header.mapToItem(
+                    dialog.background, 0, dialog.header.height).y
+        var contentTop = dialog.contentItem.mapToItem(
+                    dialog.background, 0, 0).y
+        compare(contentTop - headerBottom, dialog.spacing,
+                "标题和正文之间只保留一个 Dialog.spacing")
+    }
+
     function test_batch_trash_shows_count_and_keeps_reason() {
         menu.openTrash({ id: "id-1", name: "a.mkv", kind: "file" },
                        ["id-1", "id-2"])

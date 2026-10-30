@@ -24,6 +24,8 @@ KDialog {
 
     footer: DialogFooter {
         outerMargin: dialog.padding
+        statusText: qsTr("支持磁力、ed2k 和 HTTP 下载地址；空行会自动忽略。")
+        statusColor: theme.textMuted
         okText: qsTr("添加")
         okObjectName: "newTaskDialogOk"
         okEnabled: input.text.trim().length > 0
@@ -85,13 +87,6 @@ KDialog {
             }
         }
 
-        Label {
-            Layout.fillWidth: true
-            text: qsTr("支持磁力、ed2k 和 HTTP 下载地址；空行会自动忽略。")
-            color: theme.textMuted
-            font.pixelSize: theme.fontMeta
-            wrapMode: Text.Wrap
-        }
     }
 
     function submit() {
