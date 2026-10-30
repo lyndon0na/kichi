@@ -13,7 +13,7 @@ Rectangle {
     property var backend: null
     property int currentIndex: 0
 
-    signal pageRequested(int index)
+    signal pageRequested(int pageIndex)
 
     KTheme { id: theme }
 
@@ -25,28 +25,29 @@ Rectangle {
         spacing: theme.gapXs
 
         Repeater {
+            // 显示顺序与 main.qml 的页面索引解耦；page 始终对应实际页面。
             model: [
-                { "label": qsTr("我的文件"), "icon": "folder" },
-                { "label": qsTr("分享"), "icon": "share" },
-                { "label": qsTr("传输任务"), "icon": "transfer" },
-                { "label": qsTr("离线任务"), "icon": "download" },
-                { "label": qsTr("回收站"), "icon": "trash" },
-                { "label": qsTr("设置"), "icon": "settings" }
+                { "page": 0, "label": qsTr("我的文件"), "icon": "folder" },
+                { "page": 3, "label": qsTr("离线任务"), "icon": "download" },
+                { "page": 1, "label": qsTr("分享"), "icon": "share" },
+                { "page": 4, "label": qsTr("回收站"), "icon": "trash" },
+                { "page": 2, "label": qsTr("传输任务"), "icon": "transfer" },
+                { "page": 5, "label": qsTr("设置"), "icon": "settings" }
             ]
 
             delegate: Button {
                 id: navButton
-                required property int index
                 required property var modelData
 
+                objectName: "sidebarNav_" + modelData.page
                 Layout.fillWidth: true
                 Layout.preferredHeight: 40
                 padding: 0
                 leftPadding: 12
                 rightPadding: 12
                 checkable: true
-                checked: bar.currentIndex === index
-                onClicked: bar.pageRequested(index)
+                checked: bar.currentIndex === modelData.page
+                onClicked: bar.pageRequested(modelData.page)
 
                 background: Rectangle {
                     radius: theme.radiusCard
