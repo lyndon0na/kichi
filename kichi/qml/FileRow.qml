@@ -20,6 +20,9 @@ ItemDelegate {
     property int rowIndex: -1
     /// 当前条目正在取播放直链 / 等待播放器窗口
     property bool playLoading: false
+    /// 播放器已经真正开播、尚未退出
+    property bool playing: false
+    readonly property bool showPlayingState: row.playing && !row.playLoading
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
     property int thumbnailSlotWidth: 36
     property int thumbnailSlotHeight: 24
@@ -32,6 +35,8 @@ ItemDelegate {
     // 大小 / 时间用次级字号：和表头一致，也让文件名在一行里有主次
     property int metaPixelSize: 12
     property int iconPixelSize: 16
+    property int videoBadgeSize: 16
+    property int videoBadgeMargin: 2
     // 水平内边距固定：表头按同一个数值摆位。不依赖控件风格的默认 padding，
     // 否则换风格（这里实测是 8 而不是 Qt 默认的 12）表头就和行错开。
     // 数值由页面从 FileListDensity 下发，与表头共用同一个 contentPadding。
@@ -193,32 +198,98 @@ ItemDelegate {
                 backend: row.backend
                 entry: row.entry
                 iconPixelSize: row.iconPixelSize
+                videoBadgeSize: row.videoBadgeSize
+                videoBadgeMargin: row.videoBadgeMargin
+                loading: row.playLoading
+                playing: row.showPlayingState
             }
         }
 
-        ElidedLabel {
-            id: nameLabel
-            objectName: "fileNameText"
-            text: row.entry ? row.entry.name : ""
-            font.pixelSize: row.textPixelSize
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
+        Item {
+            id: nameGroup
             Layout.fillWidth: true
-            color: palette.text
-            externallyHovered: mouseArea.containsMouse
-                               && row.pointerOver(nameLabel, mouseArea.mouseX,
-                                                  mouseArea.mouseY)
+            Layout.fillHeight: true
+
+            Row {
+                id: nameLine
+
+                anchors.fill: parent
+                spacing: 4
+                readonly property int extraCount: (rowPlayingStatus.visible ? 1 : 0)
+                                                    + (auditLabel.visible ? 1 : 0)
+                readonly property real extraWidth:
+                    (rowPlayingStatus.visible ? rowPlayingStatus.implicitWidth : 0)
+                    + (auditLabel.visible ? auditLabel.implicitWidth : 0)
+                    + extraCount * spacing
+
+                ElidedLabel {
+                    id: nameLabel
+                    objectName: "fileNameText"
+                    width: Math.min(implicitWidth,
+                                    Math.max(0, nameLine.width - nameLine.extraWidth))
+                    height: nameLine.height
+                    text: row.entry ? row.entry.name : ""
+                    font.pixelSize: row.textPixelSize
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    color: palette.text
+                    externallyHovered: mouseArea.containsMouse
+                                       && row.pointerOver(nameLabel, mouseArea.mouseX,
+                                                          mouseArea.mouseY)
+                }
+
+                Rectangle {
+                    id: rowPlayingStatus
+                    objectName: "rowPlayingStatus"
+
+                    visible: row.showPlayingState
+                    width: implicitWidth
+                    implicitWidth: rowPlayingContent.implicitWidth + 10
+                    height: 18
+                    y: Math.round((nameLine.height - height) / 2)
+                    radius: theme.radiusSmall
+                    color: theme.accentSoft
+                    Accessible.name: qsTr("播放中")
+
+                    RowLayout {
+                        id: rowPlayingContent
+
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        KPlayingBars {
+                            objectName: "rowPlayingBars"
+
+                            implicitWidth: 10
+                            implicitHeight: 10
+                            fillColor: theme.accent
+                            running: rowPlayingStatus.visible
+                        }
+
+                        Label {
+                            text: qsTr("播放中")
+                            font.pixelSize: theme.fontCaption
+                            font.weight: Font.DemiBold
+                            color: theme.accent
+                        }
+                    }
+                }
+
+                Label {
+                    id: auditLabel
+                    text: qsTr("违规")
+                    visible: row.entry ? row.entry.auditFlag : false
+                    width: visible ? implicitWidth : 0
+                    height: nameLine.height
+                    font.pixelSize: row.textPixelSize
+                    verticalAlignment: Text.AlignVCenter
+                    color: theme.danger
+                }
+            }
         }
 
         Label {
-            text: qsTr("违规")
-            visible: row.entry ? row.entry.auditFlag : false
-            font.pixelSize: row.textPixelSize
-            verticalAlignment: Text.AlignVCenter
-            color: theme.danger
-        }
-
-        Label {
+            objectName: "fileSizeText"
             text: row.entry ? row.entry.sizeText : ""
             font.pixelSize: row.metaPixelSize
             verticalAlignment: Text.AlignVCenter
@@ -230,6 +301,7 @@ ItemDelegate {
         // 没有修改时间的条目也占住整列宽度：否则这一列会塌掉，
         // 大小列跟着右移，表头就对不齐了
         Label {
+            objectName: "fileModifiedText"
             text: row.entry ? row.entry.modifiedText : ""
             font.pixelSize: row.metaPixelSize
             verticalAlignment: Text.AlignVCenter

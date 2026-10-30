@@ -99,10 +99,24 @@ Item {
                                              palette.text.b,
                                              theme.darkMode ? 0.12 : 0.06)
 
-    /// 视频缩略图状态条：深色遮罩 + 高对比前景，不跟内容底色绑定
+    /// 视频缩略图上的深色药丸 / 遮罩：不跟内容底色绑定
     readonly property color mediaBadge: Qt.rgba(palette.shadow.r, palette.shadow.g,
                                                 palette.shadow.b,
                                                 0.82)
+    /// 缩略图上的轻量角标底色：仍能压住复杂画面，但不会像实心黑块。
+    readonly property color mediaBadgeSoft: Qt.rgba(palette.shadow.r,
+                                                    palette.shadow.g,
+                                                    palette.shadow.b,
+                                                    0.44)
+    /// 加载态覆盖缩略图的暗幕；小缩略图再深一档，保证白色加载环清楚。
+    readonly property color mediaScrim: Qt.rgba(palette.shadow.r,
+                                                palette.shadow.g,
+                                                palette.shadow.b,
+                                                0.38)
+    readonly property color mediaScrimStrong: Qt.rgba(palette.shadow.r,
+                                                      palette.shadow.g,
+                                                      palette.shadow.b,
+                                                      0.68)
     /// 深色图片遮罩上的文字始终用白色。
     /// KDE 浅色主题下 `palette.brightText` 不保证是浅色，直接用它会把
     /// 「正在加载 / 取消」画成黑字。

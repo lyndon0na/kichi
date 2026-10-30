@@ -17,6 +17,9 @@ ItemDelegate {
     property bool selected: false
     /// 当前条目正在取播放直链 / 等待播放器窗口
     property bool playLoading: false
+    /// 播放器已经真正开播、尚未退出
+    property bool playing: false
+    readonly property bool showPlayingState: card.playing && !card.playLoading
 
     // 数值由 FilesPage 从 FileListDensity 下发，和网格列宽一起计算。
     property int contentPadding: 5
@@ -26,7 +29,8 @@ ItemDelegate {
     property int thumbnailRadius: 8
     property int textPixelSize: 14
     property int iconPixelSize: 28
-    property int videoBadgeSize: 18
+    property int videoBadgeSize: 28
+    property int videoBadgeMargin: 7
 
     signal contextMenu(point position)
     signal playRequested(string id, point position)
@@ -60,7 +64,9 @@ ItemDelegate {
                  ? theme.surfacePressed
                  : mouseArea.containsMouse
                    ? theme.surfaceHover
-                   : theme.surfaceClear
+                   : card.showPlayingState
+                     ? theme.accentGhost
+                     : theme.surfaceClear
     }
 
     MouseArea {
@@ -90,8 +96,8 @@ ItemDelegate {
         }
     }
 
-    // 盖在缩略图底部的加载条。放在委托根上而不是 contentItem 里：
-    // 整卡 MouseArea 的 z=1 会吃掉缩略图内部控件的点击，状态条必须再高一层。
+    // 盖住整块缩略图的中央加载层。放在委托根上而不是 contentItem 里：
+    // 整卡 MouseArea 的 z=1 会吃掉缩略图内部控件的点击，取消热区必须再高一层。
     VideoLoadingOverlay {
         objectName: "gridVideoLoading"
 
@@ -157,6 +163,53 @@ ItemDelegate {
                 entry: card.entry
                 iconPixelSize: card.iconPixelSize
                 videoBadgeSize: card.videoBadgeSize
+                videoBadgeMargin: card.videoBadgeMargin
+                loading: card.playLoading
+                playing: card.showPlayingState
+            }
+
+            Rectangle {
+                id: gridPlayingPill
+                objectName: "gridPlayingPill"
+
+                visible: card.showPlayingState
+                z: 2
+                implicitWidth: gridPlayingContent.implicitWidth + 16
+                implicitHeight: 24
+                width: implicitWidth
+                height: implicitHeight
+                radius: height / 2
+                anchors.right: parent.right
+                anchors.rightMargin: 7
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 7
+                color: theme.mediaBadge
+                Accessible.name: qsTr("播放中")
+
+                RowLayout {
+                    id: gridPlayingContent
+
+                    anchors.centerIn: parent
+                    spacing: 5
+
+                    KPlayingBars {
+                        objectName: "gridPlayingBars"
+
+                        implicitWidth: 10
+                        implicitHeight: 10
+                        fillColor: theme.accent
+                        running: gridPlayingPill.visible
+                    }
+
+                    Label {
+                        objectName: "gridPlayingText"
+
+                        text: qsTr("播放中")
+                        font.pixelSize: theme.fontCaption
+                        font.weight: Font.DemiBold
+                        color: theme.mediaForeground
+                    }
+                }
             }
 
             // 网格没有整行左侧的 3px 竖条，选中态用同色细环 + 卡片淡底，
@@ -208,5 +261,6 @@ ItemDelegate {
                                && card.pointerOver(gridName, mouseArea.mouseX,
                                                    mouseArea.mouseY)
         }
+
     }
 }

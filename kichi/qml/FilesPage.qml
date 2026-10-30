@@ -28,11 +28,25 @@ Item {
             return ""
         return page.backend.playLoadingId
     }
+    readonly property var playingIds: {
+        if (!page.backend || typeof page.backend.playingIds === "undefined")
+            return []
+        return page.backend.playingIds || []
+    }
 
     function isEntryPlayLoading(id) {
         return page.backend !== null
                 && page.backend.playLoading === true
                 && page.playLoadingId === String(id)
+    }
+
+    function isEntryPlaying(id) {
+        const target = String(id)
+        for (let i = 0; i < page.playingIds.length; i++) {
+            if (String(page.playingIds[i]) === target)
+                return true
+        }
+        return false
     }
 
     // 滚动位置记忆 / 导航 / 快捷键 / 操作完成后的收尾（纯逻辑在 FilePageInteraction.qml）
@@ -241,7 +255,10 @@ Item {
                         textPixelSize: density.namePixelSize
                         metaPixelSize: density.metaPixelSize
                         iconPixelSize: density.iconPixelSize
+                        videoBadgeSize: density.listVideoBadgeSize
+                        videoBadgeMargin: density.listVideoBadgeMargin
                         playLoading: page.isEntryPlayLoading(entry.id)
+                        playing: page.isEntryPlaying(entry.id)
                         // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
                         highlighted: !!entry && selection.isSelected(entry.id)
                         // 单击：把修饰键交给 FileSelection 处理（Ctrl 切换 / Shift 区间）
@@ -335,7 +352,9 @@ Item {
                     textPixelSize: density.namePixelSize
                     iconPixelSize: density.gridIconPixelSize
                     videoBadgeSize: density.gridVideoBadgeSize
+                    videoBadgeMargin: density.gridVideoBadgeMargin
                     playLoading: page.isEntryPlayLoading(entry.id)
+                    playing: page.isEntryPlaying(entry.id)
                     selected: !!entry && selection.isSelected(entry.id)
 
                     onSelectRequested: function (modifiers, itemIndex) {
@@ -388,6 +407,7 @@ Item {
                 sizeColumnWidth: density.resultSizeColumnWidth
                 modifiedColumnWidth: density.resultModifiedColumnWidth
                 playLoadingId: page.playLoadingId
+                playingIds: page.playingIds
 
                 onContextMenu: function (entry, point) {
                     page.openResultContext(entry, point)

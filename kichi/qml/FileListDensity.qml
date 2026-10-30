@@ -66,7 +66,10 @@ Item {
     readonly property int gridCardPadding: 5
     readonly property int gridCardSpacing: 7
     readonly property int gridIconPixelSize: Math.round(28 * densityScale)
-    readonly property int gridVideoBadgeSize: Math.round(18 * densityScale)
+    readonly property int gridVideoBadgeSize: Math.round(28 * densityScale)
+    readonly property int gridVideoBadgeMargin: Math.round(7 * densityScale)
+    readonly property int listVideoBadgeSize: Math.round(16 * densityScale)
+    readonly property int listVideoBadgeMargin: Math.round(2 * densityScale)
     readonly property int gridThumbnailMinRadius: Math.round(8 * densityScale)
     readonly property int gridThumbnailMaxRadius: Math.round(16 * densityScale)
     readonly property int gridNameLineCount: 2

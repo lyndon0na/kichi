@@ -83,6 +83,8 @@ pub mod qobject {
         #[qproperty(QString, play_loading_id, cxx_name = "playLoadingId", READ, NOTIFY = changed)]
         /// 正在加载的文件名
         #[qproperty(QString, play_loading_name, cxx_name = "playLoadingName", READ, NOTIFY = changed)]
+        /// 播放器已经真正开播、尚未退出的文件 id（可同时有多个）
+        #[qproperty(QStringList, playing_ids, cxx_name = "playingIds", READ, NOTIFY = changed)]
         /// 非空 = 提示条显示错误态（播放失败），[关闭] 清空
         #[qproperty(QString, play_error, cxx_name = "playError", READ, NOTIFY = changed)]
         /// 非空 = 提示条短提示（档位回退说明），几秒后由界面自动收起
@@ -699,6 +701,13 @@ pub struct KichiRust {
     pub(crate) play_loading_id: QString,
     /// 正在加载的文件名
     pub(crate) play_loading_name: QString,
+    /// 已开播会话：请求代数 → 文件 id。
+    ///
+    /// 用代数作 key，而不是只存一个 id：kichi 允许上一个视频继续播放时再开新的；
+    /// 旧会话退出只能清掉它自己，不能误删新会话的「播放中」标记。
+    pub(crate) active_play_sessions: std::collections::BTreeMap<u64, String>,
+    /// 去重后的已开播文件 id，QML 直接消费
+    pub(crate) playing_ids: QStringList,
     /// 非空 = 提示条显示错误态（播放失败）
     pub(crate) play_error: QString,
     /// 非空 = 提示条短提示（档位回退说明），界面几秒后自动收起
@@ -870,6 +879,8 @@ impl Default for KichiRust {
             play_loading: false,
             play_loading_id: QString::default(),
             play_loading_name: QString::default(),
+            active_play_sessions: std::collections::BTreeMap::new(),
+            playing_ids: QStringList::default(),
             play_error: QString::default(),
             play_notice: QString::default(),
             play_cancel: None,

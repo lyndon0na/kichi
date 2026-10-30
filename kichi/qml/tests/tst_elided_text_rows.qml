@@ -243,4 +243,19 @@ TestCase {
         mouseClick(cancel)
         compare(harness.searchBackend.cancelPlayCalls, 1)
     }
+
+    function test_search_result_shows_playing_status_unless_loading() {
+        harness.searchResults.playingIds = ["other", "search-result"]
+        wait(30)
+
+        const status = findChild(harness.searchResults, "searchPlayingStatus")
+        const bars = findChild(harness.searchResults, "searchPlayingBars")
+        verify(status !== null && bars !== null)
+        compare(status.visible, true)
+        compare(bars.running, true)
+
+        harness.searchResults.playLoadingId = "search-result"
+        tryCompare(status, "visible", false)
+        compare(findChild(harness.searchResults, "searchPlayLoading").visible, true)
+    }
 }

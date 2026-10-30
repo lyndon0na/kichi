@@ -33,7 +33,13 @@ pub fn build_command(config: &PlayerConfig, playlist: &Path, title: &str) -> Com
 ///
 /// 直链写进临时清单（0600）而不放命令行，避免 `ps` / journal 暴露签名 URL。
 /// 清单要等播放器真正读入后才能删：先是 3 秒宽限，等不到就等它退出再删。
-pub fn spawn(config: &PlayerConfig, url: &str, title: &str) -> Result<(), String> {
+/// 播放器退出并回收后调用 `on_exit`，让界面清掉「播放中」。
+pub fn spawn(
+    config: &PlayerConfig,
+    url: &str,
+    title: &str,
+    on_exit: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
     if url.trim().is_empty() {
         return Err("播放链接为空".to_owned());
     }
@@ -54,15 +60,35 @@ pub fn spawn(config: &PlayerConfig, url: &str, title: &str) -> Result<(), String
     std::thread::Builder::new()
         .name("kichi-player".into())
         .spawn(move || {
-            std::thread::sleep(PLAYLIST_GRACE);
+            // 宽限是为了让播放器读完清单；进程提前退出时没必要把
+            // 「播放中」多挂满 3 秒，轮询到退出就立刻收尾。
+            let deadline = std::time::Instant::now() + PLAYLIST_GRACE;
+            let mut early_status = None;
+            while std::time::Instant::now() < deadline {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        early_status = Some(status);
+                        break;
+                    }
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(_) => break,
+                }
+            }
             let _ = std::fs::remove_file(&playlist);
-            match child.wait() {
+            let status = match early_status {
+                Some(status) => Ok(status),
+                None => child.wait(),
+            };
+            match status {
                 Ok(status) if !status.success() => {
                     eprintln!("[kichi] 播放器退出码：{status}");
                 }
                 Ok(_) => {}
                 Err(err) => eprintln!("[kichi] 等待播放器退出失败：{err}"),
             }
+            on_exit();
         })
         .map_err(|err| format!("启动播放器守护线程失败：{err}"))?;
     Ok(())
@@ -174,7 +200,7 @@ mod tests {
     #[test]
     fn empty_url_is_rejected_before_spawn() {
         let config = test_config();
-        assert!(spawn(&config, "  ", "x").is_err());
+        assert!(spawn(&config, "  ", "x", || {}).is_err());
     }
 
     #[test]

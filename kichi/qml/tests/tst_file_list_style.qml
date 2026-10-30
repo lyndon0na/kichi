@@ -13,6 +13,10 @@ TestCase {
     width: 760
     height: 520
 
+    KTheme {
+        id: themeProbe
+    }
+
     QtObject {
         id: fakeBackend
 
@@ -21,6 +25,7 @@ TestCase {
         property string requestedId: ""
         property bool playLoading: false
         property string playLoadingId: ""
+        property var playingIds: []
         property int cancelPlayCalls: 0
 
         signal thumbnailReady(string id, string path)
@@ -139,6 +144,7 @@ TestCase {
         fakeBackend.requestedId = ""
         fakeBackend.playLoading = false
         fakeBackend.playLoadingId = ""
+        fakeBackend.playingIds = []
         fakeBackend.cancelPlayCalls = 0
     }
 
@@ -242,7 +248,50 @@ TestCase {
         const badge = findChild(thumbnail, "videoBadge")
         verify(badge !== null)
         compare(badge.visible, true)
-        compare(badge.width, 12)
+        compare(badge.width, 16)
+        compare(badge.radius, 4)
+        compare(badge.color, themeProbe.mediaBadgeSoft)
+    }
+
+    function test_playable_video_without_thumbnail_keeps_play_badge() {
+        thumbnail = thumbnailComponent.createObject(parent, {
+            entry: pageEntry("video-no-thumb", "没有封面的第02话.mp4", true, false)
+        })
+        verify(thumbnail !== null)
+        wait(20)
+
+        compare(thumbnail.imageReady, false)
+        compare(findChild(thumbnail, "thumbnailFallbackIcon").visible, true)
+        compare(findChild(thumbnail, "videoBadge").visible, true)
+    }
+
+    function test_playing_row_uses_ring_and_name_status_without_resizing() {
+        harness = harnessComponent.createObject(parent, { visible: true })
+        verify(harness !== null)
+        wait(20)
+
+        const row = findChild(harness, "fileRow")
+        row.entry = pageEntry("video-playing", "第03话.mp4", true, false)
+        const sizeLabel = findChild(row, "fileSizeText")
+        const sizeX = sizeLabel.mapToItem(row, 0, 0).x
+        row.playing = true
+        wait(30)
+
+        const thumbnail = findChild(row, "fileThumbnail")
+        const status = findChild(row, "rowPlayingStatus")
+        const ring = findChild(thumbnail, "playingRing")
+        const nameLabel = findChild(row, "fileNameText")
+        verify(thumbnail !== null && status !== null && ring !== null && nameLabel !== null)
+        compare(row.implicitHeight, 48)
+        compare(findChild(row, "thumbnailSlot").width, 36)
+        compare(sizeLabel.mapToItem(row, 0, 0).x, sizeX, "播放状态不能挤动大小列")
+        compare(status.x, nameLabel.width + 4, "短文件名后的状态要紧贴名称")
+        verify(status.mapToItem(row, 0, 0).x < sizeX)
+        compare(thumbnail.playing, true)
+        compare(findChild(thumbnail, "videoBadge").visible, false)
+        compare(ring.visible, true)
+        compare(ring.border.width, 2)
+        compare(status.visible, true)
     }
 
     function test_loading_video_row_cancels_without_selecting() {
@@ -253,19 +302,27 @@ TestCase {
         const row = findChild(harness, "fileRow")
         row.entry = pageEntry("video-loading", "第01话.mp4", true, false)
         row.playLoading = true
+        row.playing = true
         wait(20)
 
         const overlay = findChild(row, "rowVideoLoading")
-        const compactCancel = findChild(overlay, "videoLoadingCompactCancel")
-        verify(overlay !== null && compactCancel !== null)
+        const cancel = findChild(overlay, "videoLoadingCancel")
+        const scrim = findChild(overlay, "videoLoadingScrim")
+        const thumbnail = findChild(row, "fileThumbnail")
+        verify(overlay !== null && cancel !== null && scrim !== null && thumbnail !== null)
         compare(overlay.visible, true)
+        compare(overlay.z > thumbnail.z, true, "加载态必须盖住缩略图角标")
+        compare(scrim.color, themeProbe.mediaScrimStrong)
+        compare(thumbnail.playing, false)
+        compare(findChild(thumbnail, "videoBadge").visible, false)
+        compare(findChild(row, "rowPlayingStatus").visible, false)
         compare(findChild(row, "rowPlayCancel"), null)
 
         const spy = Qt.createQmlObject(
             "import QtTest; SignalSpy { signalName: 'selectRequested' }",
             row)
         spy.target = row
-        mouseClick(compactCancel)
+        mouseClick(cancel)
         compare(fakeBackend.cancelPlayCalls, 1)
         compare(spy.count, 0, "取消加载不能顺带选中或播放视频")
         spy.destroy()

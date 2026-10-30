@@ -5,8 +5,8 @@ import QtQuick.Effects
 // 文件列表的首列：固定 36×24，不随内容改变列位置。
 //
 // 图片 / 视频加载成功时铺满裁切；文件夹、不支持预览、远程失败、
-// 本地图片解码失败都退回原来的 FileIcon。视频成功缩略图保留右下角播放角标；
-// 真正加载播放时再由 VideoLoadingOverlay 覆盖状态。
+// 本地图片解码失败都退回原来的 FileIcon。可播放视频无论有没有缩略图都保留
+// 右下角描边播放角标；真正开播后改为强调色内环，加载时由 VideoLoadingOverlay 覆盖。
 Item {
     id: control
 
@@ -15,7 +15,12 @@ Item {
     property int iconPixelSize: 18
     property int radius: 3
     /// 视频角标尺寸：列表用小角标，网格可以放大
-    property int videoBadgeSize: 12
+    property int videoBadgeSize: 16
+    property int videoBadgeMargin: 2
+    /// 播放加载态优先于可播放角标：转圈出现时只保留一个视觉焦点。
+    property bool loading: false
+    /// 播放器已经真正开播、尚未退出
+    property bool playing: false
 
     /// Rust 回传的是 file:// URI，测试里也可以注入其它本地 source。
     property string localUri: ""
@@ -23,9 +28,14 @@ Item {
     property string requestedId: ""
 
     readonly property bool imageReady: localUri.length > 0 && preview.status === Image.Ready
-    readonly property bool showVideoBadge: imageReady
-                                            && entry !== null
+    readonly property bool showVideoBadge: entry !== null
                                             && entry.video === true
+                                            && entry.playable === true
+                                            && !loading
+                                            && !playing
+    readonly property int videoBadgeRadius: videoBadgeSize >= 22
+                                             ? Math.round(videoBadgeSize / 2)
+                                             : theme.radiusSmall
     implicitWidth: 36
     implicitHeight: 24
 
@@ -148,34 +158,54 @@ Item {
         opacity: control.entry && control.entry.kind === "folder" ? 1.0 : 0.6
     }
 
+    // 播放中只加一圈内侧强调色，不遮住画面，也不改变缩略图槽尺寸。
+    Rectangle {
+        objectName: "playingRing"
+
+        anchors.fill: parent
+        anchors.margins: 1
+        visible: control.playing
+        radius: Math.max(0, control.radius - 1)
+        color: control.theme.surfaceClear
+        border.width: control.playing ? 2 : 0
+        border.color: control.theme.accent
+    }
+
     Rectangle {
         objectName: "videoBadge"
 
         visible: control.showVideoBadge
         width: control.videoBadgeSize
         height: control.videoBadgeSize
-        radius: Math.max(2, Math.round(control.videoBadgeSize / 6))
+        radius: control.videoBadgeRadius
         anchors.right: parent.right
-        anchors.rightMargin: 2
+        anchors.rightMargin: control.videoBadgeMargin
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 2
-        color: control.theme.mediaBadge
+        anchors.bottomMargin: control.videoBadgeMargin
+        color: control.theme.mediaBadgeSoft
+        border.width: 1
+        border.color: Qt.rgba(control.theme.mediaForeground.r,
+                              control.theme.mediaForeground.g,
+                              control.theme.mediaForeground.b, 0.72)
 
         Item {
-            width: 6
-            height: 8
+            width: 8
+            height: 10
             anchors.centerIn: parent
-            scale: control.videoBadgeSize / 12
+            scale: control.videoBadgeSize / 20
 
             Shape {
                 anchors.fill: parent
 
                 ShapePath {
-                    fillColor: control.theme.mediaForeground
-                    strokeColor: "transparent"
+                    fillColor: "transparent"
+                    strokeColor: control.theme.mediaForeground
+                    strokeWidth: 1.1
+                    capStyle: ShapePath.RoundCap
+                    joinStyle: ShapePath.RoundJoin
 
                     PathSvg {
-                        path: "M0 0 L6 4 L0 8 Z"
+                        path: "M1 1 L8 5 L1 9 Z"
                     }
                 }
             }

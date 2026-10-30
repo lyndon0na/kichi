@@ -43,6 +43,7 @@ TestCase {
         property int thumbnailRequests: 0
         property bool playLoading: false
         property string playLoadingId: ""
+        property var playingIds: []
         property int cancelPlayCalls: 0
 
         signal changed()
@@ -168,6 +169,7 @@ TestCase {
         fakeBackend.thumbnailRequests = 0
         fakeBackend.playLoading = false
         fakeBackend.playLoadingId = ""
+        fakeBackend.playingIds = []
         fakeBackend.cancelPlayCalls = 0
     }
 
@@ -227,7 +229,7 @@ TestCase {
         compare(fakeBackend.thumbnailRequests, 0, "文件夹不应请求缩略图")
     }
 
-    function test_grid_video_loading_strip_cancels_without_selection() {
+    function test_grid_video_loading_centers_spinner_and_cancels_without_selection() {
         density = densityComponent.createObject(parent)
         verify(density !== null)
         const video = entry(4, "file")
@@ -248,22 +250,23 @@ TestCase {
 
         const overlay = findChild(gridItem, "gridVideoLoading")
         verify(overlay !== null)
-        const strip = findChild(overlay, "videoLoadingStrip")
+        const scrim = findChild(overlay, "videoLoadingScrim")
         const spinner = findChild(overlay, "videoLoadingSpinner")
         const cancel = findChild(overlay, "videoLoadingCancel")
-        const message = findChild(overlay, "videoLoadingText")
-        const cancelText = findChild(overlay, "videoLoadingCancelText")
-        verify(strip !== null && spinner !== null && cancel !== null
-               && message !== null && cancelText !== null)
+        verify(scrim !== null && spinner !== null && cancel !== null)
         compare(overlay.visible, true)
-        compare(strip.visible, true)
-        compare(strip.height, 34)
-        compare(strip.topLeftRadius, 0)
-        compare(strip.bottomLeftRadius, density.gridThumbnailRadius(200))
+        compare(scrim.radius, density.gridThumbnailRadius(200))
+        compare(scrim.color, themeProbe.mediaScrim)
         compare(themeProbe.mediaForeground, "#ffffff")
         compare(spinner.color, "#ffffff")
-        compare(message.color, "#ffffff")
-        compare(cancelText.color, "#ffffff")
+        compare(spinner.width, 28)
+        const thumbnail = findChild(gridItem, "gridThumbnail")
+        compare(findChild(thumbnail, "videoBadge").visible, false)
+        const spinnerCenter = spinner.mapToItem(overlay, spinner.width / 2,
+                                                spinner.height / 2)
+        fuzzyCompare(spinnerCenter.x, overlay.width / 2, 1)
+        fuzzyCompare(spinnerCenter.y, overlay.height / 2, 1)
+        compare(findChild(gridItem, "gridMediaStateChip"), null)
 
         const spy = Qt.createQmlObject(
             "import QtTest; SignalSpy { signalName: 'selectRequested' }",
@@ -274,6 +277,70 @@ TestCase {
         compare(spy.count, 0, "取消加载不能顺带选中视频")
         tryCompare(overlay, "visible", false)
         spy.destroy()
+    }
+
+    function test_grid_playing_video_uses_ring_and_pill() {
+        density = densityComponent.createObject(parent)
+        verify(density !== null)
+        const video = entry(6, "file")
+        gridItem = gridItemComponent.createObject(parent, {
+            width: 200,
+            height: density.gridItemHeight(200),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(200),
+            entry: video,
+            playing: true
+        })
+        verify(gridItem !== null)
+        wait(30)
+
+        const thumbnail = findChild(gridItem, "gridThumbnail")
+        const thumbnailBox = findChild(gridItem, "gridThumbnailBox")
+        const ring = findChild(thumbnail, "playingRing")
+        const pill = findChild(gridItem, "gridPlayingPill")
+        verify(thumbnail !== null && thumbnailBox !== null && ring !== null && pill !== null)
+        compare(thumbnail.playing, true)
+        compare(findChild(thumbnail, "videoBadge").visible, false)
+        compare(ring.visible, true)
+        compare(ring.border.width, 2)
+        compare(pill.visible, true)
+        compare(pill.parent, thumbnailBox)
+        compare(gridItem.background.color, themeProbe.accentGhost)
+
+        gridItem.playLoading = true
+        tryCompare(pill, "visible", false)
+        compare(findChild(gridItem, "gridVideoLoading").visible, true)
+        compare(thumbnail.playing, false)
+        compare(findChild(thumbnail, "videoBadge").visible, false)
+    }
+
+    function test_grid_playable_video_has_only_the_badge() {
+        density = densityComponent.createObject(parent)
+        const video = entry(8, "file")
+        gridItem = gridItemComponent.createObject(parent, {
+            width: 200,
+            height: density.gridItemHeight(200),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(200),
+            entry: video
+        })
+        verify(gridItem !== null)
+        wait(30)
+
+        const badge = findChild(findChild(gridItem, "gridThumbnail"), "videoBadge")
+        verify(badge !== null)
+        compare(findChild(gridItem, "gridMediaStateChip"), null)
+        compare(badge.visible, true)
+        compare(badge.radius, badge.width / 2)
+
+        gridItem.entry = entry(9, "folder")
+        tryCompare(badge, "visible", false)
     }
 
     function test_grid_item_marks_audit_files_on_the_thumbnail() {
@@ -353,6 +420,33 @@ TestCase {
         compare(list.visible, true)
         compare(grid.visible, false)
         tryCompare(list, "contentY", 48)
+    }
+
+    function test_page_binds_multiple_playing_ids_to_rows() {
+        fakeBackend.files = manyEntries(4)
+        fakeBackend.playingIds = ["entry-0", "entry-2"]
+        fakeBackend.fileView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        verify(list !== null)
+        compare(page.isEntryPlaying("entry-0"), true)
+        compare(page.isEntryPlaying("entry-1"), false)
+        compare(page.isEntryPlaying("entry-2"), true)
+        const first = list.itemAtIndex(0)
+        const second = list.itemAtIndex(1)
+        const third = list.itemAtIndex(2)
+        verify(first !== null && second !== null && third !== null)
+        compare(first.playing, true)
+        compare(second.playing, false)
+        compare(third.playing, true)
+
+        fakeBackend.playingIds = ["entry-1"]
+        tryCompare(first, "playing", false)
+        tryCompare(second, "playing", true)
+        tryCompare(third, "playing", false)
     }
 
     function test_grid_layout_fills_width_without_a_phantom_column() {

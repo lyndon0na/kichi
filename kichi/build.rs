@@ -14,6 +14,7 @@ const QML_FILES: &[&str] = &[
     "qml/FileIcon.qml",
     "qml/FileThumbnail.qml",
     "qml/KLoadingSpinner.qml",
+    "qml/KPlayingBars.qml",
     "qml/VideoLoadingOverlay.qml",
     "qml/FilesPage.qml",
     "qml/FilesPageMenu.qml",

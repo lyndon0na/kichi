@@ -16,6 +16,8 @@ Item {
     property string selectedId: ""
     // 正在加载的视频 id：图标位置换成可点击的转圈，点击即取消
     property string playLoadingId: ""
+    // 播放器正在播放的文件 id（可同时有多个）
+    property var playingIds: []
     // 行高 / 字号 / 列宽由 FilesPage 下发，与目录列表同一套密度
     property int rowHeight: 60
     property int textPixelSize: 16
@@ -50,6 +52,15 @@ Item {
     function isPlayLoading(id) {
         return root.playLoadingId.length > 0
                 && root.playLoadingId === String(id)
+    }
+
+    function isPlaying(id) {
+        const target = String(id)
+        for (let i = 0; i < root.playingIds.length; i++) {
+            if (String(root.playingIds[i]) === target)
+                return true
+        }
+        return false
     }
 
     ColumnLayout {
@@ -117,6 +128,7 @@ Item {
                 id: row
                 width: results.width - metrics.scrollBarSlot
                 readonly property bool playLoading: root.isPlayLoading(modelData.id)
+                readonly property bool playing: root.isPlaying(modelData.id) && !playLoading
                 // 两行：名字一行、所在文件夹一行。ItemDelegate 的内容区
                 // 默认有上下留白，固定高度会把第二行挤到外面重叠
                 height: Math.max(root.rowHeight, contentItem.implicitHeight + 18)
@@ -239,20 +251,89 @@ Item {
                             font.weight: Font.DemiBold
                         }
 
-                        ElidedLabel {
-                            objectName: "searchNameText"
-                            text: modelData.name
-                            font.pixelSize: root.textPixelSize
-                            elide: Text.ElideRight
+                        Item {
+                            id: searchNameGroup
                             Layout.fillWidth: true
-                            color: theme.textPrimary
-                        }
+                            Layout.preferredHeight: Math.max(root.iconPixelSize, 22)
+                            Layout.alignment: Qt.AlignVCenter
 
-                        Label {
-                            text: qsTr("违规")
-                            visible: modelData.auditFlag
-                            font.pixelSize: root.textPixelSize
-                            color: theme.danger
+                            Row {
+                                id: searchNameLine
+
+                                anchors.fill: parent
+                                spacing: 4
+                                readonly property int extraCount:
+                                    (searchPlayingStatus.visible ? 1 : 0)
+                                    + (searchAuditLabel.visible ? 1 : 0)
+                                readonly property real extraWidth:
+                                    (searchPlayingStatus.visible
+                                     ? searchPlayingStatus.implicitWidth : 0)
+                                    + (searchAuditLabel.visible
+                                       ? searchAuditLabel.implicitWidth : 0)
+                                    + extraCount * spacing
+
+                                ElidedLabel {
+                                    id: searchNameLabel
+                                    objectName: "searchNameText"
+                                    width: Math.min(implicitWidth,
+                                                    Math.max(0, searchNameLine.width
+                                                                - searchNameLine.extraWidth))
+                                    height: searchNameLine.height
+                                    text: modelData.name
+                                    font.pixelSize: root.textPixelSize
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                    color: theme.textPrimary
+                                }
+
+                                Rectangle {
+                                    id: searchPlayingStatus
+                                    objectName: "searchPlayingStatus"
+
+                                    visible: row.playing
+                                    width: implicitWidth
+                                    implicitWidth: searchPlayingContent.implicitWidth + 10
+                                    height: 18
+                                    y: Math.round((searchNameLine.height - height) / 2)
+                                    radius: theme.radiusSmall
+                                    color: theme.accentSoft
+                                    Accessible.name: qsTr("播放中")
+
+                                    RowLayout {
+                                        id: searchPlayingContent
+
+                                        anchors.centerIn: parent
+                                        spacing: 4
+
+                                        KPlayingBars {
+                                            objectName: "searchPlayingBars"
+
+                                            implicitWidth: 10
+                                            implicitHeight: 10
+                                            fillColor: theme.accent
+                                            running: searchPlayingStatus.visible
+                                        }
+
+                                        Label {
+                                            text: qsTr("播放中")
+                                            font.pixelSize: theme.fontCaption
+                                            font.weight: Font.DemiBold
+                                            color: theme.accent
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    id: searchAuditLabel
+                                    text: qsTr("违规")
+                                    visible: modelData.auditFlag
+                                    width: visible ? implicitWidth : 0
+                                    height: searchNameLine.height
+                                    font.pixelSize: root.textPixelSize
+                                    verticalAlignment: Text.AlignVCenter
+                                    color: theme.danger
+                                }
+                            }
                         }
 
                         Label {

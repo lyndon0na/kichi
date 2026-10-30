@@ -1,23 +1,25 @@
 //! 播放会话登记表 + 监控线程 + 退出收尾。
 //!
 //! 每条播放会话由 [`start`] 创建，事件经 `notify` 回投给界面层
-//! （调用方负责切回主线程）。登记表只做三件事：取消、统计、退出时全部关掉。
+//! （调用方负责切回主线程）。同一条会话会先发 [`StartEvent::Ready`]，
+//! 播放器真正退出后再发 [`StartEvent::Stopped`]。登记表只做三件事：
+//! 取消、统计、退出时全部关掉。
 //!
 //! 生命周期（mpv 路径）：
 //! 1. spawn mpv（`--idle=yes` + IPC socket）；
 //! 2. 连 socket → `observe_property` + `loadfile`；
 //! 3. 等窗口出现（[`ipc::watch`]）；
-//! 4. 就绪 → 先回投 `Ready`，再 `set_property idle no`（播完自动退出），
-//!    然后在这条线程上等 mpv 退出并回收进程；
-//! 5. 取消 → 发 `quit`，800 ms 还不退就 `kill`；
-//! 6. 会话在 mpv 退出后从登记表移除（正常播完同样移除）。
+//! 4. 就绪 → 回投 `Ready`，再 `set_property idle no`（播完自动退出）；
+//! 5. 在这条线程上等 mpv 退出；正常播完或 kichi 主动关闭都回投 `Stopped`；
+//! 6. 取消加载 → 发 `quit`，800 ms 还不退就 `kill`，只回投 `Cancelled`；
+//! 7. 会话在 mpv 退出后从登记表移除（正常播完同样移除）。
 //!
 //! 缩到托盘**不算**退出：已经在播的 mpv 继续；真退出时调 [`shutdown_all`]。
 
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::ipc::{self, StartOutcome};
@@ -39,6 +41,8 @@ pub enum StartEvent {
     ///
     /// `subtitle_note` 是自动字幕没能挂上去的原因；没有字幕 / 成功时为 `None`。
     Ready { subtitle_note: Option<String> },
+    /// 播放器进程已退出；只有此前真的发过 `Ready` 才会出现。
+    Stopped,
     /// 启动失败 / 播放器在出窗口前退出。文案已含文件名，界面直接显示
     Failed(String),
     /// 用户取消（界面不写任何文案）
@@ -71,7 +75,8 @@ fn with_sessions<T>(f: impl FnOnce(&mut HashMap<u64, Session>) -> T) -> T {
 
 /// 启动一次播放：mpv → idle + IPC；非 mpv → 旧清单方式。
 ///
-/// 事件通过 `notify` 回投（调用方负责切回主线程）。返回会话 id（非 mpv 固定为
+/// 事件通过 `notify` 回投（调用方负责切回主线程）。一次会话最多回投
+/// `Ready → Stopped`，或 `Failed` / `Cancelled`。返回会话 id（非 mpv 固定为
 /// `0`，它没有可取消的会话）；启动失败（spawn 失败 / 线程起不来）返回 `Err`，
 /// 由调用方放进提示条。
 pub fn start(
@@ -81,7 +86,7 @@ pub fn start(
     cancel: Arc<Cancel>,
     subtitles: Option<SubtitleAssets>,
     late: Option<LateSubtitles>,
-    notify: impl FnOnce(StartEvent) + Send + 'static,
+    notify: impl Fn(StartEvent) + Send + Sync + 'static,
 ) -> Result<u64, String> {
     if url.trim().is_empty() {
         return Err("播放链接为空".to_owned());
@@ -90,12 +95,24 @@ pub fn start(
         // 非 mpv：spawn 成功即视为开播（没有窗口探测，也没法挂字幕）
         drop(subtitles);
         drop(late);
-        launch::spawn(config, url, title)?;
+        let notify = Arc::new(notify);
+        let ready = Arc::new(Barrier::new(2));
+        let exit_notify = notify.clone();
+        let exit_ready = ready.clone();
+        launch::spawn(config, url, title, move || {
+            // 极端情况下播放器可能在 Ready 回投前就退出。先对齐一次，
+            // 保证界面总是收到 Ready → Stopped，而不是反过来留下永久标记。
+            exit_ready.wait();
+            exit_notify(StartEvent::Stopped);
+        })?;
         notify(StartEvent::Ready {
             subtitle_note: None,
         });
+        ready.wait();
         return Ok(0);
     }
+
+    let notify = Arc::new(notify);
 
     super::ensure_play_dir()?;
     let socket = ipc::socket_path();
@@ -130,6 +147,7 @@ pub fn start(
     let url = url.to_owned();
     let monitor_socket = socket.clone();
     let monitor_child = child.clone();
+    let monitor_notify = notify.clone();
     let spawned = std::thread::Builder::new()
         .name("kichi-mpv".into())
         .spawn(move || {
@@ -142,7 +160,7 @@ pub fn start(
                 &program,
                 subtitles,
                 late,
-                notify,
+                move |event| monitor_notify(event),
             );
             // 进程已由监控线程收尾（或被强杀）：从登记表移除，
             // 别让退出收尾再等一次
@@ -173,8 +191,32 @@ fn run_monitor(
     program: &str,
     subtitles: Option<SubtitleAssets>,
     late: Option<LateSubtitles>,
-    emit: impl FnOnce(StartEvent),
+    emit: impl Fn(StartEvent),
 ) {
+    let was_ready = run_monitor_before_exit(
+        socket, child, cancel, url, title, program, subtitles, late, &emit,
+    );
+    if was_ready {
+        emit(StartEvent::Stopped);
+    }
+}
+
+/// 跑到播放器就绪并等它退出；返回值表示是否已经发过 `Ready`。
+///
+/// 单独拆出来是为了保证所有开播后的退出路径都恰好补发一次 `Stopped`，
+/// 包括 IPC 不可观测、正常播完和 kichi 退出时主动关闭。
+#[allow(clippy::too_many_arguments)]
+fn run_monitor_before_exit(
+    socket: &std::path::Path,
+    child: &Arc<Mutex<Option<Child>>>,
+    cancel: &Cancel,
+    url: &str,
+    title: &str,
+    program: &str,
+    subtitles: Option<SubtitleAssets>,
+    late: Option<LateSubtitles>,
+    emit: &impl Fn(StartEvent),
+) -> bool {
     let no_status_note = || {
         subtitles
             .as_ref()
@@ -185,7 +227,7 @@ fn run_monitor(
         if cancel.is_cancelled() {
             kill_child(child);
             emit(StartEvent::Cancelled);
-            return;
+            return false;
         }
         // 连不上：如果进程已经退出（flatpak 起不来、参数被拒），那是真失败；
         // 进程还活着才按「已交给播放器」处理，但不提供取消（见 ADR 0007 的代价）
@@ -193,14 +235,14 @@ fn run_monitor(
             emit(StartEvent::Failed(format!(
                 "mpv 未能播放「{title}」：播放器已退出（无法连接 IPC）"
             )));
-            return;
+            return false;
         }
         eprintln!("[kichi] 连不上 mpv 的 IPC，无法观测播放状态（{program}）");
         emit(StartEvent::Ready {
             subtitle_note: no_status_note(),
         });
         wait_for_exit(child);
-        return;
+        return true;
     };
     if let Err(err) = conn
         .observe_start()
@@ -213,7 +255,7 @@ fn run_monitor(
         emit(StartEvent::Failed(format!(
             "mpv 未能播放「{title}」：无法与播放器通信（IPC 写入失败）"
         )));
-        return;
+        return false;
     }
 
     // 链接打不开时用**同一个**直链重试：PikPak 的签名直链偶发第一次被 CDN 拒
@@ -227,7 +269,7 @@ fn run_monitor(
             StartOutcome::Cancelled => {
                 shut_down(&mut conn, child);
                 emit(StartEvent::Cancelled);
-                return;
+                return false;
             }
             StartOutcome::Failed(reason) => break (Some(reason), false),
             StartOutcome::LoadFailed(reason) => {
@@ -242,7 +284,7 @@ fn run_monitor(
                 if !crate::session::download::sleep_cancellable(cancel, delay) {
                     shut_down(&mut conn, child);
                     emit(StartEvent::Cancelled);
-                    return;
+                    return false;
                 }
                 if let Err(err) = conn.loadfile(url) {
                     eprintln!("[kichi] 重试播放失败（IPC 写入）：{err}");
@@ -263,7 +305,7 @@ fn run_monitor(
             if cancel.is_cancelled() {
                 shut_down(&mut conn, child);
                 emit(StartEvent::Cancelled);
-                return;
+                return false;
             }
             // 请求 id 与「有没有 select 过」跨预挂 / 播放中补挂共用
             let mut next_sub_id = ipc::SUB_ADD_REQ_BASE;
@@ -296,6 +338,7 @@ fn run_monitor(
                 &mut next_sub_id,
                 &mut selected,
             );
+            true
         }
         Some(reason) => {
             // HTTP 状态码只在 mpv 日志里（"http: HTTP error 403 Forbidden"）
@@ -309,6 +352,7 @@ fn run_monitor(
             emit(StartEvent::Failed(format!(
                 "mpv 未能播放「{title}」：{detail}"
             )));
+            false
         }
     }
 }
@@ -619,6 +663,11 @@ mod tests {
                 subtitle_note: None
             })
         );
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).ok(),
+            Some(StartEvent::Stopped),
+            "播放器进程退出后要清掉「播放中」"
+        );
         assert_eq!(active_count(), 0);
     }
 
@@ -764,6 +813,11 @@ while time.time() < deadline:
         );
         // Ready 之后监控线程还在等它退出（这里它会一直挂着直到退出收尾）
         shutdown_all();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(3)).ok(),
+            Some(StartEvent::Stopped),
+            "主动关闭已经开播的播放器也要回投 Stopped"
+        );
         assert_eq!(active_count(), 0, "退出收尾要把会话清干净");
     }
 
