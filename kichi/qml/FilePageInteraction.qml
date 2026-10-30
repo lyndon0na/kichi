@@ -12,12 +12,15 @@ QtObject {
     property var fileList: null
     property var menu: null
     property bool searching: false
+    /// 当前活动视图："list" / "grid"；滚动位置按「目录 + 视图」分别记住
+    property string viewMode: "list"
 
     // —— 滚动位置记忆（目录 id → contentY）——
     // 进目录 / 返回 / 刷新 / 移动完成后都不跳回顶部。
     property var scrollByDir: ({})
     property bool restoreScrollPending: false
     property real pendingScrollY: -1
+    property string pendingViewMode: ""
     property int seenFilesRevision: -1
 
     function entryForId(id) {
@@ -48,6 +51,11 @@ QtObject {
 
     // —— 滚动位置 ——
 
+    function scrollKeyFor(view) {
+        const dir = ctl.backend ? ctl.backend.currentDirId : ""
+        return String(dir) + ":" + String(view)
+    }
+
     function rememberScroll() {
         if (!ctl.backend || !ctl.fileList)
             return
@@ -55,16 +63,19 @@ QtObject {
         const keys = Object.keys(scrollByDir)
         for (let i = 0; i < keys.length; i++)
             next[keys[i]] = scrollByDir[keys[i]]
-        next[ctl.backend.currentDirId] = ctl.fileList.contentY
+        next[scrollKeyFor(viewMode)] = ctl.fileList.contentY
         scrollByDir = next
     }
 
     function restoreScrollNow() {
         if (pendingScrollY < 0)
             return
+        if (pendingViewMode.length > 0 && pendingViewMode !== viewMode)
+            return
         // 空目录或尚未布局：清掉待恢复值，别留到下一次无关刷新再跳
         if (!ctl.backend || ctl.backend.files.length === 0) {
             pendingScrollY = -1
+            pendingViewMode = ""
             return
         }
         if (ctl.fileList.contentHeight <= 0)
@@ -72,6 +83,23 @@ QtObject {
         const maxY = Math.max(0, ctl.fileList.contentHeight - ctl.fileList.height)
         ctl.fileList.contentY = Math.max(0, Math.min(pendingScrollY, maxY))
         pendingScrollY = -1
+        pendingViewMode = ""
+    }
+
+    /// 切换列表 / 网格：先把当前视图的位置记下来，等目标视图真正可见后再恢复。
+    function prepareViewSwitch(view) {
+        if (!ctl.backend)
+            return
+        const saved = scrollByDir[scrollKeyFor(view)]
+        pendingScrollY = saved !== undefined ? saved : 0
+        pendingViewMode = view
+        restoreScrollPending = false
+        Qt.callLater(ctl.restoreScrollNow)
+    }
+
+    onViewModeChanged: {
+        if (pendingViewMode === viewMode)
+            Qt.callLater(ctl.restoreScrollNow)
     }
 
     function noteFilesRevision() {
@@ -85,8 +113,9 @@ QtObject {
             ctl.selection.prune(ctl.backend.files)
         if (restoreScrollPending) {
             restoreScrollPending = false
-            const saved = scrollByDir[ctl.backend.currentDirId]
+            const saved = scrollByDir[scrollKeyFor(viewMode)]
             pendingScrollY = saved !== undefined ? saved : 0
+            pendingViewMode = ""
             // 列表布局在模型更新之后才完成；contentHeight 变化时会再试一次
             Qt.callLater(ctl.restoreScrollNow)
         }

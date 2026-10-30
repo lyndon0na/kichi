@@ -11,6 +11,9 @@ Item {
     property var backend: null
     property var entry: null
     property int iconPixelSize: 18
+    property int radius: 3
+    /// 视频角标尺寸：列表用小角标，网格可以放大
+    property int videoBadgeSize: 12
 
     /// Rust 回传的是 file:// URI，测试里也可以注入其它本地 source。
     property string localUri: ""
@@ -71,7 +74,7 @@ Item {
         id: frame
 
         anchors.fill: parent
-        radius: 3
+        radius: control.radius
         color: control.localUri.length > 0 ? control.theme.surfaceRaised
                                            : control.theme.surfaceClear
         border.width: control.imageReady ? 1 : 0
@@ -117,26 +120,31 @@ Item {
         objectName: "videoBadge"
 
         visible: control.showVideoBadge
-        width: 12
-        height: 12
-        radius: 2
+        width: control.videoBadgeSize
+        height: control.videoBadgeSize
+        radius: Math.max(2, Math.round(control.videoBadgeSize / 6))
         anchors.right: parent.right
         anchors.rightMargin: 2
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 2
         color: control.theme.mediaBadge
 
-        Shape {
+        Item {
             width: 6
             height: 8
             anchors.centerIn: parent
+            scale: control.videoBadgeSize / 12
 
-            ShapePath {
-                fillColor: control.theme.onMediaBadge
-                strokeColor: "transparent"
+            Shape {
+                anchors.fill: parent
 
-                PathSvg {
-                    path: "M0 0 L6 4 L0 8 Z"
+                ShapePath {
+                    fillColor: control.theme.onMediaBadge
+                    strokeColor: "transparent"
+
+                    PathSvg {
+                        path: "M0 0 L6 4 L0 8 Z"
+                    }
                 }
             }
         }

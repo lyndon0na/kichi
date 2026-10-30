@@ -94,6 +94,8 @@ pub mod qobject {
         #[qproperty(bool, tray_available, cxx_name = "trayAvailable", READ, NOTIFY = changed)]
         #[qproperty(i32, tray_show_requested, cxx_name = "trayShowRequested", READ, NOTIFY = changed)]
         #[qproperty(bool, quit_requested, cxx_name = "quitRequested", READ, NOTIFY = changed)]
+        /// 文件页显示方式："list" / "grid"
+        #[qproperty(QString, file_view_text, cxx_name = "fileView", READ, NOTIFY = changed)]
         #[qproperty(QString, sort_field_text, cxx_name = "sortField", READ, NOTIFY = changed)]
         #[qproperty(bool, sort_ascending, cxx_name = "sortAscending", READ, NOTIFY = changed)]
         #[qproperty(i32, window_width, cxx_name = "windowWidth", READ, NOTIFY = changed)]
@@ -326,6 +328,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setCloseToTray"]
         fn set_close_to_tray(self: Pin<&mut Self>, enabled: bool);
+
+        /// 切换文件页显示方式："list" / "grid"
+        #[qinvokable]
+        #[cxx_name = "setFileView"]
+        fn set_file_view(self: Pin<&mut Self>, value: QString);
 
         #[qinvokable]
         #[cxx_name = "setSorting"]
@@ -712,6 +719,9 @@ pub struct KichiRust {
     pub(crate) tray_show_requested: i32,
     /// 托盘要求退出
     pub(crate) quit_requested: bool,
+    /// 文件页显示方式（枚举给持久化与同步用；字符串 `file_view_text` 给 QML）
+    pub(crate) file_view: crate::settings::FileViewMode,
+    pub(crate) file_view_text: QString,
     /// 排序字段（枚举给重排用；字符串 `sort_field_text` 给 QML）
     pub(crate) sort_field: crate::settings::SortField,
     pub(crate) sort_field_text: QString,
@@ -862,6 +872,8 @@ impl Default for KichiRust {
             tray_available: false,
             tray_show_requested: 0,
             quit_requested: false,
+            file_view: crate::settings::FileViewMode::List,
+            file_view_text: QString::from("list"),
             sort_field: crate::settings::SortField::Name,
             sort_field_text: QString::from("name"),
             sort_ascending: true,
@@ -971,6 +983,8 @@ impl KichiRust {
         self.notify_enabled = settings.notify_enabled;
         self.auto_subtitles = settings.auto_subtitles;
         self.close_to_tray = settings.close_to_tray;
+        self.file_view = settings.file_view;
+        self.file_view_text = QString::from(settings.file_view.as_str());
         self.sort_field = settings.sort_field;
         self.sort_field_text = QString::from(settings.sort_field.as_str());
         self.sort_ascending = settings.sort_ascending;

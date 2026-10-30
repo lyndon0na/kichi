@@ -10,7 +10,7 @@ use cxx_qt_lib::QString;
 
 use super::qobject;
 use crate::session::limits;
-use crate::settings::{self, Quality, Settings, SortField};
+use crate::settings::{self, FileViewMode, Quality, Settings, SortField};
 
 impl qobject::Kichi {
     /// 改清晰度偏好。
@@ -86,6 +86,17 @@ impl qobject::Kichi {
         }
         self.as_mut().update_settings(|settings| {
             settings.close_to_tray = enabled;
+        });
+    }
+
+    /// 切换文件页显示方式。只影响展示，不重新请求目录。
+    pub fn set_file_view(mut self: Pin<&mut Self>, value: QString) {
+        let mode = FileViewMode::parse(&value.to_string());
+        if self.file_view == mode {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.file_view = mode;
         });
     }
 
@@ -249,6 +260,7 @@ impl qobject::Kichi {
             notify,
             auto_subs,
             tray,
+            file_view,
             field,
             ascending,
             width,
@@ -261,6 +273,7 @@ impl qobject::Kichi {
             snapshot.notify_enabled,
             snapshot.auto_subtitles,
             snapshot.close_to_tray,
+            snapshot.file_view,
             snapshot.sort_field.as_str(),
             snapshot.sort_ascending,
             snapshot.window_width,
@@ -275,6 +288,8 @@ impl qobject::Kichi {
         rust.notify_enabled = notify;
         rust.auto_subtitles = auto_subs;
         rust.close_to_tray = tray;
+        rust.file_view = file_view;
+        rust.file_view_text = QString::from(file_view.as_str());
         rust.sort_field = snapshot.sort_field;
         rust.sort_ascending = ascending;
         rust.sort_field_text = QString::from(field);

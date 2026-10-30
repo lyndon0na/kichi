@@ -1,4 +1,4 @@
-//! 界面设置：清晰度偏好、播放器命令、通知开关、排序、窗口记忆。
+//! 界面设置：清晰度偏好、播放器命令、通知开关、文件视图、排序、窗口记忆。
 //!
 //! 存放位置 `~/.config/kichi/settings.json`（`KICHI_SETTINGS_FILE` 可覆盖）。
 //! 同目录还放令牌降级文件，整个 `kichi` 目录归本项目独占——
@@ -119,6 +119,46 @@ impl SortField {
     }
 }
 
+/// 文件页的显示方式。
+///
+/// 列表是默认值；网格只改变同目录条目的展示，不改变排序、筛选或文件操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileViewMode {
+    #[default]
+    List,
+    Grid,
+}
+
+impl FileViewMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Grid => "grid",
+        }
+    }
+
+    pub fn parse(text: &str) -> Self {
+        if text.trim().eq_ignore_ascii_case("grid") {
+            Self::Grid
+        } else {
+            Self::List
+        }
+    }
+}
+
+impl Serialize for FileViewMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for FileViewMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Self::parse(&text))
+    }
+}
+
 /// 全部可持久化设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -136,6 +176,8 @@ pub struct Settings {
     pub auto_subtitles: bool,
     /// 关闭窗口时缩到托盘
     pub close_to_tray: bool,
+    /// 文件页显示方式：列表 / 网格
+    pub file_view: FileViewMode,
     pub sort_field: SortField,
     pub sort_ascending: bool,
     /// 窗口宽高；0 表示还没存过（用默认尺寸）
@@ -164,6 +206,7 @@ impl Default for Settings {
             notify_enabled: true,
             auto_subtitles: true,
             close_to_tray: false,
+            file_view: FileViewMode::List,
             sort_field: SortField::Name,
             sort_ascending: true,
             window_width: 0,
@@ -360,6 +403,7 @@ mod tests {
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
             close_to_tray: true,
+            file_view: FileViewMode::Grid,
             sort_field: SortField::Modified,
             sort_ascending: false,
             window_width: 1280,
@@ -418,6 +462,11 @@ mod tests {
         assert_eq!(settings.preferred_quality, Quality::Original);
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
+        assert_eq!(
+            settings.file_view,
+            FileViewMode::List,
+            "旧设置没有文件视图字段时默认列表"
+        );
         assert_eq!(settings.window_width, 0, "负尺寸收回为 0");
         assert_eq!(settings.download_parallel, 3, "旧设置没有并发字段时取默认");
         assert_eq!(
@@ -470,6 +519,10 @@ mod tests {
         assert_eq!(Quality::parse("nonsense"), Quality::Ask);
         assert_eq!(SortField::parse("size"), SortField::Size);
         assert_eq!(SortField::parse(""), SortField::Name);
+        assert_eq!(FileViewMode::parse("grid"), FileViewMode::Grid);
+        assert_eq!(FileViewMode::parse(" GRID "), FileViewMode::Grid);
+        assert_eq!(FileViewMode::parse("list"), FileViewMode::List);
+        assert_eq!(FileViewMode::parse("nonsense"), FileViewMode::List);
     }
 
     #[test]

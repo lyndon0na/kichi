@@ -302,6 +302,16 @@ ApplicationWindow {
                             ToolTip.text: qsTr("新建文件夹")
                             onClicked: filesPage.beginNewFolder()
                         }
+
+                        FilesPageViewMenu {
+                            id: fileViewMenu
+
+                            Layout.alignment: Qt.AlignVCenter
+                            backend: backend
+                            onViewRequested: function (view) {
+                                filesPage.setFileView(view)
+                            }
+                        }
                     }
 
                 }

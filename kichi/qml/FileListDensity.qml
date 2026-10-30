@@ -57,4 +57,25 @@ Item {
     // 统一到 12：8 太挤、16 太散，且两者都跟「行高 44」不成比例。
     readonly property int rowPadding: 12
     readonly property int columnSpacing: 12
+
+    // —— 网格视图 ——
+    // 缩略图保持 3:2；列数由 FilesPage 按可用宽度计算，委托只负责自己的内容。
+    readonly property int gridMinItemWidth: Math.round(160 * densityScale)
+    readonly property int gridColumnGap: 14
+    readonly property int gridRowGap: 18
+    readonly property int gridCardPadding: 5
+    readonly property int gridCardSpacing: 7
+    readonly property int gridTextSpacing: 2
+    readonly property int gridIconPixelSize: Math.round(28 * densityScale)
+    readonly property int gridVideoBadgeSize: Math.round(18 * densityScale)
+    readonly property int gridNameLineHeight: Math.round(namePixelSize * 1.35)
+    readonly property int gridMetaLineHeight: Math.round(metaPixelSize * 1.3)
+
+    /// 一个网格委托的完整高度（不含行与行之间的 gridRowGap）。
+    function gridItemHeight(itemWidth) {
+        const thumbWidth = Math.max(1, itemWidth - gridCardPadding * 2)
+        const thumbHeight = Math.max(1, Math.ceil(thumbWidth * 2 / 3))
+        return gridCardPadding * 2 + thumbHeight + gridCardSpacing
+                + gridNameLineHeight + gridTextSpacing + gridMetaLineHeight
+    }
 }

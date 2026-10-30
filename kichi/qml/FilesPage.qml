@@ -19,15 +19,20 @@ Item {
 
     // 搜索视图开着：列表区换成结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
+    // 文件页当前显示方式；搜索视图始终使用独立的结果列表
+    readonly property bool gridMode: page.backend !== null
+                                     && page.backend.fileView === "grid"
+    readonly property var activeFileView: page.gridMode ? fileGrid : fileList
 
     // 滚动位置记忆 / 导航 / 快捷键 / 操作完成后的收尾（纯逻辑在 FilePageInteraction.qml）
     FilePageInteraction {
         id: interaction
         backend: page.backend
         selection: selection
-        fileList: fileList
+        fileList: page.activeFileView
         menu: menu
         searching: page.searching
+        viewMode: page.gridMode ? "grid" : "list"
     }
 
     // 列表密度（行高 / 字号 / 图标 / 列宽）都在 FileListDensity 里，
@@ -41,6 +46,23 @@ Item {
     UiMetrics {
         id: metrics
     }
+
+    // 网格列宽：左右各留一份页面内边距，右侧再让出滚动条车道。
+    // GridView 按 cellWidth 向下取整列数，所以 cellWidth 只能等于可用宽度 / 列数；
+    // 若把列间距也算进去，会少排一列，在右侧留下整列空白。
+    readonly property int gridSideMargin: metrics.pageMargin
+    readonly property int gridRightMargin: metrics.scrollBarSlot + gridSideMargin
+    readonly property real gridAvailableWidth: Math.max(
+        0, fileGrid.width - gridSideMargin - gridRightMargin)
+    readonly property int gridColumns: Math.max(1, Math.floor(
+        (gridAvailableWidth + density.gridColumnGap)
+        / (density.gridMinItemWidth + density.gridColumnGap)))
+    readonly property int gridCellSlotWidth: gridColumns > 0
+        ? Math.max(1, Math.floor(gridAvailableWidth / gridColumns)) : 0
+    readonly property real gridItemWidth: Math.max(1, gridCellSlotWidth
+                                                     - density.gridColumnGap)
+    readonly property real gridItemHeight: density.gridItemHeight(gridItemWidth)
+    readonly property real gridCellHeight: gridItemHeight + density.gridRowGap
 
     // 面包屑在页头（main.qml）里，不是本页的一行：这里只提供跳转入口。
     // 以前本页顶部还有一行「↑ 全部文件」，和页头各成一条，看着是几块拼的。
@@ -67,6 +89,23 @@ Item {
         interaction.refreshFiles()
     }
 
+    // 页头的视图列表调这里：先记当前滚动位置，再让目标视图恢复自己的位置。
+    function setFileView(view) {
+        if (!page.backend || typeof page.backend.setFileView !== "function")
+            return
+        const next = view === "grid" ? "grid" : "list"
+        if (page.backend.fileView === next)
+            return
+        interaction.rememberScroll()
+        interaction.prepareViewSwitch(next)
+        page.backend.setFileView(next)
+    }
+
+    function focusActiveView() {
+        if (page.activeFileView && page.visible && !page.searching)
+            page.activeFileView.forceActiveFocus()
+    }
+
     // 搜索结果里的播放 / 下载也在右键菜单里，锚点用右键位置
     function openResultContext(entry, point) {
         // 搜索结果给的是本视图坐标：换算成窗口坐标再交给右键菜单（绝对定位）
@@ -86,9 +125,10 @@ Item {
             page.backend.refreshFiles()
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
-        if (fileList && !page.searching)
-            fileList.forceActiveFocus()
+        page.focusActiveView()
     }
+
+    onGridModeChanged: Qt.callLater(page.focusActiveView)
 
     ColumnLayout {
         anchors.fill: parent
@@ -110,7 +150,7 @@ Item {
                 // 表头只属于当前目录视图：搜索结果列不同（多类型列、所在文件夹），
                 // 不硬套同一套列宽。排序箭头读的是 backend 的排序状态。
                 FileListHeader {
-                    visible: !page.searching
+                    visible: !page.searching && !page.gridMode
                     Layout.fillWidth: true
                     backend: page.backend
                     thumbnailSlotWidth: density.thumbnailSlotWidth
@@ -133,7 +173,7 @@ Item {
                     // 只靠 1px 底部分隔线区分，不再用行间缝隙。
                     spacing: 0
                     // 搜索视图显示结果；否则显示当前目录
-                    visible: !page.searching
+                    visible: !page.searching && !page.gridMode
                     model: page.backend ? page.backend.files : []
                     boundsBehavior: Flickable.StopAtBounds
                     // 列表铺满到页面右缘，条画在右侧 10px 车道里；
@@ -219,6 +259,93 @@ Item {
                             var windowPoint = row.mapToItem(null, point.x, point.y)
                             menu.openContext(entry, windowPoint, selection.idList(), false)
                         }
+                    }
+                }
+            }
+
+            // 网格视图：和列表共用同一块内容区、同一个 model 和同一套选择逻辑。
+            // GridView 的 cellWidth 含列间空隙，委托宽度由 FilesPage 统一算好，
+            // 这样最后一列不会钻到滚动条车道下面。
+            GridView {
+                id: fileGrid
+                objectName: "fileGrid"
+
+                anchors.fill: parent
+                visible: !page.searching && page.gridMode
+                model: page.backend ? page.backend.files : []
+                cellWidth: page.gridCellSlotWidth
+                cellHeight: page.gridCellHeight
+                leftMargin: page.gridSideMargin
+                rightMargin: page.gridRightMargin
+                topMargin: 0
+                bottomMargin: 0
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: KScrollBar {}
+
+                focus: true
+                Keys.onPressed: function (event) {
+                    interaction.handleKey(event)
+                }
+                onVisibleChanged: {
+                    if (visible)
+                        forceActiveFocus()
+                }
+                onContentHeightChanged: interaction.restoreScrollNow()
+
+                // 空白处右键：和列表一样只接住没命中条目的位置。
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: function (point) {
+                        if (!page.backend)
+                            return
+                        const x = point.position.x
+                        const y = point.position.y
+                        if (fileGrid.indexAt(x, y + fileGrid.contentY) >= 0)
+                            return
+                        menu.openBlankAt(fileGrid.mapToItem(null, x, y))
+                    }
+                }
+
+                delegate: FileGridItem {
+                    id: gridItem
+
+                    width: page.gridItemWidth
+                    height: page.gridItemHeight
+                    entry: modelData
+                    backend: page.backend
+                    rowIndex: index
+                    contentPadding: density.gridCardPadding
+                    cardSpacing: density.gridCardSpacing
+                    textSpacing: density.gridTextSpacing
+                    nameLineHeight: density.gridNameLineHeight
+                    metaLineHeight: density.gridMetaLineHeight
+                    textPixelSize: density.namePixelSize
+                    metaPixelSize: density.metaPixelSize
+                    iconPixelSize: density.gridIconPixelSize
+                    videoBadgeSize: density.gridVideoBadgeSize
+                    selected: !!entry && selection.isSelected(entry.id)
+
+                    onSelectRequested: function (modifiers, itemIndex) {
+                        const entries = page.backend ? page.backend.files : []
+                        if (itemIndex < 0 || itemIndex >= entries.length)
+                            return
+                        fileGrid.currentIndex = itemIndex
+                        selection.click(entries[itemIndex].id, itemIndex, modifiers, entries)
+                    }
+                    onFolderOpenRequested: function (id) {
+                        interaction.navigateToDir(id)
+                    }
+                    onPlayRequested: function (id, point) {
+                        playMenu.anchorPoint = gridItem.mapToItem(null, point.x, point.y)
+                        if (page.backend)
+                            page.backend.requestPlay(id)
+                    }
+                    onContextMenu: function (point) {
+                        selection.ensureSelected(entry)
+                        fileGrid.forceActiveFocus()
+                        var windowPoint = gridItem.mapToItem(null, point.x, point.y)
+                        menu.openContext(entry, windowPoint, selection.idList(), false)
                     }
                 }
             }

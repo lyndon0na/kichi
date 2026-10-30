@@ -30,6 +30,8 @@ const QML_FILES: &[&str] = &[
     "qml/FileListHeader.qml",
     "qml/FileListDensity.qml",
     "qml/FileRow.qml",
+    "qml/FileGridItem.qml",
+    "qml/FilesPageViewMenu.qml",
     "qml/KScrollBar.qml",
     "qml/KProgressBar.qml",
     "qml/DialogFooter.qml",
