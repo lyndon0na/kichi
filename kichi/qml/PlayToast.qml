@@ -156,7 +156,7 @@ Rectangle {
             Layout.preferredHeight: 18
         }
 
-        Label {
+        ElidedLabel {
             id: message
             Layout.maximumWidth: toast.maxTextWidth
             Layout.alignment: Qt.AlignVCenter

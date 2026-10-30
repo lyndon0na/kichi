@@ -122,16 +122,12 @@ ItemDelegate {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            HoverHandler {
-                id: nameHover
-            }
-
             Column {
                 width: parent.width
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 2
 
-                Label {
+                ElidedLabel {
                     objectName: "taskNameText"
                     width: parent.width
                     text: row.name
@@ -139,9 +135,13 @@ ItemDelegate {
                     font.pixelSize: theme.fontBody
                     font.weight: Font.DemiBold
                     elide: Text.ElideMiddle
+                    toolTipText: row.phase === "error" && row.detail.length > 0
+                                 ? row.name + "\n" + row.detail : row.name
+                    showToolTipWhenUntruncated: row.phase === "error"
+                                                && row.detail.length > 0
                 }
 
-                Label {
+                ElidedLabel {
                     objectName: "taskMetaText"
                     width: parent.width
                     visible: text.length > 0
@@ -150,14 +150,6 @@ ItemDelegate {
                     font.pixelSize: theme.fontCaption
                     elide: Text.ElideRight
                 }
-            }
-
-            ToolTip {
-                visible: nameHover.hovered
-                         && row.phase === "error"
-                         && row.detail.length > 0
-                text: row.detail
-                delay: 700
             }
         }
 

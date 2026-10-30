@@ -17,7 +17,7 @@ RowLayout {
 
     spacing: theme.gapSm
 
-    Label {
+    ElidedLabel {
         objectName: "trashSelectionSummary"
         Layout.fillWidth: true
         Layout.alignment: Qt.AlignVCenter

@@ -21,6 +21,8 @@ Button {
     /// 可选线稿图标（NavIcon 的名字），留空则只有文字
     property string iconName: ""
     property int iconSize: 16
+    // 调用处已有说明性 ToolTip 时关掉文字自身的截断提示，避免同时弹两层。
+    property bool showTextToolTip: true
 
     KTheme { id: theme }
 
@@ -91,9 +93,11 @@ Button {
             opacity: control.variant === "ghost" ? 0.8 : 1
         }
 
-        Label {
+        ElidedLabel {
+            objectName: "buttonText"
             Layout.fillWidth: true
             text: control.text
+            toolTipEnabled: control.showTextToolTip
             font: control.font
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter

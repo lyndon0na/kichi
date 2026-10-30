@@ -29,6 +29,12 @@ ItemDelegate {
 
     KTheme { id: theme }
 
+    function pointerOver(item, x, y) {
+        const topLeft = item.mapToItem(row, 0, 0)
+        return x >= topLeft.x && x <= topLeft.x + item.width
+                && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
     implicitHeight: row.rowHeight
     leftPadding: row.contentPadding
     rightPadding: row.contentPadding
@@ -42,6 +48,8 @@ ItemDelegate {
     icon.color: "transparent"
 
     MouseArea {
+        id: mouseArea
+
         anchors.fill: parent
         z: 1
         acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -113,16 +121,22 @@ ItemDelegate {
             }
         }
 
-        Label {
+        ElidedLabel {
+            id: nameLabel
+            objectName: "trashNameText"
             Layout.fillWidth: true
             text: row.entry ? row.entry.name : ""
             font.pixelSize: row.textPixelSize
             color: palette.text
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+            externallyHovered: row.rowHovered
+                               && row.pointerOver(nameLabel, mouseArea.mouseX,
+                                                  mouseArea.mouseY)
         }
 
-        Label {
+        ElidedLabel {
+            id: trashDeletedText
             objectName: "trashDeletedText"
             Layout.preferredWidth: row.deletedColumnWidth
             text: row.entry ? row.entry.deletedText : ""
@@ -131,6 +145,9 @@ ItemDelegate {
             verticalAlignment: Text.AlignVCenter
             horizontalAlignment: Text.AlignRight
             elide: Text.ElideRight
+            externallyHovered: row.rowHovered
+                               && row.pointerOver(trashDeletedText, mouseArea.mouseX,
+                                                  mouseArea.mouseY)
         }
 
         Label {

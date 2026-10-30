@@ -102,6 +102,12 @@ ItemDelegate {
         card.backend.downloadEntry(card.entry.id)
     }
 
+    function pointerOver(item, x, y) {
+        const topLeft = item.mapToItem(card, 0, 0)
+        return x >= topLeft.x && x <= topLeft.x + item.width
+                && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
     contentItem: ColumnLayout {
         spacing: 0
 
@@ -161,7 +167,8 @@ ItemDelegate {
 
         Item { Layout.preferredHeight: card.cardSpacing }
 
-        Label {
+        ElidedLabel {
+            id: gridName
             objectName: "gridName"
 
             Layout.fillWidth: true
@@ -177,6 +184,9 @@ ItemDelegate {
             lineHeight: card.nameLineHeight
             lineHeightMode: Text.FixedHeight
             verticalAlignment: Text.AlignTop
+            externallyHovered: mouseArea.containsMouse
+                               && card.pointerOver(gridName, mouseArea.mouseX,
+                                                   mouseArea.mouseY)
         }
     }
 }

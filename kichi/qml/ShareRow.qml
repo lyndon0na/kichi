@@ -131,7 +131,7 @@ ItemDelegate {
                 Layout.fillHeight: true
                 spacing: 2
 
-                Label {
+                ElidedLabel {
                     Layout.fillWidth: true
                     text: row.title
                     color: theme.textPrimary
@@ -141,7 +141,7 @@ ItemDelegate {
                     verticalAlignment: Text.AlignVCenter
                 }
 
-                Label {
+                ElidedLabel {
                     Layout.fillWidth: true
                     text: row.statsText
                     color: theme.textMuted
@@ -168,7 +168,7 @@ ItemDelegate {
                 Layout.minimumWidth: row.expirationColumnWidth
                 Layout.fillHeight: true
 
-                Label {
+                ElidedLabel {
                     anchors.fill: parent
                     text: row.expirationText
                     color: theme.textSecondary
@@ -184,7 +184,7 @@ ItemDelegate {
                 Layout.minimumWidth: row.createdColumnWidth
                 Layout.fillHeight: true
 
-                Label {
+                ElidedLabel {
                     anchors.fill: parent
                     text: row.createdText
                     color: theme.textSecondary

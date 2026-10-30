@@ -16,7 +16,7 @@ RowLayout {
 
     spacing: theme.gapSm
 
-    Label {
+    ElidedLabel {
         objectName: "tasksHeaderStatus"
         Layout.fillWidth: true
         Layout.alignment: Qt.AlignVCenter

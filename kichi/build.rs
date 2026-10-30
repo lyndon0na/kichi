@@ -41,6 +41,7 @@ const QML_FILES: &[&str] = &[
     "qml/KButton.qml",
     "qml/KIconButton.qml",
     "qml/KTextField.qml",
+    "qml/ElidedLabel.qml",
     "qml/KComboBox.qml",
     "qml/KStatusBadge.qml",
     "qml/KSectionTitle.qml",

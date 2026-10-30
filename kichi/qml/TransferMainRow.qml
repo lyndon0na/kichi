@@ -148,6 +148,12 @@ ItemDelegate {
         return row.displayStatus + "\n" + row.detail
     }
 
+    function pointerOver(item, x, y) {
+        const topLeft = item.mapToItem(row, 0, 0)
+        return x >= topLeft.x && x <= topLeft.x + item.width
+                && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
     background: Rectangle {
         radius: 0
         color: row.notice ? theme.surface
@@ -262,7 +268,8 @@ ItemDelegate {
             Layout.minimumWidth: 0
             Layout.fillHeight: true
 
-            Label {
+            ElidedLabel {
+                id: nameLabel
                 objectName: "nameText"
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -273,9 +280,14 @@ ItemDelegate {
                 font.weight: row.folder ? Font.DemiBold : Font.Normal
                 elide: Text.ElideMiddle
                 verticalAlignment: Text.AlignVCenter
+                externallyHovered: rowHover.hovered
+                                   && row.pointerOver(nameLabel,
+                                                      rowHover.point.position.x,
+                                                      rowHover.point.position.y)
             }
 
             MouseArea {
+                id: rowHeader
                 objectName: "rowHeader"
                 anchors.fill: parent
                 enabled: row.expandable
@@ -290,10 +302,6 @@ ItemDelegate {
             Layout.minimumWidth: density.statusColumnWidth
             Layout.fillHeight: true
 
-            HoverHandler {
-                id: statusHover
-            }
-
             Rectangle {
                 width: density.statusColumnWidth - 8
                 height: 22
@@ -301,7 +309,7 @@ ItemDelegate {
                 radius: theme.radiusSmall
                 color: theme.softTint(statusToneColor(), row.tone === "neutral" ? 0.10 : 0.14)
 
-                Label {
+                ElidedLabel {
                     id: statusLabel
                     objectName: "stateText"
                     anchors.fill: parent
@@ -314,12 +322,10 @@ ItemDelegate {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideRight
+                    toolTipText: row.statusTooltip()
+                    showToolTipWhenUntruncated: true
                 }
             }
-
-            ToolTip.visible: statusHover.hovered && row.statusTooltip().length > 0
-            ToolTip.delay: 500
-            ToolTip.text: row.statusTooltip()
         }
 
         Item {
@@ -343,7 +349,7 @@ ItemDelegate {
                     indeterminate: row.currentProgress < 0
                 }
 
-                Label {
+                ElidedLabel {
                     objectName: "progressText"
                     Layout.preferredWidth: 42
                     text: row.currentProgressText
@@ -364,7 +370,7 @@ ItemDelegate {
             }
         }
 
-        Label {
+        ElidedLabel {
             objectName: "sizeText"
             visible: row.showSize
             Layout.preferredWidth: row.showSize ? density.sizeColumnWidth : 0
@@ -377,7 +383,7 @@ ItemDelegate {
             elide: Text.ElideLeft
         }
 
-        Label {
+        ElidedLabel {
             objectName: "rateText"
             visible: row.showRate
             Layout.preferredWidth: row.showRate ? density.rateColumnWidth : 0
@@ -453,6 +459,7 @@ ItemDelegate {
                     topPadding: 2
                     bottomPadding: 2
                     font.pixelSize: theme.fontMeta
+                    showTextToolTip: false
                     ToolTip.visible: row.interrupted && hovered
                     ToolTip.delay: 400
                     ToolTip.text: qsTr("上次未完成，若下载目录未变会从断点续传")

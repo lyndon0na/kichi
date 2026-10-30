@@ -62,7 +62,7 @@ Item {
                 Layout.preferredHeight: 20
             }
 
-            Label {
+            ElidedLabel {
                 Layout.fillWidth: true
                 text: root.backend ? root.backend.searchStatus : ""
                 wrapMode: Text.Wrap
@@ -187,7 +187,8 @@ Item {
                             font.weight: Font.DemiBold
                         }
 
-                        Label {
+                        ElidedLabel {
+                            objectName: "searchNameText"
                             text: modelData.name
                             font.pixelSize: root.textPixelSize
                             elide: Text.ElideRight
@@ -226,6 +227,7 @@ Item {
                             variant: "ghost"
                             visible: isFolder
                             enabled: root.backend !== null
+                            showTextToolTip: false
                             implicitHeight: 26
                             leftPadding: 10
                             rightPadding: 10
@@ -236,15 +238,18 @@ Item {
                     }
 
                     // 「所在文件夹」本身也能点：文件夹条目推进去、文件条目揭示
-                    Label {
+                    ElidedLabel {
+                        objectName: "searchFolderText"
                         Layout.fillWidth: true
                         text: qsTr("所在文件夹：%1").arg(modelData.folderText)
                         color: modelData.folderId && modelData.folderId.length > 0
                                ? theme.accent : theme.textMuted
                         font.pixelSize: root.metaPixelSize
                         elide: Text.ElideMiddle
+                        externallyHovered: folderPathMouse.containsMouse
 
                         MouseArea {
+                            id: folderPathMouse
                             anchors.fill: parent
                             enabled: !!modelData.folderId && modelData.folderId.length > 0
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor

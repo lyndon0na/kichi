@@ -91,7 +91,7 @@ Item {
                 cursorShape: Qt.PointingHandCursor
             }
 
-            Label {
+            ElidedLabel {
                 anchors.fill: parent
                 text: header.label(qsTr("名称"), nameCell.field)
                 color: theme.textMuted
@@ -100,6 +100,7 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 horizontalAlignment: Text.AlignLeft
                 elide: Text.ElideRight
+                externallyHovered: nameHover.hovered
             }
 
             TapHandler {
@@ -121,7 +122,7 @@ Item {
                 cursorShape: Qt.PointingHandCursor
             }
 
-            Label {
+            ElidedLabel {
                 anchors.fill: parent
                 // 右侧留出固定的箭头槽位，排序切换时表头文字不左右跳
                 anchors.rightMargin: 14
@@ -132,6 +133,7 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
+                externallyHovered: sizeHover.hovered
             }
 
             Label {
@@ -165,7 +167,7 @@ Item {
                 cursorShape: Qt.PointingHandCursor
             }
 
-            Label {
+            ElidedLabel {
                 anchors.fill: parent
                 anchors.rightMargin: 14
                 text: header.label(qsTr("修改时间"), modifiedCell.field)
@@ -175,6 +177,7 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
+                externallyHovered: modifiedHover.hovered
             }
 
             Label {

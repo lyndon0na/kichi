@@ -19,7 +19,7 @@ ColumnLayout {
         KSettingsRow {
             title: qsTr("设置文件")
 
-            Label {
+            ElidedLabel {
                 id: settingsPath
                 objectName: "settingsPath"
                 width: 420
@@ -29,12 +29,7 @@ ColumnLayout {
                 font.pixelSize: theme.fontMeta
                 elide: Text.ElideMiddle
                 horizontalAlignment: Text.AlignRight
-                ToolTip.visible: pathHover.hovered
-                ToolTip.text: text
-
-                HoverHandler {
-                    id: pathHover
-                }
+                showToolTipWhenUntruncated: true
             }
         }
     }

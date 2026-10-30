@@ -488,8 +488,9 @@ ApplicationWindow {
                                         color: palette.placeholderText
                                     }
 
-                                    Label {
+                                    ElidedLabel {
                                         id: crumbName
+                                        objectName: "crumbNameText"
 
                                         visible: !crumb.ellipsis
                                         text: crumb.ellipsis ? "" : root.crumbs[crumb.crumbIndex]
@@ -506,10 +507,13 @@ ApplicationWindow {
                                         // 宽度由 plan 算好，不再交给布局压缩：
                                         // 布局压缩会按比例切短名字（见 plan 处的说明）
                                         Layout.preferredWidth: crumb.ellipsis ? 0 : modelData.w
+                                        externallyHovered: crumbMouse.containsMouse
 
                                         MouseArea {
+                                            id: crumbMouse
                                             anchors.fill: parent
                                             enabled: !crumb.current
+                                            hoverEnabled: true
                                             cursorShape: enabled ? Qt.PointingHandCursor
                                                                  : Qt.ArrowCursor
                                             onClicked: filesPage.goCrumb(crumb.crumbIndex)
@@ -610,7 +614,7 @@ ApplicationWindow {
             color: theme.hairline
         }
 
-        Label {
+        ElidedLabel {
             objectName: "statusBarLabel"
             anchors.fill: parent
             anchors.leftMargin: metrics.pageMargin
@@ -620,12 +624,7 @@ ApplicationWindow {
             verticalAlignment: Text.AlignVCenter
             color: statusBar.message.length > 0 ? theme.textSecondary : theme.textMuted
             font.pixelSize: theme.fontMeta
-            ToolTip.visible: statusHover.hovered && text.length > 0
-            ToolTip.text: statusBar.shownText
-
-            HoverHandler {
-                id: statusHover
-            }
+            showToolTipWhenUntruncated: true
         }
     }
 

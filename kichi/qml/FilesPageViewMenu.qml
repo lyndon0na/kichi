@@ -37,6 +37,7 @@ Item {
         rightPadding: 8
         font.pixelSize: 12
         enabled: root.backend !== null && root.backend.searchActive !== true
+        showTextToolTip: false
         Accessible.name: qsTr("文件显示方式")
         ToolTip.visible: hovered
         ToolTip.text: !enabled

@@ -113,6 +113,12 @@ ItemDelegate {
         row.backend.downloadEntry(row.entry.id)
     }
 
+    function pointerOver(item, x, y) {
+        const topLeft = item.mapToItem(row, 0, 0)
+        return x >= topLeft.x && x <= topLeft.x + item.width
+                && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
     // 选中态：强调色只铺一层很淡的底，左侧再点一根 3px 竖条。
     // 不整行铺满 palette.highlight——饱和色块会把文件名的对比度压下去，
     // 而屏幕上真正「选中」的通常只有一行，代价却铺满整行。
@@ -169,13 +175,18 @@ ItemDelegate {
             }
         }
 
-        Label {
+        ElidedLabel {
+            id: nameLabel
+            objectName: "fileNameText"
             text: row.entry ? row.entry.name : ""
             font.pixelSize: row.textPixelSize
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
             Layout.fillWidth: true
             color: palette.text
+            externallyHovered: mouseArea.containsMouse
+                               && row.pointerOver(nameLabel, mouseArea.mouseX,
+                                                  mouseArea.mouseY)
         }
 
         Label {

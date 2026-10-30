@@ -204,7 +204,7 @@ KDialog {
                 onClicked: picker.goUp()
             }
 
-            Label {
+            ElidedLabel {
                 objectName: "movePickerTarget"
                 Layout.fillWidth: true
                 elide: Text.ElideMiddle

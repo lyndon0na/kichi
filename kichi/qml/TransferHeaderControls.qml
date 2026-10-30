@@ -18,7 +18,7 @@ RowLayout {
 
     spacing: theme.gapSm
 
-    Label {
+    ElidedLabel {
         objectName: "transferHeaderStatus"
         Layout.fillWidth: true
         Layout.alignment: Qt.AlignVCenter

@@ -77,7 +77,7 @@ Rectangle {
                 }
             }
 
-            Label {
+            ElidedLabel {
                 Layout.fillWidth: true
                 visible: !card.pending
                 text: card.accountName
@@ -85,12 +85,8 @@ Rectangle {
                 font.pixelSize: theme.fontMeta
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
-                ToolTip.visible: accountHover.hovered
-                ToolTip.text: card.account
-
-                HoverHandler {
-                    id: accountHover
-                }
+                toolTipText: card.account
+                showToolTipWhenUntruncated: true
             }
 
             // 骨架：占住用户名这一行的宽度，信息到达后原地换成文字
@@ -123,19 +119,14 @@ Rectangle {
         }
 
         // —— 第二行：已用容量 / 上限 ——
-        Label {
+        ElidedLabel {
             Layout.fillWidth: true
             visible: !card.pending && card.quotaLimit.length > 0
             text: qsTr("已用 %1 / %2").arg(card.quotaUsed).arg(card.quotaLimit)
             elide: Text.ElideRight
             color: theme.textMuted
             font.pixelSize: theme.fontCaption
-            ToolTip.visible: quotaHover.hovered
-            ToolTip.text: text
-
-            HoverHandler {
-                id: quotaHover
-            }
+            showToolTipWhenUntruncated: true
         }
 
         // 骨架：占住容量文字那一行（真数据是 16px 高的 Label）

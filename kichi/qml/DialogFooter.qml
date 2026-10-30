@@ -59,7 +59,7 @@ Item {
 
         spacing: 8
 
-        Label {
+        ElidedLabel {
             objectName: "dialogFooterStatus"
             Layout.fillWidth: true
             Layout.minimumWidth: 0

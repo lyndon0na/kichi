@@ -65,7 +65,7 @@ Item {
             width: root.dialogWidth
             spacing: 8
 
-            Label {
+            ElidedLabel {
                 Layout.fillWidth: true
                 text: qsTr("原名称：%1").arg(root.targetName)
                 color: palette.placeholderText

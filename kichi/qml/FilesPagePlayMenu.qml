@@ -55,7 +55,7 @@ Menu {
         height: Math.max(24, menu.metrics.height + 10)
         topPadding: 0
         bottomPadding: 0
-        contentItem: Label {
+        contentItem: ElidedLabel {
             leftPadding: 12
             rightPadding: 12
             topPadding: 0

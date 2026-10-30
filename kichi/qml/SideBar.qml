@@ -78,7 +78,7 @@ Rectangle {
                         Layout.alignment: Qt.AlignVCenter
                     }
 
-                    Label {
+                    ElidedLabel {
                         Layout.fillWidth: true
                         text: navButton.modelData.label
                         font.pixelSize: theme.fontBody
