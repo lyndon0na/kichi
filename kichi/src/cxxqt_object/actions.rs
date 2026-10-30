@@ -24,25 +24,29 @@ impl qobject::Kichi {
         password: QString,
         captcha_token: QString,
     ) {
-        if self.busy {
+        if self.login_running {
             return;
         }
         let user = username.to_string().trim().to_owned();
         let password = password.to_string();
         if user.is_empty() || password.is_empty() {
-            self.as_mut().set_message("请输入账号和密码", false);
+            self.as_mut().set_message("请输入账号和密码");
             return;
         }
         let captcha = captcha_token.to_string();
         let captcha = (!captcha.trim().is_empty()).then(|| captcha.trim().to_owned());
 
         let session = self.backend.session.clone();
-        self.as_mut().set_message("正在登录……", true);
+        self.as_mut().rust_mut().login_running = true;
+        self.as_mut().set_message("正在登录……");
         run_in_background(
             move || session.sign_in(&user, &password, captcha.as_deref()),
             |mut qichi, result| match result {
                 Ok(()) => qichi.as_mut().on_logged_in(),
-                Err(err) => qichi.as_mut().on_failure(err),
+                Err(err) => {
+                    qichi.as_mut().rust_mut().login_running = false;
+                    qichi.as_mut().on_failure(err);
+                }
             },
         );
     }
@@ -57,7 +61,7 @@ impl qobject::Kichi {
 
     /// 启动恢复后的补全（QML 界面就绪时调用一次）。
     pub fn warm_up(mut self: Pin<&mut Self>) {
-        let restored = self.auth_state.to_string() == "signedIn" && self.busy;
+        let restored = self.auth_state.to_string() == "signedIn" && self.session_restoring;
         if !self.auto_resume_checked {
             self.as_mut().rust_mut().auto_resume_checked = true;
             if restored {
@@ -70,6 +74,9 @@ impl qobject::Kichi {
             }
         }
         if restored {
+            self.as_mut().rust_mut().session_restoring = false;
+            // 恢复成功由已登录界面本身表达，底栏不常驻启动提示。
+            self.as_mut().set_message("");
             self.as_mut().refresh_identity_and_quota();
             self.as_mut().refresh_files();
             self.as_ref().start_task_polling();
@@ -84,8 +91,9 @@ impl qobject::Kichi {
                     rust.auth_state = QString::from("signedOut");
                     rust.captcha_required = false;
                     rust.captcha_url.clear();
-                    rust.status_message = QString::from("已退出登录");
-                    rust.busy = false;
+                    rust.status_message = QString::default();
+                    rust.login_running = false;
+                    rust.session_restoring = false;
                 }
                 self.as_mut().reset_files();
                 self.as_mut().reset_thumbnails();
@@ -96,9 +104,7 @@ impl qobject::Kichi {
                 self.as_mut().reset_shares();
                 self.as_mut().stop_task_polling();
             }
-            Err(err) => self
-                .as_mut()
-                .set_message(&format!("退出登录失败：{err}"), false),
+            Err(err) => self.as_mut().set_message(&format!("退出登录失败：{err}")),
         }
         // 退出后要立刻切回登录页
         self.as_mut().notify();
@@ -167,13 +173,14 @@ impl qobject::Kichi {
     }
 
     /// 统一更新状态类属性。
-    pub(crate) fn set_message(mut self: Pin<&mut Self>, text: &str, busy: bool) {
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.status_message = QString::from(text);
-            rust.busy = busy;
-        }
+    pub(crate) fn set_message(mut self: Pin<&mut Self>, text: &str) {
+        self.as_mut().rust_mut().status_message = QString::from(text);
         self.as_mut().notify();
+    }
+
+    /// 清掉临时提醒；底栏随后自动回到当前页面 / 目录上下文。
+    pub fn clear_status_message(mut self: Pin<&mut Self>) {
+        self.as_mut().set_message("");
     }
 
     fn set_captcha(mut self: Pin<&mut Self>, url: Option<&str>) {
@@ -181,7 +188,7 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.captcha_required = true;
             rust.captcha_url = url.unwrap_or_default().to_owned();
-            rust.busy = false;
+            rust.login_running = false;
         }
         self.as_mut().notify();
     }
@@ -193,8 +200,9 @@ impl qobject::Kichi {
             rust.auth_state = QString::from("signedIn");
             rust.captcha_required = false;
             rust.captcha_url.clear();
-            rust.status_message = QString::from("登录成功，正在同步账号信息……");
-            rust.busy = true;
+            rust.status_message = QString::default();
+            rust.login_running = false;
+            rust.session_restoring = false;
         }
         self.as_mut().notify();
         self.as_mut().refresh_identity_and_quota();
@@ -212,7 +220,7 @@ impl qobject::Kichi {
                     ),
                     None => "验证令牌已过期，请重新提交登录".to_owned(),
                 };
-                self.as_mut().set_message(&message, false);
+                self.as_mut().set_message(&message);
                 self.as_mut().set_captcha(url.as_deref());
             }
             Failure::Auth(reason) => {
@@ -220,17 +228,16 @@ impl qobject::Kichi {
                     let mut rust = self.as_mut().rust_mut();
                     rust.auth_state = QString::from("expired");
                     rust.status_message = QString::from(format!("登录状态失效：{reason}").as_str());
-                    rust.busy = false;
                 }
                 self.as_mut().notify();
             }
             limited @ Failure::RateLimited { .. } => {
                 // 配额/限速要解释清楚，否则用户会以为客户端坏了
                 let text = crate::session::rate_limit_text(&limited);
-                self.as_mut().set_message(&text, false);
+                self.as_mut().set_message(&text);
                 self.as_mut().notify_rate_limited(&text);
             }
-            other => self.as_mut().set_message(&other.to_string(), false),
+            other => self.as_mut().set_message(&other.to_string()),
         }
     }
 
@@ -260,11 +267,7 @@ impl qobject::Kichi {
             rust.quota_ratio = ratio;
             rust.quota_vip = quota.vip;
         }
-        let vip = if quota.vip { "会员" } else { "免费账号" };
-        self.as_mut().set_message(
-            &format!("账号信息已同步：{vip} · 已用 {used} / {limit}"),
-            false,
-        );
+        self.as_mut().notify();
     }
 
     /// 后台刷新身份与容量（身份失败不阻断容量）。
@@ -289,7 +292,7 @@ impl qobject::Kichi {
                     // 身份查询失败只提示，不影响容量
                     Err(err) => qichi
                         .as_mut()
-                        .set_message(&format!("账号信息获取失败：{err}"), false),
+                        .set_message(&format!("账号信息获取失败：{err}")),
                 }
                 match quota {
                     Ok(quota) => qichi.as_mut().on_quota(quota),
@@ -307,10 +310,21 @@ where
     T: Send + 'static,
     D: FnOnce(Pin<&mut qobject::Kichi>, Result<T, Failure>) + Send + 'static,
 {
+    // 线程可能根本没起来。把回调放在共享槽里，成功启动时由线程取走，
+    // 启动失败时由主线程取走并立即回投错误，避免界面永远停在「正在……」。
+    let done_slot = std::sync::Arc::new(Mutex::new(Some(done)));
+    let done_for_thread = std::sync::Arc::clone(&done_slot);
     let spawned = std::thread::Builder::new()
         .name("kichi-net".into())
         .spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let done = done_for_thread
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            let Some(done) = done else {
+                return;
+            };
             enqueue(Box::new(
                 move |mut qichi: Pin<&mut qobject::Kichi>| match outcome {
                     Ok(result) => done(qichi.as_mut(), result),
@@ -323,6 +337,16 @@ where
         });
     if let Err(err) = spawned {
         eprintln!("[kichi] 无法创建网络线程：{err}");
+        let done = done_slot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .take();
+        if let Some(done) = done {
+            let reason = format!("无法创建后台线程：{err}");
+            enqueue(Box::new(move |mut qichi: Pin<&mut qobject::Kichi>| {
+                done(qichi.as_mut(), Err(Failure::Other(reason)));
+            }));
+        }
     }
 }
 

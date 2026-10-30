@@ -150,6 +150,7 @@ QtObject {
     function refreshFiles() {
         if (!ctl.backend)
             return
+        ctl.backend.clearStatusMessage()
         rememberScroll()
         restoreScrollPending = true
         ctl.backend.refreshFiles()

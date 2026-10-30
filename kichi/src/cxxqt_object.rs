@@ -37,7 +37,8 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(QString, auth_state, cxx_name = "authState", READ, NOTIFY = changed)]
         #[qproperty(QString, status_message, cxx_name = "statusMessage", READ, NOTIFY = changed)]
-        #[qproperty(bool, busy, READ, NOTIFY = changed)]
+        /// 登录请求在途：只给登录页用，后台任务不得修改
+        #[qproperty(bool, login_running, cxx_name = "loginRunning", READ, NOTIFY = changed)]
         #[qproperty(QString, account, READ, NOTIFY = changed)]
         #[qproperty(QString, quota_used_text, cxx_name = "quotaUsed", READ, NOTIFY = changed)]
         #[qproperty(QString, quota_limit_text, cxx_name = "quotaLimit", READ, NOTIFY = changed)]
@@ -48,6 +49,8 @@ pub mod qobject {
         #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
         /// 当前目录 id（根为空串）：界面按它记忆 / 恢复滚动位置
         #[qproperty(QString, current_dir_id, cxx_name = "currentDirId", READ, NOTIFY = changed)]
+        /// 目录列表请求在途：文件页自己的加载态
+        #[qproperty(bool, listing, cxx_name = "filesLoading", READ, NOTIFY = changed)]
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
         #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
@@ -186,6 +189,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "warmUp"]
         fn warm_up(self: Pin<&mut Self>);
+
+        /// 用户切换页面 / 目录时清掉上一条提醒，让底栏回到页面上下文。
+        #[qinvokable]
+        #[cxx_name = "clearStatusMessage"]
+        fn clear_status_message(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "pump"]
@@ -596,7 +604,8 @@ use files::Crumb;
 pub struct KichiRust {
     pub(crate) auth_state: QString,
     pub(crate) status_message: QString,
-    pub(crate) busy: bool,
+    pub(crate) login_running: bool,
+    pub(crate) session_restoring: bool,
     pub(crate) captcha_required: bool,
     pub(crate) account: QString,
     pub(crate) quota_used_text: QString,
@@ -804,7 +813,8 @@ impl Default for KichiRust {
         let mut object = Self {
             auth_state: QString::from("signedOut"),
             status_message: QString::default(),
-            busy: false,
+            login_running: false,
+            session_restoring: false,
             captcha_required: false,
             account: QString::default(),
             quota_used_text: QString::default(),
@@ -1018,7 +1028,7 @@ impl KichiRust {
         let state = self.backend.state();
         self.auth_state = QString::from(actions::state_name(state));
         if state == State::SignedIn {
-            self.busy = true;
+            self.session_restoring = true;
             self.status_message = QString::from("正在恢复会话……");
             return;
         }

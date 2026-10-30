@@ -140,7 +140,7 @@ impl qobject::Kichi {
                             rust.share_created_pass_code = QString::from(share.pass_code.as_str());
                             rust.share_created_expiration =
                                 QString::from(expiration_label(days).as_str());
-                            rust.status_message = QString::from(message.as_str());
+                            rust.status_message = QString::default();
                         }
                         qichi.as_mut().notify();
                         qichi.as_mut().share_action_done(
@@ -233,7 +233,6 @@ impl qobject::Kichi {
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
                 .then_with(|| a.share_id.cmp(&b.share_id))
         });
-        let count = shares.len();
         let mut list = QVariantList::default();
         for share in &shares {
             list.append(QVariant::from(&share_map(share)));
@@ -243,11 +242,6 @@ impl qobject::Kichi {
             rust.shares = list;
             rust.shares_loading = false;
             rust.share_refresh_at = Some(Instant::now());
-            rust.status_message = QString::from(if count == 0 {
-                "暂无分享链接".to_owned()
-            } else {
-                format!("分享链接 {count} 条")
-            });
         }
         self.as_mut().notify();
     }
@@ -256,7 +250,7 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.share_action_running = false;
-            rust.status_message = QString::from(message);
+            rust.status_message = QString::default();
         }
         self.as_mut().notify();
         self.as_mut()

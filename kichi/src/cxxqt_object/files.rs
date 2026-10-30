@@ -54,8 +54,7 @@ impl qobject::Kichi {
             rust.list_epoch = rust.list_epoch.wrapping_add(1);
             rust.list_epoch
         };
-        self.as_mut()
-            .set_message(&format!("正在读取「{}」……", current.name), true);
+        self.as_mut().notify();
 
         run_in_background(
             move || session.list_dir(parent_id.as_deref()),
@@ -104,9 +103,10 @@ impl qobject::Kichi {
             .map(|entry| entry.name.clone());
         let Some(name) = found else {
             self.as_mut()
-                .set_message("该文件夹已不在当前列表中，请刷新后重试", false);
+                .set_message("该文件夹已不在当前列表中，请刷新后重试");
             return;
         };
+        self.as_mut().clear_status_message();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.crumb_backup = Some(rust.crumbs.clone());
@@ -134,6 +134,7 @@ impl qobject::Kichi {
         if !moved {
             return;
         }
+        self.as_mut().clear_status_message();
         self.as_mut().sync_breadcrumb();
         self.as_mut().refresh_files();
     }
@@ -148,6 +149,7 @@ impl qobject::Kichi {
         if len < 2 || target + 1 >= len {
             return;
         }
+        self.as_mut().clear_status_message();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.crumb_backup = Some(rust.crumbs.clone());
@@ -195,29 +197,18 @@ impl qobject::Kichi {
         self.as_mut().sync_breadcrumb();
     }
 
-    /// 把列表与状态写回属性（只在主线程调用）。
-    ///
-    /// 在本地筛选（搜索结果）里叫这个名字：筛选只是换一批条目展示，
-    /// 计数与状态栏文案照旧。
+    /// 把目录列表写回属性（只在主线程调用）。
     pub(crate) fn show_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
         sort_entries(&mut entries, self.sort_field, self.sort_ascending);
         let files = list_from(&entries);
-        let count = entries.len();
-        let folder = self
-            .crumbs
-            .last()
-            .map(|crumb| crumb.name.clone())
-            .unwrap_or_else(|| ROOT_NAME.to_owned());
         {
             let mut rust = self.as_mut().rust_mut();
             rust.files = files;
             rust.entries = entries;
             rust.listing = false;
-            rust.busy = false;
             // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
             rust.files_revision = rust.files_revision.wrapping_add(1);
             rust.files_stale = false;
-            rust.status_message = QString::from(format!("「{folder}」共 {count} 项"));
         }
         self.as_mut().notify();
     }

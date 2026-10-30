@@ -123,6 +123,7 @@ ApplicationWindow {
         // 第一次下载不发这个信号——不打断用户正在浏览的目录。
         // 窗口最小化 / 在托盘时照常切页，但不主动把窗口弹出来（现状）。
         function onLocateTransfer(sourceId) {
+            backend.clearStatusMessage()
             root.currentPage = 2
             transfersPage.focusSource(sourceId)
         }
@@ -164,6 +165,8 @@ ApplicationWindow {
                 backend: backend
                 currentIndex: root.currentPage
                 onPageRequested: function (index) {
+                    if (root.currentPage !== index)
+                        backend.clearStatusMessage()
                     root.currentPage = index
                 }
             }
@@ -284,7 +287,8 @@ ApplicationWindow {
                             iconName: "refresh"
                             iconSize: 14
                             iconOpacity: 0.65
-                            enabled: !filesPage.searching && !backend.busy
+                            enabled: !filesPage.searching && !backend.filesLoading
+                                     && !backend.fileActionRunning
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("刷新")
                             onClicked: filesPage.refreshFiles()
@@ -296,7 +300,7 @@ ApplicationWindow {
                             iconName: "plus"
                             iconSize: 14
                             iconOpacity: 0.65
-                            enabled: !filesPage.searching && !backend.busy
+                            enabled: !filesPage.searching && !backend.filesLoading
                                      && !backend.fileActionRunning
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("新建文件夹")
@@ -356,7 +360,6 @@ ApplicationWindow {
                         // 中间某一级读不全会截断时，最少留给它这么宽
                         // （约五个汉字：够认出是哪一层）
                         readonly property int minCrumbWidth: 76
-
                         // 量文字宽度：当前级是 DemiBold，宽度和普通级不一样，得分开量。
                         // 用 FontMetrics 的纯测宽函数，不在 plan 绑定里改 TextMetrics.text；
                         // 后者会让 plan 读到自己在计算过程中改写的依赖，触发绑定循环。
@@ -450,7 +453,8 @@ ApplicationWindow {
                                 iconName: "arrow-up"
                                 iconSize: 14
                                 iconOpacity: 0.65
-                                enabled: !backend.busy && root.crumbs.length > 1
+                                enabled: !backend.filesLoading && !backend.fileActionRunning
+                                         && root.crumbs.length > 1
                                 ToolTip.visible: hovered
                                 ToolTip.text: qsTr("上一级（回到上级目录）")
                                 onClicked: filesPage.goUp()
@@ -514,7 +518,7 @@ ApplicationWindow {
 
                                     // 加载中转圈：只跟在当前目录名后面
                                     BusyIndicator {
-                                        visible: crumb.current && backend.busy
+                                        visible: crumb.current && backend.filesLoading
                                         running: visible
                                         Layout.preferredWidth: 18
                                         Layout.preferredHeight: 18
@@ -522,6 +526,7 @@ ApplicationWindow {
                                     }
                                 }
                             }
+
                         }
                     }
 
@@ -578,14 +583,18 @@ ApplicationWindow {
         backend: backend
     }
 
-    // 状态栏：不再用 Frame（Breeze 下是一块贴底的浅色面板，像被切断的表格）。
-    // 改成与内容同底、顶部一根极浅分隔线的细条，提示文字 12px 次要色，
-    // 没有消息时整条高度为 0、不占位。
+    // 底栏：单行单槽。默认显示当前页面 / 目录上下文；进度、错误和需要留意的
+    // 结果临时覆盖它，操作结束后自动回到上下文。登录页只在本就有错误时出现。
     footer: Item {
+        id: statusBar
+
         readonly property int barHeight: 32
+        readonly property string message: backend.statusMessage
+        readonly property string shownText: message.length > 0
+                                             ? message : root.pageContextText()
 
         implicitHeight: visible ? barHeight : 0
-        visible: backend.statusMessage.length > 0
+        visible: root.signedIn || message.length > 0
 
         Rectangle {
             anchors.fill: parent
@@ -602,16 +611,17 @@ ApplicationWindow {
         }
 
         Label {
+            objectName: "statusBarLabel"
             anchors.fill: parent
             anchors.leftMargin: metrics.pageMargin
             anchors.rightMargin: metrics.pageMargin
-            text: backend.statusMessage
+            text: statusBar.shownText
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
-            color: theme.textSecondary
+            color: statusBar.message.length > 0 ? theme.textSecondary : theme.textMuted
             font.pixelSize: theme.fontMeta
-            ToolTip.visible: statusHover.hovered
-            ToolTip.text: backend.statusMessage
+            ToolTip.visible: statusHover.hovered && text.length > 0
+            ToolTip.text: statusBar.shownText
 
             HoverHandler {
                 id: statusHover
@@ -666,5 +676,63 @@ ApplicationWindow {
         if (root.currentPage === 5)
             return qsTr("设置")
         return qsTr("我的文件")
+    }
+
+    /// 底栏无提醒时显示的上下文。读取的是各页已经维护的加载态与计数，
+    /// 不另起网络请求，也不把常规刷新写进 statusMessage。
+    function pageContextText() {
+        if (!backend)
+            return ""
+        if (root.currentPage === 0) {
+            if (backend.searchActive) {
+                if (!backend.searchSettled) {
+                    return qsTr("全盘搜索 · 已扫 %1 条，命中 %2 条")
+                            .arg(backend.searchScanned)
+                            .arg(backend.searchHits)
+                }
+                return qsTr("搜索「%1」· 命中 %2 条")
+                        .arg(backend.searchQuery)
+                        .arg(backend.searchHits)
+            }
+            const folder = root.crumbs.length > 0
+                    ? root.crumbs[root.crumbs.length - 1] : qsTr("全部文件")
+            if (backend.filesLoading)
+                return qsTr("正在读取「%1」…").arg(folder)
+            return qsTr("%1 · 共 %2 项").arg(folder).arg(backend.files.length)
+        }
+        if (root.currentPage === 1) {
+            if (backend.sharesLoading)
+                return qsTr("分享 · 正在读取…")
+            return qsTr("分享 · 共 %1 条").arg(backend.shares.length)
+        }
+        if (root.currentPage === 2) {
+            const active = transfersPage.activeCount
+            const queued = transfersPage.queuedCount
+            const paused = transfersPage.pausedCount
+            if (active + queued + paused === 0)
+                return qsTr("传输任务 · 暂无进行中的任务")
+            return qsTr("传输任务 · %1").arg(transfersPage.statusText)
+        }
+        if (root.currentPage === 3) {
+            if (backend.tasksLoading)
+                return qsTr("离线任务 · 正在读取…")
+            const count = backend.tasks.length
+            const active = tasksPage.activeCount
+            if (active > 0) {
+                return qsTr("离线任务 · 共 %1 条，%2 条进行中")
+                        .arg(count)
+                        .arg(active)
+            }
+            return qsTr("离线任务 · 共 %1 条").arg(count)
+        }
+        if (root.currentPage === 4) {
+            if (backend.trashLoading
+                    || (!backend.trashLoaded && backend.trashError.length === 0))
+                return qsTr("回收站 · 正在读取…")
+            if (!backend.trashLoaded && backend.trashError.length > 0)
+                return qsTr("回收站 · 读取失败")
+            return qsTr("回收站 · 共 %1 项").arg(backend.trashFiles.length)
+        }
+        return qsTr("设置")
     }
 }

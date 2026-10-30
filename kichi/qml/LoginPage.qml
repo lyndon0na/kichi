@@ -68,7 +68,7 @@ Item {
                     id: userField
                     placeholderText: qsTr("邮箱或手机号")
                     Layout.fillWidth: true
-                    enabled: page.backend && !page.backend.busy
+                    enabled: page.backend && !page.backend.loginRunning
                     inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 }
 
@@ -77,7 +77,7 @@ Item {
                     placeholderText: qsTr("密码")
                     echoMode: TextInput.Password
                     Layout.fillWidth: true
-                    enabled: page.backend && !page.backend.busy
+                    enabled: page.backend && !page.backend.loginRunning
                     onAccepted: page.submit()
                 }
 
@@ -132,12 +132,12 @@ Item {
                 }
 
                 KButton {
-                    text: page.backend && page.backend.busy ? qsTr("正在登录……") : qsTr("登录")
+                    text: page.backend && page.backend.loginRunning ? qsTr("正在登录……") : qsTr("登录")
                     variant: "primary"
                     implicitHeight: 38
                     Layout.fillWidth: true
                     Layout.topMargin: theme.gapXs
-                    enabled: page.backend !== null && !page.backend.busy
+                    enabled: page.backend !== null && !page.backend.loginRunning
                              && userField.text.length > 0 && passField.text.length > 0
                     onClicked: page.submit()
                 }
@@ -156,7 +156,7 @@ Item {
     }
 
     function submit() {
-        if (!backend || backend.busy) return
+        if (!backend || backend.loginRunning) return
         backend.login(userField.text, passField.text, captchaField.text)
     }
 }

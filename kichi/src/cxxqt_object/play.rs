@@ -9,7 +9,7 @@
 //! 等待过程有提示条（`qml/PlayToast.qml`）：取链 + 等 mpv 窗口出现期间
 //! `playLoading` 为真，提示条上的「取消」调 `cancelPlayLoading`；
 //! 出窗口 / 失败 / 取消时收起。
-//! 底栏（`statusMessage`）不参与加载提示——它只留给其它后台任务。
+//! 底栏（`statusMessage`）不参与加载提示；无提醒时它显示当前页面上下文。
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -49,7 +49,7 @@ impl qobject::Kichi {
         let id = id.to_string();
         let Some(name): Option<String> = self.as_ref().rust().entry_name(&id) else {
             self.as_mut()
-                .set_message("该文件已不在当前列表中，请刷新后重试", false);
+                .set_message("该文件已不在当前列表中，请刷新后重试");
             return;
         };
         // 新的播放取消上一次「还在加载」的那次（已在播放的 mpv 不受影响）：
@@ -82,8 +82,7 @@ impl qobject::Kichi {
             // 上一个请求可能还在途：它已被 epoch 作废，这里把等待标记一并清掉，
             // 否则菜单开着期间 cancel_play 会被误当成「正在取直链」而拒绝关闭
             rust.play_pending = false;
-            rust.busy = false;
-            rust.status_message = QString::from(format!("「{name}」请选择清晰度").as_str());
+            rust.status_message = QString::default();
         }
         self.as_mut().notify();
     }
@@ -97,8 +96,7 @@ impl qobject::Kichi {
             return;
         };
         if self.as_ref().rust().play_target().is_none() {
-            self.as_mut()
-                .set_message("播放选项已过期，请重新点播放", false);
+            self.as_mut().set_message("播放选项已过期，请重新点播放");
             return;
         }
         let name = self.play_title.to_string();
@@ -131,9 +129,8 @@ impl qobject::Kichi {
             rust.play_error = QString::default();
             rust.play_notice = QString::default();
             rust.play_cancel = Some(cancel.clone());
-            // 加载态走提示条：底栏立即清空（别的后台任务仍可写它）
+            // 加载态走提示条：清掉旧提醒，底栏回到页面上下文。
             rust.status_message = QString::default();
-            rust.busy = false;
         }
         self.as_mut().notify();
 
@@ -243,7 +240,7 @@ impl qobject::Kichi {
         };
         let title = player::title_for(&option, name);
         // 回退过就在提示条里说清楚实际播的是哪一档，别让用户以为自己看到的是那档
-        // （ADR 0003：不静默替换；底栏始终为空）
+        // （ADR 0003：不静默替换；说明走提示条，底栏保持页面上下文）
         let notice = super::play_subtitles::combine_notes(
             note.map(|note| format!("「{name}」没有{note}，已播放{}", option.label)),
             subtitle_note,
@@ -328,9 +325,8 @@ impl qobject::Kichi {
                     rust.play_cancel = None;
                     rust.play_error = QString::default();
                     rust.play_notice = QString::from(notice.as_str());
-                    // 成功后清空底栏：不常驻「已用 … 播放…」
+                    // 成功后清掉旧提醒：不常驻「已用 … 播放…」
                     rust.status_message = QString::default();
-                    rust.busy = false;
                 }
                 self.finish_play();
             }

@@ -354,7 +354,7 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("这个文件夹是空的")
                 color: palette.placeholderText
-                visible: !page.searching && page.backend !== null && !page.backend.busy
+                visible: !page.searching && page.backend !== null && !page.backend.filesLoading
                          && page.backend.files.length === 0
             }
 

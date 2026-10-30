@@ -67,7 +67,7 @@ impl qobject::Kichi {
     pub fn untrash_entries(mut self: Pin<&mut Self>, ids: QStringList) {
         let ids = clean_ids(ids);
         if ids.is_empty() {
-            self.as_mut().set_message("没有选中要还原的条目", false);
+            self.as_mut().set_message("没有选中要还原的条目");
             return;
         }
         self.as_mut()
@@ -78,7 +78,7 @@ impl qobject::Kichi {
     pub fn delete_trash_entries(mut self: Pin<&mut Self>, ids: QStringList) {
         let ids = clean_ids(ids);
         if ids.is_empty() {
-            self.as_mut().set_message("没有选中要彻底删除的条目", false);
+            self.as_mut().set_message("没有选中要彻底删除的条目");
             return;
         }
         self.as_mut()
@@ -88,13 +88,12 @@ impl qobject::Kichi {
     /// 调用官方 `trash:empty` 一次性清空当前账号的回收站。
     pub fn clear_trash(mut self: Pin<&mut Self>) {
         if !self.trash_loaded {
-            self.as_mut()
-                .set_message("回收站还没读取完成，请稍后再试", false);
+            self.as_mut().set_message("回收站还没读取完成，请稍后再试");
             return;
         }
         let total = self.trash_list.len();
         if total == 0 {
-            self.as_mut().set_message("回收站已经是空的", false);
+            self.as_mut().set_message("回收站已经是空的");
             return;
         }
         if !self.as_mut().begin_file_action() {
@@ -111,7 +110,7 @@ impl qobject::Kichi {
             });
         }
         self.as_mut()
-            .set_message(&TrashActionKind::Clear.progress(0, total), true);
+            .set_message(&TrashActionKind::Clear.progress(0, total));
 
         let session = self.backend.session.clone();
         run_in_background(
@@ -176,8 +175,7 @@ impl qobject::Kichi {
             let next_done = state.completed + chunk.len();
             (state.kind, chunk, state.total, completed, next_done)
         };
-        self.as_mut()
-            .set_message(&kind.progress(completed, total), true);
+        self.as_mut().set_message(&kind.progress(completed, total));
 
         let session = self.backend.session.clone();
         run_in_background(
@@ -239,6 +237,7 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.trash_action = None;
             rust.file_action_running = false;
+            rust.status_message = QString::default();
             if kind == TrashActionKind::Restore {
                 rust.files_stale = true;
             }
@@ -248,7 +247,7 @@ impl qobject::Kichi {
             true,
             QString::from(message.as_str()),
         );
-        self.as_mut().refresh_trash_with_status(Some(message));
+        self.as_mut().refresh_trash_with_status(None);
     }
 
     fn finish_trash_failure(
@@ -276,7 +275,7 @@ impl qobject::Kichi {
         } else {
             format!("{}失败：{reason}", kind.label())
         };
-        self.as_mut().set_message(&message, false);
+        self.as_mut().set_message(&message);
         self.as_mut().file_action_done(
             QString::from(kind.action_name()),
             false,

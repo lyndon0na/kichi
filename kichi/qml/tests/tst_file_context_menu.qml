@@ -19,7 +19,7 @@ TestCase {
 
     QtObject {
         id: backend
-        property bool busy: false
+        property bool filesLoading: false
         property bool fileActionRunning: false
         property bool shareActionRunning: false
         property var playMenu: []

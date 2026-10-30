@@ -119,7 +119,7 @@ impl qobject::Kichi {
         let session = self.backend.session.clone();
         let my_epoch = self.tasks_epoch;
         self.as_mut()
-            .set_message(&format!("正在提交 {count} 条离线任务……"), true);
+            .set_message(&format!("正在提交 {count} 条离线任务……"));
         run_in_background(
             move || Ok::<_, Failure>(submit(&session, &urls)),
             move |mut qichi, result| {
@@ -138,7 +138,11 @@ impl qobject::Kichi {
                     qichi.as_mut().on_tasks_failure(failure);
                     return;
                 }
-                qichi.as_mut().set_message(&text, false);
+                if outcome.errors.is_empty() && !outcome.stopped_early {
+                    qichi.as_mut().clear_status_message();
+                } else {
+                    qichi.as_mut().set_message(&text);
+                }
                 qichi.as_mut().refresh_tasks_force();
             },
         );
@@ -152,7 +156,7 @@ impl qobject::Kichi {
         }
         let session = self.backend.session.clone();
         let my_epoch = self.tasks_epoch;
-        self.as_mut().set_message("正在删除任务……", true);
+        self.as_mut().set_message("正在删除任务……");
         run_in_background(
             move || session.delete_offline_task(&id),
             move |mut qichi, result| {
@@ -161,9 +165,7 @@ impl qobject::Kichi {
                 }
                 match result {
                     Ok(()) => {
-                        qichi
-                            .as_mut()
-                            .set_message("任务已删除（云端文件保留）", false);
+                        qichi.as_mut().set_message("任务已删除（云端文件保留）");
                         qichi.as_mut().refresh_tasks_force();
                     }
                     Err(err) => qichi.as_mut().on_tasks_failure(err),
@@ -219,7 +221,7 @@ impl qobject::Kichi {
             self.as_mut().on_failure(failure);
             return;
         }
-        self.as_mut().set_message(&failure.to_string(), false);
+        self.as_mut().set_message(&failure.to_string());
     }
 
     /// 把任务列表写回属性；`announce` 决定是否对「刚结束」的任务发系统通知。
@@ -266,8 +268,6 @@ impl qobject::Kichi {
         for task in &tasks {
             list.append(QVariant::from(&task_map(task)));
         }
-        let active = tasks.iter().filter(|t| !t.phase.is_settled()).count();
-        let total = tasks.len();
         let next_wait = next_interval(&tasks);
         {
             let mut rust = self.as_mut().rust_mut();
@@ -277,14 +277,6 @@ impl qobject::Kichi {
             rust.task_refresh_at = Some(Instant::now());
         }
         schedule_poll_wait(next_wait);
-        let summary = if total == 0 {
-            "暂无离线任务".to_owned()
-        } else if active == 0 {
-            format!("离线任务 {total} 条，均已完成")
-        } else {
-            format!("离线任务 {total} 条，{active} 条进行中")
-        };
-        self.as_mut().set_message(&summary, false);
         self.as_mut().notify();
 
         let notify_enabled = self.notify_enabled;

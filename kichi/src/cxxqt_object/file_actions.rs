@@ -4,7 +4,8 @@
 //! 这里是会改云端数据的入口，出错方式和浏览完全不同。
 //!
 //! 所有入口共享一套收尾：抢占 `file_action_running` 旗标 →
-//! 后台执行 → 主线程写状态栏并发 `fileActionDone` → 成功就整目录刷新。
+//! 后台执行 → 主线程发 `fileActionDone` → 成功就整目录刷新。
+//! 普通成功不再常驻状态栏；移入回收站例外，保留「可恢复」这一额外后果。
 
 use std::pin::Pin;
 
@@ -33,7 +34,7 @@ impl qobject::Kichi {
         let session = self.backend.session.clone();
         let for_message = name.trim().to_owned();
         self.as_mut()
-            .set_message(&format!("正在改名为「{for_message}」……"), true);
+            .set_message(&format!("正在改名为「{for_message}」……"));
         run_in_background(
             move || session.rename_entry(&id, &name),
             move |mut qichi, result| match result {
@@ -61,7 +62,7 @@ impl qobject::Kichi {
             .filter(|id| !id.is_empty());
         let session = self.backend.session.clone();
         let for_message = name.trim().to_owned();
-        self.as_mut().set_message("正在新建文件夹……", true);
+        self.as_mut().set_message("正在新建文件夹……");
         run_in_background(
             move || session.create_folder(parent_id.as_deref(), &name),
             move |mut qichi, result| match result {
@@ -90,7 +91,7 @@ impl qobject::Kichi {
         let subject = item_subject(&ids, self.as_ref().rust().entry_name(&ids[0]));
         let session = self.backend.session.clone();
         self.as_mut()
-            .set_message(&format!("正在把{subject}移入回收站……"), true);
+            .set_message(&format!("正在把{subject}移入回收站……"));
         run_in_background(
             move || {
                 let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
@@ -188,7 +189,7 @@ impl qobject::Kichi {
         let target_for_thread = target.clone();
         let target_label_for_message = target_label.clone();
         self.as_mut()
-            .set_message(&format!("正在{verb}{subject}到「{target_label}」……"), true);
+            .set_message(&format!("正在{verb}{subject}到「{target_label}」……"));
         run_in_background(
             move || {
                 let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
@@ -237,7 +238,11 @@ impl qobject::Kichi {
     /// 结束一次文件操作。
     fn end_file_action(mut self: Pin<&mut Self>, action: &str, message: &str) {
         self.as_mut().rust_mut().file_action_running = false;
-        self.as_mut().set_message(message, false);
+        if action == "trash" {
+            self.as_mut().set_message(message);
+        } else {
+            self.as_mut().clear_status_message();
+        }
         self.as_mut()
             .file_action_done(QString::from(action), true, QString::from(message));
     }

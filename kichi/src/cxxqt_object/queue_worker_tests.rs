@@ -1,4 +1,4 @@
-//! `queue_worker.rs` 的单元测试：进度节流、批次结束的通知与状态栏、建目录。
+//! `queue_worker.rs` 的单元测试：进度节流、批次结束通知、建目录。
 //!
 //! 下载循环本身要真实会话，属于 `live_tests` 的范围；目录遍历的边界在
 //! `queue_collect_tests.rs`；显示路径的测试在 `transfers_tests.rs`。
@@ -95,66 +95,6 @@ fn empty_folder_is_a_success_without_a_notice() {
     assert!(
         end_notice(&report, &BatchEnd::Completed).is_none(),
         "空文件夹建完就完了，不值得弹系统通知"
-    );
-}
-
-#[test]
-fn empty_folder_status_says_what_was_created() {
-    let report = report_with("空文件夹", true, 0, 0, 0, true, None);
-    assert_eq!(
-        status_text(&report, &BatchEnd::Completed).as_deref(),
-        Some("已创建空文件夹：空文件夹")
-    );
-}
-
-#[test]
-fn completed_status_mentions_skipped_directories() {
-    let report = report_with("剧集", true, 12, 0, 3, false, None);
-    assert_eq!(
-        status_text(&report, &BatchEnd::Completed).as_deref(),
-        Some("下载完成：12 个文件（跳过 3 个目录）")
-    );
-
-    let clean = report_with("剧集", true, 12, 0, 0, false, None);
-    assert_eq!(
-        status_text(&clean, &BatchEnd::Completed).as_deref(),
-        Some("下载完成：12 个文件"),
-        "没有跳过时不写后缀"
-    );
-}
-
-#[test]
-fn failed_and_partial_batches_stay_out_of_the_status_bar() {
-    let partial = report_with("剧集", true, 10, 2, 1, false, Some("断网"));
-    assert_eq!(status_text(&partial, &BatchEnd::Completed), None);
-
-    let failed = report_with("剧集", true, 0, 5, 0, false, Some("断网"));
-    assert_eq!(status_text(&failed, &BatchEnd::Completed), None);
-
-    let dir_failed = BatchEnd::Failed("创建下载目录失败".to_owned());
-    assert_eq!(status_text(&partial, &dir_failed), None);
-    assert_eq!(status_text(&partial, &BatchEnd::Interrupted), None);
-
-    assert_eq!(
-        status_text(&partial, &BatchEnd::Cancelled).as_deref(),
-        Some("下载已取消（已完成 10 个，失败 2 个）")
-    );
-}
-
-#[test]
-fn completed_batch_reports_individually_cancelled_children() {
-    let mut mixed = report_with("剧集", true, 3, 0, 1, false, None);
-    mixed.cancelled = 2;
-    assert_eq!(
-        status_text(&mixed, &BatchEnd::Completed).as_deref(),
-        Some("下载结束：完成 3 个，取消 2 个（跳过 1 个目录）")
-    );
-
-    let mut all_cancelled = report_with("剧集", true, 0, 0, 0, false, None);
-    all_cancelled.cancelled = 4;
-    assert_eq!(
-        status_text(&all_cancelled, &BatchEnd::Completed).as_deref(),
-        Some("下载已取消：4 个文件")
     );
 }
 

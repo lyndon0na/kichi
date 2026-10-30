@@ -19,7 +19,7 @@ TestCase {
         property var files: []
         property string fileView: "list"
         property bool searchActive: false
-        property bool busy: false
+        property bool filesLoading: false
         property bool filesStale: false
         property int filesRevision: 1
         property string currentDirId: ""
@@ -58,6 +58,7 @@ TestCase {
         function openDir(id) {}
         function openParent() {}
         function openCrumb(index) {}
+        function clearStatusMessage() {}
         function refreshFiles() {}
         function exitSearch() {}
         function searchLocal(text) {}

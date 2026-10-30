@@ -70,7 +70,8 @@ Item {
         MenuItem {
             text: qsTr("播放（mpv）")
             visible: root.targetPlayable && root.targetCount === 1
-            enabled: root.backend !== null && !root.backend.busy
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
                      && root.backend.playMenu.length === 0
             onTriggered: {
                 // targetPoint 已经是窗口坐标，直接交给清晰度菜单
@@ -169,7 +170,8 @@ Item {
 
         MenuItem {
             text: qsTr("刷新")
-            enabled: root.backend !== null && !root.backend.busy
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
             onTriggered: root.refreshRequested()
         }
     }

@@ -66,7 +66,7 @@ impl qobject::Kichi {
             rust.trash_epoch = rust.trash_epoch.wrapping_add(1);
             rust.trash_epoch
         };
-        self.as_mut().set_message("正在读取回收站……", true);
+        self.as_mut().notify();
 
         run_in_background(
             move || session.list_trash(),
@@ -77,15 +77,7 @@ impl qobject::Kichi {
                 match result {
                     Ok(mut entries) => {
                         sort_trash_entries(&mut entries);
-                        let count = entries.len();
                         let files = trash_list_from(&entries);
-                        let status = final_status.unwrap_or_else(|| {
-                            if count == 0 {
-                                "回收站为空".to_owned()
-                            } else {
-                                format!("回收站共 {count} 项")
-                            }
-                        });
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.trash_rows = files;
@@ -94,8 +86,9 @@ impl qobject::Kichi {
                             rust.trash_loaded = true;
                             rust.trash_error = QString::default();
                             rust.trash_revision = rust.trash_revision.wrapping_add(1);
-                            rust.busy = false;
-                            rust.status_message = QString::from(status.as_str());
+                            if let Some(status) = final_status {
+                                rust.status_message = QString::from(status.as_str());
+                            }
                         }
                         qichi.as_mut().notify();
                     }

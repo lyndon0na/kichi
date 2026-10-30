@@ -24,7 +24,7 @@ pub(crate) fn spawn(path: PathBuf) -> std::io::Result<()> {
         .spawn(move || {
             if let Outcome::Message(text) = reveal(&path) {
                 super::actions::enqueue_ui(move |mut kichi| {
-                    kichi.as_mut().set_message(&text, false);
+                    kichi.as_mut().set_message(&text);
                 });
             }
         })

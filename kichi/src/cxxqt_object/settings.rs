@@ -26,7 +26,7 @@ impl qobject::Kichi {
         let command = command.to_string();
         let args = args.to_string();
         if let Err(reason) = validate_player(&command) {
-            self.as_mut().set_message(&reason, false);
+            self.as_mut().set_message(&reason);
             return;
         }
         self.as_mut().update_settings(|settings| {
@@ -70,7 +70,6 @@ impl qobject::Kichi {
             }
             self.as_mut().set_message(
                 "系统托盘不可用（当前桌面没有托盘或 D-Bus 不支持），「关闭到托盘」已保持关闭",
-                false,
             );
             self.as_mut().update_settings(|settings| {
                 settings.close_to_tray = false;
@@ -147,8 +146,7 @@ impl qobject::Kichi {
         let path = path.to_string();
         let trimmed = path.trim().to_owned();
         if trimmed.chars().any(|c| c.is_control()) {
-            self.as_mut()
-                .set_message("下载目录里不能有换行或控制字符", false);
+            self.as_mut().set_message("下载目录里不能有换行或控制字符");
             return;
         }
         self.as_mut().update_settings(|settings| {
@@ -217,20 +215,20 @@ impl qobject::Kichi {
                             path.display()
                         );
                         super::actions::enqueue_ui(move |mut kichi| {
-                            kichi.as_mut().set_message(&reason, false);
+                            kichi.as_mut().set_message(&reason);
                         });
                     }
                 },
                 Ok(None) => {}
                 Err(reason) => {
                     super::actions::enqueue_ui(move |mut kichi| {
-                        kichi.as_mut().set_message(&reason, false);
+                        kichi.as_mut().set_message(&reason);
                     });
                 }
             });
         if let Err(err) = spawned {
             self.as_mut()
-                .set_message(&format!("无法启动系统目录选择器：{err}"), false);
+                .set_message(&format!("无法启动系统目录选择器：{err}"));
         }
     }
 
@@ -246,8 +244,7 @@ impl qobject::Kichi {
         let outcome = settings::save(&path, &snapshot);
         self.as_mut().notify();
         if let Err(err) = outcome {
-            self.as_mut()
-                .set_message(&format!("设置未能保存：{err}"), false);
+            self.as_mut().set_message(&format!("设置未能保存：{err}"));
         }
     }
 

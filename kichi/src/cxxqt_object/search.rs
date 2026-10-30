@@ -87,7 +87,7 @@ impl qobject::Kichi {
         let query = self.search_query.to_string().trim().to_owned();
         if query.is_empty() {
             self.as_mut()
-                .set_message("先输入关键词，再按回车或点搜索按钮", false);
+                .set_message("先输入关键词，再按回车或点搜索按钮");
             return;
         }
         if !self.search_settled {
@@ -111,6 +111,9 @@ impl qobject::Kichi {
             rust.search_index.clear();
             rust.search_truncated = false;
             rust.search_status = QString::from("正在扫描网盘……");
+            // 底栏不承担扫描进度；清掉上一轮筛选/校验留下的文案，避免看起来
+            // 像当前扫描还在沿用旧状态。
+            rust.status_message = QString::default();
             rust.search_epoch
         };
         self.as_mut().notify();
@@ -131,7 +134,7 @@ impl qobject::Kichi {
             eprintln!("[kichi] 无法创建搜索线程：{err}");
             self.as_mut().finish_scan(ScanEnd::Stopped);
             self.as_mut()
-                .set_message("无法创建搜索线程，全盘搜索没有开始", false);
+                .set_message("无法创建搜索线程，全盘搜索没有开始");
         }
     }
 
@@ -154,6 +157,7 @@ impl qobject::Kichi {
 
     /// 退出搜索视图，回到当前目录。
     pub fn exit_search(mut self: Pin<&mut Self>) {
+        self.as_mut().clear_status_message();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.search_epoch = rust.search_epoch.wrapping_add(1);
@@ -183,7 +187,7 @@ impl qobject::Kichi {
     pub fn search_open_folder(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         let Some(hit) = self.search_index.get(&id).cloned() else {
-            self.as_mut().set_message("该结果已过期，请重新搜索", false);
+            self.as_mut().set_message("该结果已过期，请重新搜索");
             return;
         };
         self.as_mut().navigate_to_folder(&hit);
@@ -243,12 +247,13 @@ impl qobject::Kichi {
     /// 清掉搜索状态并进入 `folder`（文件夹要么来自结果清单，要么是临时构造的）。
     fn navigate_to_folder(mut self: Pin<&mut Self>, folder: &SearchHit) {
         if folder.entry.kind != EntryKind::Folder {
-            self.as_mut().set_message("这不是文件夹，无法进入", false);
+            self.as_mut().set_message("这不是文件夹，无法进入");
             return;
         }
         if self.listing {
             return;
         }
+        self.as_mut().clear_status_message();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.search_epoch = rust.search_epoch.wrapping_add(1);
@@ -280,7 +285,7 @@ impl qobject::Kichi {
         self.as_mut().refresh_files();
     }
 
-    /// 本地筛选的结果直接当列表显示（状态栏文案由调用方给）。
+    /// 本地筛选的结果直接当列表显示；搜索状态在页面状态行 / 底栏上下文表达。
     fn apply_local_filter(mut self: Pin<&mut Self>, entries: Vec<FileEntry>, status: &str) {
         let folder = self
             .crumbs
@@ -303,8 +308,7 @@ impl qobject::Kichi {
             rust.search_displayed = count;
             rust.search_results = filtered;
             rust.search_status = QString::from(status);
-            rust.status_message = QString::from(format!("「{folder}」：{status}").as_str());
-            rust.busy = false;
+            rust.status_message = QString::default();
         }
         self.as_mut().notify();
     }
@@ -382,10 +386,8 @@ impl qobject::Kichi {
         if !self.search_active {
             return;
         }
-        self.as_mut().set_message(
-            "搜索结果按扫描到的先后排列，不受目录排序影响；排序按钮只作用于当前目录",
-            false,
-        );
+        self.as_mut()
+            .set_message("搜索结果按扫描到的先后排列，不受目录排序影响；排序按钮只作用于当前目录");
     }
 }
 
@@ -469,7 +471,7 @@ fn post_finished(epoch: u64, outcome: Result<ScanEnd, Failure>, cancelled: bool)
                 } else {
                     qichi
                         .as_mut()
-                        .set_message(&format!("全盘搜索中断：{reason}"), false);
+                        .set_message(&format!("全盘搜索中断：{reason}"));
                 }
             }
         }

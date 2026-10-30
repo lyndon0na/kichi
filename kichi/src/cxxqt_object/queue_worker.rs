@@ -417,7 +417,7 @@ fn post_live() {
     );
 }
 
-/// 一批结束的四种去向（决定通知文案与状态栏）。
+/// 一批结束的几种去向（决定通知文案）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BatchEnd {
     Completed,
@@ -428,10 +428,10 @@ enum BatchEnd {
     Failed(String),
 }
 
-/// 整批结束：释放占用、最多发一条通知、给状态栏收尾，然后推进下一批。
+/// 整批结束：释放占用、最多发一条通知、清掉进度文案，然后推进下一批。
 ///
 /// 通知开关在这里（主线程）读，用户中途改也能生效。`my_epoch` 与当前代数
-/// 不一致时说明期间退出过登录：不碰记录 / 通知 / 状态栏（那些已属于上个会话），
+/// 不一致时说明期间退出过登录：不碰记录 / 通知 / 底栏（那些已属于上个会话），
 /// 但**必须还回调度槽**——旧线程真正退出后，新会话排队的批次才能开始。
 fn post_finished(batch: u64, end: BatchEnd, my_epoch: u64) {
     super::actions::enqueue_ui(
@@ -458,51 +458,11 @@ fn post_finished(batch: u64, end: BatchEnd, my_epoch: u64) {
                     super::notifications::show_notice(&notice);
                 }
             }
-            // 状态栏文案由纯函数决定：空文件夹 = 完成，失败 / 中断不进状态栏
-            match status_text(&report, &end) {
-                Some(text) => qichi.as_mut().set_message(&text, false),
-                None => qichi.as_mut().set_message("", false),
-            }
+            // 下载批次结束不常驻底栏：结果在传输页 / 系统通知里，底栏回到页面上下文。
+            qichi.as_mut().clear_status_message();
             qichi.as_mut().advance_downloads();
         },
     );
-}
-
-/// 批次结束 → 状态栏文案（`None` = 清空，失败 / 中断不留旧文案）。
-fn status_text(report: &BatchReport, end: &BatchEnd) -> Option<String> {
-    match end {
-        BatchEnd::Cancelled => Some(format!(
-            "下载已取消（已完成 {} 个，失败 {} 个）",
-            report.done, report.failed
-        )),
-        BatchEnd::Paused => Some(format!("下载已暂停：{}", report.name)),
-        BatchEnd::Completed if report.empty_folder => {
-            Some(format!("已创建空文件夹：{}", report.name))
-        }
-        BatchEnd::Completed if report.failed > 0 => None,
-        BatchEnd::Completed if report.cancelled > 0 && report.done > 0 => {
-            let mut text = format!(
-                "下载结束：完成 {} 个，取消 {} 个",
-                report.done, report.cancelled
-            );
-            if report.skipped > 0 {
-                text.push_str(&format!("（跳过 {} 个目录）", report.skipped));
-            }
-            Some(text)
-        }
-        BatchEnd::Completed if report.cancelled > 0 => {
-            Some(format!("下载已取消：{} 个文件", report.cancelled))
-        }
-        BatchEnd::Completed if report.done > 0 && report.failed == 0 => {
-            let mut text = format!("下载完成：{} 个文件", report.done);
-            if report.skipped > 0 {
-                text.push_str(&format!("（跳过 {} 个目录）", report.skipped));
-            }
-            Some(text)
-        }
-        // 失败 / 中断 / 部分失败按用户选择不留在状态栏
-        _ => None,
-    }
 }
 
 /// 批次结束 → 一条通知；取消与空文件夹不弹。
