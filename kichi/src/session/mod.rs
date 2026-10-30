@@ -7,6 +7,7 @@
 pub mod download;
 mod download_naming;
 mod download_resume;
+pub(crate) mod limits;
 pub mod media;
 pub mod partials;
 pub mod paths;
@@ -17,6 +18,7 @@ mod store;
 pub mod subtitle_cache;
 pub mod subtitles;
 mod tasks;
+mod throttle;
 pub mod thumbnail_cache;
 
 mod client_cache;

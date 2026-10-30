@@ -10,6 +10,7 @@ RowLayout {
 
     readonly property int activeCount: target ? target.activeCount : 0
     readonly property int queuedCount: target ? target.queuedCount : 0
+    readonly property int pausedCount: target ? target.pausedCount : 0
     readonly property bool hasFinished: target ? target.hasFinished : false
     readonly property bool backendReady: target !== null && target.backend !== null
 
@@ -22,7 +23,7 @@ RowLayout {
         Layout.fillWidth: true
         Layout.alignment: Qt.AlignVCenter
         text: root.target ? root.target.statusText : ""
-        color: root.activeCount > 0 || root.queuedCount > 0
+        color: root.activeCount > 0 || root.queuedCount > 0 || root.pausedCount > 0
                ? theme.textSecondary : theme.textMuted
         font.pixelSize: theme.fontMeta
         elide: Text.ElideRight
@@ -55,7 +56,8 @@ RowLayout {
         text: qsTr("取消全部")
         variant: "secondary"
         implicitHeight: 32
-        enabled: root.backendReady && root.activeCount > 0
+        enabled: root.backendReady
+                 && (root.activeCount > 0 || root.pausedCount > 0)
         onClicked: root.target.backend.cancelDownloads()
     }
 }

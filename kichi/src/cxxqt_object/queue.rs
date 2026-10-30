@@ -33,6 +33,8 @@ use crate::session::Session;
 #[derive(Debug, Clone)]
 pub(crate) struct Job {
     pub(crate) id: String,
+    /// 在所属批次里的稳定下标；文件夹续跑时保留原行 key。
+    pub(crate) index: usize,
     /// 落盘用的相对目录（文件夹下载时保留层级；单文件为空）
     pub(crate) sub_dir: Vec<String>,
     pub(crate) name: String,
@@ -40,6 +42,25 @@ pub(crate) struct Job {
     pub(crate) size: u64,
     /// 列表里的审核标记：详情没下发 audit 时用来跳过无用的 5 秒重试
     pub(crate) audit_flagged: bool,
+}
+
+/// 暂停批次重新入队所需的快照。
+///
+/// `files = Some(..)` 表示直接复用已经展开的子文件（暂停后继续，不再读目录）；
+/// `None` 表示文件夹还没开始收集，继续时重新读目录。
+pub(crate) struct ResumeBatch {
+    pub(crate) batch: u64,
+    pub(crate) source_id: String,
+    pub(crate) entry: FileEntry,
+    pub(crate) dir: PathBuf,
+    pub(crate) files: Option<Vec<Job>>,
+    pub(crate) dirs: Vec<Vec<String>>,
+    pub(crate) skipped: usize,
+    /// 暂停前已经结束的子文件：续跑结束时的汇总与通知仍要算上。
+    pub(crate) done: usize,
+    pub(crate) failed: usize,
+    pub(crate) cancelled: usize,
+    pub(crate) failure: Option<String>,
 }
 
 /// 一个文件下载完的结果（只用于批次汇总；具体路径 / 原因在 `transfers`）。
@@ -112,6 +133,10 @@ struct Pending {
     empty_folder: bool,
     /// 单文件重试时保留的层级；普通下载 / 文件夹批次为空
     sub_dir: Vec<String>,
+    /// 暂停继续时直接复用的文件；普通下载为 None
+    resume_files: Option<Vec<Job>>,
+    /// 暂停继续时原本已经收集的目录树
+    resume_dirs: Vec<Vec<String>>,
     /// 最后一条失败原因（单文件批次通知用）
     failure: Option<String>,
     /// 真的起过线程（目录收集或下载）；只有这种批次才可能在登出后还活着
@@ -194,6 +219,8 @@ fn enqueue(
         failure: None,
         started: false,
         abandoned: false,
+        resume_files: None,
+        resume_dirs: Vec::new(),
     });
 }
 
@@ -204,7 +231,7 @@ pub(crate) fn reserve(entry: FileEntry, dir: PathBuf) -> Option<u64> {
     let source_id = entry.id.clone();
     let job = TransferJob::from_entry(&entry, dir.clone());
     with_scheduler(|scheduler| {
-        if is_taken(scheduler, &source_id) {
+        if is_taken(scheduler, &source_id) || transfers::has_paused_source(&source_id) {
             return None;
         }
         let batch = transfers::new_batch();
@@ -221,24 +248,12 @@ pub(crate) fn reserve(entry: FileEntry, dir: PathBuf) -> Option<u64> {
 pub(crate) fn reserve_retry(job: TransferJob) -> Option<u64> {
     let source_id = job.id.clone();
     with_scheduler(|scheduler| {
-        if is_taken(scheduler, &source_id) {
+        if is_taken(scheduler, &source_id) || transfers::has_paused_source(&source_id) {
             return None;
         }
         let batch = transfers::new_batch();
         transfers::start_batch(batch, &source_id, &job);
-        // 只用到 id / name / kind / size / audit；其余 FileEntry 字段下载路径不读。
-        let entry = FileEntry {
-            id: job.id.clone(),
-            name: job.name.clone(),
-            kind: job.kind,
-            size: job.size,
-            modified_at: None,
-            md5: None,
-            audit_flagged: job.audit_flagged,
-            media: false,
-            video: false,
-            thumbnail_url: String::new(),
-        };
+        let entry = entry_from_job(&job);
         enqueue(
             scheduler,
             batch,
@@ -251,9 +266,63 @@ pub(crate) fn reserve_retry(job: TransferJob) -> Option<u64> {
     })
 }
 
+pub(crate) fn entry_from_job(job: &TransferJob) -> FileEntry {
+    // 只用到 id / name / kind / size / audit；其余 FileEntry 字段下载路径不读。
+    FileEntry {
+        id: job.id.clone(),
+        name: job.name.clone(),
+        kind: job.kind,
+        size: job.size,
+        modified_at: None,
+        md5: None,
+        audit_flagged: job.audit_flagged,
+        media: false,
+        video: false,
+        thumbnail_url: String::new(),
+    }
+}
+
+/// 把一个暂停批次放回队尾；不新建记录，也不改记录状态。
+pub(crate) fn reserve_resume(resume: ResumeBatch) -> bool {
+    with_scheduler(|scheduler| {
+        if scheduler
+            .active
+            .iter()
+            .chain(scheduler.queue.iter())
+            .any(|pending| pending.batch == resume.batch)
+            || is_taken(scheduler, &resume.source_id)
+        {
+            return false;
+        }
+        scheduler.queue.push_back(Pending {
+            batch: resume.batch,
+            source_id: resume.source_id,
+            entry: resume.entry,
+            dir: resume.dir,
+            cancel: Arc::new(Cancel::default()),
+            job_cancels: Arc::new(Mutex::new(HashMap::new())),
+            state: PendingState::Queued,
+            done: resume.done,
+            failed: resume.failed,
+            cancelled: resume.cancelled,
+            skipped: resume.skipped,
+            empty_folder: false,
+            sub_dir: Vec::new(),
+            resume_files: resume.files,
+            resume_dirs: resume.dirs,
+            failure: resume.failure,
+            started: false,
+            abandoned: false,
+        });
+        true
+    })
+}
+
 /// 这个条目是否已在排队 / 准备 / 下载中（QML 菜单文案用）。
 pub(crate) fn is_pending(source_id: &str) -> bool {
-    with_scheduler(|scheduler| is_taken(scheduler, source_id))
+    with_scheduler(|scheduler| {
+        is_taken(scheduler, source_id) || transfers::has_paused_source(source_id)
+    })
 }
 
 /// 线程真的起来了：从现在起，登出不能再直接丢掉这个批次。
@@ -340,14 +409,30 @@ fn next_start() -> Option<Start> {
                 continue;
             }
             let folder = pending.folder();
-            pending.state = if folder {
+            let resume_collected = pending.resume_files.take().map(|files| {
+                let dirs = std::mem::take(&mut pending.resume_dirs);
+                if folder {
+                    pending.job_cancels = Arc::new(Mutex::new(
+                        files
+                            .iter()
+                            .map(|job| (job.index, Cancel::child(pending.cancel.clone())))
+                            .collect(),
+                    ));
+                }
+                Collected {
+                    files,
+                    dirs,
+                    skipped: pending.skipped,
+                }
+            });
+            pending.state = if folder && resume_collected.is_none() {
                 PendingState::Preparing
             } else {
                 PendingState::Running
             };
-            if folder {
+            if folder && resume_collected.is_none() {
                 transfers::mark_preparing(pending.batch);
-            } else {
+            } else if !folder && resume_collected.is_none() {
                 // 单文件跳过「准备中」，直接 排队中 → 下载中
                 transfers::begin(pending.batch, 0);
             }
@@ -359,6 +444,7 @@ fn next_start() -> Option<Start> {
                 cancel: pending.cancel.clone(),
                 job_cancels: pending.job_cancels.clone(),
                 sub_dir: pending.sub_dir.clone(),
+                resume_collected,
             };
             scheduler.active.push(pending);
             return Some(start);
@@ -374,6 +460,8 @@ pub(crate) enum StartOutcome {
     NotCurrent,
     /// 这期间被取消：记录已标「已取消」，占用已释放
     Cancelled,
+    /// 这期间被暂停：断点保留，记录已标「已暂停」，占用已释放
+    Paused,
     /// 线程起不来：记录已标失败，占用已释放
     Failed(BatchFailure),
 }
@@ -393,8 +481,7 @@ pub(crate) fn start_download(
             collected
                 .files
                 .iter()
-                .enumerate()
-                .map(|(index, _)| (index, Cancel::child(current.cancel.clone())))
+                .map(|job| (job.index, Cancel::child(current.cancel.clone())))
                 .collect(),
         ));
         current.job_cancels = job_cancels.clone();
@@ -409,7 +496,13 @@ pub(crate) fn start_download(
     let Some((dir, cancel, name, folder, job_cancels)) = found else {
         return StartOutcome::NotCurrent;
     };
-    // 读目录那几秒里可能刚好按了取消：这时不要再给总账行挂子行
+    // 读目录那几秒里可能刚好按了暂停 / 取消：这时不要再给总账行挂子行。
+    if cancel.is_paused() {
+        transfers::mark_paused(batch);
+        let _ = release(batch);
+        return StartOutcome::Paused;
+    }
+    // 取消时不要再给总账行挂子行
     // （否则记录会从「已取消」闪回「排队中」再变回来）
     if cancel.is_cancelled() {
         transfers::cancel_batch(batch, "");
@@ -566,15 +659,31 @@ pub(crate) fn add_skipped(batch: u64, extra: usize) {
 ///
 /// 排队中的还没起线程，直接放掉占用（记录由调用方统一标「已取消」）；
 /// 正在跑的每一批只置取消标志，等线程自己收尾后释放。
-pub(crate) fn cancel_all() {
+/// 返回被直接移出队列的批次号，调用方可以立即清理它们的旧断点。
+pub(crate) fn cancel_all() -> Vec<u64> {
     with_scheduler(|scheduler| {
         for current in &mut scheduler.active {
             current.cancel.cancel();
         }
+        let queued: Vec<u64> = scheduler
+            .queue
+            .iter()
+            .map(|pending| pending.batch)
+            .collect();
         for pending in scheduler.queue.drain(..) {
             pending.cancel.cancel();
         }
-    });
+        queued
+    })
+}
+
+/// 取消一个批次时，线程是否已经起来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelOutcome {
+    /// 还没起线程，调用方可以立即清理断点。
+    Queued,
+    /// 线程会自己收尾，断点清理必须等 join 之后。
+    Running,
 }
 
 /// 取消一个具体传输行。
@@ -582,8 +691,12 @@ pub(crate) fn cancel_all() {
 /// - 顶层文件 / 文件夹总账行：取消整批（排队中的直接移出队列）；
 /// - 文件夹子文件：只翻该文件自己的取消信号，同批其它文件继续。
 ///
-/// 返回 `false` 表示调度器里已经找不到这一批（通常是与完成收尾撞车）。
-pub(crate) fn cancel_transfer(batch: u64, index: usize, whole_batch: bool) -> bool {
+/// 返回 `None` 表示调度器里已经找不到这一批（通常是与完成收尾撞车）。
+pub(crate) fn cancel_transfer(
+    batch: u64,
+    index: usize,
+    whole_batch: bool,
+) -> Option<CancelOutcome> {
     with_scheduler(|scheduler| {
         if whole_batch {
             if let Some(at) = scheduler
@@ -591,11 +704,9 @@ pub(crate) fn cancel_transfer(batch: u64, index: usize, whole_batch: bool) -> bo
                 .iter()
                 .position(|pending| pending.batch == batch)
             {
-                let Some(pending) = scheduler.queue.remove(at) else {
-                    return false;
-                };
+                let pending = scheduler.queue.remove(at)?;
                 pending.cancel.cancel();
-                return true;
+                return Some(CancelOutcome::Queued);
             }
             if let Some(pending) = scheduler
                 .active
@@ -603,36 +714,76 @@ pub(crate) fn cancel_transfer(batch: u64, index: usize, whole_batch: bool) -> bo
                 .find(|pending| pending.batch == batch)
             {
                 pending.cancel.cancel();
-                return true;
+                return Some(CancelOutcome::Running);
             }
-            return false;
+            return None;
         }
 
-        let pending = scheduler
+        if let Some(pending) = scheduler
             .active
             .iter()
             .find(|pending| pending.batch == batch)
-            .or_else(|| {
-                scheduler
-                    .queue
-                    .iter()
-                    .find(|pending| pending.batch == batch)
-            });
-        let Some(pending) = pending else {
-            return false;
-        };
-        let parent = pending.cancel.clone();
-        let mut cancels = pending
-            .job_cancels
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cancel = cancels
-            .entry(index)
-            .or_insert_with(|| Cancel::child(parent))
-            .clone();
-        drop(cancels);
-        cancel.cancel();
-        true
+        {
+            cancel_child(pending, index);
+            return Some(CancelOutcome::Running);
+        }
+        if let Some(pending) = scheduler
+            .queue
+            .iter()
+            .find(|pending| pending.batch == batch)
+        {
+            cancel_child(pending, index);
+            return Some(CancelOutcome::Queued);
+        }
+        None
+    })
+}
+
+fn cancel_child(pending: &Pending, index: usize) {
+    let parent = pending.cancel.clone();
+    let mut cancels = pending
+        .job_cancels
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cancel = cancels
+        .entry(index)
+        .or_insert_with(|| Cancel::child(parent))
+        .clone();
+    drop(cancels);
+    cancel.cancel();
+}
+
+/// 暂停结果：排队中的可一步暂停，运行中的要等下载线程收尾。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PauseOutcome {
+    Queued,
+    Running,
+    NotCurrent,
+}
+
+/// 暂停一个顶层批次。子文件级暂停不提供。
+pub(crate) fn pause_transfer(batch: u64) -> PauseOutcome {
+    with_scheduler(|scheduler| {
+        if let Some(at) = scheduler
+            .queue
+            .iter()
+            .position(|pending| pending.batch == batch)
+        {
+            let Some(pending) = scheduler.queue.remove(at) else {
+                return PauseOutcome::NotCurrent;
+            };
+            pending.cancel.pause();
+            return PauseOutcome::Queued;
+        }
+        if let Some(pending) = scheduler
+            .active
+            .iter()
+            .find(|pending| pending.batch == batch)
+        {
+            pending.cancel.pause();
+            return PauseOutcome::Running;
+        }
+        PauseOutcome::NotCurrent
     })
 }
 

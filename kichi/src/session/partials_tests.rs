@@ -369,7 +369,7 @@ fn part_abort_keeps_on_abandon_but_deletes_on_cancel() {
     let abandon = Cancel::default();
     abandon.abandon();
     let part = make_part(&dir, "f1", b"abc");
-    assert_eq!(part.abort("f1", &abandon).to_string(), "下载已取消");
+    assert_eq!(part.abort("f1", &abandon).to_string(), "下载已中断");
     assert!(
         dir.join("f1.kichi-part").is_file(),
         "登出要保留 part 等下次续传"
@@ -429,5 +429,35 @@ fn path_override_is_used() {
     assert_eq!(lookup("file-env", &dir), Some(entry));
     forget("file-env");
     assert_eq!(lookup("file-env", &dir), None);
+    std::env::remove_var("KICHI_PARTIALS_FILE");
+}
+
+#[test]
+fn discard_removes_only_parts_below_the_requested_download_root() {
+    let _guard = env_lock();
+    let root = temp_dir("discard-root");
+    let other = temp_dir("discard-other");
+    let index = root.join("partials.json");
+    std::env::set_var("KICHI_PARTIALS_FILE", &index);
+
+    let root_part = root.join("same-id.kichi-part");
+    let other_part = other.join("same-id.kichi-part");
+    std::fs::write(&root_part, b"root").expect("写根目录 part");
+    std::fs::write(&other_part, b"other").expect("写其它目录 part");
+    let root_entry = PartialEntry::new("same-id", &root_part, &root.join("same-id.mkv"), Some(4));
+    let other_entry =
+        PartialEntry::new("same-id", &other_part, &other.join("same-id.mkv"), Some(5));
+    save(&index, &[root_entry, other_entry]).expect("保存断点索引");
+
+    discard("same-id", &root);
+
+    assert!(!root_part.exists(), "目标下载目录里的 part 要删除");
+    assert!(other_part.exists(), "其它下载目录里的 part 不能误删");
+    assert_eq!(lookup("same-id", &root), None);
+    assert!(
+        lookup("same-id", &other).is_some(),
+        "其它目录的索引仍能续传"
+    );
+
     std::env::remove_var("KICHI_PARTIALS_FILE");
 }

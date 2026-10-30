@@ -28,6 +28,7 @@ pub(crate) const MAX_DEPTH_ENV: &str = "KICHI_DOWNLOAD_MAX_DEPTH";
 pub(crate) const CANCELLED: &str = "下载已取消";
 
 /// 一次目录收集的结果。
+#[derive(Clone)]
 pub(crate) struct Collected {
     /// 要下载的文件（保留层级）
     pub(crate) files: Vec<Job>,
@@ -72,8 +73,12 @@ pub(crate) fn collect_tree(
             walk.skipped
         )));
     }
+    let mut files = walk.files;
+    for (index, job) in files.iter_mut().enumerate() {
+        job.index = index;
+    }
     Ok(Collected {
-        files: walk.files,
+        files,
         dirs: walk.dirs,
         skipped: walk.skipped,
     })
@@ -140,6 +145,7 @@ impl Walk<'_> {
                 EntryKind::Folder => self.visit_folder(entry, path, depth)?,
                 EntryKind::File => self.files.push(Job {
                     id: entry.id.clone(),
+                    index: 0,
                     sub_dir: path.clone(),
                     name: entry.name.clone(),
                     size: entry.size,

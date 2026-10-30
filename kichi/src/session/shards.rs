@@ -30,26 +30,19 @@ use self::worker::{
 use super::download::{commit_lock, Cancel, DownloadCallbacks, Downloaded};
 use super::download_naming::{claim_part, finalize_part};
 use super::download_resume::{local_write_failure, resume_failure};
+use super::limits;
 use super::media::KnownHint;
 use super::partials::{self, plan_shards, PartialEntry, ShardPlan};
 use super::{Failure, Session};
 
 /// 启用分片的最小文件大小（32 MiB）。
 pub(super) const SHARD_THRESHOLD: u64 = 32 * 1024 * 1024;
-/// 每文件默认分片数。
-pub(super) const DEFAULT_CONNECTIONS: usize = 4;
-/// 覆盖分片数的环境变量；1 = 不分片。
-pub(super) const CONNECTIONS_ENV: &str = "KICHI_DOWNLOAD_CONNECTIONS";
-const MAX_CONNECTIONS: usize = 8;
+#[cfg(test)]
+pub(super) use super::limits::{CONNECTIONS_ENV, DEFAULT_CONNECTIONS, MAX_CONNECTIONS};
 
 /// 当前生效的分片数（0 / 非法回默认；1 = 不分片）。
 pub(super) fn shard_connections() -> usize {
-    std::env::var(CONNECTIONS_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|count| *count > 0)
-        .unwrap_or(DEFAULT_CONNECTIONS)
-        .min(MAX_CONNECTIONS)
+    limits::connections()
 }
 
 /// 尝试分片下载。返回 `None` 表示这个文件不分片，调用方走单连接路径。
@@ -291,13 +284,13 @@ fn run_plan(
             .iter()
             .any(|o| matches!(o, ShardOutcome::Cancelled))
     {
-        // 登出与用户取消分开：登出保留 part + 逐片索引，下次登录续传
-        if cancel.is_abandoned() {
+        // 登出 / 暂停与用户取消分开：前两者保留 part + 逐片索引
+        if cancel.preserves_part() {
             shared.save_index();
         } else {
             cleanup(file_id, &prepared_paths(&shared));
         }
-        return RunResult::Finished(Err(Failure::Other("下载已取消".to_owned())));
+        return RunResult::Finished(Err(Failure::Other(cancel.stop_reason().to_owned())));
     }
     if let Some(reason) = first_local(&outcomes) {
         cleanup(file_id, &prepared_paths(&shared));
@@ -394,11 +387,11 @@ fn finish_complete(
     final_path: &Path,
     cancel: &Cancel,
 ) -> Result<Downloaded, Failure> {
-    // 数据已齐但登出了：保留 part + 逐片索引，绝不 rename
-    if cancel.is_abandoned() {
+    // 数据已齐但登出 / 暂停了：保留 part + 逐片索引，绝不 rename
+    if cancel.preserves_part() {
         drop(file);
         shared.save_index();
-        return Err(Failure::Other("下载已取消".to_owned()));
+        return Err(Failure::Other(cancel.stop_reason().to_owned()));
     }
     if let Err(err) = file.sync_all() {
         drop(file);
@@ -411,10 +404,10 @@ fn finish_complete(
     drop(file);
     // sync 可能耗时几秒；与登出作废互斥后再决定是否 rename
     let commit = commit_lock();
-    if cancel.is_abandoned() {
+    if cancel.preserves_part() {
         drop(commit);
         shared.save_index();
-        return Err(Failure::Other("下载已取消".to_owned()));
+        return Err(Failure::Other(cancel.stop_reason().to_owned()));
     }
     let renamed = finalize_part(part_path, final_path);
     drop(commit);

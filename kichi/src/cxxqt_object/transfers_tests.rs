@@ -1044,6 +1044,52 @@ fn interrupted_state_text_and_name() {
 }
 
 #[test]
+fn paused_rows_are_actionable_but_not_active() {
+    for state in [
+        TransferState::Queued,
+        TransferState::Preparing,
+        TransferState::Running,
+        TransferState::Pausing,
+    ] {
+        assert!(state.is_active(), "{state:?} 仍占调度槽");
+        assert!(state.is_cancellable());
+    }
+    assert!(
+        !TransferState::Paused.is_active(),
+        "已暂停不占调度槽、不计入侧栏传输中"
+    );
+    assert!(TransferState::Paused.is_cancellable(), "暂停任务仍可取消");
+    assert!(!TransferState::Paused.is_finished(), "暂停不是历史结束状态");
+}
+
+#[test]
+fn clean_exit_marks_only_active_top_level_batches_for_auto_resume() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("running.mkv", 10), ("paused.mkv", 10), ("done.mkv", 10)],
+    );
+    records[0].state = TransferState::Running;
+    set_child(&mut records, 1, 0, TransferState::Running);
+    set_child(&mut records, 1, 1, TransferState::Paused);
+    set_child(&mut records, 1, 2, TransferState::Done);
+    mark_auto_resume_in(&mut records);
+    assert!(records[0].auto_resume, "运行中的文件夹总账行要续跑");
+    assert!(records[1].auto_resume, "运行中的子文件要续跑");
+    assert!(!records[2].auto_resume, "暂停子行不自动续跑");
+    assert!(!records[3].auto_resume, "已完成子行不自动续跑");
+
+    records[0].state = TransferState::Pausing;
+    mark_auto_resume_in(&mut records);
+    assert!(
+        records.iter().all(|record| !record.auto_resume),
+        "正在暂停的任务按用户意图保持暂停，不能在下次启动自动跑起来"
+    );
+}
+
+#[test]
 fn interrupted_parent_survives_child_state_changes() {
     let mut records = Vec::new();
     folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);

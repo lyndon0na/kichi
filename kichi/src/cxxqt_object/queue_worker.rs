@@ -25,22 +25,13 @@ use crate::session::{Failure, Session};
 /// 进度回投的最小间隔。
 pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
-/// 批内并发下载数：默认 3，`KICHI_DOWNLOAD_PARALLEL` 可覆盖。
-///
-/// 0 / 非法值回默认；1 = 完全退回串行（出问题不用改代码）。上限 8 只是
-/// 防止环境变量写错时一次起出上百条线程；PikPak 直链走 CDN，再高多半只是抢带宽。
-pub(crate) const PARALLEL_ENV: &str = "KICHI_DOWNLOAD_PARALLEL";
-pub(crate) const DEFAULT_PARALLEL: usize = 3;
-const MAX_PARALLEL: usize = 8;
+/// 并发设置的唯一来源在 `session::limits`；测试直接从那里导入。
+#[cfg(test)]
+pub(crate) use crate::session::limits::{DEFAULT_PARALLEL, MAX_PARALLEL, PARALLEL_ENV};
 
 /// 当前生效的批内并发数。
 pub(crate) fn download_parallel() -> usize {
-    std::env::var(PARALLEL_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|count| *count > 0)
-        .unwrap_or(DEFAULT_PARALLEL)
-        .min(MAX_PARALLEL)
+    crate::session::limits::parallel()
 }
 
 /// 相对下载根目录的目录路径 → 本地绝对路径。
@@ -125,13 +116,15 @@ pub(crate) fn run_jobs(
     }
     // 取消 / 登出导致提前退出时，还没轮到的条目也要收尾。
     // 取消时当前条可能刚好下载成功，也会落在这里。
-    if cancel.is_cancelled() {
+    if cancel.is_cancelled() && !cancel.is_paused() {
         transfers::cancel_batch(batch, "");
     }
     // 优先级：panic > 取消 > 批次级失败 > 正常完成。fail_batch 已经写下的失败原因
     // 不会被 cancel_batch 覆盖（后者只动活动记录，失败行已经结束了）。
     let end = if interrupted {
         BatchEnd::Interrupted
+    } else if cancel.is_paused() {
+        BatchEnd::Paused
     } else if cancel.is_cancelled() {
         BatchEnd::Cancelled
     } else if let Some(reason) = batch_error {
@@ -190,13 +183,19 @@ fn download_all(
     let interrupted = run_parallel(
         &collected.files,
         download_parallel(),
-        |index, job| {
+        |_position, job| {
+            let index = job.index;
             let job_cancel = job_cancels
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .entry(index)
                 .or_insert_with(|| Cancel::child(cancel.clone()))
                 .clone();
+            if job_cancel.is_paused() {
+                // 整批暂停：不要在收尾前把这一行误记成「已取消」。
+                // 批次结束后 `post_finished` 会统一改成「已暂停」。
+                return;
+            }
             if job_cancel.is_cancelled() {
                 add_result(batch, JobOutcome::Cancelled);
                 transfers::cancel_file(batch, index);
@@ -205,6 +204,9 @@ fn download_all(
             }
             transfers::begin(batch, index);
             post_sync();
+            if job_cancel.is_paused() {
+                return;
+            }
             if job_cancel.is_cancelled() {
                 add_result(batch, JobOutcome::Cancelled);
                 transfers::cancel_file(batch, index);
@@ -239,9 +241,10 @@ fn download_all(
             );
             let saved = outcome.is_ok();
             let cancelled = job_cancel.is_cancelled();
+            let paused = job_cancel.is_paused();
             let same_epoch = my_epoch == current_epoch();
             if !records_result(saved, cancelled, same_epoch) {
-                if cancelled && !saved && same_epoch {
+                if cancelled && !saved && same_epoch && !paused {
                     add_result(batch, JobOutcome::Cancelled);
                     transfers::cancel_file(batch, index);
                     post_sync();
@@ -419,6 +422,7 @@ fn post_live() {
 enum BatchEnd {
     Completed,
     Cancelled,
+    Paused,
     Interrupted,
     /// 批次级失败（根目录建不出来）：原因写进记录与通知
     Failed(String),
@@ -441,6 +445,14 @@ fn post_finished(batch: u64, end: BatchEnd, my_epoch: u64) {
             let Some(report) = super::queue::release(batch) else {
                 return;
             };
+            if end == BatchEnd::Paused {
+                transfers::mark_paused(batch);
+                qichi.as_mut().sync_transfers();
+            } else if end == BatchEnd::Cancelled {
+                // 线程已经全部 join，可以安全清掉那些还没轮到打开 Part 的旧断点
+                // （典型场景：暂停的文件夹继续后，在下一批真正开始前又取消）。
+                transfers::discard_batch_parts(batch);
+            }
             if qichi.notify_enabled {
                 if let Some(notice) = end_notice(&report, &end) {
                     super::notifications::show_notice(&notice);
@@ -463,6 +475,7 @@ fn status_text(report: &BatchReport, end: &BatchEnd) -> Option<String> {
             "下载已取消（已完成 {} 个，失败 {} 个）",
             report.done, report.failed
         )),
+        BatchEnd::Paused => Some(format!("下载已暂停：{}", report.name)),
         BatchEnd::Completed if report.empty_folder => {
             Some(format!("已创建空文件夹：{}", report.name))
         }
@@ -496,6 +509,7 @@ fn status_text(report: &BatchReport, end: &BatchEnd) -> Option<String> {
 fn end_notice(report: &BatchReport, end: &BatchEnd) -> Option<super::notifications::Notice> {
     match end {
         BatchEnd::Cancelled => None,
+        BatchEnd::Paused => None,
         BatchEnd::Interrupted => Some(super::notifications::batch_failed(
             &report.name,
             report.folder,
@@ -536,6 +550,8 @@ pub(crate) struct Start {
     pub(crate) job_cancels: JobCancels,
     /// 单文件重试时保留的层级（`Job.sub_dir`）
     pub(crate) sub_dir: Vec<String>,
+    /// 暂停继续时直接复用已收集的文件，不再读一次目录
+    pub(crate) resume_collected: Option<Collected>,
 }
 
 /// 起这一批的线程：文件夹先读目录，单文件直接进下载循环。
@@ -549,7 +565,24 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
     let job_cancels = start.job_cancels.clone();
     let my_epoch = current_epoch();
     let builder = std::thread::Builder::new().name("kichi-dl".into());
-    if start.folder {
+    if let Some(collected) = start.resume_collected.clone() {
+        let dir = start.dir.clone();
+        let spawned = builder.spawn(move || {
+            run_jobs(
+                session,
+                dir,
+                batch,
+                collected,
+                cancel,
+                job_cancels,
+                my_epoch,
+            )
+        });
+        if spawned.is_ok() {
+            super::queue::mark_started(batch);
+        }
+        spawned.map(|_| ())
+    } else if start.folder {
         let folder = start.entry.clone();
         let spawned = builder.spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -557,11 +590,12 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
             }))
             .unwrap_or_else(|_| Err(Failure::Other("读取目录时后台任务异常中断".to_owned())));
             let cancelled = cancel.is_cancelled();
+            let paused = cancel.is_paused();
             // 读完目录回主线程：展开记录、进下载循环，或者标掉这一批
             super::actions::enqueue_ui(move |mut qichi| {
                 qichi
                     .as_mut()
-                    .on_folder_collected(batch, result, cancelled, my_epoch);
+                    .on_folder_collected(batch, result, cancelled, paused, my_epoch);
             });
         });
         if spawned.is_ok() {
@@ -571,6 +605,7 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
     } else {
         let job = Job {
             id: start.entry.id.clone(),
+            index: 0,
             sub_dir: start.sub_dir.clone(),
             name: start.entry.name.clone(),
             size: start.entry.size,

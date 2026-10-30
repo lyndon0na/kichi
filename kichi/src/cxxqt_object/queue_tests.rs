@@ -159,7 +159,8 @@ fn cancel_all_drops_queued_batches() {
     reset_for_test();
     reserve_id("a").expect("a");
     reserve_id("b").expect("b");
-    cancel_all();
+    let queued_batches = cancel_all();
+    assert_eq!(queued_batches.len(), 2, "返回直接移除的排队批次");
     let (_, queued) = counts();
     assert_eq!(queued, 0, "排队中的批次直接放掉，不再占位");
     assert!(!is_pending("a") && !is_pending("b"), "释放后可以重新下");
@@ -171,10 +172,125 @@ fn cancel_transfer_drops_a_queued_batch() {
     let _guard = lock();
     reset_for_test();
     let batch = reserve_id("queued-folder").expect("登记");
-    assert!(cancel_transfer(batch, 0, true));
+    assert_eq!(cancel_transfer(batch, 0, true), Some(CancelOutcome::Queued));
     let (running, queued) = counts();
     assert!(!running && queued == 0, "排队批次直接移出队列");
     assert!(!is_pending("queued-folder"), "取消后不再占用来源 id");
+    reset_for_test();
+}
+
+#[test]
+fn pause_drops_a_queued_batch_and_resume_reuses_its_identity() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("queued-pause").expect("登记");
+    assert_eq!(pause_transfer(batch), PauseOutcome::Queued);
+    transfers::pause_queued(batch);
+    assert!(
+        is_pending("queued-pause"),
+        "暂停后虽不占调度槽，但仍占用同一源条目"
+    );
+    assert!(
+        reserve_id("queued-pause").is_none(),
+        "已暂停的源条目不能再排第二批"
+    );
+    assert_eq!(counts(), (false, 0));
+
+    let files = vec![Job {
+        id: "child".to_owned(),
+        index: 3,
+        sub_dir: vec!["合集".to_owned()],
+        name: "child.mkv".to_owned(),
+        size: 10,
+        audit_flagged: false,
+    }];
+    assert!(reserve_resume(ResumeBatch {
+        batch,
+        source_id: "queued-pause".to_owned(),
+        entry: entry("queued-pause", EntryKind::Folder, "合集"),
+        dir: PathBuf::from("/tmp"),
+        files: Some(files),
+        dirs: vec![vec!["合集".to_owned()]],
+        skipped: 2,
+        done: 1,
+        failed: 1,
+        cancelled: 0,
+        failure: Some("旧失败".to_owned()),
+    }));
+
+    let start = next_start().expect("继续后重新入队");
+    assert_eq!(start.batch, batch, "继续复用原批次号");
+    let collected = start.resume_collected.expect("文件夹子项直接复用");
+    assert_eq!(collected.files[0].index, 3, "原 index / 行 key 不变");
+    assert_eq!(collected.skipped, 2);
+    assert_eq!(
+        release(batch).map(|report| (report.done, report.failed, report.cancelled)),
+        Some((1, 1, 0)),
+        "续跑后的通知汇总要包含暂停前已完成 / 失败的子项"
+    );
+    assert!(
+        start
+            .job_cancels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&3),
+        "继续后的子取消信号也按原 index 挂回"
+    );
+    transfers::reset();
+    reset_for_test();
+}
+
+#[test]
+fn pause_running_batch_waits_for_release_then_resumes() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("running-pause").expect("登记");
+    let start = next_start().expect("文件夹开始准备");
+    assert_eq!(pause_transfer(batch), PauseOutcome::Running);
+    assert!(start.cancel.is_paused(), "运行中的批次先收到暂停信号");
+    assert!(start.cancel.is_cancelled(), "暂停也必须让下载线程尽快停下");
+    assert_eq!(counts(), (true, 0), "线程收尾前仍占调度槽");
+
+    assert!(release(batch).is_some());
+    assert!(reserve_resume(ResumeBatch {
+        batch,
+        source_id: "running-pause".to_owned(),
+        entry: entry("running-pause", EntryKind::Folder, "running-pause"),
+        dir: PathBuf::from("/tmp"),
+        files: Some(Vec::new()),
+        dirs: Vec::new(),
+        skipped: 0,
+        done: 0,
+        failed: 0,
+        cancelled: 0,
+        failure: None,
+    }));
+    let resumed = next_start().expect("线程收尾后可继续");
+    assert_eq!(resumed.batch, batch);
+    transfers::reset();
+    reset_for_test();
+}
+
+#[test]
+fn cancel_after_pause_switches_back_to_delete_semantics() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("pause-then-cancel").expect("登记");
+    let start = next_start().expect("文件夹开始准备");
+    assert_eq!(pause_transfer(batch), PauseOutcome::Running);
+    assert!(start.cancel.is_paused());
+
+    assert_eq!(
+        cancel_transfer(batch, 0, true),
+        Some(CancelOutcome::Running)
+    );
+    assert!(start.cancel.is_cancelled());
+    assert!(
+        !start.cancel.is_paused(),
+        "暂停后改取消必须让下载线程删除断点"
+    );
+    assert!(release(batch).is_some());
+    transfers::reset();
     reset_for_test();
 }
 
@@ -186,7 +302,10 @@ fn child_cancel_leaves_the_batch_and_siblings_running() {
     let start = next_start().expect("文件夹轮到准备");
     assert!(start.folder);
 
-    assert!(cancel_transfer(batch, 0, false));
+    assert_eq!(
+        cancel_transfer(batch, 0, false),
+        Some(CancelOutcome::Running)
+    );
     let child = start
         .job_cancels
         .lock()
@@ -198,7 +317,10 @@ fn child_cancel_leaves_the_batch_and_siblings_running() {
     assert!(!start.cancel.is_cancelled(), "整批父信号不受影响");
     assert!(is_pending("running-folder"));
 
-    assert!(cancel_transfer(batch, 0, true));
+    assert_eq!(
+        cancel_transfer(batch, 0, true),
+        Some(CancelOutcome::Running)
+    );
     assert!(start.cancel.is_cancelled(), "父行取消会向下传递整批");
     assert!(child.is_cancelled());
     let _ = release(batch);

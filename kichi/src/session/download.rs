@@ -46,6 +46,8 @@ pub struct Cancel {
     flag: AtomicBool,
     /// 手动登出：停止 + 保留 part（与用户取消的「删 part」相反）
     abandon: AtomicBool,
+    /// 用户暂停：停止 + 保留 part；与登出不同，不提升会话代数。
+    paused: AtomicBool,
     /// 文件夹批次的单个文件继承整批取消，但取消子项不会反向停掉整批。
     parent: Option<std::sync::Arc<Cancel>>,
 }
@@ -55,6 +57,7 @@ impl Default for Cancel {
         Self {
             flag: AtomicBool::new(false),
             abandon: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
             parent: None,
         }
     }
@@ -87,9 +90,44 @@ impl Cancel {
                 .is_some_and(|parent| parent.is_abandoned())
     }
 
-    /// 请求取消（任意线程可调）。只停止，不改变「是否保留 part」。
+    /// 是否是用户主动暂停（命中时保留断点，但不算登出）。
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.is_paused())
+    }
+
+    /// 停止后要不要保留 `.kichi-part` 与断点索引。
+    pub fn preserves_part(&self) -> bool {
+        self.is_abandoned() || self.is_paused()
+    }
+
+    /// 本次停止对应的界面文案。
+    pub fn stop_reason(&self) -> &'static str {
+        if self.is_abandoned() {
+            "下载已中断"
+        } else if self.is_paused() {
+            "下载已暂停"
+        } else {
+            "下载已取消"
+        }
+    }
+
+    /// 请求取消（任意线程可调）。
+    ///
+    /// 「正在暂停」后改点取消时，必须清掉暂停标记；否则下载线程仍会按
+    /// `preserves_part()` 保留断点，和用户明确取消的语义相反。
     pub fn cancel(&self) {
+        self.paused.store(false, Ordering::Relaxed);
         self.flag.store(true, Ordering::Relaxed);
+    }
+
+    /// 用户暂停：先写暂停标记再停止，读线程看到停止标志时一定能看到暂停标记。
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+        self.flag.store(true, Ordering::Release);
     }
 
     /// 登出：停止并保留断点。
@@ -338,8 +376,8 @@ impl Session {
             let before_read = part.offset;
             match read_into_part(&mut stream, &mut part, progress, cancel) {
                 ReadOutcome::Complete => {
-                    // 数据已齐：登出也只能保留 part，绝不 rename
-                    if cancel.is_abandoned() {
+                    // 数据已齐：登出 / 暂停也只能保留 part，绝不 rename
+                    if cancel.preserves_part() {
                         return Err(part.abort(file_id, cancel));
                     }
                     // flush + sync 都成功才算落盘，再改名
@@ -349,7 +387,7 @@ impl Session {
                     }
                     // sync 可能耗时几秒；与登出作废互斥后再决定是否 rename
                     let commit = commit_lock();
-                    if cancel.is_abandoned() {
+                    if cancel.preserves_part() {
                         drop(commit);
                         return Err(part.abort(file_id, cancel));
                     }

@@ -78,6 +78,9 @@ pub(crate) struct EntryRecord {
     /// 进程启动序号：识别「上一轮没跑完的行」
     #[serde(default)]
     pub(crate) session: u64,
+    /// 正常退出时仍在进行，下一轮恢复登录态后自动续跑
+    #[serde(default)]
+    pub(crate) auto_resume: bool,
 }
 
 /// 重试种子在磁盘上的样子（与 `TransferJob` 一一对应）。
@@ -162,6 +165,8 @@ pub(crate) fn state_of(name: &str) -> TransferState {
         "queued" => TransferState::Queued,
         "preparing" => TransferState::Preparing,
         "running" => TransferState::Running,
+        "pausing" => TransferState::Pausing,
+        "paused" => TransferState::Paused,
         "done" => TransferState::Done,
         "failed" => TransferState::Failed,
         "cancelled" => TransferState::Cancelled,
@@ -197,6 +202,7 @@ pub(crate) fn entry_of(record: &Transfer, dirs: Vec<Vec<String>>) -> EntryRecord
         dirs,
         created_unix: record.created_unix,
         session: record.session,
+        auto_resume: record.auto_resume,
     }
 }
 
@@ -264,8 +270,12 @@ fn batch_is_consistent(rows: &[&EntryRecord]) -> bool {
     })
 }
 
-/// 恢复规则：没跑完（排队 / 准备 / 下载中）或状态认不出的行 → 已中断。
+/// 恢复规则：暂停请求（含线程尚未来得及收尾的「正在暂停」）保持暂停；
+/// 其余没跑完（排队 / 准备 / 下载中）或状态认不出的行 → 已中断。
 pub(crate) fn recovered_state(stored: TransferState) -> TransferState {
+    if matches!(stored, TransferState::Pausing | TransferState::Paused) {
+        return TransferState::Paused;
+    }
     if stored.is_active() || !stored.is_finished() {
         return TransferState::Interrupted;
     }
@@ -334,6 +344,7 @@ fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
         entry.skipped,
         entry.created_unix,
         session,
+        entry.auto_resume,
     )
 }
 
@@ -358,11 +369,11 @@ pub(crate) fn created_of(records: &[Transfer], batch: u64) -> i64 {
         .unwrap_or(0)
 }
 
-/// 超过保留期、且不包含任何已完成行的整批（升序）。
+/// 超过保留期、且不包含任何已完成 / 暂停行的整批（升序）。
 ///
 /// 已完成的批次是用户看得见的结果，不因为放了三个月就消失；
-/// 只有失败 / 取消 / 已中断的旧批次在启动时整批删。没有时间戳（手改 / 更早的
-/// 文件）的批次不因缺信息被误删。
+/// 暂停的批次还要让用户继续，也不能悄悄丢；只有失败 / 取消 / 已中断的旧批次
+/// 在启动时整批删。没有时间戳（手改 / 更早的文件）的批次不因缺信息被误删。
 pub(crate) fn expired_batches(records: &[Transfer], now: i64, days: i64) -> Vec<u64> {
     let cutoff = now.saturating_sub(days.saturating_mul(DAY_SECS));
     let mut batches: Vec<u64> = records.iter().map(|record| record.batch).collect();
@@ -373,7 +384,11 @@ pub(crate) fn expired_batches(records: &[Transfer], now: i64, days: i64) -> Vec<
         let has_done = records
             .iter()
             .any(|record| record.batch == *batch && record.state == TransferState::Done);
-        created > 0 && created < cutoff && !has_done
+        let has_paused = records.iter().any(|record| {
+            record.batch == *batch
+                && matches!(record.state, TransferState::Pausing | TransferState::Paused)
+        });
+        created > 0 && created < cutoff && !has_done && !has_paused
     });
     batches
 }

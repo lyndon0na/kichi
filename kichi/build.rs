@@ -66,6 +66,7 @@ const QML_FILES: &[&str] = &[
     "qml/TransferMainRow.qml",
     "qml/TransferStickyRow.qml",
     "qml/SettingsPage.qml",
+    "qml/SettingsDownloads.qml",
     "qml/SettingsAbout.qml",
     "qml/SettingsPlayback.qml",
     "qml/PlayToast.qml",

@@ -41,16 +41,30 @@ Item {
 
     readonly property int activeCount: backend ? backend.downloadActive : 0
     readonly property int queuedCount: backend ? backend.downloadQueued : 0
+    readonly property int pausedCount: {
+        var source = backend ? backend.transfers || [] : []
+        var count = 0
+        for (var i = 0; i < source.length; i++) {
+            if (source[i].folder !== undefined && source[i].state === "paused")
+                count += 1
+        }
+        return count
+    }
     readonly property int workingCount: Math.max(activeCount - queuedCount, 0)
     readonly property bool hasFinished: backend !== null
                                          && backend.transferHasFinished
     readonly property string statusText: {
-        if (workingCount > 0 && queuedCount > 0)
-            return qsTr("%1 项传输中 · %2 项等待").arg(workingCount).arg(queuedCount)
+        var parts = []
         if (workingCount > 0)
-            return qsTr("%1 项传输中").arg(workingCount)
+            parts.push(qsTr("%1 项传输中").arg(workingCount))
         if (queuedCount > 0)
-            return qsTr("%1 项等待开始").arg(queuedCount)
+            parts.push(workingCount > 0 || pausedCount > 0
+                       ? qsTr("%1 项等待").arg(queuedCount)
+                       : qsTr("%1 项等待开始").arg(queuedCount))
+        if (pausedCount > 0)
+            parts.push(qsTr("%1 项已暂停").arg(pausedCount))
+        if (parts.length > 0)
+            return parts.join(" · ")
         return qsTr("暂无传输任务")
     }
 
@@ -94,7 +108,8 @@ Item {
     }
 
     function isActivePhase(phase) {
-        return phase === "queued" || phase === "preparing" || phase === "running"
+        return phase === "queued" || phase === "preparing"
+                || phase === "running" || phase === "pausing"
     }
 
     function isExpandable(folder) {
@@ -406,6 +421,12 @@ Item {
                     onToggleRequested: function(rowKey) {
                         page.toggleFolder(rowKey)
                     }
+                    onPauseRequested: function(rowKey) {
+                        page.backend.pauseTransfer(rowKey)
+                    }
+                    onResumeRequested: function(rowKey) {
+                        page.backend.resumeTransfer(rowKey)
+                    }
                     onCancelRequested: function(rowKey) {
                         page.backend.cancelTransfer(rowKey)
                     }
@@ -443,6 +464,12 @@ Item {
                 z: 2
                 onToggleRequested: function(rowKey) {
                     page.toggleFolder(rowKey)
+                }
+                onPauseRequested: function(rowKey) {
+                    page.backend.pauseTransfer(rowKey)
+                }
+                onResumeRequested: function(rowKey) {
+                    page.backend.resumeTransfer(rowKey)
                 }
                 onCancelRequested: function(rowKey) {
                     page.backend.cancelTransfer(rowKey)

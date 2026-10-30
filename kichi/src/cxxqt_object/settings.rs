@@ -9,6 +9,7 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 
 use super::qobject;
+use crate::session::limits;
 use crate::settings::{self, Quality, Settings, SortField};
 
 impl qobject::Kichi {
@@ -144,6 +145,46 @@ impl qobject::Kichi {
         });
     }
 
+    /// 同时下载的文件数（跨批与文件夹批内共用）。
+    pub fn set_download_parallel(mut self: Pin<&mut Self>, value: i32) {
+        let value = usize::try_from(value)
+            .unwrap_or(limits::DEFAULT_PARALLEL)
+            .clamp(1, limits::MAX_PARALLEL);
+        self.as_mut().update_settings(|settings| {
+            settings.download_parallel = value;
+        });
+        self.as_mut().apply_download_limits();
+        // 调高并发后立即填满新增的空闲槽。
+        self.as_mut().advance_downloads();
+    }
+
+    /// 单个文件的分片连接数；1 = 不分片。
+    pub fn set_download_connections(mut self: Pin<&mut Self>, value: i32) {
+        let value = usize::try_from(value)
+            .unwrap_or(limits::DEFAULT_CONNECTIONS)
+            .clamp(1, limits::MAX_CONNECTIONS);
+        self.as_mut().update_settings(|settings| {
+            settings.download_connections = value;
+        });
+        self.as_mut().apply_download_limits();
+    }
+
+    /// 全局限速 MiB/s；0 = 不限。
+    pub fn set_download_rate_mib(mut self: Pin<&mut Self>, value: i32) {
+        let value = u64::try_from(value).unwrap_or(0).min(limits::MAX_RATE_MIB);
+        self.as_mut().update_settings(|settings| {
+            settings.download_rate_mib = value;
+        });
+        self.as_mut().apply_download_limits();
+    }
+
+    /// 正常退出后，下次恢复登录态时是否自动继续未完成传输。
+    pub fn set_auto_resume_downloads(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().update_settings(|settings| {
+            settings.auto_resume_downloads = enabled;
+        });
+    }
+
     /// 调起系统原生目录选择器，选中后走正常的下载目录保存流程。
     pub fn choose_download_dir(mut self: Pin<&mut Self>) {
         let start = self.settings.download_dir_path();
@@ -241,12 +282,26 @@ impl qobject::Kichi {
         rust.window_height = height;
         rust.window_maximized = maximized;
         rust.download_dir = QString::from(download_dir.as_str());
+        rust.download_parallel =
+            i32::try_from(snapshot.download_parallel).unwrap_or(limits::DEFAULT_PARALLEL as i32);
+        rust.download_connections = i32::try_from(snapshot.download_connections)
+            .unwrap_or(limits::DEFAULT_CONNECTIONS as i32);
+        rust.download_rate_mib = i32::try_from(snapshot.download_rate_mib).unwrap_or(i32::MAX);
+        rust.auto_resume_downloads = snapshot.auto_resume_downloads;
     }
 }
 
 impl qobject::Kichi {
     fn settings_path_buf(&self) -> std::path::PathBuf {
         crate::settings::default_path()
+    }
+
+    pub(super) fn apply_download_limits(&self) {
+        limits::configure(
+            self.settings.download_parallel,
+            self.settings.download_connections,
+            self.settings.download_rate_mib,
+        );
     }
 }
 

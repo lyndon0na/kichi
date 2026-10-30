@@ -67,6 +67,20 @@ fn abandon_sets_stop_and_keep() {
 }
 
 #[test]
+fn cancel_after_pause_clears_the_preserve_flag() {
+    let cancel = Cancel::default();
+    cancel.pause();
+    assert!(cancel.is_cancelled() && cancel.is_paused());
+    assert!(cancel.preserves_part(), "暂停先保留断点");
+
+    cancel.cancel();
+    assert!(cancel.is_cancelled());
+    assert!(!cancel.is_paused(), "暂停后改取消必须切回删除断点");
+    assert!(!cancel.preserves_part());
+    assert_eq!(cancel.stop_reason(), "下载已取消");
+}
+
+#[test]
 fn child_cancel_stops_only_itself_and_inherits_parent() {
     let parent = std::sync::Arc::new(Cancel::default());
     let first = Cancel::child(parent.clone());

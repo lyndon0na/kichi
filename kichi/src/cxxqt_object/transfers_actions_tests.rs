@@ -152,6 +152,59 @@ fn cancel_target_accepts_active_single_files_only() {
 }
 
 #[test]
+fn paused_child_is_cancelled_through_its_parent_only() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Paused),
+        ("b.mkv", TransferState::Done),
+    ]);
+    records[0].state = TransferState::Paused;
+    let parent = cancel_target_in(&records, "7:folder").expect("暂停批次父行可取消");
+    assert!(parent.whole_batch);
+    assert_eq!(parent.state, TransferState::Paused);
+    assert!(
+        cancel_target_in(&records, "7:0").is_none(),
+        "暂停中的子文件不给单独取消入口"
+    );
+}
+
+#[test]
+fn resume_target_reuses_only_unfinished_children_and_their_indexes() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Paused),
+        ("b.mkv", TransferState::Done),
+        ("c.mkv", TransferState::Paused),
+    ]);
+    records[0].state = TransferState::Paused;
+    let target = resume_batch_in(
+        &records,
+        |record| record_key(record) == "7:folder",
+        |record| record.state == TransferState::Paused,
+    )
+    .expect("暂停文件夹可继续");
+    assert_eq!(target.batch, 7);
+    assert_eq!(target.source_id, "folder-id");
+    assert_eq!(target.entry.kind, EntryKind::Folder);
+    let files = target.files.expect("已有子行时直接复用");
+    assert_eq!(files.len(), 2, "完成的行不重下");
+    assert_eq!(files[0].index, 0);
+    assert_eq!(files[1].index, 2);
+}
+
+#[test]
+fn resume_target_for_a_paused_file_keeps_its_download_dir() {
+    let mut row = record("file-1", EntryKind::File, &["剧集"], TransferState::Paused);
+    row.job.dir = PathBuf::from("/tmp/kichi-resume");
+    let target = resume_batch_in(
+        &[row],
+        |record| record_key(record) == "7:0",
+        |record| record.state == TransferState::Paused,
+    )
+    .expect("暂停文件可继续");
+    assert_eq!(target.dir, PathBuf::from("/tmp/kichi-resume"));
+    assert_eq!(target.files.expect("单文件直接复用").len(), 1);
+}
+
+#[test]
 fn whole_folder_retry_is_only_for_ledgers_without_children() {
     let mut whole = folder_batch(&[]);
     whole[0].state = TransferState::Interrupted;

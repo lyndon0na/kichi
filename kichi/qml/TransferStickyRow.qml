@@ -15,6 +15,8 @@ Item {
     property bool flash: false
 
     signal toggleRequested(string key)
+    signal pauseRequested(string key)
+    signal resumeRequested(string key)
     signal cancelRequested(string key)
     signal retryRequested(string key)
     signal revealRequested(string key)
@@ -66,6 +68,8 @@ Item {
         showRate: sticky.showRate
         flash: sticky.flash
         onToggleRequested: function(key) { sticky.toggleRequested(key) }
+        onPauseRequested: function(key) { sticky.pauseRequested(key) }
+        onResumeRequested: function(key) { sticky.resumeRequested(key) }
         onCancelRequested: function(key) { sticky.cancelRequested(key) }
         onRetryRequested: function(key) { sticky.retryRequested(key) }
         onRevealRequested: function(key) { sticky.revealRequested(key) }

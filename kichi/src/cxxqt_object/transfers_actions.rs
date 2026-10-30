@@ -13,6 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use kichi_core::EntryKind;
 
+use super::queue::{self, Job, ResumeBatch};
 use super::transfers::{
     current_session, folder_download_path, has_done_child, is_folder_ledger, record_key,
     refresh_parent_state, row_from, with_records, with_trees, Transfer, TransferJob, TransferState,
@@ -26,6 +27,7 @@ pub(crate) struct CancelTarget {
     /// 顶层文件 / 文件夹总账行取消整批；子文件只取消自己。
     pub(crate) whole_batch: bool,
     pub(crate) name: String,
+    pub(crate) state: TransferState,
 }
 
 pub(crate) fn cancel_target(key: &str) -> Option<CancelTarget> {
@@ -34,7 +36,10 @@ pub(crate) fn cancel_target(key: &str) -> Option<CancelTarget> {
 
 fn cancel_target_in(records: &[Transfer], key: &str) -> Option<CancelTarget> {
     let record = records.iter().find(|record| record_key(record) == key)?;
-    if !record.state.is_active() {
+    if !record.state.is_cancellable() {
+        return None;
+    }
+    if record.child && matches!(record.state, TransferState::Pausing | TransferState::Paused) {
         return None;
     }
     Some(CancelTarget {
@@ -42,7 +47,124 @@ fn cancel_target_in(records: &[Transfer], key: &str) -> Option<CancelTarget> {
         index: record.index,
         whole_batch: !record.child,
         name: record.display_name(),
+        state: record.state,
     })
+}
+
+/// 手动「继续」所需的批次快照；只接受顶层已暂停行。
+pub(crate) fn resume_target(key: &str) -> Option<ResumeBatch> {
+    with_records(|records| {
+        resume_batch_in(
+            records,
+            |record| {
+                record_key(record) == key && !record.child && record.state == TransferState::Paused
+            },
+            |record| record.state == TransferState::Paused,
+        )
+    })
+}
+
+/// 启动时消费正常退出留下的自动续跑标记。
+///
+/// 标记与读取在同一把 records 锁里完成；返回后标记已清零，调用方要先强制
+/// 写盘再真正启动，避免刚续上就崩溃导致下一轮再自动启动一次。
+pub(crate) fn take_auto_resume() -> Vec<ResumeBatch> {
+    with_records(|records| {
+        let batches: Vec<u64> = records
+            .iter()
+            .filter(|record| !record.child && record.auto_resume)
+            .map(|record| record.batch)
+            .collect();
+        let mut targets = Vec::new();
+        for batch in batches {
+            if let Some(target) = resume_batch_in(
+                records,
+                |record| {
+                    record.batch == batch
+                        && !record.child
+                        && record.auto_resume
+                        && record.state == TransferState::Interrupted
+                },
+                |record| record.auto_resume && record.state == TransferState::Interrupted,
+            ) {
+                targets.push(target);
+            }
+        }
+        for record in records.iter_mut() {
+            record.auto_resume = false;
+        }
+        targets
+    })
+}
+
+fn resume_batch_in(
+    records: &[Transfer],
+    trigger: impl Fn(&Transfer) -> bool,
+    item: impl Fn(&Transfer) -> bool,
+) -> Option<ResumeBatch> {
+    let parent = records
+        .iter()
+        .find(|record| !record.child && trigger(record))?;
+    let batch = parent.batch;
+    let children: Vec<&Transfer> = records
+        .iter()
+        .filter(|record| record.batch == batch && record.child)
+        .collect();
+    let done = children
+        .iter()
+        .filter(|record| record.state == TransferState::Done)
+        .count();
+    let failed = children
+        .iter()
+        .filter(|record| record.state == TransferState::Failed)
+        .count();
+    let cancelled = children
+        .iter()
+        .filter(|record| record.state == TransferState::Cancelled)
+        .count();
+    let failure = children
+        .iter()
+        .find(|record| record.state == TransferState::Failed && !record.detail.is_empty())
+        .map(|record| record.detail.clone());
+    let files = if is_folder_ledger(parent) {
+        if children.is_empty() {
+            None
+        } else {
+            let mut selected: Vec<&Transfer> =
+                children.into_iter().filter(|record| item(record)).collect();
+            selected.sort_by_key(|record| record.index);
+            if selected.is_empty() {
+                return None;
+            }
+            Some(selected.into_iter().map(job_of).collect())
+        }
+    } else {
+        Some(vec![job_of(parent)])
+    };
+    Some(ResumeBatch {
+        batch,
+        source_id: parent.source_id.clone(),
+        entry: queue::entry_from_job(&parent.job),
+        dir: parent.job.dir.clone(),
+        files,
+        dirs: with_trees(|trees| trees.get(&batch).cloned().unwrap_or_default()),
+        skipped: parent.skipped,
+        done,
+        failed,
+        cancelled,
+        failure,
+    })
+}
+
+fn job_of(record: &Transfer) -> Job {
+    Job {
+        id: record.job.id.clone(),
+        index: record.index,
+        sub_dir: record.job.sub_dir.clone(),
+        name: record.job.name.clone(),
+        size: record.job.size,
+        audit_flagged: record.job.audit_flagged,
+    }
 }
 
 /// 一条失败 / 已中断记录的重试种子；其余状态返回 `None`（唯一的可重试闸门）。

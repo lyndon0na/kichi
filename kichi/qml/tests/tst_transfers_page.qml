@@ -29,6 +29,10 @@ TestCase {
         property string openedKey: ""
         property int cancelCount: 0
         property string cancelledKey: ""
+        property int pauseCount: 0
+        property string pausedKey: ""
+        property int resumeCount: 0
+        property string resumedKey: ""
         property int retryCount: 0
         property string retriedKey: ""
         property int revealCount: 0
@@ -54,6 +58,10 @@ TestCase {
             openedKey = ""
             cancelCount = 0
             cancelledKey = ""
+            pauseCount = 0
+            pausedKey = ""
+            resumeCount = 0
+            resumedKey = ""
             retryCount = 0
             retriedKey = ""
             revealCount = 0
@@ -118,6 +126,16 @@ TestCase {
         function cancelTransfer(key) {
             cancelCount += 1
             cancelledKey = key
+        }
+
+        function pauseTransfer(key) {
+            pauseCount += 1
+            pausedKey = key
+        }
+
+        function resumeTransfer(key) {
+            resumeCount += 1
+            resumedKey = key
         }
 
         function retryTransfer(key) {
@@ -187,6 +205,10 @@ TestCase {
             return "准备中"
         if (state === "running")
             return "下载中"
+        if (state === "pausing")
+            return "正在暂停"
+        if (state === "paused")
+            return "已暂停"
         if (state === "done")
             return "已完成"
         if (state === "failed")
@@ -661,6 +683,76 @@ TestCase {
         wait(20)
         compare(backend.cancelledKey, "40:folder")
         compare(backend.cancelCount, 2)
+    }
+
+    function test_pause_and_resume_actions_are_top_level_only() {
+        backend.publish([
+            makeRow("41:0", "下载中.mkv", "running", {
+                progress: 25,
+                progressText: "25%"
+            }),
+            makeRow("41:1", "正在暂停.mkv", "pausing", {
+                progress: 30,
+                progressText: "30%"
+            }),
+            makeRow("42:folder", "暂停目录", "paused", {
+                folder: true,
+                childCount: 1,
+                progress: 40,
+                progressText: "40%"
+            })
+        ], 1, 0)
+        waitRows(3)
+
+        var running = row("41:0")
+        verify(findChild(running, "pauseLink").visible)
+        compare(findChild(running, "resumeLink").visible, false)
+        mouseClick(findChild(running, "pauseLink"))
+        wait(20)
+        compare(backend.pausedKey, "41:0")
+        compare(backend.pauseCount, 1)
+
+        var pausing = row("41:1")
+        compare(findChild(pausing, "pauseLink").visible, false)
+        compare(findChild(pausing, "resumeLink").visible, false)
+        compare(findChild(pausing, "cancelLink").visible, true)
+
+        var paused = row("42:folder")
+        verify(findChild(paused, "resumeLink").visible)
+        compare(findChild(paused, "pauseLink").visible, false)
+        compare(findChild(paused, "cancelLink").visible, true)
+        mouseClick(findChild(paused, "resumeLink"))
+        wait(20)
+        compare(backend.resumedKey, "42:folder")
+        compare(backend.resumeCount, 1)
+        compare(findChild(header, "transferHeaderStatus").text, "1 项传输中 · 1 项已暂停")
+    }
+
+    function test_paused_child_has_no_individual_actions() {
+        backend.setDetails("43:folder", [
+            makeRow("43:0", "子文件.mkv", "paused", {
+                progress: 30,
+                progressText: "30%"
+            })
+        ])
+        backend.publish([
+            makeRow("43:folder", "暂停目录", "paused", {
+                folder: true,
+                childCount: 1,
+                progress: 30,
+                progressText: "30%"
+            })
+        ], 0, 0)
+        waitRows(1)
+        mouseClick(findChild(row("43:folder"), "rowHeader"))
+        waitRows(2)
+
+        var child = row("43:0")
+        verify(child !== null)
+        compare(findChild(child, "pauseLink").visible, false)
+        compare(findChild(child, "resumeLink").visible, false)
+        compare(findChild(child, "cancelLink").visible, false)
+        compare(findChild(child, "rowProgress").visible, true)
     }
 
     function test_aggregate_row_uses_parent_live_values() {

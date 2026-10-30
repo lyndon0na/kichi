@@ -144,6 +144,14 @@ pub struct Settings {
     pub window_maximized: bool,
     /// 下载目录；空串表示用默认（`~/Downloads`）
     pub download_dir: String,
+    /// 同时下载的文件数（1–8）
+    pub download_parallel: usize,
+    /// 单文件分片连接数（1–8；1 = 不分片）
+    pub download_connections: usize,
+    /// 全局限速 MiB/s；0 = 不限
+    pub download_rate_mib: u64,
+    /// 正常退出后，下次恢复登录态时自动继续未完成传输
+    pub auto_resume_downloads: bool,
 }
 
 impl Default for Settings {
@@ -162,6 +170,10 @@ impl Default for Settings {
             window_height: 0,
             window_maximized: false,
             download_dir: String::new(),
+            download_parallel: crate::session::limits::DEFAULT_PARALLEL,
+            download_connections: crate::session::limits::DEFAULT_CONNECTIONS,
+            download_rate_mib: 0,
+            auto_resume_downloads: true,
         }
     }
 }
@@ -260,6 +272,15 @@ impl Settings {
         if self.window_height < 0 {
             self.window_height = 0;
         }
+        self.download_parallel = self
+            .download_parallel
+            .clamp(1, crate::session::limits::MAX_PARALLEL);
+        self.download_connections = self
+            .download_connections
+            .clamp(1, crate::session::limits::MAX_CONNECTIONS);
+        self.download_rate_mib = self
+            .download_rate_mib
+            .min(crate::session::limits::MAX_RATE_MIB);
         self
     }
 }
@@ -344,6 +365,10 @@ mod tests {
             window_width: 1280,
             window_height: 720,
             window_maximized: true,
+            download_parallel: 5,
+            download_connections: 6,
+            download_rate_mib: 12,
+            auto_resume_downloads: false,
             ..Settings::default()
         };
         save(&path, &settings).expect("保存失败");
@@ -394,7 +419,34 @@ mod tests {
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
         assert_eq!(settings.window_width, 0, "负尺寸收回为 0");
+        assert_eq!(settings.download_parallel, 3, "旧设置没有并发字段时取默认");
+        assert_eq!(
+            settings.download_connections, 4,
+            "旧设置没有分片字段时取默认"
+        );
+        assert_eq!(settings.download_rate_mib, 0, "旧设置默认不限速");
+        assert!(settings.auto_resume_downloads, "自动续跑默认开启");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn download_limits_are_clamped_when_loaded() {
+        let normalized = Settings {
+            download_parallel: 99,
+            download_connections: 0,
+            download_rate_mib: u64::MAX,
+            ..Settings::default()
+        }
+        .normalized();
+        assert_eq!(
+            normalized.download_parallel,
+            crate::session::limits::MAX_PARALLEL
+        );
+        assert_eq!(normalized.download_connections, 1);
+        assert_eq!(
+            normalized.download_rate_mib,
+            crate::session::limits::MAX_RATE_MIB
+        );
     }
 
     #[test]

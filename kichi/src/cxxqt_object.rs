@@ -118,6 +118,10 @@ pub mod qobject {
         /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰）
         #[qproperty(bool, transfer_has_finished, cxx_name = "transferHasFinished", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_parallel, cxx_name = "downloadParallel", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_connections, cxx_name = "downloadConnections", READ, NOTIFY = changed)]
+        #[qproperty(i32, download_rate_mib, cxx_name = "downloadRateMib", READ, NOTIFY = changed)]
+        #[qproperty(bool, auto_resume_downloads, cxx_name = "autoResumeDownloads", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
         /// 移动 / 复制选择器当前层的文件夹（QML 当 model 用）
         #[qproperty(QVariantList, move_targets, cxx_name = "moveTargets", READ, NOTIFY = changed)]
@@ -372,6 +376,16 @@ pub mod qobject {
         #[cxx_name = "cancelTransfer"]
         fn cancel_transfer(self: Pin<&mut Self>, key: QString);
 
+        /// 暂停一个顶层传输批次（排队中立即暂停，运行中等待线程收尾）
+        #[qinvokable]
+        #[cxx_name = "pauseTransfer"]
+        fn pause_transfer(self: Pin<&mut Self>, key: QString);
+
+        /// 继续一个已暂停的顶层传输批次
+        #[qinvokable]
+        #[cxx_name = "resumeTransfer"]
+        fn resume_transfer(self: Pin<&mut Self>, key: QString);
+
         /// 在文件管理器里显示一条已完成记录的落盘文件
         #[qinvokable]
         #[cxx_name = "revealTransfer"]
@@ -394,6 +408,22 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setDownloadDir"]
         fn set_download_dir(self: Pin<&mut Self>, path: QString);
+
+        #[qinvokable]
+        #[cxx_name = "setDownloadParallel"]
+        fn set_download_parallel(self: Pin<&mut Self>, value: i32);
+
+        #[qinvokable]
+        #[cxx_name = "setDownloadConnections"]
+        fn set_download_connections(self: Pin<&mut Self>, value: i32);
+
+        #[qinvokable]
+        #[cxx_name = "setDownloadRateMib"]
+        fn set_download_rate_mib(self: Pin<&mut Self>, value: i32);
+
+        #[qinvokable]
+        #[cxx_name = "setAutoResumeDownloads"]
+        fn set_auto_resume_downloads(self: Pin<&mut Self>, enabled: bool);
 
         /// 通过 XDG Desktop Portal 调起系统原生目录选择器
         #[qinvokable]
@@ -712,6 +742,12 @@ pub struct KichiRust {
     pub(crate) download_queued: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
+    pub(crate) download_parallel: i32,
+    pub(crate) download_connections: i32,
+    pub(crate) download_rate_mib: i32,
+    pub(crate) auto_resume_downloads: bool,
+    /// 启动时自动续跑标记是否已经处理过（每进程一次）
+    pub(crate) auto_resume_checked: bool,
     /// 有文件操作（改名 / 新建 / 删除 / 移动 / 复制）在途，界面上禁用相关入口
     pub(crate) file_action_running: bool,
     /// 移动 / 复制选择器当前层的文件夹
@@ -846,6 +882,12 @@ impl Default for KichiRust {
             download_running: false,
             download_queued: 0,
             download_dir: QString::default(),
+            download_parallel: i32::try_from(crate::session::limits::DEFAULT_PARALLEL).unwrap_or(3),
+            download_connections: i32::try_from(crate::session::limits::DEFAULT_CONNECTIONS)
+                .unwrap_or(4),
+            download_rate_mib: 0,
+            auto_resume_downloads: true,
+            auto_resume_checked: false,
             file_action_running: false,
             move_targets: QVariantList::default(),
             move_targets_loading: false,
@@ -908,6 +950,11 @@ impl KichiRust {
         self.settings_path = QString::from(path.to_string_lossy().as_ref());
         let (settings, warning) = crate::settings::load(&path);
         self.settings = settings;
+        crate::session::limits::configure(
+            self.settings.download_parallel,
+            self.settings.download_connections,
+            self.settings.download_rate_mib,
+        );
         self.sync_settings_initial();
         if let Some(warning) = warning {
             // 设置坏掉不该拦住使用：提示走状态栏，其余照默认跑
@@ -932,6 +979,12 @@ impl KichiRust {
         self.window_maximized = settings.window_maximized;
         // 下载目录属性展示「实际生效的路径」，空串表示用默认
         self.download_dir = QString::from(settings.download_dir.as_str());
+        self.download_parallel = i32::try_from(settings.download_parallel)
+            .unwrap_or(crate::session::limits::DEFAULT_PARALLEL as i32);
+        self.download_connections = i32::try_from(settings.download_connections)
+            .unwrap_or(crate::session::limits::DEFAULT_CONNECTIONS as i32);
+        self.download_rate_mib = i32::try_from(settings.download_rate_mib).unwrap_or(i32::MAX);
+        self.auto_resume_downloads = settings.auto_resume_downloads;
         let backend = self.backend.restored_backend();
         self.storage_backend = QString::from(match backend {
             Some(crate::session::Backend::Keychain) => "系统钥匙串（KWallet）",

@@ -61,6 +61,7 @@ fn folder_rows(batch: u64, name: &str) -> Vec<crate::cxxqt_object::transfers::Tr
         0,
         1_790_000_000,
         7,
+        false,
     );
     parent.source_id = format!("src-{name}");
     let child_job = TransferJob {
@@ -85,6 +86,7 @@ fn folder_rows(batch: u64, name: &str) -> Vec<crate::cxxqt_object::transfers::Tr
         0,
         1_790_000_000,
         7,
+        false,
     );
     parent.skipped = 0;
     vec![parent, child]
@@ -221,6 +223,38 @@ fn active_rows_become_interrupted() {
 }
 
 #[test]
+fn pausing_or_paused_rows_restore_as_paused() {
+    for state in [TransferState::Pausing, TransferState::Paused] {
+        let mut row = file_row(1, "paused.mkv");
+        row.state = state;
+        let restored = restore(entries(&[row], &[]), 2);
+        assert_eq!(
+            restored[0].state,
+            TransferState::Paused,
+            "{state:?} 重启后要保留用户暂停意图，让用户手动继续"
+        );
+        assert!(!restored[0].state.is_active());
+        assert!(restored[0].state.is_cancellable());
+    }
+}
+
+#[test]
+fn auto_resume_marker_survives_roundtrip_until_consumed() {
+    let mut row = file_row(1, "resume.mkv");
+    row.state = TransferState::Running;
+    row.auto_resume = true;
+
+    let restored = restore(entries(&[row], &[]), 2);
+    assert_eq!(restored[0].state, TransferState::Interrupted);
+    assert!(restored[0].auto_resume, "读回后仍要知道这一行需要自动续跑");
+    let path = temp_path("auto-resume-marker");
+    save(&path, &entries(&restored, &[])).expect("保存续跑标记");
+    let loaded = load(&path);
+    assert!(loaded[0].auto_resume, "标记必须真的写进 JSON");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn finished_rows_keep_their_state() {
     for state in [
         TransferState::Done,
@@ -312,6 +346,28 @@ fn expired_batches_ignore_rows_without_timestamp() {
     row.state = TransferState::Failed;
     row.created_unix = 0;
     assert!(expired_batches(&[row], now, RETENTION_DAYS).is_empty());
+}
+
+#[test]
+fn expired_batches_keep_paused_work_even_when_old() {
+    let now = 1_800_000_000;
+    let day = 24 * 3600;
+    let mut paused = folder_rows(1, "暂停的剧集");
+    paused[0].state = TransferState::Paused;
+    paused[1].state = TransferState::Paused;
+    paused[0].created_unix = now - 100 * day;
+    paused[1].created_unix = now - 100 * day;
+
+    let mut old_failed = file_row(2, "old-failed.mkv");
+    old_failed.state = TransferState::Failed;
+    old_failed.created_unix = now - 100 * day;
+
+    let expired = expired_batches(
+        &[paused[0].clone(), paused[1].clone(), old_failed],
+        now,
+        RETENTION_DAYS,
+    );
+    assert_eq!(expired, vec![2], "暂停批次无论多久都要留给用户继续");
 }
 
 #[test]
@@ -499,6 +555,7 @@ fn prune_trees_drops_batches_that_left_the_record_table() {
             0,
             1_790_000_000,
             3,
+            false,
         ))
     });
     with_trees(|trees| {
@@ -552,6 +609,7 @@ fn write_now_mirrors_the_record_table() {
             0,
             1_790_000_000,
             3,
+            false,
         ))
     });
     let target = StoreTarget {

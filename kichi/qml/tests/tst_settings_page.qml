@@ -13,7 +13,7 @@ TestCase {
     when: windowShown
     // 足够高，让「账号」一节整个落在可视区内（否则 mouseClick 点不到）
     width: 1000
-    height: 1200
+    height: 2200
 
     // 替代 Kichi 桥接对象：只提供设置页读写的属性 / 方法。
     QtObject {
@@ -25,11 +25,16 @@ TestCase {
         property string playerDefaultArgs: "--no-border"
         property string playerArgs: ""
         property string downloadDir: ""
+        property int downloadParallel: 3
+        property int downloadConnections: 4
+        property int downloadRateMib: 0
+        property bool autoResumeDownloads: true
         property bool notifyEnabled: true
         property bool closeToTray: false
         property string storageBackend: "KWallet"
         property string settingsPath: "/tmp/kichi-settings.toml"
         property int chooseDownloadDirCalls: 0
+        property int openDownloadDirCalls: 0
 
         // SettingsPlayback 监听后端的 `changed`（设置从别处刷新时同步控件）
         signal changed()
@@ -42,8 +47,12 @@ TestCase {
         }
         function resetPlayer() {}
         function setDownloadDir(value) { downloadDir = value }
+        function setDownloadParallel(value) { downloadParallel = value }
+        function setDownloadConnections(value) { downloadConnections = value }
+        function setDownloadRateMib(value) { downloadRateMib = value }
+        function setAutoResumeDownloads(value) { autoResumeDownloads = value }
         function chooseDownloadDir() { chooseDownloadDirCalls += 1 }
-        function openDownloadDir() {}
+        function openDownloadDir() { openDownloadDirCalls += 1 }
         function setNotifyEnabled(value) { notifyEnabled = value }
         function setCloseToTray(value) { closeToTray = value }
     }
@@ -57,7 +66,7 @@ TestCase {
 
     function init() {
         page = pageComponent.createObject(parent, {
-            width: 1000, height: 1200, backend: backend
+            width: 1000, height: 2200, backend: backend
         })
         verify(page !== null, "SettingsPage 创建失败")
     }
@@ -152,5 +161,30 @@ TestCase {
         wait(40)
 
         compare(backend.chooseDownloadDirCalls, 1, "点一次只请求一次系统选择器")
+    }
+
+    function test_download_throughput_controls_are_wired() {
+        var parallel = findChild(page, "settingsDownloadParallel")
+        var connections = findChild(page, "settingsDownloadConnections")
+        var rate = findChild(page, "settingsDownloadRate")
+        var autoResume = findChild(page, "settingsAutoResumeDownloads")
+        verify(parallel !== null)
+        verify(connections !== null)
+        verify(rate !== null)
+        verify(autoResume !== null)
+
+        parallel.value = 5
+        parallel.valueModified()
+        connections.value = 6
+        connections.valueModified()
+        rate.value = 12
+        rate.valueModified()
+        autoResume.checked = false
+        autoResume.toggled()
+
+        compare(backend.downloadParallel, 5)
+        compare(backend.downloadConnections, 6)
+        compare(backend.downloadRateMib, 12)
+        compare(backend.autoResumeDownloads, false)
     }
 }

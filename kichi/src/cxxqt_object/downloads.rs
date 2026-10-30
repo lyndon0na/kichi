@@ -172,11 +172,21 @@ impl qobject::Kichi {
 
     /// 取消所有未结束的批次（排队中的直接放掉，正在跑的等线程收尾；已下完的文件保留）。
     pub fn cancel_downloads(mut self: Pin<&mut Self>) {
-        queue::cancel_all();
+        let paused = transfers::paused_batches();
+        let queued = queue::cancel_all();
         // 立刻反映到记录表：正在下的那条与排队中的都变「已取消」，
         // 不用等下载线程读到取消标志（网络卡住时可能要等当前读返回）。
         // `downloadRunning` 由调度器的收尾推进，不在这里清。
         transfers::cancel_active("");
+        // 暂停批次已经不在调度器里；未完成子行也要取消并删掉断点。
+        for batch in paused {
+            transfers::cancel_paused_batch(batch);
+        }
+        // 排队批次没有线程替它们收尾；包括「暂停后继续又马上取消」的情况，
+        // 旧 part 必须在这里同步清掉。
+        for batch in queued {
+            transfers::discard_batch_parts(batch);
+        }
         self.as_mut().set_message("正在取消下载……", false);
         self.as_mut().sync_transfers();
     }
@@ -188,20 +198,120 @@ impl qobject::Kichi {
             self.as_mut().set_message("这条记录已经不在进行中", false);
             return;
         };
-        if !queue::cancel_transfer(target.batch, target.index, target.whole_batch) {
-            self.as_mut().set_message("这条记录已经结束", false);
+        if target.state == transfers::TransferState::Paused {
+            if !target.whole_batch {
+                self.as_mut()
+                    .set_message("请在文件夹总行上取消整个暂停任务", false);
+                return;
+            }
+            transfers::cancel_paused_batch(target.batch);
+            self.as_mut()
+                .set_message(&format!("已取消并清理断点：{}", target.name), false);
+            self.as_mut().sync_transfers();
             return;
         }
+        let outcome = match queue::cancel_transfer(target.batch, target.index, target.whole_batch) {
+            Some(outcome) => outcome,
+            None => {
+                self.as_mut().set_message("这条记录已经结束", false);
+                return;
+            }
+        };
         if target.whole_batch {
             transfers::cancel_batch(target.batch, "");
             self.as_mut()
                 .set_message(&format!("正在取消：{}", target.name), false);
+            if outcome == queue::CancelOutcome::Queued {
+                transfers::discard_batch_parts(target.batch);
+            }
         } else {
             transfers::cancel_file(target.batch, target.index);
             self.as_mut()
                 .set_message(&format!("正在取消：{}", target.name), false);
+            if outcome == queue::CancelOutcome::Queued {
+                transfers::discard_file_part(target.batch, target.index);
+            }
         }
         self.as_mut().advance_downloads();
+    }
+
+    /// 暂停一个顶层传输批次。子文件级暂停不提供。
+    pub fn pause_transfer(mut self: Pin<&mut Self>, key: QString) {
+        let key = key.to_string();
+        let Some(target) = transfers_actions::cancel_target(&key) else {
+            self.as_mut().set_message("这条记录已经不能暂停", false);
+            return;
+        };
+        if !target.whole_batch {
+            self.as_mut()
+                .set_message("请暂停整个文件夹，不能在子文件上单独暂停", false);
+            return;
+        }
+        if target.state == transfers::TransferState::Paused {
+            self.as_mut().set_message("这个任务已经暂停", false);
+            return;
+        }
+        match queue::pause_transfer(target.batch) {
+            queue::PauseOutcome::Queued => {
+                transfers::pause_queued(target.batch);
+                self.as_mut()
+                    .set_message(&format!("已暂停：{}", target.name), false);
+            }
+            queue::PauseOutcome::Running => {
+                transfers::mark_pausing(target.batch);
+                self.as_mut()
+                    .set_message(&format!("正在暂停：{}", target.name), false);
+            }
+            queue::PauseOutcome::NotCurrent => {
+                self.as_mut().set_message("这条记录已经结束", false);
+            }
+        }
+        self.as_mut().advance_downloads();
+    }
+
+    /// 继续一个已暂停的顶层批次；复用原批次、原记录和原下载目录。
+    pub fn resume_transfer(mut self: Pin<&mut Self>, key: QString) {
+        let key = key.to_string();
+        let Some(target) = transfers_actions::resume_target(&key) else {
+            self.as_mut().set_message("这条记录当前不能继续", false);
+            return;
+        };
+        let name = target.entry.name.clone();
+        let batch = target.batch;
+        if !queue::reserve_resume(target) {
+            self.as_mut()
+                .set_message("这个条目已有下载任务在排队或运行", false);
+            return;
+        }
+        transfers::resume_paused(batch);
+        self.as_mut().set_message(&format!("已继续：{name}"), false);
+        self.as_mut().advance_downloads();
+    }
+
+    /// 启动恢复登录态后消费正常退出留下的自动续跑标记（整个进程只调用一次）。
+    pub(crate) fn auto_resume_restored(mut self: Pin<&mut Self>) {
+        let targets = transfers_actions::take_auto_resume();
+        // 无论设置是否开启、是否成功入队，都先把标记清掉并落盘。
+        flush_history();
+        if !self.settings.auto_resume_downloads || targets.is_empty() {
+            self.as_mut().sync_transfers();
+            return;
+        }
+        let mut resumed = 0usize;
+        for target in targets {
+            let batch = target.batch;
+            if queue::reserve_resume(target) {
+                transfers::resume_paused(batch);
+                resumed += 1;
+            }
+        }
+        if resumed > 0 {
+            self.as_mut()
+                .set_message(&format!("已自动继续 {resumed} 项未完成传输"), false);
+            self.as_mut().advance_downloads();
+        } else {
+            self.as_mut().sync_transfers();
+        }
     }
 
     /// 在文件管理器里打开下载目录（没建就顺手建好）。
@@ -329,6 +439,7 @@ impl qobject::Kichi {
         batch: u64,
         result: Result<queue_collect::Collected, Failure>,
         cancelled: bool,
+        paused: bool,
         my_epoch: u64,
     ) {
         // 期间退出过登录：这一批属于上个会话（在途行已落成「已中断」），只还调度槽、不碰记录。
@@ -338,7 +449,10 @@ impl qobject::Kichi {
             self.as_mut().advance_downloads();
             return;
         }
-        if let Some(collected) = self.as_mut().settle_collected(batch, result, cancelled) {
+        if let Some(collected) = self
+            .as_mut()
+            .settle_collected(batch, result, cancelled, paused)
+        {
             let total = collected.files.len();
             let session = self.backend.session.clone();
             match queue::start_download(&session, batch, collected) {
@@ -358,7 +472,9 @@ impl qobject::Kichi {
                     self.as_mut().set_message("", false);
                 }
                 // 这一批已不是当前批次 / 期间被取消：记录已收尾，下面照常推进
-                queue::StartOutcome::NotCurrent | queue::StartOutcome::Cancelled => {}
+                queue::StartOutcome::NotCurrent
+                | queue::StartOutcome::Cancelled
+                | queue::StartOutcome::Paused => {}
             }
         }
         // 不管这一批是开跑、失败还是空文件夹，都要让后面排队的顶上
@@ -371,8 +487,16 @@ impl qobject::Kichi {
         batch: u64,
         result: Result<queue_collect::Collected, Failure>,
         cancelled: bool,
+        paused: bool,
     ) -> Option<queue_collect::Collected> {
         let failure = match result {
+            _ if paused => {
+                // 先于取消分支：暂停同样会置停止标志，但不能删断点或写成已取消。
+                transfers::mark_paused(batch);
+                let _ = queue::release(batch);
+                self.as_mut().sync_transfers();
+                return None;
+            }
             _ if cancelled => {
                 // 用户主动取消：不弹系统通知
                 transfers::cancel_batch(batch, "");

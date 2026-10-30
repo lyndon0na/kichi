@@ -57,7 +57,19 @@ impl qobject::Kichi {
 
     /// 启动恢复后的补全（QML 界面就绪时调用一次）。
     pub fn warm_up(mut self: Pin<&mut Self>) {
-        if self.auth_state.to_string() == "signedIn" && self.busy {
+        let restored = self.auth_state.to_string() == "signedIn" && self.busy;
+        if !self.auto_resume_checked {
+            self.as_mut().rust_mut().auto_resume_checked = true;
+            if restored {
+                self.as_mut().auto_resume_restored();
+            } else {
+                // 启动时没有恢复登录态（无令牌 / 已过期）：手动登录不该误续旧任务。
+                super::transfers::clear_auto_resume();
+                super::downloads::flush_history();
+                self.as_mut().sync_transfers();
+            }
+        }
+        if restored {
             self.as_mut().refresh_identity_and_quota();
             self.as_mut().refresh_files();
             self.as_ref().start_task_polling();
@@ -127,6 +139,7 @@ impl qobject::Kichi {
     /// `quitRequested`），所以下载历史的强制写盘也挂在这里：
     /// 进程直接结束前把记录表落成最后一次（ADR 0014）。
     pub fn shutdown_tray(&self) {
+        super::transfers::mark_auto_resume();
         super::downloads::flush_history();
         super::tray::stop();
     }

@@ -451,6 +451,8 @@ fn read_shard(
                 crate::format::size(remaining)
             ));
         }
+        // 顺序下载和所有分片共享同一个全局限速桶。
+        let throttled = super::super::throttle::consume(cancel, read);
         let offset = state.start + done;
         if let Err(err) = file.write_all_at(&buffer[..read], offset) {
             return ReadShard::Local(format!("写入本地文件失败：{err}"));
@@ -458,5 +460,8 @@ fn read_shard(
         state.done.store(done + read as u64, Ordering::SeqCst);
         (callbacks.progress)(shared.done_bytes(), Some(shared.total));
         shared.save_index_if_due();
+        if !throttled {
+            return ReadShard::Cancelled;
+        }
     }
 }

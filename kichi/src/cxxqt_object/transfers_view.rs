@@ -90,6 +90,10 @@ pub(crate) fn batch_stats(records: &[Transfer], batch: u64) -> BatchStats {
             TransferState::Failed => stats.failed += 1,
             TransferState::Cancelled => stats.cancelled += 1,
             TransferState::Queued | TransferState::Preparing => {}
+            // 暂停保留已下载字节，父行进度条停在当前位置
+            TransferState::Pausing | TransferState::Paused => {
+                stats.progress_bytes += child.bytes;
+            }
             // 上次没下完：既不算成功也不算失败，父行保持「已中断」
             TransferState::Interrupted => {}
         }
@@ -200,6 +204,8 @@ fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> S
                 .unwrap_or_else(|| (stats.finished() + 1).min(stats.total));
             format!("第 {position}/{} 个", stats.total)
         }
+        TransferState::Pausing => "正在暂停…".to_owned(),
+        TransferState::Paused => "已暂停，已下载的进度会保留".to_owned(),
         TransferState::Done => match folder_download_path(record) {
             Some(path) => format!("{} 个文件 · 保存到 {}", stats.total, path.display()),
             None => format!("{} 个文件", stats.total),
@@ -245,6 +251,7 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
         TransferState::Running => percent.unwrap_or(-1),
         TransferState::Failed | TransferState::Cancelled => percent.unwrap_or(0),
         TransferState::Queued | TransferState::Preparing => 0,
+        TransferState::Pausing | TransferState::Paused => percent.unwrap_or(0),
         // 上次下到一半：进度条停在历史位置，不假装 0
         TransferState::Interrupted => percent.unwrap_or(0),
     };

@@ -220,6 +220,8 @@ pub(crate) fn batch_rate_info(records: &[Transfer], batch: u64, now: Instant) ->
                     .zip(record.total)
                     .map(|(sum, total)| sum.saturating_add(total));
             }
+            // 暂停 / 正在暂停不推进速度或 ETA；已下载字节由结构快照保留。
+            TransferState::Pausing | TransferState::Paused => {}
         }
     }
     let Some(running) = running else {

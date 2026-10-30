@@ -112,11 +112,16 @@ pub(super) fn save_empty_file(
         return Err(Failure::Other(format!("写入本地文件失败：{err}")));
     }
     let commit = commit_lock();
+    if cancel.is_paused() {
+        drop(file);
+        let _ = std::fs::remove_file(&part_path);
+        return Err(Failure::Other(cancel.stop_reason().to_owned()));
+    }
     if cancel.is_abandoned() {
         drop(commit);
         drop(file);
         let _ = std::fs::remove_file(&part_path);
-        return Err(Failure::Other("下载已取消".to_owned()));
+        return Err(Failure::Other(cancel.stop_reason().to_owned()));
     }
     drop(file);
     let renamed = std::fs::rename(&part_path, &final_path);
@@ -187,14 +192,15 @@ impl Part {
     /// 取消 / 登出导致本次中止。
     ///
     /// - 登出（abandon）：刷新索引并保留 part，下次登录续传；
+    /// - 用户暂停：刷新索引并保留 part，继续时从原位置接上；
     /// - 用户取消：删 part + 忘索引（ADR 0011 不变）。
     pub(super) fn abort(self, file_id: &str, cancel: &Cancel) -> Failure {
-        if cancel.is_abandoned() {
+        if cancel.preserves_part() {
             self.remember(file_id);
         } else {
             self.cleanup(file_id);
         }
-        Failure::Other("下载已取消".to_owned())
+        Failure::Other(cancel.stop_reason().to_owned())
     }
 }
 
@@ -245,9 +251,9 @@ pub(super) fn prepare_part(
             drop(file);
             // sync 后与登出作废互斥：命中就原样保留 part + 索引，下次登录直接改名
             let commit = commit_lock();
-            if cancel.is_abandoned() {
+            if cancel.preserves_part() {
                 drop(commit);
-                return Err(Failure::Other("下载已取消".to_owned()));
+                return Err(Failure::Other(cancel.stop_reason().to_owned()));
             }
             let renamed = finalize_part(&part_path, &final_path);
             drop(commit);
@@ -351,11 +357,16 @@ pub(super) fn read_into_part<S: Read>(
         if read == 0 {
             break;
         }
+        // 令牌桶跨界共享；取消发生在等待中时，这一块已经收到的数据仍先写盘。
+        let throttled = super::throttle::consume(cancel, read);
         if let Err(err) = part.file.write_all(&buffer[..read]) {
             return ReadOutcome::Local(format!("写入本地文件失败：{err}"));
         }
         part.offset += read as u64;
         progress(part.offset, part.total);
+        if !throttled {
+            return ReadOutcome::Cancelled;
+        }
     }
     match part.total {
         Some(total) if part.offset < total => ReadOutcome::Retryable(format!(

@@ -362,6 +362,34 @@ pub fn forget(id: &str) {
     }
 }
 
+/// 用户取消一条未完成下载：删掉指定下载根目录下的 `.kichi-part` 和索引项。
+///
+/// 只处理 `id` 相同且 part 位于 `target_dir` 之下的条目，避免同名 id 或换过
+/// 下载目录时误删别处文件。已完成文件没有 part，传进来的 id 自然不会命中。
+pub fn discard(id: &str, target_dir: &Path) {
+    let _guard = lock();
+    let path = paths::partials_path();
+    let mut entries = load(&path);
+    let before = entries.len();
+    entries.retain(|entry| {
+        if entry.id != id || !entry.part_path().starts_with(target_dir) {
+            return true;
+        }
+        let part = entry.part_path();
+        if let Err(err) = std::fs::remove_file(&part) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[kichi] 删除下载断点失败（{}）：{err}", part.display());
+            }
+        }
+        false
+    });
+    if entries.len() != before {
+        if let Err(err) = save(&path, &entries) {
+            eprintln!("[kichi] 更新断点索引失败：{err}");
+        }
+    }
+}
+
 fn lookup_in(path: &Path, id: &str, target_dir: &Path) -> Option<PartialEntry> {
     load(path)
         .into_iter()

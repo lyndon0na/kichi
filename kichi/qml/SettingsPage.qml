@@ -42,64 +42,11 @@ Item {
                 backend: page.backend
             }
 
-            KSettingsGroup {
-                title: qsTr("下载")
+            SettingsDownloads {
+                objectName: "settingsDownloads"
                 Layout.fillWidth: true
                 Layout.topMargin: theme.gapXl
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    Layout.margins: theme.gapLg
-                    spacing: theme.gapXs
-
-                    Label {
-                        text: qsTr("下载目录")
-                        font.pixelSize: theme.fontBody
-                        font.weight: Font.Medium
-                        color: theme.textPrimary
-                    }
-
-                    Label {
-                        text: qsTr("留空使用 ~/Downloads；修改后立即生效。")
-                        font.pixelSize: theme.fontMeta
-                        color: theme.textMuted
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: theme.gapSm
-
-                        KTextField {
-                            id: downloadField
-                            objectName: "settingsDownloadDir"
-                            Layout.fillWidth: true
-                            selectByMouse: true
-                            placeholderText: qsTr("留空使用 ~/Downloads")
-                            text: page.backend ? page.backend.downloadDir : ""
-                            onEditingFinished: page.applyDownloadDir()
-                        }
-
-                        KButton {
-                            objectName: "settingsChooseDownloadDir"
-                            text: qsTr("选择目录")
-                            variant: "secondary"
-                            iconName: "folder"
-                            onClicked: {
-                                if (page.backend)
-                                    page.backend.chooseDownloadDir()
-                            }
-                        }
-
-                        KButton {
-                            text: qsTr("打开目录")
-                            variant: "ghost"
-                            onClicked: {
-                                if (page.backend)
-                                    page.backend.openDownloadDir()
-                            }
-                        }
-                    }
-                }
+                backend: page.backend
             }
 
             KSettingsGroup {
@@ -179,19 +126,4 @@ Item {
         }
     }
 
-    Connections {
-        target: page.backend
-        function onChanged() {
-            if (!downloadField.activeFocus)
-                downloadField.text = page.backend ? page.backend.downloadDir : ""
-        }
-    }
-
-    function applyDownloadDir() {
-        if (!page.backend)
-            return
-        page.backend.setDownloadDir(downloadField.text)
-        // 后端可能拒绝非法路径；读回实际生效值。
-        downloadField.text = page.backend.downloadDir
-    }
 }

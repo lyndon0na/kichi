@@ -33,6 +33,10 @@ pub(crate) enum TransferState {
     /// 轮到了、正在读目录结构（只有文件夹批次的首次展开）
     Preparing,
     Running,
+    /// 用户已请求暂停，下载线程正在收尾
+    Pausing,
+    /// 已暂停：保留断点，不占调度槽，可继续或取消
+    Paused,
     Done,
     Failed,
     Cancelled,
@@ -42,12 +46,25 @@ pub(crate) enum TransferState {
 }
 
 impl TransferState {
-    /// 能否取消 / 占调度槽。**不含** `Interrupted`：那一轮下载已经不存在了。
+    /// 是否占用调度槽 / 计入侧栏「传输中」。
+    ///
+    /// **不含** `Paused`：暂停任务不占调度槽，也不该让侧栏一直显示在传输。
+    /// **不含** `Interrupted`：那一轮下载已经不存在了。
     ///
     /// 写成显式 `match`（不用 `matches!`）：将来加状态时编译器会提醒这里漏了分支。
     pub(crate) fn is_active(self) -> bool {
         match self {
-            Self::Queued | Self::Preparing | Self::Running => true,
+            Self::Queued | Self::Preparing | Self::Running | Self::Pausing => true,
+            Self::Paused | Self::Done | Self::Failed | Self::Cancelled | Self::Interrupted => false,
+        }
+    }
+
+    /// 是否还能被用户取消。
+    ///
+    /// `Paused` 不占调度槽，但仍保留断点并允许显式取消（取消时要删 part）。
+    pub(crate) fn is_cancellable(self) -> bool {
+        match self {
+            Self::Queued | Self::Preparing | Self::Running | Self::Pausing | Self::Paused => true,
             Self::Done | Self::Failed | Self::Cancelled | Self::Interrupted => false,
         }
     }
@@ -59,7 +76,12 @@ impl TransferState {
     pub(crate) fn is_finished(self) -> bool {
         match self {
             Self::Done | Self::Failed | Self::Cancelled => true,
-            Self::Queued | Self::Preparing | Self::Running | Self::Interrupted => false,
+            Self::Queued
+            | Self::Preparing
+            | Self::Running
+            | Self::Pausing
+            | Self::Paused
+            | Self::Interrupted => false,
         }
     }
 
@@ -68,6 +90,8 @@ impl TransferState {
             Self::Queued => "排队中",
             Self::Preparing => "准备中",
             Self::Running => "下载中",
+            Self::Pausing => "正在暂停",
+            Self::Paused => "已暂停",
             Self::Done => "已完成",
             Self::Failed => "失败",
             Self::Cancelled => "已取消",
@@ -80,6 +104,8 @@ impl TransferState {
             Self::Queued => "queued",
             Self::Preparing => "preparing",
             Self::Running => "running",
+            Self::Pausing => "pausing",
+            Self::Paused => "paused",
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -161,6 +187,8 @@ pub(crate) struct Transfer {
     pub(crate) created_unix: i64,
     /// 进程启动序号：落盘后用来识别「上一轮没跑完的行」
     pub(crate) session: u64,
+    /// 正常退出时仍在排队 / 准备 / 下载，下一轮恢复登录态后自动续跑
+    pub(crate) auto_resume: bool,
 }
 
 impl Transfer {
@@ -335,6 +363,7 @@ pub(super) fn restore_row(
     skipped: usize,
     created_unix: i64,
     session: u64,
+    auto_resume: bool,
 ) -> Transfer {
     Transfer {
         batch,
@@ -353,6 +382,7 @@ pub(super) fn restore_row(
         skipped,
         created_unix,
         session,
+        auto_resume,
     }
 }
 
@@ -384,6 +414,73 @@ pub(crate) fn finish_folder_empty(batch: u64) {
 /// 一条开始下载。
 pub(crate) fn begin(batch: u64, index: usize) {
     with_records(|records| begin_in(records, batch, index));
+}
+
+/// 用户点了暂停：先把仍归属于下载线程的行标成「正在暂停」。
+pub(crate) fn mark_pausing(batch: u64) {
+    with_records(|records| mark_pausing_in(records, batch));
+}
+
+/// 下载线程已收尾：把仍在途的行落成「已暂停」。
+pub(crate) fn mark_paused(batch: u64) {
+    with_records(|records| {
+        mark_paused_in(records, batch);
+        // 文件夹可能刚好在暂停请求到达时下完最后一个文件；父行该落成完成，
+        // 不能留下「已暂停但没有可继续子项」的死状态。
+        refresh_parent_state(records, batch);
+    });
+}
+
+/// 排队中的批次还没起线程，可以一步进入「已暂停」。
+pub(crate) fn pause_queued(batch: u64) {
+    with_records(|records| {
+        pause_queued_in(records, batch);
+        refresh_parent_state(records, batch);
+    });
+}
+
+/// 继续暂停批次：记录回到「排队中」，由调度器重新起线程。
+pub(crate) fn resume_paused(batch: u64) {
+    with_records(|records| resume_paused_in(records, batch));
+}
+
+/// 正常退出前给仍在排队 / 准备 / 下载的行打自动续跑标记。
+///
+/// 暂停、失败、取消、已中断和已完成行一律清掉，恢复时只消费明确标过的行。
+pub(crate) fn mark_auto_resume() {
+    with_records(|records| mark_auto_resume_in(records));
+}
+
+/// 启动时清掉自动续跑标记：必须在真正启动前写盘，避免随后崩溃又续一轮。
+pub(crate) fn clear_auto_resume() {
+    with_records(|records| clear_auto_resume_in(records));
+}
+
+fn mark_auto_resume_in(records: &mut [Transfer]) {
+    let auto_batches: Vec<u64> = records
+        .iter()
+        .filter(|record| {
+            !record.child
+                && matches!(
+                    record.state,
+                    TransferState::Queued | TransferState::Preparing | TransferState::Running
+                )
+        })
+        .map(|record| record.batch)
+        .collect();
+    for record in records {
+        record.auto_resume = auto_batches.contains(&record.batch)
+            && matches!(
+                record.state,
+                TransferState::Queued | TransferState::Preparing | TransferState::Running
+            );
+    }
+}
+
+fn clear_auto_resume_in(records: &mut [Transfer]) {
+    for record in records {
+        record.auto_resume = false;
+    }
 }
 
 /// 进度更新（只在 Running 时接受，取消后迟到的回调不复活记录）。
@@ -427,9 +524,78 @@ pub(crate) fn cancel_file(batch: u64, index: usize) {
     with_records(|records| cancel_file_in(records, batch, index));
 }
 
+/// 当前所有已暂停的顶层批次。
+pub(crate) fn paused_batches() -> Vec<u64> {
+    with_records(|records| {
+        let mut batches: Vec<u64> = records
+            .iter()
+            .filter(|record| !record.child && record.state == TransferState::Paused)
+            .map(|record| record.batch)
+            .collect();
+        batches.sort_unstable();
+        batches.dedup();
+        batches
+    })
+}
+
+/// 这个源条目是否已有一批处于暂停态。
+///
+/// `Pausing` 仍占调度器 active 槽，由调度器的查重负责；`Paused` 已释放调度槽，
+/// 但同一云端条目仍不能再排一批，否则两批会抢同一个 `.kichi-part`。
+pub(crate) fn has_paused_source(source_id: &str) -> bool {
+    with_records(|records| {
+        records.iter().any(|record| {
+            !record.child && record.source_id == source_id && record.state == TransferState::Paused
+        })
+    })
+}
+
+/// 取消一个已暂停批次：未完成行全部改成已取消，并删掉它们的断点。
+pub(crate) fn cancel_paused_batch(batch: u64) {
+    with_records(|records| {
+        for record in records.iter_mut().filter(|record| record.batch == batch) {
+            if record.state != TransferState::Done {
+                record.state = TransferState::Cancelled;
+                record.detail.clear();
+                record.speed = SpeedMeter::default();
+                record.note = NoteState::default();
+            }
+        }
+    });
+    discard_batch_parts(batch);
+}
+
+/// 删掉某一批里所有未完成文件行的断点；已完成文件没有 part，不受影响。
+pub(crate) fn discard_batch_parts(batch: u64) {
+    discard_parts(batch, None);
+}
+
+/// 只清一个文件夹子文件在暂停 / 排队取消后的断点。
+pub(crate) fn discard_file_part(batch: u64, index: usize) {
+    discard_parts(batch, Some(index));
+}
+
+fn discard_parts(batch: u64, index: Option<usize>) {
+    let jobs = with_records(|records| {
+        records
+            .iter()
+            .filter(|record| {
+                record.batch == batch
+                    && index.is_none_or(|index| record.index == index)
+                    && record.job.kind == EntryKind::File
+                    && record.state != TransferState::Done
+            })
+            .map(|record| (record.job.id.clone(), record.job.dir.clone()))
+            .collect::<Vec<_>>()
+    });
+    for (id, dir) in jobs {
+        crate::session::partials::discard(&id, &dir);
+    }
+}
+
 fn cancel_file_in(records: &mut [Transfer], batch: u64, index: usize) {
     let changed = match find_file(records, batch, index) {
-        Some(record) if record.state.is_active() => {
+        Some(record) if record.state.is_cancellable() => {
             record.state = TransferState::Cancelled;
             record.detail.clear();
             true
@@ -452,7 +618,13 @@ pub(crate) fn interrupt_active() {
 
 fn interrupt_active_in(records: &mut [Transfer]) {
     for record in records.iter_mut() {
-        if record.state.is_active() {
+        if matches!(
+            record.state,
+            TransferState::Queued
+                | TransferState::Preparing
+                | TransferState::Running
+                | TransferState::Pausing
+        ) {
             record.state = TransferState::Interrupted;
             record.detail.clear();
         }
@@ -569,6 +741,7 @@ pub(super) fn row_from(
         skipped: 0,
         created_unix,
         session,
+        auto_resume: false,
     }
 }
 
@@ -661,6 +834,8 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
     let mut children = 0usize;
     let mut active = false;
     let mut running = false;
+    let mut pausing = false;
+    let mut paused = false;
     let mut failed = false;
     let mut cancelled = false;
     let mut interrupted = false;
@@ -678,6 +853,14 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
             TransferState::Running => {
                 active = true;
                 running = true;
+                all_done = false;
+            }
+            TransferState::Pausing => {
+                pausing = true;
+                all_done = false;
+            }
+            TransferState::Paused => {
+                paused = true;
                 all_done = false;
             }
             TransferState::Done => {}
@@ -700,13 +883,17 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
         return;
     }
 
-    records[parent].state = if active {
+    records[parent].state = if pausing {
+        TransferState::Pausing
+    } else if active {
         // 读目录刚结束、子行还没开始时保持「准备中」
         if running || parent_state != TransferState::Preparing {
             TransferState::Running
         } else {
             TransferState::Preparing
         }
+    } else if paused {
+        TransferState::Paused
     } else if interrupted {
         TransferState::Interrupted
     } else if failed {
@@ -732,9 +919,68 @@ fn mark_preparing_in(records: &mut [Transfer], batch: u64) {
     }
 }
 
+fn mark_pausing_in(records: &mut [Transfer], batch: u64) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if matches!(
+            record.state,
+            TransferState::Queued | TransferState::Preparing | TransferState::Running
+        ) {
+            record.state = TransferState::Pausing;
+            record.detail.clear();
+        }
+    }
+}
+
+fn mark_paused_in(records: &mut [Transfer], batch: u64) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if matches!(
+            record.state,
+            TransferState::Queued
+                | TransferState::Preparing
+                | TransferState::Running
+                | TransferState::Pausing
+        ) {
+            record.state = TransferState::Paused;
+            record.detail.clear();
+        }
+    }
+}
+
+fn pause_queued_in(records: &mut [Transfer], batch: u64) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if matches!(
+            record.state,
+            TransferState::Queued | TransferState::Preparing
+        ) {
+            record.state = TransferState::Paused;
+            record.detail.clear();
+        }
+    }
+}
+
+fn resume_paused_in(records: &mut [Transfer], batch: u64) {
+    for record in records.iter_mut().filter(|record| record.batch == batch) {
+        if matches!(
+            record.state,
+            TransferState::Paused | TransferState::Interrupted
+        ) {
+            record.state = TransferState::Queued;
+            record.detail.clear();
+            record.speed = SpeedMeter::default();
+            record.note = NoteState::default();
+        }
+    }
+}
+
 fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
     for record in records.iter_mut().filter(|record| record.batch == batch) {
-        if record.state.is_active() {
+        if matches!(
+            record.state,
+            TransferState::Queued
+                | TransferState::Preparing
+                | TransferState::Running
+                | TransferState::Pausing
+        ) {
             record.state = TransferState::Failed;
             record.detail = reason.to_owned();
         }
@@ -875,7 +1121,10 @@ fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &Path)
 
 fn finish_err_in(records: &mut [Transfer], batch: u64, index: usize, reason: &str) {
     let changed = if let Some(record) = find_file(records, batch, index) {
-        if record.state.is_active() {
+        if matches!(
+            record.state,
+            TransferState::Queued | TransferState::Preparing | TransferState::Running
+        ) {
             record.state = TransferState::Failed;
             record.detail = reason.to_owned();
             true
@@ -895,7 +1144,7 @@ fn cancel_active_in(records: &mut [Transfer], batch: Option<u64>, reason: &str) 
         if batch.is_some_and(|batch| record.batch != batch) {
             continue;
         }
-        if record.state.is_active() {
+        if record.state.is_cancellable() {
             record.state = TransferState::Cancelled;
             record.detail = reason.to_owned();
         }

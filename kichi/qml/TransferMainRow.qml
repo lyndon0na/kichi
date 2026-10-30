@@ -36,6 +36,8 @@ ItemDelegate {
     property var live: ({})
 
     signal toggleRequested(string key)
+    signal pauseRequested(string key)
+    signal resumeRequested(string key)
     signal cancelRequested(string key)
     signal retryRequested(string key)
     signal revealRequested(string key)
@@ -51,11 +53,19 @@ ItemDelegate {
     readonly property bool notice: row.phase === "notice"
     readonly property bool failed: row.phase === "failed"
     readonly property bool interrupted: row.phase === "interrupted"
+    readonly property bool pausing: row.phase === "pausing"
+    readonly property bool paused: row.phase === "paused"
     readonly property bool active: pagePhaseActive(row.phase)
     readonly property bool showProgress: row.active || row.phase === "done"
+                                         || row.pausing || row.paused
                                          || row.currentProgress > 0
                                          || row.currentProgress < 0
-    readonly property bool canCancel: row.active && !row.notice
+    readonly property bool canPause: row.active && !row.pausing
+                                     && !row.child && !row.notice
+    readonly property bool canResume: row.paused && !row.child && !row.notice
+    readonly property bool canCancel: !row.notice
+                                      && ((row.pausing || row.paused)
+                                          ? !row.child : row.active)
     readonly property bool canRetry: (row.failed || row.interrupted)
                                      && (!row.folder || row.childCount === 0)
     readonly property bool canReveal: row.path.length > 0
@@ -66,6 +76,7 @@ ItemDelegate {
     readonly property string displayStatus: row.statusLabel()
     readonly property string tone: row.failed ? "danger"
         : row.interrupted ? "warning"
+        : row.pausing || row.paused ? "warning"
         : row.phase === "done" ? "success"
         : row.active ? "accent"
         : "neutral"
@@ -78,7 +89,8 @@ ItemDelegate {
     }
 
     function pagePhaseActive(phase) {
-        return phase === "queued" || phase === "preparing" || phase === "running"
+        return phase === "queued" || phase === "preparing"
+                || phase === "running" || phase === "pausing"
     }
 
     function liveField(field, fallback) {
@@ -387,6 +399,34 @@ ItemDelegate {
             RowLayout {
                 anchors.centerIn: parent
                 spacing: 2
+
+                KButton {
+                    objectName: "pauseLink"
+                    visible: row.canPause
+                    text: qsTr("暂停")
+                    variant: "ghost"
+                    implicitHeight: 26
+                    leftPadding: 7
+                    rightPadding: 7
+                    topPadding: 2
+                    bottomPadding: 2
+                    font.pixelSize: theme.fontMeta
+                    onClicked: row.pauseRequested(row.key)
+                }
+
+                KButton {
+                    objectName: "resumeLink"
+                    visible: row.canResume
+                    text: qsTr("继续")
+                    variant: "ghost"
+                    implicitHeight: 26
+                    leftPadding: 7
+                    rightPadding: 7
+                    topPadding: 2
+                    bottomPadding: 2
+                    font.pixelSize: theme.fontMeta
+                    onClicked: row.resumeRequested(row.key)
+                }
 
                 KButton {
                     objectName: "cancelLink"
