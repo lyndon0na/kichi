@@ -17,6 +17,7 @@ mod store;
 pub mod subtitle_cache;
 pub mod subtitles;
 mod tasks;
+pub mod thumbnail_cache;
 
 mod client_cache;
 mod refresh;
@@ -423,6 +424,12 @@ impl Session {
             "回收站条目超过 {} 条，暂不支持完整显示",
             MAX_LIST_PAGES * LIST_PAGE_SIZE
         )))
+    }
+
+    /// 下载一条列表缩略图（阻塞）。QML 永远看不到远程地址，只拿到缓存路径。
+    pub fn fetch_thumbnail(&self, url: &str) -> Result<Vec<u8>, Failure> {
+        let client = self.drive()?;
+        client.fetch_thumbnail(url).map_err(Failure::from)
     }
 
     /// 取当前用户并回填身份（阻塞）。

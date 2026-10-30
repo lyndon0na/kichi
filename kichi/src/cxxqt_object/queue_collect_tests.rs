@@ -25,6 +25,8 @@ fn entry(id: &str, name: &str, kind: EntryKind) -> FileEntry {
         md5: None,
         audit_flagged: false,
         media: false,
+        video: false,
+        thumbnail_url: String::new(),
     }
 }
 

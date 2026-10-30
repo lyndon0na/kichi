@@ -230,6 +230,8 @@ impl qobject::Kichi {
                 md5: None,
                 audit_flagged: false,
                 media: false,
+                video: false,
+                thumbnail_url: String::new(),
             },
             folder_id: String::new(),
             folder_path: None,
@@ -489,6 +491,8 @@ mod tests {
             md5: None,
             audit_flagged: false,
             media: kind == EntryKind::File,
+            video: false,
+            thumbnail_url: String::new(),
         }
     }
 

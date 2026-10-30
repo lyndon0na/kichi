@@ -2,6 +2,7 @@
 //!
 //! 只做“发请求 / 收 JSON”的机械工作，业务语义由 `auth` / `drive` 解释。
 
+use std::io::Read;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, RequestBuilder};
@@ -33,6 +34,8 @@ impl<'a> Body<'a> {
 #[derive(Clone)]
 pub(crate) struct HttpClient {
     client: Client,
+    /// 公开缩略图专用：不跟随重定向，确保请求始终留在允许的 CDN 主机。
+    public_client: Client,
     config: Config,
     device_id: String,
 }
@@ -45,8 +48,16 @@ impl HttpClient {
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| Error::Network(format!("无法创建 HTTP 客户端：{e}")))?;
+        let public_client = Client::builder()
+            .user_agent(&config.user_agent)
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| Error::Network(format!("无法创建缩略图 HTTP 客户端：{e}")))?;
         Ok(Self {
             client,
+            public_client,
             config,
             device_id: device_id.to_owned(),
         })
@@ -55,6 +66,52 @@ impl HttpClient {
     /// 本客户端使用的设备 id。
     pub(crate) fn device_id(&self) -> &str {
         &self.device_id
+    }
+
+    /// 下载无需鉴权的公开资源（缩略图）。
+    ///
+    /// 不携带 Bearer / captcha 头，也不把 URL 放进错误文案。只允许
+    /// `mypikpak.com` 的 HTTPS 主机，避免服务端字段异常时请求任意地址。
+    pub(crate) fn fetch_public_bytes(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, Error> {
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|_| Error::InvalidInput("缩略图地址无效".to_owned()))?;
+        if parsed.scheme() != "https" || !public_thumbnail_host(parsed.host_str()) {
+            return Err(Error::InvalidInput(
+                "缩略图地址不在允许的主机范围内".to_owned(),
+            ));
+        }
+
+        let response = self
+            .public_client
+            .get(parsed)
+            .send()
+            .map_err(|e| Error::Network(network_reason(&e)))?;
+        if !public_thumbnail_host(response.url().host_str()) {
+            return Err(Error::Other("缩略图响应来自不允许的主机".to_owned()));
+        }
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::Other(format!("缩略图下载失败（HTTP {status}）")));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > max_bytes)
+        {
+            return Err(Error::Other("缩略图超过大小上限".to_owned()));
+        }
+
+        let mut bytes = Vec::new();
+        response
+            .take(max_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| Error::Network(format!("读取缩略图失败：{e}")))?;
+        if bytes.is_empty() {
+            return Err(Error::Other("缩略图响应为空".to_owned()));
+        }
+        if bytes.len() as u64 > max_bytes {
+            return Err(Error::Other("缩略图超过大小上限".to_owned()));
+        }
+        Ok(bytes)
     }
 
     /// 发出请求并解析 JSON 响应；非 2xx 时按官方错误负载归类。
@@ -162,6 +219,14 @@ impl HttpClient {
             .map_err(|e| Error::Network(network_reason(&e)))?;
         Err(api_error(status, &text))
     }
+}
+
+fn public_thumbnail_host(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "mypikpak.com" || host.ends_with(".mypikpak.com")
 }
 
 /// 把查询参数拼到 URL 末尾；空查询返回原 URL。
@@ -325,6 +390,17 @@ mod tests {
     fn truncate_is_char_safe() {
         assert_eq!(truncate("一二三四", 2), "一二…");
         assert_eq!(truncate("ab", 2), "ab");
+    }
+
+    #[test]
+    fn public_assets_stay_on_pikpak_hosts() {
+        assert!(public_thumbnail_host(Some(
+            "sg-thumbnail-drive.mypikpak.com"
+        )));
+        assert!(public_thumbnail_host(Some("mypikpak.com")));
+        assert!(!public_thumbnail_host(Some("mypikpak.com.example.org")));
+        assert!(!public_thumbnail_host(Some("evil-mypikpak.com")));
+        assert!(!public_thumbnail_host(None));
     }
 
     #[test]

@@ -25,6 +25,8 @@ fn main() {
     player::subtitles::sweep_stale(std::time::Duration::from_secs(24 * 60 * 60));
     // 持久字幕缓存：删 30 天前的，并把总大小收到 100 MiB 以内。
     session::subtitle_cache::sweep();
+    // 文件列表缩略图：删 30 天前的，并把总大小收到 64 MiB 以内。
+    session::thumbnail_cache::sweep();
 
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();

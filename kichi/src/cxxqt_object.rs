@@ -139,6 +139,12 @@ pub mod qobject {
         #[qsignal]
         fn changed(self: Pin<&mut Self>);
 
+        /// 缩略图已落到本地缓存（`path` 是可直接给 Image 的 file:// URI）。
+        /// 失败时 `path` 为空串，QML 退回文件图标。
+        #[qsignal]
+        #[cxx_name = "thumbnailReady"]
+        fn thumbnail_ready(self: Pin<&mut Self>, id: QString, path: QString);
+
         /// 一次文件操作（改名 / 新建 / 删除）结束：动作、成功与否、给用户看的提示
         #[qsignal]
         #[cxx_name = "fileActionDone"]
@@ -182,6 +188,16 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshFiles"]
         fn refresh_files(self: Pin<&mut Self>);
+
+        /// 请求某条文件的缩略图。QML 只传 id，远程地址和缓存路径都留在 Rust 侧。
+        #[qinvokable]
+        #[cxx_name = "requestThumbnail"]
+        fn request_thumbnail(self: Pin<&mut Self>, id: QString);
+
+        /// 已缓存缩略图的本地 URI；未命中返回空串。
+        #[qinvokable]
+        #[cxx_name = "thumbnailPath"]
+        fn thumbnail_path(self: &Self, id: QString) -> QString;
 
         #[qinvokable]
         #[cxx_name = "refreshTrash"]
@@ -525,6 +541,7 @@ mod settings;
 mod shares;
 mod tasks;
 mod tasks_submit;
+mod thumbnails;
 mod transfers;
 mod transfers_actions;
 mod transfers_detail;
@@ -574,6 +591,10 @@ pub struct KichiRust {
     pub(crate) breadcrumb: QStringList,
     /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
     pub(crate) entries: Vec<kichi_core::FileEntry>,
+    /// 正在下载的缩略图 id：同一行反复重建时只发一次请求。
+    pub(crate) thumbnail_requests: std::collections::HashSet<String>,
+    /// 缩略图请求代数：退出登录后丢弃旧账号在途结果。
+    pub(crate) thumbnail_epoch: u64,
     /// 目录栈；根目录 id 为空串
     pub(crate) crumbs: Vec<Crumb>,
     /// 进 / 退目录前的目录栈快照：列表失败就回滚，面包屑别指着一个没读到的目录
@@ -758,6 +779,8 @@ impl Default for KichiRust {
             files_stale: false,
             breadcrumb,
             entries: Vec::new(),
+            thumbnail_requests: std::collections::HashSet::new(),
+            thumbnail_epoch: 0,
             crumbs: vec![Crumb::root()],
             crumb_backup: None,
             listing: false,

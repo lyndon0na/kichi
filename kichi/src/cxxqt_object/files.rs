@@ -364,6 +364,15 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
         &QString::from("playable"),
         &QVariant::from(&(entry.kind == EntryKind::File && entry.media)),
     );
+    map.insert_clone(
+        &QString::from("video"),
+        &QVariant::from(&(entry.kind == EntryKind::File && entry.video)),
+    );
+    // 只告诉界面「有没有可尝试的缩略图」，远程 URL 永远不离开 Rust。
+    map.insert_clone(
+        &QString::from("hasThumbnail"),
+        &QVariant::from(&(entry.kind == EntryKind::File && !entry.thumbnail_url.is_empty())),
+    );
     map
 }
 
@@ -383,11 +392,33 @@ mod sort_tests {
             md5: None,
             audit_flagged: false,
             media: false,
+            video: false,
+            thumbnail_url: String::new(),
         }
     }
 
     fn names(entries: &[FileEntry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn qml_map_exposes_media_flags_but_not_the_remote_url() {
+        let mut entry = entry("cover.jpg", EntryKind::File, 10, 1);
+        entry.video = true;
+        entry.thumbnail_url = "https://thumb.example/secret".to_owned();
+        let map = entry_map(&entry);
+
+        assert_eq!(
+            map.get(&QString::from("hasThumbnail"))
+                .and_then(|value| value.value::<bool>()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get(&QString::from("video"))
+                .and_then(|value| value.value::<bool>()),
+            Some(true)
+        );
+        assert!(map.get(&QString::from("thumbnailUrl")).is_none());
     }
 
     fn sample() -> Vec<FileEntry> {

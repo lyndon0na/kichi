@@ -12,7 +12,10 @@ Item {
         id: selection
         objectName: "trashSelection"
     }
-    FileListDensity { id: density }
+    FileListDensity {
+        id: density
+        objectName: "fileListDensity"
+    }
     UiMetrics { id: metrics }
     KTheme { id: theme }
 
@@ -104,7 +107,7 @@ Item {
 
                 TrashTableHeader {
                     Layout.fillWidth: true
-                    iconColumnWidth: density.iconColumnWidth
+                    thumbnailSlotWidth: density.thumbnailSlotWidth
                     deletedColumnWidth: density.modifiedColumnWidth
                     sizeColumnWidth: density.sizeColumnWidth
                     contentPadding: density.rowPadding
@@ -120,7 +123,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    spacing: 2
+                    spacing: 0
                     model: page.entries
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: KScrollBar {}
@@ -138,9 +141,11 @@ Item {
                         id: row
                         width: ListView.view.width - metrics.scrollBarSlot
                         entry: modelData
+                        backend: page.backend
                         rowIndex: index
                         highlighted: !!entry && selection.isSelected(entry.id)
-                        iconColumnWidth: density.iconColumnWidth
+                        thumbnailSlotWidth: density.thumbnailSlotWidth
+                        thumbnailSlotHeight: density.thumbnailSlotHeight
                         deletedColumnWidth: density.modifiedColumnWidth
                         sizeColumnWidth: density.sizeColumnWidth
                         columnSpacing: density.columnSpacing

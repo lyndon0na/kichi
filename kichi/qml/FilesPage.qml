@@ -34,6 +34,7 @@ Item {
     // 表头、行、搜索结果共用同一份数值
     FileListDensity {
         id: density
+        objectName: "fileListDensity"
     }
 
     // 页面尺寸常量（滚动条车道 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -112,7 +113,7 @@ Item {
                     visible: !page.searching
                     Layout.fillWidth: true
                     backend: page.backend
-                    iconColumnWidth: density.iconColumnWidth
+                    thumbnailSlotWidth: density.thumbnailSlotWidth
                     sizeColumnWidth: density.sizeColumnWidth
                     modifiedColumnWidth: density.modifiedColumnWidth
                     contentPadding: density.rowPadding
@@ -123,13 +124,14 @@ Item {
 
                 ListView {
                     id: fileList
+                    objectName: "fileList"
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    // 行与行之间留 2px：圆角悬停底不会连成一条色带。
-                    // 文件页是带表头的表格，间距再大列就会和表头对不上。
-                    spacing: 2
+                    // 文件页是平铺表格：行和表头共用 34 / 48 高度，
+                    // 只靠 1px 底部分隔线区分，不再用行间缝隙。
+                    spacing: 0
                     // 搜索视图显示结果；否则显示当前目录
                     visible: !page.searching
                     model: page.backend ? page.backend.files : []
@@ -178,7 +180,8 @@ Item {
                         entry: modelData
                         backend: page.backend
                         rowIndex: index
-                        iconColumnWidth: density.iconColumnWidth
+                        thumbnailSlotWidth: density.thumbnailSlotWidth
+                        thumbnailSlotHeight: density.thumbnailSlotHeight
                         sizeColumnWidth: density.sizeColumnWidth
                         modifiedColumnWidth: density.modifiedColumnWidth
                         columnSpacing: density.columnSpacing

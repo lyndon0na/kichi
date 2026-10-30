@@ -149,6 +149,21 @@ TestCase {
         compare(list.itemAtIndex(1).entry.id, "old")
     }
 
+    function test_rows_use_the_shared_flat_table_metrics() {
+        publish([entry("a", false)])
+        compare(list.spacing, 0)
+        var row = list.itemAtIndex(0)
+        verify(row !== null)
+        var density = findChild(page, "fileListDensity")
+        verify(density !== null)
+        compare(row.implicitHeight, density.rowHeight)
+        compare(row.background.radius, 0)
+        compare(findChild(row, "thumbnailSlot").width, 36)
+        compare(findChild(row, "fileThumbnail").width, 36)
+        compare(findChild(row, "fileThumbnail").height, 24)
+        verify(findChild(row, "trashRowDivider") !== null)
+    }
+
     function test_context_menu_uses_row_window_coordinates() {
         publish([entry("a", false)])
         var row = list.itemAtIndex(0)

@@ -13,7 +13,7 @@ Item {
     property var backend: null
     // 列宽 / 水平内边距与 FileRow 一致：实际数值由 FilesPage 同时下发，
     // 这里的默认值只是兜底（和 FileRow 的默认值保持相同）。
-    property int iconColumnWidth: 20
+    property int thumbnailSlotWidth: 36
     property int sizeColumnWidth: 96
     property int modifiedColumnWidth: 150
     property int contentPadding: 12
@@ -30,8 +30,8 @@ Item {
 
     KTheme { id: theme }
 
-    // 表头行 + 底部 1px 分隔线
-    implicitHeight: header.headerRowHeight + 1
+    // 分隔线覆盖在表头底部，不额外增加布局高度。
+    implicitHeight: header.headerRowHeight
 
     // 换列时的常用方向：名称从 A 到 Z，大小和时间都把大的 / 新的放前面
     function defaultAscending(field) {
@@ -64,171 +64,143 @@ Item {
         return header.backend.sortAscending ? "▲" : "▼"
     }
 
-    ColumnLayout {
+    RowLayout {
         anchors.fill: parent
-        spacing: 0
+        anchors.leftMargin: header.contentPadding
+        // 行宽比表头窄一个滚动条车道：右内边距同步 +10，
+        // 否则「修改时间」列头和行里的时间差 10px
+        anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
+        spacing: header.columnSpacing
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: header.contentPadding
-            // 行宽比表头窄一个滚动条车道：右内边距同步 +10，
-            // 否则「修改时间」列头和行里的时间差 10px
-            Layout.rightMargin: header.contentPadding + metrics.scrollBarSlot
-            Layout.preferredHeight: header.headerRowHeight
-            spacing: header.columnSpacing
-
-            // 图标列占位：让「名称」和行的文件名左边缘对齐
-            Item {
-                Layout.preferredWidth: header.iconColumnWidth
-                Layout.preferredHeight: 1
-            }
-
-            // —— 名称 ——
-            Item {
-                id: nameCell
-                readonly property string field: "name"
-
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                HoverHandler {
-                    id: nameHover
-                    cursorShape: Qt.PointingHandCursor
-                }
-
-                Label {
-                    anchors.fill: parent
-                    text: header.label(qsTr("名称"), nameCell.field)
-                    color: theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignLeft
-                    elide: Text.ElideRight
-                }
-
-                TapHandler {
-                    onTapped: header.toggle(nameCell.field)
-                }
-
-            }
-
-            // —— 大小 ——
-            Item {
-                id: sizeCell
-                readonly property string field: "size"
-
-                Layout.preferredWidth: header.sizeColumnWidth
-                Layout.fillHeight: true
-
-                // 列与列之间的细分隔线：表头里画就够，行里不画
-                // （行里也画会变成网格，反而更乱）。
-                // 只占表头中间一段，不顶到上下的横线——连起来就成网格了，
-                // 那是表格软件的样子，不是文件列表
-                Rectangle {
-                    width: 1
-                    height: Math.round(header.headerRowHeight * 0.45)
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: theme.divider
-                    opacity: 1
-                }
-
-                HoverHandler {
-                    id: sizeHover
-                    cursorShape: Qt.PointingHandCursor
-                }
-
-                Label {
-                    anchors.fill: parent
-                    // 右侧留出固定的箭头槽位，排序切换时表头文字不左右跳
-                    anchors.rightMargin: 14
-                    text: header.label(qsTr("大小"), sizeCell.field)
-                    color: theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignRight
-                    elide: Text.ElideRight
-                }
-
-                Label {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 14
-                    text: header.caret(sizeCell.field)
-                    color: header.backend && header.backend.sortField === sizeCell.field
-                           ? theme.accent : theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    horizontalAlignment: Text.AlignRight
-                }
-
-                TapHandler {
-                    onTapped: header.toggle(sizeCell.field)
-                }
-
-            }
-
-            // —— 修改时间 ——
-            Item {
-                id: modifiedCell
-                readonly property string field: "modified"
-
-                Layout.preferredWidth: header.modifiedColumnWidth
-                Layout.fillHeight: true
-
-                // 只占表头中间一段，不顶到上下的横线——连起来就成网格了，
-                // 那是表格软件的样子，不是文件列表
-                Rectangle {
-                    width: 1
-                    height: Math.round(header.headerRowHeight * 0.45)
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: theme.divider
-                    opacity: 1
-                }
-
-                HoverHandler {
-                    id: modifiedHover
-                    cursorShape: Qt.PointingHandCursor
-                }
-
-                Label {
-                    anchors.fill: parent
-                    anchors.rightMargin: 14
-                    text: header.label(qsTr("修改时间"), modifiedCell.field)
-                    color: theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignRight
-                    elide: Text.ElideRight
-                }
-
-                Label {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 14
-                    text: header.caret(modifiedCell.field)
-                    color: header.backend && header.backend.sortField === modifiedCell.field
-                           ? theme.accent : theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    horizontalAlignment: Text.AlignRight
-                }
-
-                TapHandler {
-                    onTapped: header.toggle(modifiedCell.field)
-                }
-
-            }
+        // 图标列占位：让「名称」和行的文件名左边缘对齐
+        Item {
+            Layout.preferredWidth: header.thumbnailSlotWidth
+            Layout.fillHeight: true
         }
 
-        Rectangle {
+        // —— 名称 ——
+        Item {
+            id: nameCell
+            readonly property string field: "name"
+
             Layout.fillWidth: true
-            implicitHeight: 1
-            color: theme.hairline
+            Layout.fillHeight: true
+
+            HoverHandler {
+                id: nameHover
+                cursorShape: Qt.PointingHandCursor
+            }
+
+            Label {
+                anchors.fill: parent
+                text: header.label(qsTr("名称"), nameCell.field)
+                color: theme.textMuted
+                font.pixelSize: header.headerPixelSize
+                font.weight: Font.DemiBold
+                verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignLeft
+                elide: Text.ElideRight
+            }
+
+            TapHandler {
+                onTapped: header.toggle(nameCell.field)
+            }
+
         }
+
+        // —— 大小 ——
+        Item {
+            id: sizeCell
+            readonly property string field: "size"
+
+            Layout.preferredWidth: header.sizeColumnWidth
+            Layout.fillHeight: true
+
+            HoverHandler {
+                id: sizeHover
+                cursorShape: Qt.PointingHandCursor
+            }
+
+            Label {
+                anchors.fill: parent
+                // 右侧留出固定的箭头槽位，排序切换时表头文字不左右跳
+                anchors.rightMargin: 14
+                text: header.label(qsTr("大小"), sizeCell.field)
+                color: theme.textMuted
+                font.pixelSize: header.headerPixelSize
+                font.weight: Font.DemiBold
+                verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+            }
+
+            Label {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: 14
+                text: header.caret(sizeCell.field)
+                color: header.backend && header.backend.sortField === sizeCell.field
+                       ? theme.accent : theme.textMuted
+                font.pixelSize: header.headerPixelSize
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignRight
+            }
+
+            TapHandler {
+                onTapped: header.toggle(sizeCell.field)
+            }
+
+        }
+
+        // —— 修改时间 ——
+        Item {
+            id: modifiedCell
+            readonly property string field: "modified"
+
+            Layout.preferredWidth: header.modifiedColumnWidth
+            Layout.fillHeight: true
+
+            HoverHandler {
+                id: modifiedHover
+                cursorShape: Qt.PointingHandCursor
+            }
+
+            Label {
+                anchors.fill: parent
+                anchors.rightMargin: 14
+                text: header.label(qsTr("修改时间"), modifiedCell.field)
+                color: theme.textMuted
+                font.pixelSize: header.headerPixelSize
+                font.weight: Font.DemiBold
+                verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+            }
+
+            Label {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: 14
+                text: header.caret(modifiedCell.field)
+                color: header.backend && header.backend.sortField === modifiedCell.field
+                       ? theme.accent : theme.textMuted
+                font.pixelSize: header.headerPixelSize
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignRight
+            }
+
+            TapHandler {
+                onTapped: header.toggle(modifiedCell.field)
+            }
+
+        }
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: theme.hairline
     }
 }

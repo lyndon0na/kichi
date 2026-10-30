@@ -56,6 +56,10 @@ pub struct FileEntry {
     pub audit_flagged: bool,
     /// 官方归类为媒体（视频/音频），界面上可显示播放入口
     pub media: bool,
+    /// 官方明确归类为视频（缩略图角标用）
+    pub video: bool,
+    /// 列表下发的缩略图地址。只在 Rust 侧用于下载到本地缓存，不映射给 QML。
+    pub thumbnail_url: String,
 }
 
 /// 回收站条目：普通文件字段 + 原父目录与删除时间。

@@ -19,7 +19,8 @@ ItemDelegate {
     /// 在列表里的下标（Shift 区间选择用）
     property int rowIndex: -1
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
-    property int iconColumnWidth: 20
+    property int thumbnailSlotWidth: 36
+    property int thumbnailSlotHeight: 24
     property int sizeColumnWidth: 96
     property int modifiedColumnWidth: 150
     property int columnSpacing: 12
@@ -35,6 +36,8 @@ ItemDelegate {
     property int contentPadding: 12
     leftPadding: contentPadding
     rightPadding: contentPadding
+    topPadding: 0
+    bottomPadding: 0
 
     KTheme { id: theme }
 
@@ -113,10 +116,8 @@ ItemDelegate {
     // 选中态：强调色只铺一层很淡的底，左侧再点一根 3px 竖条。
     // 不整行铺满 palette.highlight——饱和色块会把文件名的对比度压下去，
     // 而屏幕上真正「选中」的通常只有一行，代价却铺满整行。
-    // 圆角 8 + 行间 2px 缝（FilesPage 的 spacing）让悬停 / 选中看起来是
-    // 一张张独立的卡片，而不是一张大表格里的色块。
+    // 平铺行只靠底部分隔线分段，不用卡片圆角和行间空隙。
     background: Rectangle {
-        radius: theme.radiusControl
         color: row.highlighted
                ? theme.accentSoft
                : mouseArea.pressed
@@ -127,35 +128,44 @@ ItemDelegate {
 
 
         Rectangle {
+            objectName: "fileRowAccent"
             visible: row.highlighted
             width: 3
-            height: parent.height - 20
+            height: Math.max(0, parent.height - 28)
             radius: 1.5
             anchors.left: parent.left
             anchors.leftMargin: 1
             anchors.verticalCenter: parent.verticalCenter
             color: theme.accent
         }
+
+        Rectangle {
+            objectName: "fileRowDivider"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: theme.divider
+        }
     }
 
     contentItem: RowLayout {
         spacing: row.columnSpacing
 
-        // 固定宽度：表头的「名称」要和文件名左边缘对齐，图标宽度由
-        // FileListDensity 统一给（emoji 时代这个宽度还得迁就字形，现在不用了）
+        // 固定缩略图槽：回退成文件图标时宽度和左边线也完全不变。
         Item {
-            Layout.preferredWidth: row.iconColumnWidth
+            objectName: "thumbnailSlot"
+            Layout.preferredWidth: row.thumbnailSlotWidth
             Layout.fillHeight: true
 
-            FileIcon {
-                width: Math.min(row.iconPixelSize, row.iconColumnWidth)
-                height: width
+            FileThumbnail {
+                objectName: "fileThumbnail"
+                width: row.thumbnailSlotWidth
+                height: row.thumbnailSlotHeight
                 anchors.centerIn: parent
-                kind: row.entry ? row.entry.kind : ""
-                fileName: row.entry ? row.entry.name : ""
-                color: palette.text
-                // 文件夹比普通文件实一点：一眼分出「能进」和「只能下」
-                opacity: row.entry && row.entry.kind === "folder" ? 1.0 : 0.6
+                backend: row.backend
+                entry: row.entry
+                iconPixelSize: row.iconPixelSize
             }
         }
 

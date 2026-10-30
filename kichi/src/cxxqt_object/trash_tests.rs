@@ -15,6 +15,8 @@ fn entry(id: &str, deleted: Option<u32>) -> TrashEntry {
             md5: None,
             audit_flagged: false,
             media: false,
+            video: false,
+            thumbnail_url: String::new(),
         },
         parent_id: String::new(),
         deleted_at: deleted.and_then(|day| Utc.with_ymd_and_hms(2026, 10, day, 0, 0, 0).single()),

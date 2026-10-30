@@ -8,9 +8,11 @@ ItemDelegate {
     id: row
 
     property var entry: null
+    property var backend: null
     readonly property var listView: ListView.view
     property int rowIndex: -1
-    property int iconColumnWidth: 20
+    property int thumbnailSlotWidth: 36
+    property int thumbnailSlotHeight: 24
     property int deletedColumnWidth: 150
     property int sizeColumnWidth: 96
     property int columnSpacing: 12
@@ -30,6 +32,8 @@ ItemDelegate {
     implicitHeight: row.rowHeight
     leftPadding: row.contentPadding
     rightPadding: row.contentPadding
+    topPadding: 0
+    bottomPadding: 0
 
     icon.name: ""
     icon.source: ""
@@ -58,8 +62,8 @@ ItemDelegate {
         }
     }
 
+    // 平铺行只靠底部分隔线分段，不用卡片圆角和行间空隙。
     background: Rectangle {
-        radius: theme.radiusControl
         color: row.highlighted
                ? theme.accentSoft
                : row.rowPressed
@@ -69,14 +73,24 @@ ItemDelegate {
                    : theme.surfaceClear
 
         Rectangle {
+            objectName: "trashRowAccent"
             visible: row.highlighted
             width: 3
-            height: parent.height - 20
+            height: Math.max(0, parent.height - 28)
             radius: 1.5
             anchors.left: parent.left
             anchors.leftMargin: 1
             anchors.verticalCenter: parent.verticalCenter
             color: theme.accent
+        }
+
+        Rectangle {
+            objectName: "trashRowDivider"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: theme.divider
         }
     }
 
@@ -84,17 +98,18 @@ ItemDelegate {
         spacing: row.columnSpacing
 
         Item {
-            Layout.preferredWidth: row.iconColumnWidth
+            objectName: "thumbnailSlot"
+            Layout.preferredWidth: row.thumbnailSlotWidth
             Layout.fillHeight: true
 
-            FileIcon {
-                width: Math.min(row.iconPixelSize, row.iconColumnWidth)
-                height: width
+            FileThumbnail {
+                objectName: "fileThumbnail"
+                width: row.thumbnailSlotWidth
+                height: row.thumbnailSlotHeight
                 anchors.centerIn: parent
-                kind: row.entry ? row.entry.kind : ""
-                fileName: row.entry ? row.entry.name : ""
-                color: palette.text
-                opacity: row.entry && row.entry.kind === "folder" ? 1.0 : 0.6
+                backend: row.backend
+                entry: row.entry
+                iconPixelSize: row.iconPixelSize
             }
         }
 
@@ -108,6 +123,7 @@ ItemDelegate {
         }
 
         Label {
+            objectName: "trashDeletedText"
             Layout.preferredWidth: row.deletedColumnWidth
             text: row.entry ? row.entry.deletedText : ""
             font.pixelSize: row.metaPixelSize
@@ -118,6 +134,7 @@ ItemDelegate {
         }
 
         Label {
+            objectName: "trashSizeText"
             Layout.preferredWidth: row.sizeColumnWidth
             text: row.entry ? row.entry.sizeText : ""
             font.pixelSize: row.metaPixelSize

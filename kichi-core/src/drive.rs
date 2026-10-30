@@ -311,6 +311,14 @@ impl DriveClient {
         self.get(&self.config.user_me_url())
     }
 
+    /// 下载列表下发的小缩略图。
+    ///
+    /// `thumbnail_link` 指向 PikPak 缩略图 CDN，不带签名或查询参数。这里仍把它
+    /// 当作不可信外部输入：只允许 HTTPS + `mypikpak.com` 主机，并限制体积。
+    pub fn fetch_thumbnail(&self, url: &str) -> Result<Vec<u8>, Error> {
+        self.http.fetch_public_bytes(url, 4 * 1024 * 1024)
+    }
+
     /// 列出一个文件夹（`parent_id` 为 `None` 表示根目录）。
     ///
     /// 一次返回 `LIST_LIMIT` 条，文件和文件夹混在一起，用 [`EntryKind`] 区分；
@@ -432,6 +440,8 @@ pub(crate) struct FileDto {
     mime_type: String,
     #[serde(default)]
     file_extension: String,
+    #[serde(default)]
+    thumbnail_link: String,
     /// 所在文件夹 id：全盘列举时靠它还原真实路径；根目录的条目为空串
     #[serde(default)]
     parent_id: String,
@@ -456,13 +466,30 @@ impl FileDto {
     /// 转换成领域类型（不消耗 `parent_id`，调用方先取走）。
     pub(crate) fn into_entry(self) -> FileEntry {
         let is_folder = self.kind == "drive#folder";
-        let media = !is_folder
-            && is_media(
+        let video = !is_folder
+            && is_video(
                 &self.name,
                 &self.file_category,
                 &self.mime_type,
                 &self.file_extension,
             );
+        let media = !is_folder
+            && (video
+                || is_audio(
+                    &self.name,
+                    &self.file_category,
+                    &self.mime_type,
+                    &self.file_extension,
+                ));
+        let has_visual_thumbnail = !is_folder
+            && !self.thumbnail_link.trim().is_empty()
+            && (video
+                || is_image(
+                    &self.name,
+                    &self.file_category,
+                    &self.mime_type,
+                    &self.file_extension,
+                ));
         FileEntry {
             id: self.id,
             name: self.name,
@@ -476,6 +503,12 @@ impl FileDto {
             md5: (!self.md5_checksum.is_empty()).then_some(self.md5_checksum),
             audit_flagged: self.audit.is_some_and(|audit| audit_flagged(&audit.status)),
             media,
+            video,
+            thumbnail_url: if has_visual_thumbnail {
+                self.thumbnail_link.trim().to_owned()
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -516,32 +549,60 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "wav", "m4a", "ogg", "opus", "aac", "ape", "wma",
 ];
 
+/// 图片扩展名表：只有图片和视频的列表缩略图会进入本地缓存。
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif", "tif", "tiff",
+];
+
+fn extension_matches(
+    name: &str,
+    category: &str,
+    mime: &str,
+    extension: &str,
+    kind: &str,
+    allowed: &[&str],
+) -> bool {
+    let from_extension = |text: &str| {
+        let ext = text.trim().trim_start_matches('.').to_ascii_lowercase();
+        allowed.contains(&ext.as_str())
+    };
+    if !extension.is_empty() && from_extension(extension) {
+        return true;
+    }
+    if name
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| from_extension(ext))
+    {
+        return true;
+    }
+    category.trim().eq_ignore_ascii_case(kind)
+        || mime
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with(&format!("{}/", kind.to_ascii_lowercase()))
+}
+
+pub(crate) fn is_video(name: &str, category: &str, mime: &str, extension: &str) -> bool {
+    extension_matches(name, category, mime, extension, "VIDEO", VIDEO_EXTENSIONS)
+}
+
+fn is_audio(name: &str, category: &str, mime: &str, extension: &str) -> bool {
+    extension_matches(name, category, mime, extension, "AUDIO", AUDIO_EXTENSIONS)
+}
+
+fn is_image(name: &str, category: &str, mime: &str, extension: &str) -> bool {
+    extension_matches(name, category, mime, extension, "IMAGE", IMAGE_EXTENSIONS)
+}
+
 /// 是否按媒体处理（决定是否显示播放入口）。
 ///
 /// **实测（2026-10-26）**：文件列表接口在不带 `kind` 过滤时，
 /// `file_category` / `mime_type` / `file_extension` 全是空串（带 `kind`
 /// 过滤才下发），因此不能只信官方分类，必须按扩展名兜底，否则视频文件
 /// 在界面上没有播放按钮。官方分类可用时优先采信。
+#[cfg(test)]
 pub(crate) fn is_media(name: &str, category: &str, mime: &str, extension: &str) -> bool {
-    let heard = |text: &str| matches!(text.trim().to_ascii_uppercase().as_str(), "VIDEO" | "AUDIO");
-    if heard(category) {
-        return true;
-    }
-    if mime.trim().to_ascii_lowercase().starts_with("video/")
-        || mime.trim().to_ascii_lowercase().starts_with("audio/")
-    {
-        return true;
-    }
-    let from_extension = |text: &str| {
-        let ext = text.trim().trim_start_matches('.').to_ascii_lowercase();
-        VIDEO_EXTENSIONS.contains(&ext.as_str()) || AUDIO_EXTENSIONS.contains(&ext.as_str())
-    };
-    if !extension.is_empty() && from_extension(extension) {
-        return true;
-    }
-    // 扩展名带点或列表里两者都缺时，从文件名末段取
-    name.rsplit_once('.')
-        .is_some_and(|(_, ext)| from_extension(ext))
+    is_video(name, category, mime, extension) || is_audio(name, category, mime, extension)
 }
 
 /// RFC3339 时间；官方可能给 `null`、空串或无法解析的值，一律按“没有时间”处理。
@@ -611,6 +672,9 @@ mod tests {
         assert!(is_media("预告片.MP4", "", "", ""));
         assert!(is_media("song.flac", "", "", ""));
         assert!(is_media(".hidden.txt.mp3", "", "", ""));
+        assert!(is_video("Screencast.webm", "", "", ""));
+        assert!(!is_video("song.flac", "", "", ""));
+        assert!(is_image("cover.JPG", "", "", ""));
         // 官方给了分类时优先采信（即使扩展名不认识）
         assert!(is_media("noext", "VIDEO", "", ""));
         assert!(is_media("file.bin", "", "video/mp4", ""));
@@ -681,7 +745,8 @@ mod tests {
                  "modified_time":"2026-10-20T12:34:56.789+08:00"},
                 {"id":"f2","name":"a.mkv","kind":"drive#file","size":"1099511627776",
                  "modified_time":null,"md5_checksum":"ABC",
-                 "audit":{"status":"STATUS_OK"}},
+                 "audit":{"status":"STATUS_OK"},
+                 "thumbnail_link":"https://sg-thumbnail-drive.mypikpak.com/v0/x/240/720"},
                 {"id":"f3","name":"bad.mkv","kind":"drive#file","size":"12",
                  "modified_time":"","audit":{"status":"STATUS_BANNED"}}
             ],
@@ -701,6 +766,13 @@ mod tests {
         assert_eq!(entries[1].size, 1_099_511_627_776, "字符串 size 应可解析");
         assert_eq!(entries[1].md5.as_deref(), Some("ABC"));
         assert!(!entries[1].audit_flagged);
+        assert!(entries[1].media);
+        assert!(entries[1].video);
+        assert_eq!(
+            entries[1].thumbnail_url,
+            "https://sg-thumbnail-drive.mypikpak.com/v0/x/240/720"
+        );
+        assert!(entries[0].thumbnail_url.is_empty(), "文件夹不请求缩略图");
 
         assert_eq!(entries[2].modified_at, None, "空时间应为 None");
         assert!(entries[2].audit_flagged, "非 STATUS_OK 的审核状态应标记");

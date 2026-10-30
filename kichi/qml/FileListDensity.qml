@@ -39,9 +39,11 @@ Item {
     readonly property int rowHeight: Math.round(baseFontSize * 3.7 * densityScale)
     readonly property int headerRowHeight: Math.round(baseFontSize * 2.6 * densityScale)
 
-    // 图标列 = 图标边长 + 左右各 2px：线稿图标不像 emoji 那样自带内边距，
-    // 列宽只要比图标略宽一点，文件名就不会贴上去
+    // 搜索结果仍用紧凑图标列；目录 / 回收站的首列是固定缩略图槽，
+    // 没有可用缩略图时在同一个槽里回退为文件图标。
     readonly property int iconColumnWidth: Math.round(22 * densityScale)
+    readonly property int thumbnailSlotWidth: Math.round(36 * densityScale)
+    readonly property int thumbnailSlotHeight: Math.round(24 * densityScale)
     readonly property int sizeColumnWidth: Math.round(96 * densityScale)
     readonly property int modifiedColumnWidth: Math.round(150 * densityScale)
 

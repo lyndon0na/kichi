@@ -6,7 +6,7 @@ import QtQuick.Layouts
 Item {
     id: header
 
-    property int iconColumnWidth: 20
+    property int thumbnailSlotWidth: 36
     property int deletedColumnWidth: 150
     property int sizeColumnWidth: 96
     property int contentPadding: 12
@@ -17,84 +17,66 @@ Item {
     UiMetrics { id: metrics }
     KTheme { id: theme }
 
-    implicitHeight: header.headerRowHeight + 1
+    implicitHeight: header.headerRowHeight
 
-    ColumnLayout {
+    RowLayout {
         anchors.fill: parent
-        spacing: 0
+        anchors.leftMargin: header.contentPadding
+        anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
+        spacing: header.columnSpacing
 
-        RowLayout {
+        Item {
+            Layout.preferredWidth: header.thumbnailSlotWidth
+            Layout.fillHeight: true
+        }
+
+        Label {
             Layout.fillWidth: true
-            Layout.leftMargin: header.contentPadding
-            Layout.rightMargin: header.contentPadding + metrics.scrollBarSlot
-            Layout.preferredHeight: header.headerRowHeight
-            spacing: header.columnSpacing
+            text: qsTr("名称")
+            color: theme.textMuted
+            font.pixelSize: header.headerPixelSize
+            font.weight: Font.DemiBold
+            verticalAlignment: Text.AlignVCenter
+        }
 
-            Item {
-                Layout.preferredWidth: header.iconColumnWidth
-                Layout.preferredHeight: 1
-            }
+        Item {
+            Layout.preferredWidth: header.deletedColumnWidth
+            Layout.fillHeight: true
 
             Label {
-                Layout.fillWidth: true
-                text: qsTr("名称")
+                objectName: "trashHeaderDeleted"
+                anchors.fill: parent
+                text: qsTr("删除时间")
                 color: theme.textMuted
                 font.pixelSize: header.headerPixelSize
                 font.weight: Font.DemiBold
                 verticalAlignment: Text.AlignVCenter
-            }
-
-            Item {
-                Layout.preferredWidth: header.deletedColumnWidth
-                Layout.fillHeight: true
-
-                Rectangle {
-                    width: 1
-                    height: Math.round(header.headerRowHeight * 0.45)
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: theme.divider
-                }
-
-                Label {
-                    anchors.fill: parent
-                    text: qsTr("删除时间")
-                    color: theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignRight
-                }
-            }
-
-            Item {
-                Layout.preferredWidth: header.sizeColumnWidth
-                Layout.fillHeight: true
-
-                Rectangle {
-                    width: 1
-                    height: Math.round(header.headerRowHeight * 0.45)
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: theme.divider
-                }
-
-                Label {
-                    anchors.fill: parent
-                    text: qsTr("大小")
-                    color: theme.textMuted
-                    font.pixelSize: header.headerPixelSize
-                    font.weight: Font.DemiBold
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignRight
-                }
+                horizontalAlignment: Text.AlignRight
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            color: theme.hairline
+        Item {
+            Layout.preferredWidth: header.sizeColumnWidth
+            Layout.fillHeight: true
+
+            Label {
+                objectName: "trashHeaderSize"
+                anchors.fill: parent
+                text: qsTr("大小")
+                color: theme.textMuted
+                font.pixelSize: header.headerPixelSize
+                font.weight: Font.DemiBold
+                verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignRight
+            }
         }
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: theme.hairline
     }
 }

@@ -103,7 +103,7 @@ fn open_dir(dir: &Path) -> bool {
 }
 
 /// 本地路径 → `file://` URI（百分号编码；`dbus-send` 的 argument 直接吃）。
-fn file_uri(path: &Path) -> String {
+pub(super) fn file_uri(path: &Path) -> String {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut uri = String::from("file://");
     for &byte in absolute.as_os_str().as_bytes() {

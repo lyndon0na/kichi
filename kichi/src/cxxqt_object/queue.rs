@@ -236,6 +236,8 @@ pub(crate) fn reserve_retry(job: TransferJob) -> Option<u64> {
             md5: None,
             audit_flagged: job.audit_flagged,
             media: false,
+            video: false,
+            thumbnail_url: String::new(),
         };
         enqueue(
             scheduler,

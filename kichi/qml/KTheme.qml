@@ -99,6 +99,12 @@ Item {
                                              palette.text.b,
                                              theme.darkMode ? 0.12 : 0.06)
 
+    /// 视频缩略图角标：深色遮罩 + 高对比前景，不跟内容底色绑定
+    readonly property color mediaBadge: Qt.rgba(palette.shadow.r, palette.shadow.g,
+                                                palette.shadow.b,
+                                                theme.darkMode ? 0.78 : 0.68)
+    readonly property color onMediaBadge: palette.brightText
+
     // —— 状态色（全应用仅存的字面量颜色，深色主题用浅一档的变体保证对比度） ——
     readonly property color danger: theme.darkMode ? "#f08c84" : "#c0392b"
     readonly property color onDanger: theme.darkMode ? "#221512" : "#ffffff"
