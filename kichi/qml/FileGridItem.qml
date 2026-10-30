@@ -19,11 +19,10 @@ ItemDelegate {
     // 数值由 FilesPage 从 FileListDensity 下发，和网格列宽一起计算。
     property int contentPadding: 5
     property int cardSpacing: 7
-    property int textSpacing: 2
     property int nameLineHeight: 19
-    property int metaLineHeight: 16
+    property int nameBlockHeight: 38
+    property int thumbnailRadius: 8
     property int textPixelSize: 14
-    property int metaPixelSize: 12
     property int iconPixelSize: 28
     property int videoBadgeSize: 18
 
@@ -35,19 +34,7 @@ ItemDelegate {
     readonly property real thumbnailWidth: Math.max(1, width - contentPadding * 2)
     readonly property int thumbnailHeight: Math.max(1, Math.ceil(thumbnailWidth * 2 / 3))
     readonly property int cardHeight: contentPadding * 2 + thumbnailHeight + cardSpacing
-                                      + nameLineHeight + textSpacing + metaLineHeight
-    readonly property string metaText: {
-        if (!entry)
-            return ""
-        const parts = []
-        if (entry.kind === "folder")
-            parts.push(qsTr("文件夹"))
-        else if (entry.sizeText && entry.sizeText.length > 0)
-            parts.push(entry.sizeText)
-        if (entry.modifiedText && entry.modifiedText.length > 0)
-            parts.push(entry.modifiedText)
-        return parts.join(" · ")
-    }
+                                      + nameBlockHeight
 
     leftPadding: contentPadding
     rightPadding: contentPadding
@@ -120,13 +107,16 @@ ItemDelegate {
 
         Item {
             id: thumbnailBox
+            objectName: "gridThumbnailBox"
 
             Layout.fillWidth: true
             Layout.preferredHeight: card.thumbnailHeight
 
             Rectangle {
+                objectName: "gridThumbnailFrame"
+
                 anchors.fill: parent
-                radius: theme.radiusControl
+                radius: card.thumbnailRadius
                 color: theme.surfaceRaised
                 border.width: 1
                 border.color: theme.hairline
@@ -136,7 +126,7 @@ ItemDelegate {
                 objectName: "gridThumbnail"
 
                 anchors.fill: parent
-                radius: theme.radiusControl
+                radius: card.thumbnailRadius
                 videoBadgeSize: card.videoBadgeSize
                 backend: card.backend
                 entry: card.entry
@@ -150,55 +140,43 @@ ItemDelegate {
 
                 anchors.fill: parent
                 anchors.margins: 1
-                radius: theme.radiusControl
+                radius: card.thumbnailRadius
                 color: "transparent"
                 border.width: card.selected ? 2 : 0
                 border.color: theme.accent
+            }
+
+            KStatusBadge {
+                objectName: "gridAuditBadge"
+
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 6
+                z: 2
+                text: qsTr("违规")
+                tone: "danger"
+                visible: card.entry ? card.entry.auditFlag === true : false
             }
         }
 
         Item { Layout.preferredHeight: card.cardSpacing }
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.preferredHeight: card.nameLineHeight
-            spacing: 6
-
-            Label {
-                objectName: "gridName"
-
-                Layout.fillWidth: true
-                Layout.preferredHeight: card.nameLineHeight
-                text: card.entry ? card.entry.name : ""
-                font.pixelSize: card.textPixelSize
-                font.weight: card.entry && card.entry.kind === "folder"
-                             ? Font.DemiBold : Font.Normal
-                color: theme.textPrimary
-                elide: Text.ElideRight
-                verticalAlignment: Text.AlignVCenter
-            }
-
-            Label {
-                text: qsTr("违规")
-                visible: card.entry ? card.entry.auditFlag === true : false
-                font.pixelSize: card.textPixelSize
-                color: theme.danger
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
-
-        Item { Layout.preferredHeight: card.textSpacing }
-
         Label {
-            objectName: "gridMeta"
+            objectName: "gridName"
 
             Layout.fillWidth: true
-            Layout.preferredHeight: card.metaLineHeight
-            text: card.metaText
-            font.pixelSize: card.metaPixelSize
-            color: theme.textMuted
+            Layout.preferredHeight: card.nameBlockHeight
+            text: card.entry ? card.entry.name : ""
+            font.pixelSize: card.textPixelSize
+            font.weight: card.entry && card.entry.kind === "folder"
+                         ? Font.DemiBold : Font.Normal
+            color: theme.textPrimary
+            wrapMode: Text.WrapAnywhere
+            maximumLineCount: 2
             elide: Text.ElideRight
-            verticalAlignment: Text.AlignVCenter
+            lineHeight: card.nameLineHeight
+            lineHeightMode: Text.FixedHeight
+            verticalAlignment: Text.AlignTop
         }
     }
 }

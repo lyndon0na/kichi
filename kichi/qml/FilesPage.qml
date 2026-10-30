@@ -317,11 +317,10 @@ Item {
                     rowIndex: index
                     contentPadding: density.gridCardPadding
                     cardSpacing: density.gridCardSpacing
-                    textSpacing: density.gridTextSpacing
                     nameLineHeight: density.gridNameLineHeight
-                    metaLineHeight: density.gridMetaLineHeight
+                    nameBlockHeight: density.gridNameBlockHeight
+                    thumbnailRadius: density.gridThumbnailRadius(width)
                     textPixelSize: density.namePixelSize
-                    metaPixelSize: density.metaPixelSize
                     iconPixelSize: density.gridIconPixelSize
                     videoBadgeSize: density.gridVideoBadgeSize
                     selected: !!entry && selection.isSelected(entry.id)

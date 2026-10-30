@@ -3,7 +3,8 @@ import QtTest
 import ".."
 
 // 文件页网格视图回归：
-// - 网格使用 3:2 缩略图，尺寸由 FileListDensity 与委托共同决定；
+// - 网格使用 3:2 缩略图，下面只显示最多两行文件名；
+// - 类型 / 大小 / 修改时间不占卡片文字区，违规状态留在缩略图角标；
 // - 列表 / 网格切换沿用同一份文件和选择模型；
 // - 两种视图各自记住滚动位置，切换回来不跳顶部。
 TestCase {
@@ -151,39 +152,84 @@ TestCase {
         fakeBackend.thumbnailRequests = 0
     }
 
-    function test_grid_item_uses_three_by_two_thumbnail_and_metadata() {
+    function test_grid_item_uses_three_by_two_thumbnail_and_two_line_name() {
         density = densityComponent.createObject(parent)
         verify(density !== null)
         const width = 200
         const height = density.gridItemHeight(width)
+        const expectedRadius = density.gridThumbnailRadius(width)
+        compare(density.gridThumbnailRadius(900), density.gridThumbnailMaxRadius)
+        verify(expectedRadius >= density.gridThumbnailMinRadius)
+        const folder = entry(1, "folder")
+        folder.name = "这是一个用于验证网格文件名最多显示两行且第二行末尾会省略的超长文件夹名称"
         gridItem = gridItemComponent.createObject(parent, {
             width: width,
             height: height,
             contentPadding: density.gridCardPadding,
             cardSpacing: density.gridCardSpacing,
-            textSpacing: density.gridTextSpacing,
             nameLineHeight: density.gridNameLineHeight,
-            metaLineHeight: density.gridMetaLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: expectedRadius,
             textPixelSize: density.namePixelSize,
-            metaPixelSize: density.metaPixelSize,
             iconPixelSize: density.gridIconPixelSize,
             videoBadgeSize: density.gridVideoBadgeSize,
-            entry: entry(1, "folder")
+            entry: folder
         })
         verify(gridItem !== null)
         wait(30)
 
         const thumbnail = findChild(gridItem, "gridThumbnail")
         const fallback = findChild(gridItem, "thumbnailFallbackIcon")
+        const thumbnailFrame = findChild(gridItem, "gridThumbnailFrame")
+        const selectionRing = findChild(gridItem, "gridSelectionRing")
+        const maskShape = findChild(thumbnail, "thumbnailMaskShape")
         const name = findChild(gridItem, "gridName")
-        const meta = findChild(gridItem, "gridMeta")
-        verify(thumbnail !== null && fallback !== null && name !== null && meta !== null)
+        const auditBadge = findChild(gridItem, "gridAuditBadge")
+        verify(thumbnail !== null && fallback !== null && thumbnailFrame !== null
+               && selectionRing !== null && maskShape !== null && name !== null
+               && auditBadge !== null)
         compare(thumbnail.width, width - density.gridCardPadding * 2)
         compare(thumbnail.height, Math.ceil(thumbnail.width * 2 / 3))
+        compare(thumbnail.radius, expectedRadius)
+        compare(thumbnailFrame.radius, expectedRadius)
+        compare(selectionRing.radius, expectedRadius)
+        compare(maskShape.radius, thumbnail.radius)
+        compare(maskShape.width, thumbnail.width)
+        compare(maskShape.height, thumbnail.height)
         compare(fallback.visible, true)
-        compare(name.text, "目录 1")
-        verify(meta.text.indexOf("文件夹") === 0)
+        compare(name.text, folder.name)
+        compare(name.wrapMode, Text.WrapAnywhere)
+        compare(name.maximumLineCount, 2)
+        compare(name.elide, Text.ElideRight)
+        compare(name.lineCount, 2)
+        compare(name.height, density.gridNameBlockHeight)
+        compare(findChild(gridItem, "gridMeta"), null, "网格不再显示类型 / 时间 / 大小")
+        compare(auditBadge.visible, false)
         compare(fakeBackend.thumbnailRequests, 0, "文件夹不应请求缩略图")
+    }
+
+    function test_grid_item_marks_audit_files_on_the_thumbnail() {
+        density = densityComponent.createObject(parent)
+        const audited = entry(3, "file")
+        audited.auditFlag = true
+        gridItem = gridItemComponent.createObject(parent, {
+            width: 180,
+            height: density.gridItemHeight(180),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(180),
+            entry: audited
+        })
+        verify(gridItem !== null)
+        wait(20)
+
+        const badge = findChild(gridItem, "gridAuditBadge")
+        const thumbnailBox = findChild(gridItem, "gridThumbnailBox")
+        verify(badge !== null && thumbnailBox !== null)
+        compare(badge.visible, true)
+        compare(badge.parent, thumbnailBox)
     }
 
     function test_selected_grid_item_has_accent_ring() {
@@ -193,9 +239,9 @@ TestCase {
             height: density.gridItemHeight(180),
             contentPadding: density.gridCardPadding,
             cardSpacing: density.gridCardSpacing,
-            textSpacing: density.gridTextSpacing,
             nameLineHeight: density.gridNameLineHeight,
-            metaLineHeight: density.gridMetaLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(180),
             entry: entry(2, "file")
         })
         verify(gridItem !== null)
@@ -272,6 +318,10 @@ TestCase {
         const pageDensity = findChild(page, "fileListDensity")
         verify(pageDensity !== null)
         verify(page.gridItemWidth + pageDensity.gridColumnGap <= page.gridCellSlotWidth)
+        const firstThumbnail = findChild(firstItem, "gridThumbnail")
+        verify(firstThumbnail !== null)
+        compare(firstThumbnail.radius,
+                pageDensity.gridThumbnailRadius(page.gridItemWidth))
     }
 
     function test_header_menu_requests_grid_and_disables_during_search() {

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Shapes
+import QtQuick.Effects
 
 // 文件列表的首列：固定 36×24，不随内容改变列位置。
 //
@@ -93,12 +94,43 @@ Item {
             fillMode: Image.PreserveAspectCrop
             sourceSize.width: Math.max(1, Math.round(control.width * 2))
             sourceSize.height: Math.max(1, Math.round(control.height * 2))
-            visible: control.imageReady
+            // MultiEffect 读取隐藏的源图，避免原图在圆角遮罩外露出来。
+            visible: false
 
             onStatusChanged: {
                 if (status === Image.Error)
                     control.clearAndFallback()
             }
+        }
+
+        // Rectangle.clip 只能做矩形裁剪；用透明底 + 白色圆角层生成真正的 alpha 遮罩。
+        Item {
+            id: roundedMask
+            objectName: "thumbnailMask"
+
+            anchors.fill: parent
+            visible: false
+            layer.enabled: true
+
+            Rectangle {
+                objectName: "thumbnailMaskShape"
+
+                anchors.fill: parent
+                radius: control.radius
+                color: "white"
+            }
+        }
+
+        MultiEffect {
+            id: previewEffect
+            objectName: "thumbnailEffect"
+
+            anchors.fill: parent
+            source: preview
+            visible: control.imageReady
+            autoPaddingEnabled: false
+            maskEnabled: true
+            maskSource: roundedMask
         }
     }
 

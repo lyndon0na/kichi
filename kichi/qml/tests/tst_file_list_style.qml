@@ -175,7 +175,15 @@ TestCase {
         })
         verify(thumbnail !== null)
         wait(30)
-        compare(findChild(thumbnail, "thumbnailImage").visible, false)
+        const image = findChild(thumbnail, "thumbnailImage")
+        const effect = findChild(thumbnail, "thumbnailEffect")
+        const maskShape = findChild(thumbnail, "thumbnailMaskShape")
+        verify(image !== null && effect !== null && maskShape !== null)
+        compare(image.visible, false)
+        compare(effect.visible, false)
+        compare(maskShape.radius, 3)
+        compare(maskShape.width, thumbnail.width)
+        compare(maskShape.height, thumbnail.height)
         compare(findChild(thumbnail, "thumbnailFallbackIcon").visible, true)
         compare(fakeBackend.requestCount, 0)
     }
@@ -213,6 +221,12 @@ TestCase {
         })
         verify(thumbnail !== null)
         tryCompare(thumbnail, "imageReady", true, 3000)
+        compare(findChild(thumbnail, "thumbnailImage").visible, false)
+        compare(findChild(thumbnail, "thumbnailEffect").visible, true)
+        compare(findChild(thumbnail, "thumbnailEffect").maskEnabled, true)
+        compare(findChild(thumbnail, "thumbnailEffect").maskSource,
+                findChild(thumbnail, "thumbnailMask"))
+        compare(findChild(thumbnail, "thumbnailMaskShape").radius, 3)
         verify(findChild(thumbnail, "videoBadge").visible)
     }
 

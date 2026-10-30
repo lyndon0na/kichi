@@ -65,17 +65,26 @@ Item {
     readonly property int gridRowGap: 18
     readonly property int gridCardPadding: 5
     readonly property int gridCardSpacing: 7
-    readonly property int gridTextSpacing: 2
     readonly property int gridIconPixelSize: Math.round(28 * densityScale)
     readonly property int gridVideoBadgeSize: Math.round(18 * densityScale)
+    readonly property int gridThumbnailMinRadius: Math.round(8 * densityScale)
+    readonly property int gridThumbnailMaxRadius: Math.round(16 * densityScale)
+    readonly property int gridNameLineCount: 2
     readonly property int gridNameLineHeight: Math.round(namePixelSize * 1.35)
-    readonly property int gridMetaLineHeight: Math.round(metaPixelSize * 1.3)
+    readonly property int gridNameBlockHeight: gridNameLineHeight * gridNameLineCount
+
+    /// 网格缩略图在大卡片上按宽度略微增大圆角，避免固定半径看起来仍是直角。
+    function gridThumbnailRadius(itemWidth) {
+        const thumbWidth = Math.max(1, itemWidth - gridCardPadding * 2)
+        return Math.round(Math.min(gridThumbnailMaxRadius,
+                                   Math.max(gridThumbnailMinRadius, thumbWidth * 0.02)))
+    }
 
     /// 一个网格委托的完整高度（不含行与行之间的 gridRowGap）。
     function gridItemHeight(itemWidth) {
         const thumbWidth = Math.max(1, itemWidth - gridCardPadding * 2)
         const thumbHeight = Math.max(1, Math.ceil(thumbWidth * 2 / 3))
         return gridCardPadding * 2 + thumbHeight + gridCardSpacing
-                + gridNameLineHeight + gridTextSpacing + gridMetaLineHeight
+                + gridNameBlockHeight
     }
 }
