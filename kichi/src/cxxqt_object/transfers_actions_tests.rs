@@ -82,7 +82,7 @@ fn folder_with_children_never_retries_as_a_whole() {
     records[0].state = TransferState::Failed;
     assert!(
         retry_target_in(&records, "7:folder").is_none(),
-        "部分失败 / 全部失败都在详情页逐个重试"
+        "部分失败 / 全部失败都在内联子行里逐个重试"
     );
     assert!(
         retry_target_in(&records, "7:1").is_some(),
@@ -116,6 +116,39 @@ fn only_failed_or_interrupted_records_can_be_retried() {
         retry_target_in(&[], "7:0").is_none(),
         "不存在的 key 返回 None"
     );
+}
+
+#[test]
+fn cancel_target_distinguishes_parent_and_child_rows() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Running),
+        ("b.mkv", TransferState::Queued),
+    ]);
+    records[0].state = TransferState::Running;
+
+    let parent = cancel_target_in(&records, "7:folder").expect("活动文件夹父行可取消");
+    assert!(parent.whole_batch, "父行取消整批");
+    assert_eq!(parent.batch, 7);
+
+    let child = cancel_target_in(&records, "7:0").expect("活动子行可取消");
+    assert!(!child.whole_batch, "子行只取消自己");
+    assert_eq!((child.batch, child.index), (7, 0));
+
+    records[1].state = TransferState::Done;
+    assert!(
+        cancel_target_in(&records, "7:0").is_none(),
+        "已结束子行不能再取消"
+    );
+}
+
+#[test]
+fn cancel_target_accepts_active_single_files_only() {
+    let active = record("file-1", EntryKind::File, &[], TransferState::Running);
+    let target = cancel_target_in(&[active], "7:0").expect("下载中的文件可取消");
+    assert!(target.whole_batch, "顶层文件取消整批");
+
+    let done = record("file-1", EntryKind::File, &[], TransferState::Done);
+    assert!(cancel_target_in(&[done], "7:0").is_none());
 }
 
 #[test]

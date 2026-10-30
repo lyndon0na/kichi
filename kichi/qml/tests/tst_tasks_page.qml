@@ -60,7 +60,7 @@ TestCase {
         target: page
     }
 
-    // 主列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
+    // 任务列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
     property var list: findChild(page, "tasksList")
     property var model: list ? list.model : null
 

@@ -537,6 +537,7 @@ ApplicationWindow {
                     TransfersPage {
                         id: transfersPage
                         backend: backend
+                        viewportWidth: root.width
                     }
 
                     TasksPage {

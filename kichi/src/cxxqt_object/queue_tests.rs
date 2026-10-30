@@ -165,6 +165,45 @@ fn cancel_all_drops_queued_batches() {
 }
 
 #[test]
+fn cancel_transfer_drops_a_queued_batch() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("queued-folder").expect("登记");
+    assert!(cancel_transfer(batch, 0, true));
+    let (running, queued) = counts();
+    assert!(!running && queued == 0, "排队批次直接移出队列");
+    assert!(!is_pending("queued-folder"), "取消后不再占用来源 id");
+    reset_for_test();
+}
+
+#[test]
+fn child_cancel_leaves_the_batch_and_siblings_running() {
+    let _guard = lock();
+    reset_for_test();
+    let batch = reserve_id("running-folder").expect("登记");
+    let start = next_start().expect("文件夹轮到准备");
+    assert!(start.folder);
+
+    assert!(cancel_transfer(batch, 0, false));
+    let child = start
+        .job_cancels
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&0)
+        .cloned()
+        .expect("子取消信号已登记");
+    assert!(child.is_cancelled(), "目标子文件收到取消");
+    assert!(!start.cancel.is_cancelled(), "整批父信号不受影响");
+    assert!(is_pending("running-folder"));
+
+    assert!(cancel_transfer(batch, 0, true));
+    assert!(start.cancel.is_cancelled(), "父行取消会向下传递整批");
+    assert!(child.is_cancelled());
+    let _ = release(batch);
+    reset_for_test();
+}
+
+#[test]
 fn reset_clears_queue_and_bumps_epoch() {
     let _guard = lock();
     reset_for_test();

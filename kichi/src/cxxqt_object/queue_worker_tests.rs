@@ -29,6 +29,7 @@ fn report_with(
         folder,
         done,
         failed,
+        cancelled: 0,
         skipped,
         empty_folder,
         failure: failure.map(str::to_owned),
@@ -137,6 +138,23 @@ fn failed_and_partial_batches_stay_out_of_the_status_bar() {
     assert_eq!(
         status_text(&partial, &BatchEnd::Cancelled).as_deref(),
         Some("下载已取消（已完成 10 个，失败 2 个）")
+    );
+}
+
+#[test]
+fn completed_batch_reports_individually_cancelled_children() {
+    let mut mixed = report_with("剧集", true, 3, 0, 1, false, None);
+    mixed.cancelled = 2;
+    assert_eq!(
+        status_text(&mixed, &BatchEnd::Completed).as_deref(),
+        Some("下载结束：完成 3 个，取消 2 个（跳过 1 个目录）")
+    );
+
+    let mut all_cancelled = report_with("剧集", true, 0, 0, 0, false, None);
+    all_cancelled.cancelled = 4;
+    assert_eq!(
+        status_text(&all_cancelled, &BatchEnd::Completed).as_deref(),
+        Some("下载已取消：4 个文件")
     );
 }
 

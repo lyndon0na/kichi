@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use kichi_core::FileEntry;
 
-use super::queue::{add_result, current_epoch, BatchReport, Job, JobOutcome};
+use super::queue::{add_result, current_epoch, BatchReport, Job, JobCancels, JobOutcome};
 use super::queue_collect::{self, Collected};
 use super::transfers;
 use crate::session::download::{safe_file_name, Cancel, DownloadCallbacks};
@@ -89,10 +89,19 @@ pub(crate) fn run_jobs(
     batch: u64,
     collected: Collected,
     cancel: Arc<Cancel>,
+    job_cancels: JobCancels,
     my_epoch: u64,
 ) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        download_all(&session, &dir, batch, &collected, &cancel, my_epoch)
+        download_all(
+            &session,
+            &dir,
+            batch,
+            &collected,
+            &cancel,
+            &job_cancels,
+            my_epoch,
+        )
     }));
     let interrupted = outcome.is_err();
     if my_epoch != current_epoch() {
@@ -155,6 +164,7 @@ fn download_all(
     batch: u64,
     collected: &Collected,
     cancel: &Arc<Cancel>,
+    job_cancels: &JobCancels,
     my_epoch: u64,
 ) -> Option<String> {
     let (dir_skipped, fatal) = create_dirs(dir, &collected.dirs, cancel);
@@ -181,8 +191,26 @@ fn download_all(
         &collected.files,
         download_parallel(),
         |index, job| {
+            let job_cancel = job_cancels
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(index)
+                .or_insert_with(|| Cancel::child(cancel.clone()))
+                .clone();
+            if job_cancel.is_cancelled() {
+                add_result(batch, JobOutcome::Cancelled);
+                transfers::cancel_file(batch, index);
+                post_sync();
+                return;
+            }
             transfers::begin(batch, index);
             post_sync();
+            if job_cancel.is_cancelled() {
+                add_result(batch, JobOutcome::Cancelled);
+                transfers::cancel_file(batch, index);
+                post_sync();
+                return;
+            }
 
             let target = local_dir(dir, &job.sub_dir);
             let throttle = Throttle::default();
@@ -194,8 +222,7 @@ fn download_all(
             };
             let note = |text: &str| {
                 transfers::note(batch, index, text);
-                // 说明不是结构变化：走 live 贴到当前文件行（第二行）上。
-                // 以前走 post_sync 时它被下载中的第二行隐藏，等于看不见。
+                // 说明不是结构变化：走 live 贴到当前文件行的速度 / 剩余列。
                 post_live();
             };
             let callbacks = DownloadCallbacks {
@@ -208,12 +235,17 @@ fn download_all(
                 KnownHint::from_list(job.size, job.audit_flagged),
                 &target,
                 callbacks,
-                cancel,
+                &job_cancel,
             );
             let saved = outcome.is_ok();
-            let cancelled = cancel.is_cancelled();
+            let cancelled = job_cancel.is_cancelled();
             let same_epoch = my_epoch == current_epoch();
             if !records_result(saved, cancelled, same_epoch) {
+                if cancelled && !saved && same_epoch {
+                    add_result(batch, JobOutcome::Cancelled);
+                    transfers::cancel_file(batch, index);
+                    post_sync();
+                }
                 return;
             }
             match outcome {
@@ -434,6 +466,20 @@ fn status_text(report: &BatchReport, end: &BatchEnd) -> Option<String> {
         BatchEnd::Completed if report.empty_folder => {
             Some(format!("已创建空文件夹：{}", report.name))
         }
+        BatchEnd::Completed if report.failed > 0 => None,
+        BatchEnd::Completed if report.cancelled > 0 && report.done > 0 => {
+            let mut text = format!(
+                "下载结束：完成 {} 个，取消 {} 个",
+                report.done, report.cancelled
+            );
+            if report.skipped > 0 {
+                text.push_str(&format!("（跳过 {} 个目录）", report.skipped));
+            }
+            Some(text)
+        }
+        BatchEnd::Completed if report.cancelled > 0 => {
+            Some(format!("下载已取消：{} 个文件", report.cancelled))
+        }
         BatchEnd::Completed if report.done > 0 && report.failed == 0 => {
             let mut text = format!("下载完成：{} 个文件", report.done);
             if report.skipped > 0 {
@@ -468,6 +514,7 @@ fn end_notice(report: &BatchReport, end: &BatchEnd) -> Option<super::notificatio
                 folder: report.folder,
                 done: report.done,
                 failed: report.failed,
+                cancelled: report.cancelled,
                 skipped: report.skipped,
                 failure: report.failure.as_deref(),
             },
@@ -486,6 +533,7 @@ pub(crate) struct Start {
     pub(crate) entry: FileEntry,
     pub(crate) dir: PathBuf,
     pub(crate) cancel: Arc<Cancel>,
+    pub(crate) job_cancels: JobCancels,
     /// 单文件重试时保留的层级（`Job.sub_dir`）
     pub(crate) sub_dir: Vec<String>,
 }
@@ -498,6 +546,7 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
     let session = session.clone();
     let batch = start.batch;
     let cancel = start.cancel.clone();
+    let job_cancels = start.job_cancels.clone();
     let my_epoch = current_epoch();
     let builder = std::thread::Builder::new().name("kichi-dl".into());
     if start.folder {
@@ -534,8 +583,17 @@ pub(crate) fn spawn_batch(session: &Arc<Session>, start: &Start) -> std::io::Res
             dirs: Vec::new(),
             skipped: 0,
         };
-        let spawned =
-            builder.spawn(move || run_jobs(session, dir, batch, collected, cancel, my_epoch));
+        let spawned = builder.spawn(move || {
+            run_jobs(
+                session,
+                dir,
+                batch,
+                collected,
+                cancel,
+                job_cancels,
+                my_epoch,
+            )
+        });
         if spawned.is_ok() {
             super::queue::mark_started(batch);
         }

@@ -16,7 +16,7 @@
 //! 避免「文件夹内部 3 路 + 外面 3 个单文件」把并发翻倍。后台线程绝不碰 Qt 对象：
 //! 结果一律经 `actions::enqueue_ui` 回主线程。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -46,6 +46,7 @@ pub(crate) struct Job {
 pub(crate) enum JobOutcome<'a> {
     Saved,
     Failed { reason: &'a str },
+    Cancelled,
 }
 
 /// 一批结束时交给界面做通知 / 状态栏的汇总。
@@ -55,6 +56,8 @@ pub(crate) struct BatchReport {
     pub(crate) folder: bool,
     pub(crate) done: usize,
     pub(crate) failed: usize,
+    /// 用户单独取消的文件数（整批取消走 `BatchEnd::Cancelled`，不靠这个计数）
+    pub(crate) cancelled: usize,
     /// 被跳过的目录数（过深 / 云端读失败 / 本地建目录失败）
     pub(crate) skipped: usize,
     /// 文件夹批次一个文件都没有，建完目录树就算完成
@@ -70,6 +73,11 @@ pub(crate) struct BatchFailure {
     pub(crate) folder: bool,
     pub(crate) reason: String,
 }
+
+/// 文件夹批次里按文件下标保存的子任务取消信号。
+///
+/// 子项继承整批取消；单独取消某个文件只翻它自己的标志，不影响同批其它文件。
+pub(crate) type JobCancels = Arc<Mutex<HashMap<usize, Arc<Cancel>>>>;
 
 /// 一批在调度器里的阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +101,11 @@ struct Pending {
     /// 点下时的下载目录快照（之后改设置不影响已排队的批次）
     dir: PathBuf,
     cancel: Arc<Cancel>,
+    job_cancels: JobCancels,
     state: PendingState,
     done: usize,
     failed: usize,
+    cancelled: usize,
     /// 被跳过的目录数（收集阶段 + 下载线程建目录失败累计）
     skipped: usize,
     /// 文件夹批次没有任何文件（空文件夹：建出目录就算完成）
@@ -173,9 +183,11 @@ fn enqueue(
         entry,
         dir,
         cancel: Arc::new(Cancel::default()),
+        job_cancels: Arc::new(Mutex::new(HashMap::new())),
         state: PendingState::Queued,
         done: 0,
         failed: 0,
+        cancelled: 0,
         skipped: 0,
         empty_folder: false,
         sub_dir,
@@ -343,6 +355,7 @@ fn next_start() -> Option<Start> {
                 entry: pending.entry.clone(),
                 dir: pending.dir.clone(),
                 cancel: pending.cancel.clone(),
+                job_cancels: pending.job_cancels.clone(),
                 sub_dir: pending.sub_dir.clone(),
             };
             scheduler.active.push(pending);
@@ -374,14 +387,24 @@ pub(crate) fn start_download(
             .active
             .iter_mut()
             .find(|pending| pending.batch == batch)?;
+        let job_cancels: JobCancels = Arc::new(Mutex::new(
+            collected
+                .files
+                .iter()
+                .enumerate()
+                .map(|(index, _)| (index, Cancel::child(current.cancel.clone())))
+                .collect(),
+        ));
+        current.job_cancels = job_cancels.clone();
         Some((
             current.dir.clone(),
             current.cancel.clone(),
             current.entry.name.clone(),
             current.folder(),
+            job_cancels,
         ))
     });
-    let Some((dir, cancel, name, folder)) = found else {
+    let Some((dir, cancel, name, folder, job_cancels)) = found else {
         return StartOutcome::NotCurrent;
     };
     // 读目录那几秒里可能刚好按了取消：这时不要再给总账行挂子行
@@ -423,7 +446,17 @@ pub(crate) fn start_download(
     let session = session.clone();
     let spawned = std::thread::Builder::new()
         .name("kichi-dl".into())
-        .spawn(move || run_jobs(session, dir, batch, collected, cancel, my_epoch));
+        .spawn(move || {
+            run_jobs(
+                session,
+                dir,
+                batch,
+                collected,
+                cancel,
+                job_cancels,
+                my_epoch,
+            )
+        });
     match spawned {
         Ok(_) => {
             mark_started(batch);
@@ -468,6 +501,7 @@ pub(crate) fn release(batch: u64) -> Option<BatchReport> {
             entry,
             done,
             failed,
+            cancelled,
             skipped,
             empty_folder,
             failure,
@@ -478,6 +512,7 @@ pub(crate) fn release(batch: u64) -> Option<BatchReport> {
             folder: entry.kind == EntryKind::Folder,
             done,
             failed,
+            cancelled,
             skipped,
             empty_folder,
             failure,
@@ -500,6 +535,9 @@ pub(crate) fn add_result(batch: u64, outcome: JobOutcome<'_>) {
                 JobOutcome::Failed { reason } => {
                     pending.failed += 1;
                     pending.failure = Some(reason.to_owned());
+                }
+                JobOutcome::Cancelled => {
+                    pending.cancelled += 1;
                 }
             }
         }
@@ -535,6 +573,65 @@ pub(crate) fn cancel_all() {
             pending.cancel.cancel();
         }
     });
+}
+
+/// 取消一个具体传输行。
+///
+/// - 顶层文件 / 文件夹总账行：取消整批（排队中的直接移出队列）；
+/// - 文件夹子文件：只翻该文件自己的取消信号，同批其它文件继续。
+///
+/// 返回 `false` 表示调度器里已经找不到这一批（通常是与完成收尾撞车）。
+pub(crate) fn cancel_transfer(batch: u64, index: usize, whole_batch: bool) -> bool {
+    with_scheduler(|scheduler| {
+        if whole_batch {
+            if let Some(at) = scheduler
+                .queue
+                .iter()
+                .position(|pending| pending.batch == batch)
+            {
+                let Some(pending) = scheduler.queue.remove(at) else {
+                    return false;
+                };
+                pending.cancel.cancel();
+                return true;
+            }
+            if let Some(pending) = scheduler
+                .active
+                .iter()
+                .find(|pending| pending.batch == batch)
+            {
+                pending.cancel.cancel();
+                return true;
+            }
+            return false;
+        }
+
+        let pending = scheduler
+            .active
+            .iter()
+            .find(|pending| pending.batch == batch)
+            .or_else(|| {
+                scheduler
+                    .queue
+                    .iter()
+                    .find(|pending| pending.batch == batch)
+            });
+        let Some(pending) = pending else {
+            return false;
+        };
+        let parent = pending.cancel.clone();
+        let mut cancels = pending
+            .job_cancels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cancel = cancels
+            .entry(index)
+            .or_insert_with(|| Cancel::child(parent))
+            .clone();
+        drop(cancels);
+        cancel.cancel();
+        true
+    })
 }
 
 /// 登出：作废在途结果、保留断点，并清空排队。

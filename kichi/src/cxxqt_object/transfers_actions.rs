@@ -18,10 +18,37 @@ use super::transfers::{
     refresh_parent_state, row_from, with_records, with_trees, Transfer, TransferJob, TransferState,
 };
 
+/// 一条活动记录对应的取消目标。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CancelTarget {
+    pub(crate) batch: u64,
+    pub(crate) index: usize,
+    /// 顶层文件 / 文件夹总账行取消整批；子文件只取消自己。
+    pub(crate) whole_batch: bool,
+    pub(crate) name: String,
+}
+
+pub(crate) fn cancel_target(key: &str) -> Option<CancelTarget> {
+    with_records(|records| cancel_target_in(records, key))
+}
+
+fn cancel_target_in(records: &[Transfer], key: &str) -> Option<CancelTarget> {
+    let record = records.iter().find(|record| record_key(record) == key)?;
+    if !record.state.is_active() {
+        return None;
+    }
+    Some(CancelTarget {
+        batch: record.batch,
+        index: record.index,
+        whole_batch: !record.child,
+        name: record.display_name(),
+    })
+}
+
 /// 一条失败 / 已中断记录的重试种子；其余状态返回 `None`（唯一的可重试闸门）。
 ///
 /// 文件夹总账行只有「读目录前整体失败或整个中断」（还没有任何子行）才能整批重试；
-/// 部分失败 / 全部失败都在详情页逐个重试失败文件。
+/// 部分失败 / 全部失败都在内联子行里逐个重试失败文件。
 pub(crate) fn retry_target(key: &str) -> Option<TransferJob> {
     with_records(|records| retry_target_in(records, key))
 }
@@ -136,7 +163,7 @@ fn remove_in(records: &mut Vec<Transfer>, key: &str) -> bool {
     true
 }
 
-/// 最后一个子行被重试移走后，已结束 / 已中断的父行也一起消失（详情页自动返回）。
+/// 最后一个子行被重试移走后，已结束 / 已中断的父行也一起收起并消失。
 fn remove_empty_parent(records: &mut Vec<Transfer>, batch: u64) {
     if records
         .iter()

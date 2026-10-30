@@ -41,22 +41,50 @@ pub struct Downloaded {
 }
 
 /// 取消信号：下载线程每块检查一次。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Cancel {
     flag: AtomicBool,
     /// 手动登出：停止 + 保留 part（与用户取消的「删 part」相反）
     abandon: AtomicBool,
+    /// 文件夹批次的单个文件继承整批取消，但取消子项不会反向停掉整批。
+    parent: Option<std::sync::Arc<Cancel>>,
+}
+
+impl Default for Cancel {
+    fn default() -> Self {
+        Self {
+            flag: AtomicBool::new(false),
+            abandon: AtomicBool::new(false),
+            parent: None,
+        }
+    }
 }
 
 impl Cancel {
+    /// 一个文件级取消信号：整批取消会向下传递，子项取消只影响自己。
+    pub fn child(parent: std::sync::Arc<Self>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            parent: Some(parent),
+            ..Self::default()
+        })
+    }
+
     /// 是否已请求取消。
     pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::Acquire)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.is_cancelled())
     }
 
     /// 是否因登出而中止（命中时保留断点，绝不 rename 成品）。
     pub fn is_abandoned(&self) -> bool {
         self.abandon.load(Ordering::Relaxed)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.is_abandoned())
     }
 
     /// 请求取消（任意线程可调）。只停止，不改变「是否保留 part」。

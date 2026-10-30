@@ -4,8 +4,8 @@
 //! `kichi-core`；落盘与读回规则拆在 [`super::transfers_history`]。
 //!
 //! 排队批次只登记一条「总账行」（文件夹名），轮到读目录时才用
-//! [`expand_folder`] 在它后面挂上子行 —— 主列表始终一个文件夹批次一行，
-//! 几百个文件同时排队时不会把上限挤爆；子行只出现在文件夹详情页。
+//! [`expand_folder`] 在它后面挂上子行 —— 统一列表始终一个文件夹批次一行，
+//! 几百个文件同时排队时不会把上限挤爆；子行只在父行展开时插入同一张表。
 //!
 //! 并发：下载线程直接写记录，主线程（取消 / 清空 / 登出）也写，统一走
 //! [`with_records`] 的互斥锁；锁中毒时继续用内部数据，不 panic。
@@ -136,7 +136,7 @@ pub(crate) struct Transfer {
     pub(crate) batch: u64,
     /// 批内顺序，决定同批次的显示顺序
     pub(crate) index: usize,
-    /// 文件夹批次展开出来的子文件行（只出现在详情页，不进主列表）
+    /// 文件夹批次展开出来的子文件行（只在父行展开时进入统一列表）
     pub(crate) child: bool,
     /// 要重下所需的一切（id / 裸名 / 类型 / 大小 / 审核标记 / 子目录 / 目录快照）
     pub(crate) job: TransferJob,
@@ -157,7 +157,7 @@ pub(crate) struct Transfer {
     pub(crate) empty_folder: bool,
     /// 文件夹总账行：被跳过的目录数（过深 / 读失败 / 本地建目录失败）
     pub(crate) skipped: usize,
-    /// 批次入队时刻（Unix 秒）：历史按天 / 月分组用（`docs/adr/0014`）
+    /// 批次入队时刻（Unix 秒）：90 天清理与整批重试保留原时刻
     pub(crate) created_unix: i64,
     /// 进程启动序号：落盘后用来识别「上一轮没跑完的行」
     pub(crate) session: u64,
@@ -209,7 +209,7 @@ pub(super) fn prune_trees() {
     with_trees(|trees| trees.retain(|batch, _| live.contains(batch)));
 }
 
-/// 文件夹批次的总账行：主列表里的唯一一行，key 为 `batch:folder`。
+/// 文件夹批次的总账行：统一列表里的顶层行，key 为 `batch:folder`。
 ///
 /// 子行与单文件行都是 `EntryKind::File`；父行和第一个子行都可能是
 /// `(batch, index = 0)`，所以按 `(batch, index)` 查文件时必须再过滤类型。
@@ -293,7 +293,7 @@ pub(crate) fn mark_preparing(batch: u64) {
 
 /// 整个文件夹批次读完了：在总账行后面挂上整批的子文件行。
 ///
-/// 父行留在原位置（主列表一个文件夹只占一行）；子行从它后面依次插入，
+/// 父行留在原位置（统一列表一个文件夹只占一行）；子行从它后面依次插入，
 /// 排队中的其他批次会自然地排在它下面。`dirs` 是相对下载根目录的目录树，
 /// 随总账行落盘（读回时的孤儿校验用；整批重试会重新读目录）。
 pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob], dirs: &[Vec<String>]) {
@@ -422,6 +422,25 @@ pub(crate) fn cancel_batch(batch: u64, reason: &str) {
     with_records(|records| cancel_active_in(records, Some(batch), reason));
 }
 
+/// 只取消文件夹批次里的一个子文件，父行按剩余子文件重新聚合。
+pub(crate) fn cancel_file(batch: u64, index: usize) {
+    with_records(|records| cancel_file_in(records, batch, index));
+}
+
+fn cancel_file_in(records: &mut [Transfer], batch: u64, index: usize) {
+    let changed = match find_file(records, batch, index) {
+        Some(record) if record.state.is_active() => {
+            record.state = TransferState::Cancelled;
+            record.detail.clear();
+            true
+        }
+        _ => false,
+    };
+    if changed {
+        refresh_parent_state(records, batch);
+    }
+}
+
 /// 登出时把还在排队的记录标成「已中断」：这一轮下载已经作废，不会再有结果。
 ///
 /// **不动正在跑的那一批的状态语义**：`queue::reset()` 只置 `abandon`，旧线程退出
@@ -475,7 +494,7 @@ pub(crate) fn has_running_file() -> bool {
 ///
 /// 单独成一路属性：进度每 250ms 变一次，若跟着整个模型重建，`ListView`
 /// 会整列表重灌、滚动位置回到顶部（2026-10-27 实测），下载期间就没法翻看了。
-/// QML 按 key 取对应行；顶部摘要和文件夹详情都从这一份取速度 / 进度。
+/// QML 按 key 取对应行；父行聚合和展开的子行都从这一份取速度 / 进度。
 pub(crate) fn live_snapshot() -> QVariantList {
     live_snapshot_at(Instant::now())
 }
@@ -488,7 +507,7 @@ pub(crate) fn live_snapshot_at(now: Instant) -> QVariantList {
     with_records(|records| {
         let mut list = QVariantList::default();
         // 批内并发与跨批并发都可能同时出现多条「下载中」：每一条都要下发自己的
-        // 实时进度，否则除第一条外的 lane / 详情行会停在开始时的值。
+        // 实时进度，否则除第一条外的父行 / 子行会停在开始时的值。
         let mut parent_batches = Vec::new();
         for running in records.iter().filter(|record| {
             record.state == TransferState::Running && record.job.kind == EntryKind::File
@@ -567,7 +586,7 @@ fn push_job(
 
 /// 把整批子行挂到文件夹总账行后面（总账行留在原位，状态仍是「准备中」）。
 ///
-/// 不删父行：主列表永远只有一条文件夹批次行；子行只在详情页展示。
+/// 不删父行：统一列表永远只有一条文件夹批次行；子行只在展开时展示。
 /// 子行从父行后面依次插入，后面排队的批次位置不受影响。
 fn expand_folder_in(
     records: &mut Vec<Transfer>,

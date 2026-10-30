@@ -1,7 +1,7 @@
-//! 传输页文件夹详情：进程内选中的批次 + 子文件快照。
+//! 传输页内联展开：进程内选中的批次 + 子文件快照。
 //!
 //! 选中状态不落盘、不跨重启；记录被清空 / 按上限淘汰 / 子行全部
-//! 被重试时，[`detail_snapshot_in`] 会自动清掉选中，详情页下一次刷新就关闭。
+//! 被重试时，[`detail_snapshot_in`] 会自动清掉选中，父行下一次刷新就收起。
 //!
 //! 锁顺序固定为「先 records，再 selection」：`select_folder` / `detail_snapshot`
 //! 与 `transfers::reset` 都遵守这个顺序，不会交叉加锁。
@@ -10,7 +10,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::transfers::{is_folder_ledger, record_key, with_records, Transfer};
+use super::transfers::{is_folder_ledger, record_key, with_records, Transfer, TransferState};
 use super::transfers_view::build_detail_snapshot;
 use super::QVariantList;
 
@@ -24,7 +24,7 @@ fn with_selection<T>(f: impl FnOnce(&mut Option<u64>) -> T) -> T {
     f(&mut guard)
 }
 
-/// 选中一个文件夹批次：key 必须对应「已有子行」的文件夹总账行。
+/// 选中一个文件夹批次：key 必须对应「已有子行且不在准备中」的文件夹总账行。
 pub(crate) fn select_folder(key: &str) -> bool {
     with_records(|records| with_selection(|selected| select_folder_in(selected, records, key)))
 }
@@ -40,6 +40,9 @@ pub(crate) fn select_folder_in(
     else {
         return false;
     };
+    if record.state == TransferState::Preparing {
+        return false;
+    }
     if !records
         .iter()
         .any(|row| row.batch == record.batch && row.child)
@@ -59,7 +62,7 @@ pub(crate) fn clear_selection_in(selected: &mut Option<u64>) -> bool {
     selected.take().is_some()
 }
 
-/// 当前选中文件夹的子文件快照 + 详情页是否仍然有效。
+/// 当前选中文件夹的子文件快照 + 内联展开是否仍然有效。
 pub(crate) fn detail_snapshot() -> (QVariantList, bool) {
     with_records(|records| with_selection(|selected| detail_snapshot_in(selected, records)))
 }

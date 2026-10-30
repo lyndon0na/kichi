@@ -67,6 +67,26 @@ fn abandon_sets_stop_and_keep() {
 }
 
 #[test]
+fn child_cancel_stops_only_itself_and_inherits_parent() {
+    let parent = std::sync::Arc::new(Cancel::default());
+    let first = Cancel::child(parent.clone());
+    let second = Cancel::child(parent.clone());
+
+    first.cancel();
+    assert!(first.is_cancelled(), "子项取消后自己立即停止");
+    assert!(!second.is_cancelled(), "不能误伤同批其它文件");
+    assert!(!parent.is_cancelled(), "取消一个文件不能取消整批");
+    assert!(
+        !first.is_abandoned() && !second.is_abandoned(),
+        "普通取消不保留断点"
+    );
+
+    parent.abandon();
+    assert!(second.is_cancelled(), "登出也要向下停止每个子项");
+    assert!(second.is_abandoned(), "登出必须让子项保留断点");
+}
+
+#[test]
 fn empty_file_is_saved_without_part_leftover() {
     let dir = temp_dir("empty");
     let downloaded =

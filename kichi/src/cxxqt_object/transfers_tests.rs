@@ -1,7 +1,7 @@
 //! `transfers.rs` 的单元测试：记录表的状态迁移、父行聚合、排序、上限与显示字段。
 //!
-//! 拆出来只为守住行数软上限（实现本身约 350 行）。文件夹批次在主列表
-//! 只占一条总账行，子行的字段与详情快照也在这里覆盖。
+//! 拆出来只为守住行数软上限（实现本身约 350 行）。文件夹批次在统一列表
+//! 只占一条总账行，子行的字段与内联展开快照也在这里覆盖。
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -375,7 +375,7 @@ fn every_row_has_a_key_for_the_qml_diff() {
     assert_eq!(int_of(&notice, "childCount"), 0);
 }
 
-// —— 准备中 / 文件夹展开 / 父行聚合（2026-10-27 文件夹详情页）——
+// —— 准备中 / 文件夹展开 / 父行聚合（2026-10-27 文件夹批次）——
 
 #[test]
 fn preparing_counts_as_active() {
@@ -446,7 +446,7 @@ fn folder_expansion_keeps_ledger_row_and_children() {
 
     let (list, active) = build_snapshot(&records);
     assert_eq!(active, 2, "文件夹批次只算一个进行中");
-    assert_eq!(list.len(), 2, "主列表只有父行 + 单文件批次");
+    assert_eq!(list.len(), 2, "统一列表只有父行 + 单文件批次");
     assert_eq!(text_of(&map_at(&list, 0), "key"), "1:folder");
     assert_eq!(text_of(&map_at(&list, 1), "key"), "2:0");
 
@@ -503,6 +503,57 @@ fn parent_state_follows_children() {
         "失败",
         "一个都没成功时不叫部分失败"
     );
+}
+
+#[test]
+fn cancelling_one_child_keeps_siblings_downloading() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("a.mkv", 10), ("b.mkv", 20), ("c.mkv", 30)],
+    );
+    begin_in(&mut records, 1, 0);
+
+    cancel_file_in(&mut records, 1, 0);
+    assert_eq!(
+        child_mut(&mut records, 1, 0).state,
+        TransferState::Cancelled
+    );
+    assert_eq!(child_mut(&mut records, 1, 1).state, TransferState::Queued);
+    assert_eq!(child_mut(&mut records, 1, 2).state, TransferState::Queued);
+    assert_eq!(
+        records[0].state,
+        TransferState::Running,
+        "同批还有排队子项，父行继续显示下载中"
+    );
+
+    begin_in(&mut records, 1, 1);
+    finish_ok_in(&mut records, 1, 1, Path::new("/tmp/b.mkv"));
+    begin_in(&mut records, 1, 2);
+    finish_ok_in(&mut records, 1, 2, Path::new("/tmp/c.mkv"));
+    assert_eq!(
+        records[0].state,
+        TransferState::Cancelled,
+        "其余子项完成后，父行如实保留部分取消状态"
+    );
+
+    let stats = batch_stats(&records, 1);
+    assert_eq!((stats.done, stats.cancelled, stats.failed), (2, 1, 0));
+    let map = record_map(&records[0], &records);
+    assert_eq!(text_of(&map, "detail"), "完成 2 个 · 取消 1 个");
+}
+
+#[test]
+fn cancelling_a_finished_child_does_not_rewrite_it() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10)]);
+    finish_ok_in(&mut records, 1, 0, Path::new("/tmp/a.mkv"));
+
+    cancel_file_in(&mut records, 1, 0);
+    assert_eq!(child_mut(&mut records, 1, 0).state, TransferState::Done);
+    assert_eq!(records[0].state, TransferState::Done);
 }
 
 #[test]
@@ -604,7 +655,7 @@ fn folder_cancelled_row_text() {
 
     let map = record_map(&records[0], &records);
     assert_eq!(text_of(&map, "stateText"), "已取消");
-    assert_eq!(text_of(&map, "detail"), "已完成 1 个 · 已取消");
+    assert_eq!(text_of(&map, "detail"), "完成 1 个 · 取消 1 个");
 }
 
 #[test]
@@ -617,7 +668,7 @@ fn main_snapshot_counts_a_folder_as_one_row() {
     begin_in(&mut records, 1, 0);
 
     let (list, active) = build_snapshot(&records);
-    assert_eq!(list.len(), 2, "子行不出现在主列表");
+    assert_eq!(list.len(), 2, "子行只有展开时才进入统一列表");
     assert_eq!(active, 2, "进行中按批次算：文件夹算 1");
     assert_eq!(text_of(&map_at(&list, 0), "key"), "1:folder");
     assert_eq!(text_of(&map_at(&list, 1), "key"), "2:0");
@@ -698,7 +749,7 @@ fn detail_snapshot_keeps_download_order() {
         "固定下载顺序"
     );
 
-    // 第一个子行完成后仍然留在第一位（详情页不按状态重排）
+    // 第一个子行完成后仍然留在第一位（内联子行不按状态重排）
     set_child(&mut records, 5, 0, TransferState::Done);
     assert_eq!(
         keys(&records)
@@ -816,7 +867,7 @@ fn display_name_keeps_folder_hierarchy() {
     assert_eq!(
         text_of(&record_map(&record, &[]), "name"),
         "剧集/第一季/第 1 集.mkv",
-        "主列表的单文件行仍用完整显示路径"
+        "统一列表的单文件行仍用完整显示路径"
     );
 
     let single = TransferJob {
@@ -929,7 +980,7 @@ fn skipped_suffix_appears_on_failed_cancelled_and_running_rows() {
     cancel_active_in(&mut cancelled, Some(2), "");
     set_skipped_in(&mut cancelled, 2, 3);
     let detail = text_of(&record_map(&cancelled[0], &cancelled), "detail");
-    assert_eq!(detail, "已完成 1 个 · 已取消 · 跳过 3 个目录");
+    assert_eq!(detail, "完成 1 个 · 跳过 3 个目录");
 
     let mut running = Vec::new();
     folder_batch(&mut running, 3, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);

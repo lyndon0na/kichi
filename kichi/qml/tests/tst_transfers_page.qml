@@ -1,191 +1,145 @@
 import QtQuick
+import QtQuick.Controls
 import QtTest
 import ".."
 
-// 传输任务页的列表差异算法回归测试（2026-10-27）。
-//
-// 为什么要有：`TransfersPage.qml` 的 `syncRows()` 曾在
-// 「已有一条失败记录 + 新一批的『下载中』要排到最前面」时死循环
-// （`ListModel.move` 目标下标等于 count 会被丢弃，游标不前进），
-// 整个界面卡死并刷 `QML ListModel: move: out of range`。
-// 症状只在「下载失败/超时后重新下载」时出现，用真实账号复现成本很高，
-// 因此把真实组件加载起来、用假后端驱动快照，直接断言行的顺序。
-//
-// 2026-10-27 加文件夹详情页后：主列表一个批次一行，子行只在
-// `TransferFolderPage.qml` 的列表里；两个 ListView 都常驻（StackLayout 保活），
-// 所以测试一律按 objectName 取列表，不再扫描「第一个 ListView」。
-//
-// 运行：
-//   QT_QPA_PLATFORM=offscreen /usr/lib64/qt6/bin/qmltestrunner \
-//       -input kichi/qml/tests/tst_transfers_page.qml
-
+// 传输任务单列表回归测试：一行同时承载进行中 / 排队 / 历史，
+// 文件夹子行只按需内联插入，响应式列与逐行动作都直接驱动真实组件。
 TestCase {
     name: "TransfersPageRows"
     when: windowShown
-    width: 900
-    height: 600
+    width: 1280
+    height: 720
 
-    // 替代 Kichi 桥接对象：只提供 TransfersPage 用到的属性 / 信号 / 方法。
     QtObject {
         id: backend
+
         property var transfers: []
         property int transferRevision: 0
         property int downloadActive: 0
         property int downloadQueued: 0
         property var transferLive: []
-        /// 模拟 Rust `transferActiveGroup`：0 或 1 个进行中分组。
-        property var transferActiveGroup: buildActiveGroup(transfers, detailData, transferLive)
         property var transferDetail: []
         property bool transferDetailActive: false
-        /// 全部历史里有没有可清的已结束批次（模拟 Rust 的同名属性）
         property bool transferHasFinished: false
 
-        /// 用例注入的详情快照（模拟 Rust 按选中批次生成的 transferDetail）
-        property var detailData: []
-
-        /// 清空动作的记录
-        property int clearCount: 0
-
-        /// 逐条动作的记录：断言「点了哪一行、调了几次」
-        property int revealCount: 0
-        property string revealedKey: ""
+        property var detailSets: ({})
+        property int openCount: 0
+        property int closeCount: 0
+        property string openedKey: ""
+        property int cancelCount: 0
+        property string cancelledKey: ""
         property int retryCount: 0
         property string retriedKey: ""
-        property int openCount: 0
-        property string openedKey: ""
-        property int closeCount: 0
-        /// 由具体用例注入：模拟 Rust 在点击处理期间同步换掉整份记录
-        property var onRetry: null
+        property int revealCount: 0
+        property string revealedKey: ""
+        property int clearCount: 0
+        property int cancelAllCount: 0
+        property int openDirCount: 0
 
         signal changed()
 
-        property int cancelCount: 0
-        property int openDirCount: 0
+        function reset() {
+            transfers = []
+            transferRevision = 0
+            downloadActive = 0
+            downloadQueued = 0
+            transferLive = []
+            transferDetail = []
+            transferDetailActive = false
+            transferHasFinished = false
+            detailSets = ({})
+            openCount = 0
+            closeCount = 0
+            openedKey = ""
+            cancelCount = 0
+            cancelledKey = ""
+            retryCount = 0
+            retriedKey = ""
+            revealCount = 0
+            revealedKey = ""
+            clearCount = 0
+            cancelAllCount = 0
+            openDirCount = 0
+        }
 
-        function cancelDownloads() {
+        function publish(items, active, queued) {
+            transfers = items
+            downloadActive = active === undefined ? 0 : active
+            downloadQueued = queued === undefined ? 0 : queued
+            transferHasFinished = items.some(function(item) {
+                return item.state === "done" || item.state === "failed"
+                        || item.state === "cancelled"
+            })
+            transferRevision += 1
+            changed()
+        }
+
+        function setLive(items) {
+            transferLive = items
+            changed()
+        }
+
+        function setDetails(key, children) {
+            var next = detailSets
+            next[key] = children
+            detailSets = next
+        }
+
+        function openTransferFolder(key) {
+            openCount += 1
+            openedKey = key
+            if (detailSets[key] !== undefined) {
+                transferDetail = detailSets[key]
+                transferDetailActive = true
+            } else {
+                transferDetail = []
+                transferDetailActive = false
+            }
+            transferRevision += 1
+            changed()
+        }
+
+        function closeTransferFolder() {
+            closeCount += 1
+            transferDetail = []
+            transferDetailActive = false
+            transferRevision += 1
+            changed()
+        }
+
+        function invalidateTransferDetail() {
+            transferDetail = []
+            transferDetailActive = false
+            transferRevision += 1
+            changed()
+        }
+
+        function cancelTransfer(key) {
             cancelCount += 1
+            cancelledKey = key
         }
-        function openDownloadDir() {
-            openDirCount += 1
+
+        function retryTransfer(key) {
+            retryCount += 1
+            retriedKey = key
         }
-        function clearFinishedTransfers() {
-            clearCount += 1
-        }
-        function locateTransfer(sourceId) {}
-        function isDownloadPending(id) {
-            return false
-        }
+
         function revealTransfer(key) {
             revealCount += 1
             revealedKey = key
         }
-        function retryTransfer(key) {
-            retryCount += 1
-            retriedKey = key
-            if (onRetry !== null)
-                onRetry(key)
-        }
-        function openTransferFolder(key) {
-            openCount += 1
-            openedKey = key
-            var found = null
-            for (var i = 0; i < transfers.length; i++) {
-                var row = transfers[i]
-                if (row.key === key && row.folder && row.childCount > 0)
-                    found = row
-            }
-            if (found !== null)
-                transferDetail = detailData
-            transferDetailActive = found !== null
-        }
-        function closeTransferFolder() {
-            closeCount += 1
-            transferDetailActive = false
-            transferDetail = []
+
+        function clearFinishedTransfers() {
+            clearCount += 1
         }
 
-        function liveMap(rows) {
-            var map = {}
-            for (var i = 0; i < rows.length; i++)
-                map[rows[i].key] = rows[i]
-            return map
+        function cancelDownloads() {
+            cancelAllCount += 1
         }
 
-        function laneOf(row, liveByKey) {
-            var live = liveByKey[row.key] || {}
-            return {
-                key: row.key,
-                sourceId: row.sourceId || "",
-                name: row.name,
-                progress: live.progress !== undefined ? live.progress : row.progress,
-                progressText: live.progressText !== undefined
-                               ? live.progressText : row.progressText,
-                sizeText: live.sizeText !== undefined ? live.sizeText : row.sizeText,
-                rateText: live.rateText || "",
-                noteText: live.noteText || "",
-                shardText: live.shardText || ""
-            }
-        }
-
-        function buildActiveGroup(rows, detailRows, liveRows) {
-            var liveByKey = liveMap(liveRows || [])
-            for (var f = 0; f < rows.length; f++) {
-                var folder = rows[f]
-                if (folder.folder && (folder.state === "running"
-                                      || folder.state === "preparing")) {
-                    var children = []
-                    for (var c = 0; c < (detailRows || []).length; c++) {
-                        if (detailRows[c].state === "running")
-                            children.push(detailRows[c])
-                    }
-                    var folderLive = liveByKey[folder.key] || {}
-                    return [{
-                        kind: "folder",
-                        groupKey: folder.key,
-                        sourceId: folder.sourceId,
-                        name: folder.name,
-                        state: folder.state,
-                        stateText: folder.stateText,
-                        runningCount: children.length,
-                        totalCount: folder.childCount || children.length,
-                        finishedCount: 0,
-                        hiddenCount: Math.max(0, children.length - 3),
-                        progress: folderLive.progress !== undefined
-                                  ? folderLive.progress : folder.progress,
-                        progressText: folderLive.progressText || folder.progressText,
-                        sizeText: folderLive.sizeText || folder.sizeText,
-                        lanes: children.slice(0, 3).map(function(child) {
-                            return laneOf(child, liveByKey)
-                        })
-                    }]
-                }
-            }
-
-            var files = []
-            for (var i = 0; i < rows.length; i++) {
-                if (!rows[i].folder && !rows[i].child && rows[i].state === "running")
-                    files.push(rows[i])
-            }
-            if (files.length === 0)
-                return []
-            return [{
-                kind: "files",
-                groupKey: "files",
-                sourceId: "",
-                name: "",
-                state: "running",
-                stateText: "下载中",
-                runningCount: files.length,
-                totalCount: files.length,
-                finishedCount: 0,
-                hiddenCount: Math.max(0, files.length - 3),
-                progress: files[0].progress,
-                progressText: "",
-                sizeText: files[0].sizeText,
-                lanes: files.slice(0, 3).map(function(file) {
-                    return laneOf(file, liveByKey)
-                })
-            }]
+        function openDownloadDir() {
+            openDirCount += 1
         }
     }
 
@@ -201,1301 +155,600 @@ TestCase {
 
     property var page: null
     property var header: null
+    property var list: null
 
-    function init() {
-        backend.transfers = []
-        backend.transferRevision = 0
-        backend.downloadActive = 0
-        backend.downloadQueued = 0
-        backend.transferLive = []
-        backend.transferDetail = []
-        backend.transferDetailActive = false
-        backend.transferHasFinished = false
-        backend.cancelCount = 0
-        backend.openDirCount = 0
-        backend.detailData = []
-        backend.clearCount = 0
-        backend.revealCount = 0
-        backend.revealedKey = ""
-        backend.retryCount = 0
-        backend.retriedKey = ""
-        backend.openCount = 0
-        backend.openedKey = ""
-        backend.closeCount = 0
-        backend.onRetry = null
-        // 挂在测试窗口下并可见：滚动位置相关的断言需要真实的布局几何
-        // （`createObject(null)` 建出来的页面没有窗口，contentHeight 恒为 0）
-        page = pageComponent.createObject(parent, {
-            width: 900,
-            height: 600,
-            visible: true,
-            backend: backend
-        })
-        verify(page !== null, "TransfersPage 创建失败")
-    }
-
-    function cleanup() {
-        if (page)
-            page.destroy()
-        if (header)
-            header.destroy()
-        page = null
-        header = null
-    }
-
-    // —— 假记录（字段取自 transfers_view.rs 的快照）——
-
-    function stateTextOf(phase) {
-        if (phase === "queued")
-            return "排队中"
-        if (phase === "preparing")
-            return "准备中"
-        if (phase === "running")
-            return "下载中"
-        if (phase === "done")
-            return "已完成"
-        if (phase === "failed")
-            return "失败"
-        if (phase === "cancelled")
-            return "已取消"
-        if (phase === "interrupted")
-            return "已中断"
-        return ""
-    }
-
-    /// 一条与 Rust `transfers` 快照同形状的单文件行。
-    function record(key, phase) {
-        var running = phase === "running"
-        return {
+    function makeRow(key, name, state, extra) {
+        var row = {
             key: key,
-            name: key + ".mkv",
-            sourceId: "src-" + key,
-            state: phase,
-            stateText: stateTextOf(phase),
-            running: running,
-            progress: running ? 10 : 0,
-            progressText: running ? "10%" : "",
-            sizeText: "1.0 MB",
-            detail: phase === "preparing" ? "正在读取目录结构…"
-                  : phase === "failed" ? "下载超时：30 秒没有收到数据（已下载 1.0 MB）"
-                  : phase === "done" ? "保存到 /home/me/Downloads/" + key + ".mkv"
-                  : "",
-            path: phase === "done" ? "/home/me/Downloads/" + key + ".mkv" : "",
+            name: name,
+            sourceId: "source-" + key,
+            state: state,
+            stateText: stateText(state),
+            running: state === "running",
+            progress: 0,
+            progressText: "",
+            sizeText: "10 B",
+            detail: "",
+            path: "",
             folder: false,
             childCount: 0,
             failedCount: 0
         }
-    }
-
-    /// 文件夹批次的总账行；选项覆盖聚合字段。
-    function folderRecord(key, phase, options) {
-        var row = record(key, phase)
-        row.name = options && options.name !== undefined
-                ? options.name : "文件夹 " + key
-        row.folder = true
-        row.childCount = options && options.childCount !== undefined
-                ? options.childCount : 0
-        row.failedCount = options && options.failedCount !== undefined
-                ? options.failedCount : 0
-        if (options) {
-            if (options.stateText !== undefined)
-                row.stateText = options.stateText
-            if (options.detail !== undefined)
-                row.detail = options.detail
-            if (options.path !== undefined)
-                row.path = options.path
-            if (options.running !== undefined)
-                row.running = options.running
-            if (options.progress !== undefined)
-                row.progress = options.progress
-            if (options.progressText !== undefined)
-                row.progressText = options.progressText
-            if (options.sizeText !== undefined)
-                row.sizeText = options.sizeText
-        }
+        var fields = extra || {}
+        for (var field in fields)
+            row[field] = fields[field]
         return row
     }
 
-    /// 详情页里的一条子文件行。
-    function childRecord(key, phase, name) {
-        var row = record(key, phase)
-        if (name !== undefined)
-            row.name = name
-        return row
+    function stateText(state) {
+        if (state === "queued")
+            return "等待中"
+        if (state === "preparing")
+            return "准备中"
+        if (state === "running")
+            return "下载中"
+        if (state === "done")
+            return "已完成"
+        if (state === "failed")
+            return "失败"
+        if (state === "cancelled")
+            return "已取消"
+        if (state === "interrupted")
+            return "已中断"
+        return "提示"
     }
 
-    /// 模拟一次 Rust 侧的结构变化（属性 + revision + changed 信号）。
-    ///
-    /// ⚠ 必须按 Rust `transfers::ordered()` 的规则排序后再发布：进行中在前
-    /// （批号、序号升序），已结束在后（新 → 旧）。少了这一步，一条记录完成时
-    /// 在快照里的位置压根不变，就测不出「完成一行导致整段搬移」这类问题。
-    function publish(records, detail) {
-        if (detail !== undefined)
-            backend.detailData = detail
-        backend.transfers = ordered(records)
-        if (backend.transferDetailActive)
-            backend.transferDetail = backend.detailData
-        backend.transferRevision += 1
-        backend.downloadActive = backend.transfers.filter(function (item) {
-            return item.state === "running" || item.state === "queued"
-                   || item.state === "preparing"
-        }).length
-        backend.downloadQueued = backend.transfers.filter(function(item) {
-            return item.state === "queued"
-        }).length
-        backend.changed()
-    }
-
-    function isActivePhase(phase) {
-        return phase === "queued" || phase === "preparing" || phase === "running"
-    }
-
-    /// 与 Rust `transfers_view::ordered()` 同规则（文件夹 key 的 index 按 0 排）：
-    /// 进行中按排队顺序在前，其余记录（含已中断）统一新 → 旧。
-    function ordered(records) {
-        function pair(key) {
-            var parts = key.split(":")
-            var index = parts[1] === "folder" ? 0 : Number(parts[1])
-            return [Number(parts[0]), index]
+    function row(key) {
+        for (var i = 0; list && i < list.count; i++) {
+            var item = list.itemAtIndex(i)
+            if (item && item.key === key)
+                return item
         }
-        var active = [], historical = []
-        for (var i = 0; i < records.length; i++) {
-            if (isActivePhase(records[i].state))
-                active.push(records[i])
-            else
-                historical.push(records[i])
-        }
-        active.sort(function (a, b) {
-            var ka = pair(a.key), kb = pair(b.key)
-            return (ka[0] - kb[0]) || (ka[1] - kb[1])
+        return findChild(page, "transferRow_" + key)
+    }
+
+    function waitRows(count) {
+        tryVerify(function() {
+            return list !== null && list.count === count
+        }, 2000, "期望 " + count + " 行，实际 " + (list ? list.count : -1))
+        wait(60)
+    }
+
+    function init() {
+        backend.reset()
+        page = pageComponent.createObject(parent, {
+            width: 1200,
+            height: 640,
+            visible: true,
+            viewportWidth: 1280,
+            backend: backend
         })
-        historical.sort(function (a, b) {
-            var ka = pair(a.key), kb = pair(b.key)
-            return (kb[0] - ka[0]) || (kb[1] - ka[1])
-        })
-        return active.concat(historical)
-    }
-
-    // —— 按 objectName 取控件（主列表与详情列表都常驻，不能扫「第一个 ListView」）——
-
-    function mainList() {
-        return findChild(page, "transferList")
-    }
-
-    function detailList() {
-        return findChild(page, "transferDetailList")
-    }
-
-    function activeSummary() {
-        return findChild(page, "transferActiveSummary")
-    }
-
-    function activeLane(key) {
-        return findChild(activeSummary(), "activeLane-" + key)
-    }
-
-    function activeLaneControl(key, name) {
-        return findByName(activeLane(key), name)
-    }
-
-    function mainModel() {
-        var list = mainList()
-        return list ? list.model : null
-    }
-
-    function detailModel() {
-        var list = detailList()
-        return list ? list.model : null
-    }
-
-    function dump() {
-        var model = mainModel()
-        var out = []
-        for (var i = 0; i < model.count; i++)
-            out.push(model.get(i).key + ":" + model.get(i).phase)
-        return out.join(",")
-    }
-
-    function test_header_shows_status_and_wires_global_actions() {
-        page.visible = false
-        backend.downloadActive = 1
-        backend.downloadQueued = 2
+        verify(page !== null, "TransfersPage 创建失败")
         header = headerComponent.createObject(parent, {
-            width: 900,
+            width: 720,
+            height: 40,
+            visible: true,
             target: page
         })
         verify(header !== null, "TransferHeaderControls 创建失败")
+        list = findChild(page, "transferList")
+        verify(list !== null, "transferList 不存在")
         wait(20)
-
-        var status = findChild(header, "transferHeaderStatus")
-        verify(status !== null)
-        compare(status.text, "2 项等待开始")
-        verify(findChild(page, "cancelAllTransfersButton") === null,
-               "全局操作不再占用页面正文工具条")
-
-        mouseClick(findChild(header, "openDownloadDirButton"))
-        compare(backend.openDirCount, 1)
-        mouseClick(findChild(header, "cancelAllTransfersButton"))
-        compare(backend.cancelCount, 1)
-
-        backend.downloadActive = 0
-        wait(20)
-        compare(findChild(header, "cancelAllTransfersButton").enabled, false)
     }
 
-    function dumpDetail() {
-        var model = detailModel()
-        var out = []
-        for (var i = 0; i < model.count; i++)
-            out.push(model.get(i).key + ":" + model.get(i).phase)
-        return out.join(",")
+    function cleanup() {
+        if (header)
+            header.destroy()
+        if (page)
+            page.destroy()
+        header = null
+        page = null
+        list = null
     }
 
-    /// 第 index 行的 delegate（主列表）。
-    function rowAt(index) {
-        var list = mainList()
-        return list ? list.itemAtIndex(index) : null
-    }
-
-    /// 第 index 行的 delegate（详情页）。
-    function detailRowAt(index) {
-        var list = detailList()
-        return list ? list.itemAtIndex(index) : null
-    }
-
-    /// 在 delegate 里按 objectName 找控件（contentItem 不一定在 children 里）。
-    function findByName(item, name) {
-        if (!item)
-            return null
-        if (item.objectName === name)
-            return item
-        var candidates = []
-        if (item.children)
-            candidates = candidates.concat(item.children)
-        if (item.contentItem)
-            candidates.push(item.contentItem)
-        for (var i = 0; i < candidates.length; i++) {
-            var found = findByName(candidates[i], name)
-            if (found)
-                return found
-        }
-        return null
-    }
-
-    /// 主列表某行里某个 objectName 的控件。
-    function controlAt(index, name) {
-        var delegate = rowAt(index)
-        return delegate ? findByName(delegate, name) : null
-    }
-
-    /// 详情列表某行里某个 objectName 的控件。
-    function detailControlAt(index, name) {
-        var delegate = detailRowAt(index)
-        return delegate ? findByName(delegate, name) : null
-    }
-
-    function openFolderAt(index) {
-        var header = controlAt(index, "rowHeader")
-        verify(header !== null, "第 " + index + " 行没有 rowHeader")
-        mouseClick(header)
-        wait(80)
-    }
-
-    function openActiveFolder() {
-        var title = findChild(activeSummary(), "activeSummaryTitle")
-        verify(title !== null, "进行中摘要没有标题")
-        mouseClick(title)
-        wait(80)
-    }
-
-    // —— 原有：主列表差异算法 ——
-
-    // 触发过卡死的原始序列：失败记录留着，重新下载。
-    function test_restart_after_failure_keeps_working() {
-        publish([record("1:0", "failed")])
-        wait(50)
-        compare(mainModel().count, 1)
-
-        publish([record("2:0", "running"), record("1:0", "failed")])
-        wait(50)
-        compare(dump(), "1:0:failed", "进行中离开历史列表")
-        verify(activeSummary().visible, "进行中进入顶部摘要")
-        compare(findChild(activeSummary(), "activeSummaryTitle").text,
-                "正在下载 1 个文件")
-    }
-
-    // 连续超时重试：每批都把新的排到最前，必须每次收敛。
-    function test_repeated_retries_do_not_freeze() {
-        var records = []
-        for (var batch = 1; batch <= 4; batch++) {
-            records.unshift(record(batch + ":0", "running"))
-            publish(records.slice())
-            wait(20)
-            records[0] = record(batch + ":0", "failed")
-            publish(records.slice())
-            wait(20)
-        }
-        compare(mainModel().count, 4)
-        compare(dump(), "4:0:failed,3:0:failed,2:0:failed,1:0:failed")
-    }
-
-    // 插入 / 删除 / 重排混在一起（一批完成的常见形状）。
-    function test_mixed_insert_remove_reorder() {
-        publish([
-            record("1:0", "done"),
-            record("1:1", "done"),
-            record("1:2", "done")
-        ])
-        wait(20)
-        publish([
-            record("2:0", "running"),
-            record("1:2", "done"),
-            record("1:0", "done")
-        ])
-        wait(20)
-        compare(dump(), "1:2:done,1:0:done", "进行中不混进历史差异列表")
-
-        publish([record("2:0", "cancelled")])
-        wait(20)
-        compare(dump(), "2:0:cancelled")
-    }
-
-    // 记录超过上限时，Rust 会追加一条「还有 N 条未显示」的提示行。
-    // 它也必须带 key（Rust 侧固定为 "notice"），否则 ListModel 报
-    // `key is undefined`，而且每次刷新都会被当成新行重复插入。
-    function test_notice_row_stays_once() {
-        function notice(hidden) {
-            return {
-                key: "notice",
-                name: "还有 " + hidden + " 条记录未显示（页面只显示前 500 条）",
-                sourceId: "",
-                state: "notice",
-                stateText: "",
-                running: false,
-                progress: 0,
-                progressText: "",
-                sizeText: "",
-                detail: "",
-                path: "",
-                folder: false,
-                childCount: 0,
-                failedCount: 0
-            }
-        }
-        publish([record("1:0", "failed"), notice(5)])
-        wait(20)
-        compare(mainModel().count, 2)
-        publish([record("2:0", "queued"), record("1:0", "failed"), notice(5)])
-        wait(20)
-        compare(mainModel().count, 3)
-        compare(mainModel().get(0).key, "2:0")
-        compare(mainModel().get(2).phase, "notice")
-    }
-
-    // 清空后重新开始。
-    function test_clear_then_download_again() {
-        publish([record("1:0", "failed")])
-        wait(20)
-        publish([])
-        wait(20)
-        compare(mainModel().count, 0)
-        publish([record("2:0", "running")])
-        wait(20)
-        compare(mainModel().count, 0, "新下载在顶部摘要里")
-        verify(activeSummary().visible)
-    }
-
-    // 2026-10-27 用户实测：滚到「看不到正在下载那条」的位置（已完成段中间），
-    // 每下完一个文件列表就往下跳一次。根因是 syncRows 正向对齐：一条记录完成时
-    // 要从「进行中」段挪到「已完成」段，正向扫描会把它一格一格往后推，
-    // 一次完成 = 几十次 move，ListView 内部位置被打乱后被强制重排。
-    function test_completion_while_scrolled_away_keeps_scroll() {
-        var records = []
-        for (var b = 0; b < 30; b++)
-            records.push(record("1:" + b, b === 0 ? "running" : "queued"))
-        for (var i = 0; i < 5; i++)
-            records.push(record("0:" + i, "done"))
-        publish(records)
-        wait(100)
-
-        var list = mainList()
-        verify(list !== null, "找不到主列表 ListView")
-        list.contentY = 700
-        wait(50)
-        var before = list.contentY
-        verify(before > 0, "先真的滚下去（contentY=" + before + "）")
-
-        // 逐个完成：每次都要停在原位
-        for (var n = 0; n < 30; n++) {
-            records[n] = record("1:" + n, "done")
-            if (n + 1 < 30)
-                records[n + 1] = record("1:" + (n + 1), "running")
-            publish(records)
-            wait(40)
-            if (Math.abs(list.contentY - before) > 1) {
-                fail("下完第 " + n + " 个后列表跳了：contentY " + before + " → " + list.contentY)
-                return
-            }
-        }
-        compare(mainModel().count, 35)
-    }
-
-    // 定位到某一行仍然要滚过去（这是主动行为，不能被上一条的「别乱滚」误伤）。
-    function test_focus_still_scrolls_to_the_row() {
-        var records = []
-        for (var i = 0; i < 40; i++)
-            records.push(record("0:" + i, "done"))
-        records.unshift(record("1:0", "queued"))
-        publish(records)
-        wait(80)
-        var list = mainList()
-        list.contentY = 0
-        wait(30)
-
-        page.focusSource("src-1:0")
-        wait(80)
-        compare(page.highlightedKey, "1:0")
-        verify(list.contentY < 200, "不该滚到底部，实际 contentY=" + list.contentY)
-    }
-
-    // 点已占用的条目：按 sourceId 定位到那一行并高亮。
-    function test_focus_source_id_lights_the_right_row() {
-        publish([record("2:0", "running"), record("1:0", "queued")])
-        wait(20)
-
-        page.focusSource("src-1:0")
-        wait(60)
-        // 定位到的是 1:0 那一行，高亮的也必须是它
-        var model = mainModel()
-        var expectedKey = null
-        for (var i = 0; i < model.count; i++) {
-            if (model.get(i).sourceId === "src-1:0")
-                expectedKey = model.get(i).key
-        }
-        compare(expectedKey, "1:0")
-        compare(page.highlightedKey, "1:0", "高亮的是定位到的那一行")
-
-        // 同一 id 再点一次也要重新定位（不能因为属性值没变就不触发）
-        page.highlightedKey = ""
-        page.focusSourceId = ""
-        page.focusSource("src-1:0")
-        wait(60)
-        compare(page.highlightedKey, "1:0")
-    }
-
-    // 高亮约 1.2 秒后自动淡出。
-    function test_highlight_fades_out() {
-        publish([record("1:0", "running")])
-        wait(20)
-        page.focusSource("src-1:0")
-        wait(60)
-        compare(page.highlightedKey, "1:0")
-        wait(1400)
-        compare(page.highlightedKey, "", "高亮必须自己消失")
-    }
-
-    // 准备中的行渲染不报 QWARN（那也直接判测试失败），并显示说明文案。
-    function test_preparing_row_renders() {
-        var row = record("1:0", "preparing")
-        row.name = "大文件夹"
-        row.folder = true
-        row.childCount = 0
-        row.sizeText = "—"
-        publish([row, record("2:0", "queued")])
-        wait(60)
-        compare(mainModel().count, 1, "准备中的文件夹只占顶部摘要")
-        compare(mainModel().get(0).phase, "queued")
-        compare(findChild(activeSummary(), "activeSummaryTitle").text,
-                "正在准备「大文件夹」")
-        compare(backend.downloadActive, 2, "准备中也算进行中")
-    }
-
-    // —— 文件夹批次：主列表只渲染总账行 ——
-
-    function test_folder_batch_is_one_row_in_main_list() {
-        var folder = folderRecord("1:folder", "running", {
-            childCount: 3,
-            running: true,
-            progress: 30,
-            progressText: "30% · 1/3",
-            detail: "第 1/3 个"
-        })
-        publish([
-            folder,
-            record("2:0", "done")
-        ], [
-            childRecord("1:0", "done", "a.mkv"),
-            childRecord("1:1", "running", "b.mkv"),
-            childRecord("1:2", "queued", "c.mkv")
-        ])
-        wait(50)
-
-        compare(mainModel().count, 1, "进行中的文件夹只占摘要，完成记录进历史")
-        compare(dump(), "2:0:done")
-        compare(findChild(activeSummary(), "activeSummaryTitle").text,
-                folder.name, "真实文件夹批次用文件夹名作标题")
-        verify(activeLane("1:1") !== null, "正在跑的子文件进入摘要")
-    }
-
-    function test_folder_row_with_children_is_clickable() {
-        var folder = folderRecord("1:folder", "running", {
-            childCount: 2,
-            running: true
-        })
-        var detail = [
-            childRecord("1:0", "done", "a.mkv"),
-            childRecord("1:1", "running", "b.mkv")
-        ]
-        publish([folder], detail)
-        wait(50)
-
-        openActiveFolder()
-        compare(backend.openCount, 1)
-        compare(backend.openedKey, "1:folder")
-        compare(page.detailActive, true, "后端激活详情")
-        verify(detailList() !== null, "找不到详情页列表")
-        compare(detailModel().count, 2)
-        compare(dumpDetail(), "1:0:done,1:1:running")
-    }
-
-    function test_folder_row_without_children_is_not_clickable() {
-        publish([folderRecord("1:folder", "preparing", {
-            childCount: 0
-        })])
-        wait(50)
-
-        compare(mainModel().count, 0)
-        var title = findChild(activeSummary(), "activeSummaryTitle")
-        verify(title !== null, "准备中的文件夹仍有摘要")
-        mouseClick(title)
-        wait(40)
-        compare(backend.openCount, 0)
-    }
-
-    // 返回后主列表的滚动位置不能被重建冲掉。
-    function test_back_keeps_main_list_scroll() {
-        // 文件夹批次号最小 → 已结束段排最后；滚到底部正好能看到它。
-        var records = [
-            folderRecord("0:folder", "done", {
-                childCount: 2,
-                path: "/home/me/Downloads/文件夹"
-            })
-        ]
-        for (var i = 1; i <= 12; i++)
-            records.push(record(i + ":0", "done"))
-        publish(records, [
-            childRecord("0:0", "done", "a.mkv"),
-            childRecord("0:1", "done", "b.mkv")
-        ])
-        wait(100)
-
-        var list = mainList()
-        list.contentY = list.contentHeight - list.height
-        wait(50)
-        var before = list.contentY
-        verify(before > 0, "先滚到底部（contentY=" + before + "）")
-
-        var folderIndex = mainModel().count - 1
-        openFolderAt(folderIndex)
-        compare(page.detailActive, true)
-
-        var back = findChild(page, "backLink")
-        verify(back !== null, "详情页找不到返回链接")
-        mouseClick(back)
-        wait(80)
-
-        compare(page.detailActive, false)
-        compare(backend.closeCount, 1)
-        compare(mainList().contentY, before, "返回后主列表滚动位置不变")
-    }
-
-    // 详情页里完成一个文件：状态变了、顺序不变、滚动位置不动。
-    function test_detail_completion_keeps_scroll_and_order() {
-        var detail = []
-        for (var i = 0; i < 40; i++) {
-            detail.push(childRecord("1:" + i, i === 0 ? "running" : "queued",
-                                    "file" + i + ".mkv"))
-        }
-        publish([folderRecord("1:folder", "running", {
-            childCount: 40,
-            running: true,
-            progress: 5,
-            progressText: "5% · 1/40",
-            detail: "第 1/40 个"
-        })], detail)
-        wait(100)
-
-        openActiveFolder()
-        var list = detailList()
-        verify(list !== null, "找不到详情页列表")
-        list.contentY = 300
-        wait(50)
-        var before = list.contentY
-        verify(before > 0, "详情页先滚下去（contentY=" + before + "）")
-
-        var updated = detail.slice()
-        updated[0] = childRecord("1:0", "done", "file0.mkv")
-        updated[1] = childRecord("1:1", "running", "file1.mkv")
-        publish([folderRecord("1:folder", "running", {
-            childCount: 40,
-            running: true,
-            progress: 8,
-            progressText: "8% · 2/40",
-            detail: "第 2/40 个"
-        })], updated)
-        wait(120)
-
-        compare(detailModel().count, 40)
-        compare(detailModel().get(0).key, "1:0", "完成的文件不移动")
-        compare(detailModel().get(0).phase, "done")
-        compare(detailList().contentY, before, "详情页滚动位置不变")
-    }
-
-    // 详情页子行的动作必须使用子行自己的 key，而不是父行的 key。
-    function test_detail_row_actions_use_child_key() {
-        var folder = folderRecord("1:folder", "failed", {
-            childCount: 2,
-            failedCount: 1,
-            stateText: "部分失败",
-            detail: "成功 1 个 · 失败 1 个"
-        })
-        publish([folder], [
-            childRecord("1:0", "done", "a.mkv"),
-            childRecord("1:1", "failed", "b.mkv")
-        ])
-        wait(60)
-
-        openFolderAt(0)
-        compare(detailModel().count, 2)
-
-        var reveal = detailControlAt(0, "revealLink")
-        verify(reveal !== null && reveal.visible, "已完成的子行有「打开位置」")
-        mouseClick(reveal)
-        compare(backend.revealCount, 1)
-        compare(backend.revealedKey, "1:0")
-
-        var retry = detailControlAt(1, "retryLink")
-        verify(retry !== null && retry.visible, "失败的子行有「重试」")
-        mouseClick(retry)
-        compare(backend.retryCount, 1)
-        compare(backend.retriedKey, "1:1", "重试的是子行自己的 key")
-
-        var hint = detailControlAt(0, "openDetailsHint")
-        verify(hint === null || !hint.visible, "子文件行不显示下钻提示")
-    }
-
-    // 部分失败：父行显示「部分失败 / 点开可重试」，没有整批重试。
-    function test_partial_failure_parent_has_no_retry() {
-        publish([folderRecord("1:folder", "failed", {
-            childCount: 3,
-            failedCount: 2,
-            stateText: "部分失败",
-            detail: "成功 1 个 · 失败 2 个"
-        })], [
-            childRecord("1:0", "done", "a.mkv"),
-            childRecord("1:1", "failed", "b.mkv"),
-            childRecord("1:2", "failed", "c.mkv")
-        ])
-        wait(60)
-
-        var retry = controlAt(0, "retryLink")
-        verify(retry === null || !retry.visible, "父行不提供整批重试")
-        var detail = controlAt(0, "detailLink")
-        verify(detail !== null, "部分失败要有说明")
-        verify(detail.text.indexOf("部分失败") < 0, "状态文字在状态列，不拼进说明")
-        verify(detail.text.indexOf("点开可重试") >= 0, "说明行追加下钻提示")
-        var hint = controlAt(0, "openDetailsHint")
-        verify(hint !== null && hint.visible, "部分失败仍可进详情")
-    }
-
-    // 读目录前整体失败：没有子行，父行可整批重试。
-    function test_failed_folder_without_children_offers_retry() {        publish([folderRecord("1:folder", "failed", {
-            childCount: 0,
-            stateText: "失败",
-            detail: "目录读取失败"
-        })])
-        wait(60)
-
-        var hint = controlAt(0, "openDetailsHint")
-        verify(hint === null || !hint.visible, "无子行不显示下钻提示")
-        var retry = controlAt(0, "retryLink")
-        verify(retry !== null && retry.visible, "无子行失败给整批重试")
-        mouseClick(retry)
-        compare(backend.retryCount, 1)
-        compare(backend.retriedKey, "1:folder", "重试的是文件夹总账行")
-    }
-
-    // 空文件夹：Done 且没有子行，但有落盘路径（ADR 0012）。
-    // 打开位置可用、不显示下钻箭头、不给重试。
-    function test_empty_folder_done_row_reveals_its_directory() {
-        publish([folderRecord("1:folder", "done", {
-            childCount: 0,
-            stateText: "已完成",
-            sizeText: "—",
-            detail: "空文件夹 · 保存到 /home/me/Downloads/空文件夹",
-            path: "/home/me/Downloads/空文件夹"
-        })])
-        wait(60)
-
-        var hint = controlAt(0, "openDetailsHint")
-        verify(hint === null || !hint.visible, "空文件夹没有子行，不显示 ›")
-        var header = controlAt(0, "rowHeader")
-        verify(header !== null && !header.enabled, "空文件夹第一行不可点开详情")
-
-        var reveal = controlAt(0, "revealLink")
-        verify(reveal !== null && reveal.visible, "空文件夹可「打开位置」")
-        mouseClick(reveal)
-        compare(backend.revealCount, 1)
-        compare(backend.revealedKey, "1:folder")
-
-        var retry = controlAt(0, "retryLink")
-        verify(retry === null || !retry.visible, "空文件夹算完成，不给重试")
-        compare(controlAt(0, "stateText").text, "已完成")
-        compare(controlAt(0, "sizeText").text, "—")
-
-        var detail = controlAt(0, "detailLink")
-        verify(detail !== null, "空文件夹要有说明行")
-        compare(detail.text, "空文件夹 · 保存到 /home/me/Downloads/空文件夹")
-    }
-
-    // 带跳过数的完成行：说明行原样显示 Rust 拼好的文案。
-    function test_done_row_shows_skipped_directories() {
-        publish([folderRecord("1:folder", "done", {
-            childCount: 3,
-            detail: "3 个文件 · 保存到 /home/me/Downloads/剧集 · 跳过 2 个目录",
-            path: "/home/me/Downloads/剧集"
-        })])
-        wait(60)
-
-        var detail = controlAt(0, "detailLink")
-        verify(detail !== null)
-        verify(detail.text.indexOf("跳过 2 个目录") >= 0,
-               "跳过后缀要显示出来：" + detail.text)
-        var reveal = controlAt(0, "revealLink")
-        verify(reveal !== null && reveal.visible, "有文件落盘的完成行仍可打开位置")
-    }
-
-    // 详情页开着时定位别的条目：先回主列表，再滚到目标行。
-    function test_focus_source_closes_detail_before_locating() {
-        var records = [
-            folderRecord("1:folder", "running", {
-                childCount: 2,
-                running: true
+    function test_one_table_holds_all_states() {
+        backend.publish([
+            makeRow("1:0", "正在下载.mkv", "running", {
+                progress: 35,
+                progressText: "35%",
+                sizeText: "35 MB / 100 MB"
             }),
-            record("2:0", "queued")
-        ]
-        publish(records, [
-            childRecord("1:0", "running", "a.mkv"),
-            childRecord("1:1", "queued", "b.mkv")
-        ])
-        wait(60)
-        openActiveFolder()
-        compare(page.detailActive, true)
-
-        page.focusSource("src-2:0")
-        wait(120)
-        compare(page.detailActive, false, "定位前先关详情")
-        compare(backend.closeCount, 1)
-        compare(page.highlightedKey, "2:0")
-    }
-
-    // 实时进度按 key 贴到摘要 lane 与详情页子行。
-    function test_live_progress_reaches_folder_and_detail_rows() {
-        var folder = folderRecord("1:folder", "running", {
-            childCount: 50,
-            running: true,
-            progress: 0,
-            progressText: "0% · 1/50",
-            sizeText: "0 B / 100 MB"
-        })
-        var detail = []
-        for (var i = 0; i < 50; i++) {
-            detail.push(childRecord("1:" + i, i === 0 ? "running" : "queued",
-                                    "f" + i + ".mkv"))
-        }
-        publish([folder], detail)
-        wait(80)
-
-        backend.transferLive = [
-            { key: "1:folder", progress: 62, progressText: "62% · 31/50",
-              sizeText: "62 MB / 100 MB", rateText: "3.7 MB/s · 剩 2 分 30 秒",
-              noteText: "" },
-            { key: "1:0", progress: 42, progressText: "42%",
-              sizeText: "4 MB / 10 MB", rateText: "812 KB/s · 剩 45 秒",
-              noteText: "" }
-        ]
-        wait(80)
-
-        var bar = activeLaneControl("1:0", "activeLaneProgress")
-        verify(bar !== null && bar.visible, "摘要 lane 显示当前文件进度")
-        compare(Math.round(bar.value), 42, "lane 按自己的 key 取进度")
-        compare(activeLaneControl("1:0", "activeLaneSize").text, "4 MB / 10 MB")
-
-        openActiveFolder()
-        wait(80)
-        var childBar = detailControlAt(0, "rowProgress")
-        verify(childBar !== null && childBar.visible, "详情页当前文件显示进度条")
-        compare(Math.round(childBar.value), 42, "详情页子行按自己的 key 取进度")
-        compare(detailControlAt(0, "sizeText").text, "4 MB / 10 MB")
-    }
-
-    // 批内并发后可能同时有多条「下载中」：每一行都要按自己的 key 取实时进度。
-    function test_two_running_files_keep_their_own_live_progress() {
-        publish([
-            record("1:0", "running"),
-            record("1:1", "running")
-        ])
-        wait(80)
-
-        backend.transferLive = [
-            { key: "1:0", progress: 20, progressText: "20%",
-              sizeText: "2 MB / 10 MB", rateText: "1 MB/s", noteText: "" },
-            { key: "1:1", progress: 70, progressText: "70%",
-              sizeText: "7 MB / 10 MB", rateText: "2 MB/s", noteText: "" }
-        ]
-        wait(80)
-
-        compare(Math.round(activeLaneControl("1:0", "activeLaneProgress").value), 20,
-                "第一条 lane 只吃自己的进度")
-        compare(Math.round(activeLaneControl("1:1", "activeLaneProgress").value), 70,
-                "第二条 lane 也要实时刷新")
-        compare(activeLaneControl("1:0", "activeLaneSize").text, "2 MB / 10 MB")
-        compare(activeLaneControl("1:1", "activeLaneSize").text, "7 MB / 10 MB")
-        compare(activeLaneControl("1:0", "activeLaneRate").text, "1 MB/s")
-        compare(activeLaneControl("1:1", "activeLaneRate").text, "2 MB/s")
-    }
-
-    // —— 速度 / 剩余时间 / 卡住 / 重试说明（2026-10-27）——
-
-    // 文件夹摘要 lane 显示当前文件速度 + ETA；详情页头部显示整批速度。
-    function test_folder_row_and_detail_header_show_batch_rate() {
-        var folder = folderRecord("1:folder", "running", {
-            childCount: 50,
-            running: true,
-            progress: 62,
-            progressText: "62% · 31/50",
-            sizeText: "1.2 GB / 3.4 GB"
-        })
-        publish([folder], [
-            childRecord("1:0", "done", "a.mkv"),
-            childRecord("1:1", "running", "b.mkv"),
-            childRecord("1:2", "queued", "c.mkv")
-        ])
-        wait(80)
-
-        backend.transferLive = [
-            { key: "1:folder", progress: 62, progressText: "62% · 31/50",
-              sizeText: "1.2 GB / 3.4 GB",
-              rateText: "3.7 MB/s · 剩 2 分 30 秒", noteText: "" },
-            { key: "1:1", progress: 42, progressText: "42%",
-              sizeText: "4 MB / 10 MB",
-              rateText: "3.7 MB/s · 剩 1 分 30 秒", noteText: "" }
-        ]
-        wait(80)
-
-        var rate = activeLaneControl("1:1", "activeLaneRate")
-        verify(rate !== null && rate.visible, "摘要 lane 显示当前文件速度")
-        compare(rate.text, "3.7 MB/s · 剩 1 分 30 秒")
-
-        openActiveFolder()
-        wait(80)
-        var header = findChild(page, "folderRateText")
-        verify(header !== null && header.visible, "详情页头部显示整批速度")
-        compare(header.text, "3.7 MB/s · 剩 2 分 30 秒")
-
-        // 详情页子行按自己的 key 取单文件速度
-        var childRate = detailControlAt(1, "rateText")
-        verify(childRate !== null && childRate.visible, "详情页当前文件显示速度列")
-        compare(childRate.text, "3.7 MB/s · 剩 1 分 30 秒")
-        var finishedRate = detailControlAt(0, "rateText")
-        verify(finishedRate === null || !finishedRate.visible,
-               "已完成的子行不显示速度")
-    }
-
-    // 卡住文案替换速度；百分比、进度条、状态文字不变。
-    function test_stall_text_replaces_speed_without_touching_progress() {
-        publish([record("1:0", "running")])
-        wait(60)
-        var badge = findChild(activeSummary(), "activeSummaryBadge")
-
-        backend.transferLive = [
-            { key: "1:0", progress: 41, progressText: "41%",
-              sizeText: "4 MB / 10 MB",
-              rateText: "已卡住 7 秒", noteText: "" }
-        ]
-        wait(60)
-
-        var rate = activeLaneControl("1:0", "activeLaneRate")
-        verify(rate !== null && rate.visible)
-        compare(rate.text, "已卡住 7 秒", "卡住时只报卡住")
-        compare(activeLaneControl("1:0", "activeLaneProgress").value, 41,
-                "进度条不动")
-        compare(activeLaneControl("1:0", "activeLaneSize").text, "4 MB / 10 MB",
-                "大小列不动")
-        compare(findChild(activeSummary(), "activeSummaryBadge") === badge, true,
-                "并发徽标控件不重建")
-
-        // 恢复后切回速度
-        backend.transferLive = [
-            { key: "1:0", progress: 43, progressText: "43%",
-              sizeText: "4.3 MB / 10 MB",
-              rateText: "3.7 MB/s · 剩 2 秒", noteText: "" }
-        ]
-        wait(60)
-        compare(activeLaneControl("1:0", "activeLaneRate").text,
-                "3.7 MB/s · 剩 2 秒")
-    }
-
-    // 重试说明出现在第二行；进度条仍然可见；说明为空时占位高度不变。
-    function test_note_appears_below_and_keeps_the_progress_bar() {
-        publish([folderRecord("1:folder", "running", {
-            childCount: 3,
-            running: true,
-            progressText: "41% · 12/30"
-        })], [
-            childRecord("1:0", "running", "a.mkv")
-        ])
-        wait(60)
-
-        backend.transferLive = [
-            { key: "1:folder", progress: 41, progressText: "41% · 12/30",
-              sizeText: "840 MB / 2.1 GB",
-              rateText: "已卡住 7 秒",
-              noteText: "3 秒后从 45 MB 继续（1/3）" },
-            { key: "1:0", progress: 41, progressText: "41%",
-              sizeText: "840 MB / 2.1 GB",
-              rateText: "已卡住 7 秒",
-              noteText: "3 秒后从 45 MB 继续（1/3）" }
-        ]
-        wait(60)
-
-        var meta = activeLaneControl("1:0", "activeLaneRate")
-        verify(meta !== null && meta.visible, "lane 显示速度 / 说明")
-        compare(meta.text, "已卡住 7 秒 · 3 秒后从 45 MB 继续（1/3）")
-        var bar = activeLaneControl("1:0", "activeLaneProgress")
-        verify(bar !== null && bar.visible, "说明出现时进度条仍在")
-
-        // 说明过期（Rust 给空串）：恢复只显示速度
-        var heightBefore = activeLane("1:0").height
-        backend.transferLive = [
-            { key: "1:folder", progress: 45, progressText: "45% · 13/30",
-              sizeText: "900 MB / 2.1 GB",
-              rateText: "3.7 MB/s · 剩 5 分", noteText: "" },
-            { key: "1:0", progress: 45, progressText: "45%",
-              sizeText: "900 MB / 2.1 GB",
-              rateText: "3.7 MB/s · 剩 1 分", noteText: "" }
-        ]
-        wait(60)
-        compare(activeLaneControl("1:0", "activeLaneRate").text,
-                "3.7 MB/s · 剩 1 分", "说明过期后只留速度")
-        compare(activeLane("1:0").height, heightBefore, "lane 高度不变")
-    }
-
-    // 排队 / 完成 / 失败行：不显示速度、卡住、说明（说明仍走原 detail）。
-    function test_idle_rows_have_no_rate_or_note() {
-        // 进行中在前；已结束新→旧（3:0 失败、2:0 完成）
-        publish([
-            record("1:0", "queued"),
-            record("2:0", "done"),
-            record("3:0", "failed")
-        ])
-        wait(60)
-
-        for (var i = 0; i < 3; i++) {
-            var rate = controlAt(i, "rateText")
-            verify(rate === null || !rate.visible,
-                   "第 " + i + " 行不该有速度列")
-            var note = controlAt(i, "noteText")
-            verify(note === null || !note.visible,
-                   "第 " + i + " 行不该有下载说明")
-        }
-        // 失败原因仍按原路径显示在说明行
-        var detail = controlAt(1, "detailLink")
-        verify(detail !== null && detail.text.indexOf("下载超时") >= 0,
-               "失败原因照旧")
-    }
-
-    // —— 单条动作：完成行「打开位置」/ 失败行「重试」（2026-10-27）——
-
-    // 完成行：整段路径与右端链接调同一个方法，key 必须是这一行。
-    function test_done_row_path_and_link_reveal_the_file() {
-        publish([record("1:0", "done")])
-        wait(50)
-
-        var detail = controlAt(0, "detailLink")
-        verify(detail !== null, "完成行要能找到路径说明")
-        verify(detail.text.indexOf("保存到") === 0, "路径仍是说明文字")
-        mouseClick(detail)
-        compare(backend.revealCount, 1, "点整段路径调一次 reveal")
-        compare(backend.revealedKey, "1:0")
-
-        var link = controlAt(0, "revealLink")
-        verify(link !== null && link.visible, "完成行显示「打开位置」")
-        mouseClick(link)
-        compare(backend.revealCount, 2, "点「打开位置」也调 reveal")
-        compare(backend.revealedKey, "1:0")
-
-        var retry = controlAt(0, "retryLink")
-        verify(retry === null || !retry.visible, "完成行不给重试")
-    }
-
-    // 失败行：只显示「重试」，路径不可点。
-    function test_failed_row_retries() {
-        publish([record("1:0", "failed")])
-        wait(50)
-
-        var reveal = controlAt(0, "revealLink")
-        verify(reveal === null || !reveal.visible, "失败行没有「打开位置」")
-
-        var detail = controlAt(0, "detailLink")
-        verify(detail !== null, "失败原因照常显示")
-        mouseClick(detail)
-        compare(backend.revealCount, 0, "失败行点路径不该去定位文件")
-
-        var retry = controlAt(0, "retryLink")
-        verify(retry !== null && retry.visible, "失败行显示「重试」")
-        mouseClick(retry)
-        compare(backend.retryCount, 1)
-        compare(backend.retriedKey, "1:0", "重试的是这一行")
-    }
-
-    // 排队 / 下载中 / 已取消：两个行内动作都不出现。
-    function test_only_finished_or_failed_rows_have_actions() {
-        publish([
-            record("1:0", "queued"),
-            record("2:0", "running"),
-            record("3:0", "cancelled")
-        ])
-        wait(50)
-        for (var i = 0; i < 3; i++) {
-            var reveal = controlAt(i, "revealLink")
-            var retry = controlAt(i, "retryLink")
-            verify(reveal === null || !reveal.visible,
-                   "第 " + i + " 行不该有「打开位置」")
-            verify(retry === null || !retry.visible, "第 " + i + " 行不该有「重试」")
-        }
-        compare(backend.revealCount, 0)
-        compare(backend.retryCount, 0)
-    }
-
-    // 点击「重试」时 Rust 会同步删掉旧失败行、加入新排队行——被点的 delegate
-    // 当场销毁。必须零 QWARN（qml-lint.sh 把 QWARN 当失败）。
-    function test_retry_click_can_delete_its_own_row() {
-        publish([record("1:0", "failed")])
-        wait(50)
-        backend.onRetry = function (key) {
-            // 与 Rust 一样：删旧行 + 加新排队行，同步发快照
-            publish([record("2:0", "queued")])
-        }
-
-        var retry = controlAt(0, "retryLink")
-        verify(retry !== null && retry.visible)
-        mouseClick(retry)
-
-        compare(backend.retryCount, 1)
-        compare(backend.retriedKey, "1:0")
-        wait(50)
-        compare(dump(), "2:0:queued", "旧失败行消失，新排队行出现")
-        compare(mainModel().count, 1)
-    }
-
-    // —— 进行中摘要 / 队列 / 历史（2026-10-29 传输页重排）——
-
-    function test_date_controls_and_automatic_day_grouping_are_gone() {
-        publish([record("1:0", "done")])
-        wait(60)
-
-        verify(findChild(page, "historyDayRow") === null, "不再有日期分组行")
-        verify(findChild(page, "earlierDaysLink") === null, "不再有「更早」菜单")
-        verify(findChild(page, "dayPill-2026-10-29") === null, "不再有日期药丸")
-        compare(mainModel().get(0).sectionKey, "history",
-                "历史直接进统一分区，不再按天拆")
-    }
-
-    function test_three_independent_files_get_a_generic_summary_title() {
-        publish([
-            record("1:0", "running"),
-            record("2:0", "running"),
-            record("3:0", "running"),
-            record("4:0", "queued")
-        ])
-        wait(80)
-
-        compare(findChild(activeSummary(), "activeSummaryTitle").text,
-                "正在下载 3 个文件",
-                "不同来源不能拿第一个文件名伪装成文件夹标题")
-        verify(activeLane("1:0") !== null, "第一个独立文件有 lane")
-        verify(activeLane("2:0") !== null, "第二个独立文件有 lane")
-        verify(activeLane("3:0") !== null, "第三个独立文件有 lane")
-        compare(mainModel().count, 1, "进行中不进主列表")
-        compare(dump(), "4:0:queued", "等待队列保留后面的文件")
-    }
-
-    function test_queue_and_history_are_separate_in_join_order() {
-        publish([
-            record("1:0", "done"),
-            record("2:0", "queued"),
-            record("3:0", "failed"),
-            record("4:0", "queued")
-        ])
-        wait(60)
-
-        compare(page.queueCount, 2)
-        compare(page.historyCount, 2)
-        compare(dump(), "2:0:queued,4:0:queued,3:0:failed,1:0:done",
-                "等待队列按加入顺序，历史按新到旧")
-        compare(mainModel().get(0).sectionKey, "queue")
-        compare(mainModel().get(1).sectionKey, "queue")
-        compare(mainModel().get(2).sectionKey, "history")
-        compare(mainModel().get(3).sectionKey, "history")
-    }
-
-    function test_interrupted_history_uses_recency_not_special_priority() {
-        publish([
-            record("1:0", "interrupted"),
-            record("2:0", "done"),
-            record("3:0", "cancelled")
-        ])
-        wait(60)
-
-        compare(dump(), "3:0:cancelled,2:0:done,1:0:interrupted",
-                "已中断不单独置顶，历史统一按批次新到旧")
-        var meta = findChild(page, "historySectionMeta")
-        verify(meta !== null, "历史分组标题存在")
-        compare(meta.text, "最近记录在前 · 3 项")
-    }
-
-    function test_active_lane_progress_and_speed_follow_live_updates() {
-        publish([
-            record("1:0", "running"),
-            record("2:0", "running"),
-            record("3:0", "running")
-        ])
-        wait(60)
-
-        var live = []
-        for (var i = 1; i <= 3; i++) {
-            live.push({
-                key: i + ":0",
-                progress: i * 20,
-                progressText: (i * 20) + "%",
-                sizeText: (i * 10) + " MB / 100 MB",
-                rateText: i + ".0 MB/s",
-                noteText: ""
+            makeRow("2:0", "排队.mkv", "queued"),
+            makeRow("3:0", "完成.mkv", "done", {
+                progress: 100,
+                path: "/tmp/完成.mkv"
+            }),
+            makeRow("4:0", "失败.mkv", "failed", {
+                detail: "连接超时"
             })
-        }
-        backend.transferLive = live
-        wait(60)
+        ], 2, 1)
 
-        for (var lane = 1; lane <= 3; lane++) {
-            compare(Math.round(activeLaneControl(lane + ":0",
-                                                 "activeLaneProgress").value),
-                    lane * 20)
-            compare(activeLaneControl(lane + ":0", "activeLaneRate").text,
-                    lane + ".0 MB/s")
-        }
+        waitRows(4)
+        compare(findChild(page, "transferTableHeader") !== null, true)
+        compare(findChild(page, "transferActiveSummary"), null)
+        compare(findChild(page, "queueSectionHeader"), null)
+        compare(findChild(page, "historySectionHeader"), null)
+        compare(findChild(page, "transferDetailList"), null)
+        compare(list.count, 4, "所有状态只在同一张表里出现")
+        compare(findChild(header, "transferHeaderStatus").text, "1 项传输中 · 1 项等待")
     }
 
-    // —— 已中断的行 ——
+    function test_header_counts_queued_rows_only_once() {
+        backend.publish([
+            makeRow("1:0", "a.mkv", "queued"),
+            makeRow("2:0", "b.mkv", "queued"),
+            makeRow("3:0", "c.mkv", "queued")
+        ], 3, 3)
+        waitRows(3)
+        compare(findChild(header, "transferHeaderStatus").text, "3 项等待开始")
 
-    function test_interrupted_row_offers_retry_and_says_it_was_cut_off() {
-        var row = record("1:0", "interrupted")
-        row.stateText = "已中断"
-        row.detail = "上次退出时未完成"
-        row.path = ""
-        publish([row])
-        wait(60)
-
-        compare(controlAt(0, "stateText").text, "已中断")
-        var detail = controlAt(0, "detailLink")
-        verify(detail !== null && detail.text.indexOf("上次退出时未完成") >= 0)
-        var retry = controlAt(0, "retryLink")
-        verify(retry !== null && retry.visible, "已中断的行给「重试」")
-        var reveal = controlAt(0, "revealLink")
-        verify(reveal === null || !reveal.visible, "没有落盘路径就没有「打开位置」")
-
-        mouseClick(retry)
-        compare(backend.retryCount, 1)
-        compare(backend.retriedKey, "1:0")
+        backend.publish([
+            makeRow("1:0", "a.mkv", "running"),
+            makeRow("2:0", "b.mkv", "queued"),
+            makeRow("3:0", "c.mkv", "queued"),
+            makeRow("4:0", "d.mkv", "queued")
+        ], 4, 3)
+        waitRows(4)
+        compare(findChild(header, "transferHeaderStatus").text, "1 项传输中 · 3 项等待")
     }
 
-    function test_interrupted_folder_without_children_retries_as_a_whole() {
-        publish([folderRecord("1:folder", "interrupted", {
-            childCount: 0,
-            stateText: "已中断",
-            detail: "上次退出时未完成"
-        })])
-        wait(60)
+    function test_rows_and_header_use_fixed_density() {
+        backend.publish([
+            makeRow("1:0", "a.mkv", "running", {
+                progress: 50,
+                progressText: "50%"
+            })
+        ], 1, 0)
+        waitRows(1)
 
-        var retry = controlAt(0, "retryLink")
-        verify(retry !== null && retry.visible, "没有子行的已中断文件夹可整批重试")
-        mouseClick(retry)
-        compare(backend.retriedKey, "1:folder")
+        var rowItem = row("1:0")
+        var tableHeader = findChild(page, "transferTableHeader")
+        verify(rowItem !== null)
+        verify(tableHeader !== null)
+        compare(rowItem.implicitHeight, 48)
+        compare(tableHeader.implicitHeight, 34)
+        compare(findChild(page, "nameText").text, "a.mkv")
+        compare(findChild(page, "stateText").text, "下载中")
+        compare(findChild(page, "sizeText").visible, true)
+        compare(findChild(page, "rateText").visible, true)
     }
 
-    function test_interrupted_folder_with_children_has_no_whole_retry() {
-        publish([folderRecord("1:folder", "interrupted", {
-            childCount: 2,
-            stateText: "已中断",
-            detail: "上次退出时未完成 · 完成 1 个 · 失败 0 个"
-        })], [
-            childRecord("1:0", "interrupted", "a.mkv"),
-            childRecord("1:1", "interrupted", "b.mkv")
+    function test_type_icons_align_without_moving_child_indent() {
+        backend.setDetails("9:folder", [
+            makeRow("9:0", "子文件.mkv", "done", { progress: 100 })
         ])
-        wait(60)
+        backend.publish([
+            makeRow("1:0", "普通文件.mkv", "done", { progress: 100 }),
+            makeRow("9:folder", "目录", "done", {
+                folder: true,
+                childCount: 1
+            })
+        ], 0, 0)
+        waitRows(2)
 
-        var retry = controlAt(0, "retryLink")
-        verify(retry === null || !retry.visible, "去详情页逐个重试")
-        var hint = controlAt(0, "openDetailsHint")
-        verify(hint !== null && hint.visible, "已中断的文件夹仍可点进详情")
+        var fileIcon = findChild(row("1:0"), "rowTypeIcon")
+        var folderIcon = findChild(row("9:folder"), "rowTypeIcon")
+        verify(fileIcon !== null)
+        verify(folderIcon !== null)
+        compare(fileIcon.x, folderIcon.x, "顶层普通文件与目录图标必须同一竖线")
+
+        mouseClick(findChild(row("9:folder"), "rowHeader"))
+        waitRows(3)
+        var childIcon = findChild(row("9:0"), "rowTypeIcon")
+        verify(childIcon !== null)
+        compare(childIcon.x, 28, "子文件图标保持现有缩进")
     }
 
-    // —— 清空历史：二次确认 ——
+    function test_failure_reason_is_merged_into_status() {
+        backend.publish([
+            makeRow("1:0", "坏文件.mkv", "failed", {
+                detail: "连接超时"
+            })
+        ], 0, 0)
+        waitRows(1)
 
-    function test_clear_button_asks_for_confirmation_first() {
-        backend.transferHasFinished = true
-        publish([record("1:0", "done")])
-        wait(60)
+        var rowItem = row("1:0")
+        verify(rowItem !== null)
+        compare(findChild(rowItem, "stateText").text, "失败 · 连接超时")
+        compare(findChild(rowItem, "detailLink"), null)
+        compare(rowItem.implicitHeight, 48, "失败原因并入单行状态列")
+        compare(findChild(rowItem, "retryLink").visible, true)
+    }
 
-        var button = findChild(page, "clearFinishedButton")
-        verify(button !== null && button.enabled, "有已结束记录时按钮可用")
-        mouseClick(button)
-        wait(60)
+    function test_folder_expands_inline_and_only_one_stays_open() {
+        backend.setDetails("10:folder", [
+            makeRow("10:0", "第一集.mkv", "done", {
+                path: "/tmp/剧集/第一集.mkv",
+                progress: 100
+            }),
+            makeRow("10:1", "第二集.mkv", "failed", {
+                detail: "断网"
+            })
+        ])
+        backend.setDetails("11:folder", [
+            makeRow("11:0", "花絮.mkv", "done", { progress: 100 })
+        ])
+        backend.publish([
+            makeRow("10:folder", "剧集", "failed", {
+                folder: true,
+                childCount: 2,
+                failedCount: 1,
+                detail: "成功 1 个 · 失败 1 个"
+            }),
+            makeRow("11:folder", "花絮目录", "done", {
+                folder: true,
+                childCount: 1
+            })
+        ], 0, 0)
+        waitRows(2)
+        compare(backend.detailSets["10:folder"].length, 2)
 
-        var dialog = findChild(page, "clearConfirmDialog")
-        verify(dialog !== null && dialog.opened, "点了清空先弹确认")
-        verify(page.clearConfirmMessage.indexOf("所有已结束的记录") >= 0,
-               "说明清的是所有已结束记录")
-        verify(page.clearConfirmMessage.indexOf("已中断") >= 0,
-               "说明已中断的记录会保留")
-        compare(backend.clearCount, 0, "确认之前不清")
+        var first = row("10:folder")
+        verify(first !== null && first.expandable)
+        mouseClick(findChild(first, "rowHeader"))
+        compare(backend.transferDetail.length, 2, "后端应返回两个子文件")
+        compare(page.wantedRows().length, 4, "扁平化模型应包含父行与两个子行")
+        waitRows(4)
+        compare(page.expandedKey, "10:folder")
+        compare(backend.openedKey, "10:folder")
+        compare(row("10:0").depth, 1)
+        compare(row("10:0").rowKind, "child")
+        compare(row("10:0").parentKey, "10:folder")
+        compare(findChild(row("10:0"), "stateText").text, "已完成")
+        compare(row("10:1").implicitHeight, 48)
 
-        // 自定义 footer 的 DialogButtonBox：确定必须经 accepted → onAccepted 走到动作
-        var box = findChild(dialog, "clearConfirmBox")
-        verify(box !== null, "确认框有按钮组")
-        box.accepted()
+        var second = row("11:folder")
+        mouseClick(findChild(second, "rowHeader"))
+        waitRows(3)
+        compare(page.expandedKey, "11:folder")
+        compare(backend.openedKey, "11:folder")
+        compare(row("10:0"), null, "展开另一个文件夹时先收起前一个")
+        verify(row("11:0") !== null)
+
+        mouseClick(findChild(row("11:folder"), "openDetailsArrowHit"))
+        waitRows(2)
+        compare(page.expandedKey, "")
+        compare(backend.closeCount, 1)
+    }
+
+    function test_preparing_or_empty_folder_cannot_expand() {
+        backend.setDetails("20:folder", [
+            makeRow("20:0", "a.mkv", "queued")
+        ])
+        backend.publish([
+            makeRow("20:folder", "准备中目录", "preparing", {
+                folder: true,
+                childCount: 1
+            }),
+            makeRow("21:folder", "空目录", "done", {
+                folder: true,
+                childCount: 0
+            })
+        ], 1, 0)
+        waitRows(2)
+
+        var preparing = row("20:folder")
+        var empty = row("21:folder")
+        compare(preparing.expandable, false)
+        compare(empty.expandable, false)
+        compare(findChild(preparing, "rowHeader").enabled, false)
+
+        page.toggleFolder("20:folder")
+        page.toggleFolder("21:folder")
+        compare(backend.openCount, 0)
+        compare(list.count, 2)
+    }
+
+    function test_expanded_parent_sticks_inside_child_range_and_restores() {
+        var children = []
+        for (var child = 0; child < 12; child++) {
+            children.push(makeRow("60:" + child, "第" + (child + 1) + "集.mkv",
+                                  "done", { progress: 100 }))
+        }
+        backend.setDetails("60:folder", children)
+
+        var items = [
+            makeRow("before:1", "前一项.mkv", "done", { progress: 100 }),
+            makeRow("before:2", "前二项.mkv", "done", { progress: 100 }),
+            makeRow("60:folder", "长目录", "done", {
+                folder: true,
+                childCount: children.length
+            })
+        ]
+        for (var after = 0; after < 20; after++) {
+            items.push(makeRow("after:" + after, "后续" + after + ".mkv",
+                               "done", { progress: 100 }))
+        }
+        backend.publish(items, 0, 0)
+        waitRows(23)
+
+        mouseClick(findChild(row("60:folder"), "rowHeader"))
+        waitRows(35)
+        var sticky = findChild(page, "transferStickyRow")
+        verify(sticky !== null)
+        compare(sticky.visible, false, "父行自己还在顶部时不应重复覆盖")
+
+        list.contentY = 100
+        tryVerify(function() { return sticky.visible })
+        compare(sticky.y, list.y)
+        compare(findChild(sticky, "nameText").text, "长目录")
+
+        list.contentY = 720
+        tryVerify(function() { return !sticky.visible })
+
+        list.contentY = 480
+        tryVerify(function() { return sticky.visible })
+        var beforeWheel = list.contentY
+        mouseWheel(sticky, sticky.width / 2, sticky.height / 2, 0, -120)
+        tryVerify(function() { return list.contentY !== beforeWheel })
+        mouseClick(findChild(sticky, "openDetailsArrowHit"))
+        waitRows(23)
+        compare(page.expandedKey, "")
+        compare(backend.closeCount, 1)
+        wait(500)
+        compare(list.contentY, 96, "收起吸附层后列表应回到父行位置")
+    }
+
+    function test_switching_expanded_folder_keeps_clicked_row_in_place() {
+        var firstChildren = []
+        for (var first = 0; first < 12; first++) {
+            firstChildren.push(makeRow("70:" + first, "第一组" + first + ".mkv",
+                                       "done", { progress: 100 }))
+        }
+        backend.setDetails("70:folder", firstChildren)
+        backend.setDetails("71:folder", [
+            makeRow("71:0", "第二组 A.mkv", "done", { progress: 100 }),
+            makeRow("71:1", "第二组 B.mkv", "done", { progress: 100 })
+        ])
+
+        var items = [
+            makeRow("lead:0", "开头.mkv", "done", { progress: 100 }),
+            makeRow("70:folder", "第一组", "done", {
+                folder: true,
+                childCount: firstChildren.length
+            })
+        ]
+        for (var filler = 0; filler < 6; filler++) {
+            items.push(makeRow("fill:" + filler, "间隔" + filler + ".mkv",
+                               "done", { progress: 100 }))
+        }
+        items.push(makeRow("71:folder", "第二组", "done", {
+            folder: true,
+            childCount: 2
+        }))
+        for (var tail = 0; tail < 20; tail++) {
+            items.push(makeRow("tail:" + tail, "尾部" + tail + ".mkv",
+                               "done", { progress: 100 }))
+        }
+        backend.publish(items, 0, 0)
+        waitRows(29)
+
+        mouseClick(findChild(row("70:folder"), "rowHeader"))
+        waitRows(41)
+        list.contentY = 18 * 48
         wait(40)
-        compare(backend.clearCount, 1, "点确定后调用一次清空")
+        var second = row("71:folder")
+        verify(second !== null)
+        var beforeY = second.y - list.contentY
+
+        mouseClick(findChild(second, "rowHeader"))
+        waitRows(31)
+        second = row("71:folder")
+        verify(second !== null)
+        wait(40)
+        second = row("71:folder")
+        verify(second !== null)
+        verify(Math.round(second.y - list.contentY) === Math.round(beforeY),
+               "切换展开项时被点击的父行不能跳走：y=" + second.y
+               + " contentY=" + list.contentY)
     }
 
-    function test_clear_button_disabled_when_only_open_rows() {
-        backend.transferHasFinished = false
-        publish([record("1:0", "running"), record("2:0", "interrupted")])
-        wait(60)
-        var button = findChild(page, "clearFinishedButton")
-        verify(button !== null)
-        compare(button.enabled, false, "只有进行中 / 已中断时清空不可点")
-        compare(button.visible, false, "没有可清理记录时不显示清空")
+    function test_backend_detail_clear_collapses_parent_row() {
+        backend.setDetails("25:folder", [
+            makeRow("25:0", "a.mkv", "done", { progress: 100 })
+        ])
+        backend.publish([
+            makeRow("25:folder", "剧集", "done", {
+                folder: true,
+                childCount: 1
+            })
+        ], 0, 0)
+        waitRows(1)
+
+        mouseClick(findChild(row("25:folder"), "rowHeader"))
+        waitRows(2)
+        compare(page.expandedKey, "25:folder")
+        compare(row("25:folder").expanded, true)
+
+        backend.invalidateTransferDetail()
+        waitRows(1)
+        compare(page.expandedKey, "", "后端清理详情时父行必须同步收起")
+        compare(row("25:folder").expanded, false)
+        compare(row("25:0"), null)
     }
 
-    function test_clear_button_lives_in_history_section_header() {
-        backend.transferHasFinished = true
-        publish([record("1:0", "done")])
-        wait(60)
-        var header = findChild(page, "historySectionHeader")
-        var button = findChild(page, "clearFinishedButton")
-        verify(header !== null, "历史分组标题存在")
-        verify(button !== null && button.visible && button.enabled,
-               "清空入口属于历史分组，不再占用页头工具条")
+    function test_responsive_columns_follow_window_thresholds() {
+        backend.publish([
+            makeRow("1:0", "a.mkv", "running", {
+                progress: 10,
+                progressText: "10%",
+                sizeText: "1 MB / 10 MB"
+            })
+        ], 1, 0)
+        waitRows(1)
+
+        var tableHeader = findChild(page, "transferTableHeader")
+        var rowItem = row("1:0")
+        page.viewportWidth = 1180
+        compare(page.showRate, true)
+        compare(page.showSize, true)
+        compare(findChild(tableHeader, "transferRateHeader").visible, true)
+        compare(findChild(rowItem, "rateText").visible, true)
+
+        page.viewportWidth = 1179
+        compare(page.showRate, false)
+        compare(page.showSize, true)
+        compare(findChild(tableHeader, "transferRateHeader").visible, false)
+        compare(findChild(rowItem, "rateText").visible, false)
+        compare(findChild(rowItem, "sizeText").visible, true)
+
+        page.viewportWidth = 979
+        compare(page.showRate, false)
+        compare(page.showSize, false)
+        compare(findChild(tableHeader, "transferSizeHeader").visible, false)
+        compare(findChild(rowItem, "sizeText").visible, false)
+    }
+
+    function test_folder_and_child_actions_use_the_row_key() {
+        backend.setDetails("30:folder", [
+            makeRow("30:0", "坏文件.mkv", "failed", {
+                detail: "断网",
+                path: "/tmp/剧集/坏文件.mkv"
+            }),
+            makeRow("30:1", "排队.mkv", "queued")
+        ])
+        backend.publish([
+            makeRow("30:folder", "剧集", "failed", {
+                folder: true,
+                childCount: 2,
+                failedCount: 1,
+                path: "/tmp/剧集"
+            })
+        ], 0, 0)
+        waitRows(1)
+
+        mouseClick(findChild(row("30:folder"), "rowHeader"))
+        waitRows(3)
+        var child = row("30:0")
+        verify(child !== null)
+        mouseClick(findChild(child, "retryLink"))
+        wait(20)
+        compare(backend.retriedKey, "30:0")
+        mouseClick(findChild(child, "revealLink"))
+        wait(20)
+        compare(backend.revealedKey, "30:0")
+
+        mouseClick(findChild(row("30:folder"), "revealLink"))
+        wait(20)
+        compare(backend.revealedKey, "30:folder")
+    }
+
+    function test_parent_and_child_cancel_actions_are_separate() {
+        backend.setDetails("40:folder", [
+            makeRow("40:0", "a.mkv", "running", {
+                progress: 15,
+                progressText: "15%"
+            }),
+            makeRow("40:1", "b.mkv", "queued")
+        ])
+        backend.publish([
+            makeRow("40:folder", "剧集", "running", {
+                folder: true,
+                childCount: 2,
+                progress: 15,
+                progressText: "1/2"
+            })
+        ], 1, 0)
+        waitRows(1)
+
+        mouseClick(findChild(row("40:folder"), "rowHeader"))
+        waitRows(3)
+        mouseClick(findChild(row("40:0"), "cancelLink"))
+        wait(20)
+        compare(backend.cancelledKey, "40:0")
+
+        mouseClick(findChild(row("40:folder"), "cancelLink"))
+        wait(20)
+        compare(backend.cancelledKey, "40:folder")
+        compare(backend.cancelCount, 2)
+    }
+
+    function test_aggregate_row_uses_parent_live_values() {
+        backend.setDetails("50:folder", [
+            makeRow("50:0", "a.mkv", "running", {
+                progress: 40,
+                progressText: "40%",
+                sizeText: "4 MB / 10 MB"
+            })
+        ])
+        backend.publish([
+            makeRow("50:folder", "剧集", "running", {
+                folder: true,
+                childCount: 2,
+                progress: 20,
+                progressText: "1/2",
+                sizeText: "2 MB / 10 MB"
+            })
+        ], 1, 0)
+        backend.setLive([
+            {
+                key: "50:folder",
+                progress: 65,
+                progressText: "65% · 2/3",
+                sizeText: "6.5 MB / 10 MB",
+                rateText: "1.2 MB/s",
+                noteText: "剩余 3 秒"
+            },
+            {
+                key: "50:0",
+                progress: 40,
+                progressText: "40%",
+                sizeText: "4 MB / 10 MB",
+                rateText: "900 KB/s",
+                noteText: "剩余 8 秒"
+            }
+        ])
+        waitRows(1)
+
+        var parent = row("50:folder")
+        verify(parent !== null)
+        compare(findChild(parent, "progressText").text, "65% · 2/3")
+        compare(findChild(parent, "sizeText").text, "6.5 MB / 10 MB")
+        compare(findChild(parent, "rateText").text, "1.2 MB/s · 剩余 3 秒")
+    }
+
+    function test_reorder_diff_keeps_active_rows_first() {
+        backend.publish([
+            makeRow("1:0", "失败.mkv", "failed", { detail: "断网" }),
+            makeRow("2:0", "完成.mkv", "done", { progress: 100 })
+        ], 0, 0)
+        waitRows(2)
+
+        backend.publish([
+            makeRow("3:0", "新下载.mkv", "running", {
+                progress: 1,
+                progressText: "1%"
+            }),
+            makeRow("1:0", "失败.mkv", "failed", { detail: "断网" }),
+            makeRow("2:0", "完成.mkv", "done", { progress: 100 })
+        ], 1, 0)
+        waitRows(3)
+        compare(row("3:0").y < row("1:0").y, true)
+        compare(row("1:0").y < row("2:0").y, true)
+    }
+
+    function test_clear_finished_uses_confirmation() {
+        backend.publish([
+            makeRow("1:0", "完成.mkv", "done", {
+                progress: 100,
+                path: "/tmp/完成.mkv"
+            })
+        ], 0, 0)
+        waitRows(1)
+
+        var button = findChild(header, "clearFinishedButton")
+        verify(button !== null, "清空按钮不存在")
+        verify(button.visible, "有已结束记录时清空按钮应可见")
+        mouseClick(button)
+        wait(40)
+        var dialog = findChild(page, "clearConfirmDialog")
+        verify(dialog !== null && dialog.opened)
+        compare(backend.clearCount, 0, "确认前不能清空")
+
+        var footer = findChild(dialog, "clearConfirmBox")
+        verify(footer !== null)
+        mouseClick(footer.standardButton(Dialog.Ok))
+        wait(40)
+        compare(backend.clearCount, 1)
     }
 }

@@ -27,6 +27,7 @@ fn summary_with<'a>(
         folder,
         done,
         failed,
+        cancelled: 0,
         skipped,
         failure,
     }
@@ -96,12 +97,42 @@ fn folder_partial_failure_is_one_warning() {
 }
 
 #[test]
+fn folder_partial_cancellation_is_one_warning() {
+    let mut notice_summary = summary("剧集", true, 3, 0, None);
+    notice_summary.cancelled = 2;
+    let notice = batch_finished(notice_summary);
+    assert_eq!(notice.summary, "下载结束");
+    assert!(notice.body.contains("成功 3 个，失败 0 个，取消 2 个"));
+    assert_eq!(notice.icon, "dialog-warning");
+}
+
+#[test]
+fn folder_all_cancelled_is_informational() {
+    let mut notice_summary = summary("剧集", true, 0, 0, None);
+    notice_summary.cancelled = 4;
+    let notice = batch_finished(notice_summary);
+    assert_eq!(notice.summary, "下载结束");
+    assert!(notice.body.contains("取消 4 个文件"));
+    assert_eq!(notice.icon, "dialog-information");
+}
+
+#[test]
 fn folder_total_failure_is_error() {
     let notice = batch_finished(summary("剧集", true, 0, 50, Some("断网")));
     assert_eq!(notice.summary, "下载失败");
     assert_eq!(notice.icon, "dialog-error");
     assert!(notice.body.contains("50 个文件全部失败"));
     assert!(notice.body.contains("详情见传输任务页"));
+}
+
+#[test]
+fn folder_failures_with_some_cancelled_do_not_claim_everything_failed() {
+    let mut notice_summary = summary("剧集", true, 0, 3, Some("断网"));
+    notice_summary.cancelled = 2;
+    let notice = batch_finished(notice_summary);
+    assert_eq!(notice.summary, "下载失败");
+    assert!(notice.body.contains("失败 3 个，取消 2 个"));
+    assert!(!notice.body.contains("全部失败"));
 }
 
 #[test]

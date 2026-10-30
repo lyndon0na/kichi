@@ -4,8 +4,8 @@
 //! 「字段叫什么、什么时候显示什么、按什么顺序交给 QML」。角色名不能叫 `state`
 //! （`Item` 自带同名属性，见 `docs/pitfalls.md` 第 12 条），QML 侧统一映射成 `phase`。
 //!
-//! 文件夹批次在主列表只有一条总账行：进度 / 大小 / 文件数 / 失败数都由
-//! 子行聚合而来；子行本身只进文件夹详情页的快照。
+//! 文件夹批次在统一列表只有一条总账行：进度 / 大小 / 文件数 / 失败数都由
+//! 子行聚合而来；子行本身只进当前展开文件夹的快照。
 
 use std::time::Instant;
 
@@ -111,7 +111,7 @@ fn percent_bytes(stats: &BatchStats) -> Option<i32> {
     Some(((stats.progress_bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as i32)
 }
 
-/// 文件夹总账行的进度条 / 大小 / 百分比文案（主列表与详情页共用）。
+/// 文件夹总账行的进度条 / 大小 / 百分比文案。
 fn folder_progress_fields(stats: &BatchStats, state: TransferState) -> (i32, String, String) {
     let percent = percent_bytes(stats);
     let progress = match state {
@@ -153,7 +153,7 @@ fn folder_progress_fields(stats: &BatchStats, state: TransferState) -> (i32, Str
     (progress, progress_text, size_text)
 }
 
-/// 文件夹总账行的第二行说明（不含「点开可重试」，那由 QML 追加）。
+/// 文件夹总账行的状态 / 说明文案（失败原因由 QML 并进状态列）。
 ///
 /// 已中断的父行单独处理：它的说明是「上次退出时未完成 · 完成 x 个 · 失败 y 个」，
 /// 不参与下面按状态拼的文案（那些都是当前这一轮才有的结果）。
@@ -214,7 +214,10 @@ fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> S
             detail
         }
         TransferState::Cancelled => {
-            let mut detail = format!("已完成 {} 个 · 已取消", stats.done);
+            let mut detail = format!("完成 {} 个", stats.done);
+            if stats.cancelled > 0 {
+                detail.push_str(&format!(" · 取消 {} 个", stats.cancelled));
+            }
             if stats.failed > 0 {
                 detail.push_str(&format!(" · 失败 {} 个", stats.failed));
             }
@@ -370,7 +373,7 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
     map
 }
 
-/// 一条记录 → 主列表的一行（文件夹总账行会聚合子行）。
+/// 一条顶层记录 → 统一列表的一行（文件夹总账行会聚合子行）。
 pub(crate) fn record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
     if is_folder_ledger(record) {
         folder_record_map(record, records)
@@ -379,7 +382,7 @@ pub(crate) fn record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap
     }
 }
 
-/// 一条子行 → 详情页的一行：名字用相对文件夹的路径（去掉第一段文件夹名）。
+/// 一条子行 → 内联展开的一行：名字用相对文件夹的路径（去掉第一段文件夹名）。
 fn detail_record_map(record: &Transfer) -> QVariantMap {
     let mut parts = record.job.sub_dir.iter();
     parts.next();
@@ -512,7 +515,7 @@ pub(crate) fn ordered(records: &[Transfer]) -> Vec<&Transfer> {
     active
 }
 
-/// 记录表 → 主列表模型 + 进行中条数（按批次算，一个文件夹算 1）。
+/// 记录表 → 统一列表模型 + 进行中条数（按批次算，一个文件夹算 1）。
 pub(crate) fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     let top_level: Vec<&Transfer> = records.iter().filter(|record| !record.child).collect();
     let total = top_level.len();

@@ -72,7 +72,7 @@ pub(crate) struct EntryRecord {
     /// 文件夹批次的目录树（相对下载根目录，含根文件夹名）
     #[serde(default)]
     pub(crate) dirs: Vec<Vec<String>>,
-    /// 批次入队时刻（Unix 秒），按天 / 月分组用
+    /// 批次入队时刻（Unix 秒）：90 天清理与整批重试保留原时刻
     #[serde(default)]
     pub(crate) created_unix: i64,
     /// 进程启动序号：识别「上一轮没跑完的行」
@@ -294,7 +294,7 @@ pub(crate) fn restore(entries: Vec<EntryRecord>, session: u64) -> Vec<Transfer> 
             .iter()
             .map(|entry| restore_entry(entry, session))
             .collect();
-        // 父行在前，子行按 index（主列表顺序由视图层重新排）
+        // 父行在前，子行按 index（统一列表顺序由视图层重新排）
         batch_rows.sort_by_key(|record| (record.child, record.index));
         restored.extend(batch_rows);
     }
@@ -518,7 +518,7 @@ fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
 
 // —— 记录表 ↔ 磁盘 ——
 
-/// 记录表 → QML 主列表模型 + 进行中条数。
+/// 记录表 → QML 顶层统一列表模型 + 进行中条数。
 pub(crate) fn snapshot() -> (crate::cxxqt_object::QVariantList, i32) {
     with_records(|records| crate::cxxqt_object::transfers_view::build_snapshot(records))
 }

@@ -110,11 +110,9 @@ pub mod qobject {
         /// ListView 模型重灌（会把滚动位置冲回顶部）。
         #[qproperty(i32, transfer_revision, cxx_name = "transferRevision", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, transfer_live, cxx_name = "transferLive", READ, NOTIFY = changed)]
-        /// 进行中摘要（最多一张卡片）：独立文件组或一个正在跑 / 准备中的文件夹
-        #[qproperty(QVariantList, transfer_active_group, cxx_name = "transferActiveGroup", READ, NOTIFY = changed)]
-        /// 选中的文件夹批次的子文件列表（详情页专用）
+        /// 当前展开的文件夹批次的子文件列表（内联子行专用）
         #[qproperty(QVariantList, transfer_detail, cxx_name = "transferDetail", READ, NOTIFY = changed)]
-        /// 文件夹详情是否打开（false 时主列表可见）
+        /// 文件夹子行快照是否有效（false 时父行不可展开）
         #[qproperty(bool, transfer_detail_active, cxx_name = "transferDetailActive", READ, NOTIFY = changed)]
         #[qproperty(i32, download_active, cxx_name = "downloadActive", READ, NOTIFY = changed)]
         /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰）
@@ -341,7 +339,7 @@ pub mod qobject {
         #[cxx_name = "cancelDownloads"]
         fn cancel_downloads(self: Pin<&mut Self>);
 
-        /// 清空已结束（完成 / 失败 / 已取消 / 已中断）的记录：清全部历史，不按日期收窄
+        /// 清空完成 / 失败 / 已取消的整批记录；进行中、排队与已中断保留
         #[qinvokable]
         #[cxx_name = "clearFinishedTransfers"]
         fn clear_finished_transfers(self: Pin<&mut Self>);
@@ -351,17 +349,24 @@ pub mod qobject {
         #[cxx_name = "retryTransfer"]
         fn retry_transfer(self: Pin<&mut Self>, key: QString);
 
+        /// 取消一条正在排队 / 准备 / 下载中的记录。
+        ///
+        /// 顶层文件与文件夹总账行取消整批；文件夹子文件只取消自己。
+        #[qinvokable]
+        #[cxx_name = "cancelTransfer"]
+        fn cancel_transfer(self: Pin<&mut Self>, key: QString);
+
         /// 在文件管理器里显示一条已完成记录的落盘文件
         #[qinvokable]
         #[cxx_name = "revealTransfer"]
         fn reveal_transfer(self: Pin<&mut Self>, key: QString);
 
-        /// 打开某个文件夹批次的详情页（key 无效 / 没有子文件时不会激活）
+        /// 展开某个文件夹批次（key 无效 / 没有子文件时不会激活）
         #[qinvokable]
         #[cxx_name = "openTransferFolder"]
         fn open_transfer_folder(self: Pin<&mut Self>, key: QString);
 
-        /// 关闭文件夹详情页，回到传输任务主列表
+        /// 收起当前文件夹批次的内联子行
         #[qinvokable]
         #[cxx_name = "closeTransferFolder"]
         fn close_transfer_folder(self: Pin<&mut Self>);
@@ -419,7 +424,7 @@ pub mod qobject {
         #[cxx_name = "currentPath"]
         fn current_path(self: &Self) -> QVariantList;
 
-        /// 读取目标选择器某一层的子文件夹（独立状态，不干扰主列表）
+        /// 读取目标选择器某一层的子文件夹（独立状态，不干扰当前目录列表）
         #[qinvokable]
         #[cxx_name = "loadMoveTargets"]
         fn load_move_targets(self: Pin<&mut Self>, parent_id: QString);
@@ -522,7 +527,6 @@ mod tasks;
 mod tasks_submit;
 mod transfers;
 mod transfers_actions;
-mod transfers_active;
 mod transfers_detail;
 mod transfers_history;
 mod transfers_rate;
@@ -673,9 +677,7 @@ pub struct KichiRust {
     pub(crate) transfer_revision: i32,
     /// 正在下载文件的实时进度（各文件行 + 文件夹父行聚合；进度节拍只刷新它）
     pub(crate) transfer_live: QVariantList,
-    /// 传输页顶部摘要：0 或 1 个分组，进度节拍也会刷新它
-    pub(crate) transfer_active_group: QVariantList,
-    /// 选中文件夹批次的子文件列表（详情页专用）
+    /// 当前展开文件夹批次的子文件列表（内联子行专用）
     pub(crate) transfer_detail: QVariantList,
     /// 文件夹详情是否打开
     pub(crate) transfer_detail_active: bool,
@@ -814,7 +816,6 @@ impl Default for KichiRust {
             transfers: QVariantList::default(),
             transfer_revision: 0,
             transfer_live: QVariantList::default(),
-            transfer_active_group: QVariantList::default(),
             transfer_detail: QVariantList::default(),
             transfer_detail_active: false,
             download_active: 0,

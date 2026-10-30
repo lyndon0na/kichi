@@ -8,9 +8,9 @@ RowLayout {
 
     property var target: null
 
-    readonly property var activeGroup: target ? target.activeGroup : null
     readonly property int activeCount: target ? target.activeCount : 0
     readonly property int queuedCount: target ? target.queuedCount : 0
+    readonly property bool hasFinished: target ? target.hasFinished : false
     readonly property bool backendReady: target !== null && target.backend !== null
 
     readonly property KTheme theme: KTheme { parent: root }
@@ -22,7 +22,7 @@ RowLayout {
         Layout.fillWidth: true
         Layout.alignment: Qt.AlignVCenter
         text: root.target ? root.target.statusText : ""
-        color: root.activeGroup !== null || root.queuedCount > 0
+        color: root.activeCount > 0 || root.queuedCount > 0
                ? theme.textSecondary : theme.textMuted
         font.pixelSize: theme.fontMeta
         elide: Text.ElideRight
@@ -36,6 +36,17 @@ RowLayout {
         implicitHeight: 32
         enabled: root.backendReady
         onClicked: root.target.backend.openDownloadDir()
+    }
+
+    KButton {
+        objectName: "clearFinishedButton"
+        Layout.alignment: Qt.AlignVCenter
+        visible: root.hasFinished
+        text: qsTr("清空已完成")
+        variant: "ghost"
+        implicitHeight: 32
+        enabled: root.backendReady && root.hasFinished
+        onClicked: root.target.confirmClear()
     }
 
     KButton {

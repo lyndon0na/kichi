@@ -26,7 +26,6 @@ use super::queue_collect;
 use super::reveal;
 use super::transfers;
 use super::transfers_actions;
-use super::transfers_active;
 use super::transfers_detail;
 use super::transfers_history::{self, StoreTarget};
 use super::transfers_rate::heartbeat_due;
@@ -68,7 +67,6 @@ pub(crate) fn load_history(object: &mut crate::cxxqt_object::KichiRust) {
     with_target(|slot| *slot = Some(target));
     let (list, active) = transfers_history::snapshot();
     object.transfers = list;
-    object.transfer_active_group = transfers_active::snapshot();
     object.transfer_revision = object.transfer_revision.wrapping_add(1);
     object.download_active = active;
     object.transfer_has_finished = transfers_history::has_finished();
@@ -183,6 +181,29 @@ impl qobject::Kichi {
         self.as_mut().sync_transfers();
     }
 
+    /// 取消一条传输记录：顶层行取消整批，文件夹子文件只取消自己。
+    pub fn cancel_transfer(mut self: Pin<&mut Self>, key: QString) {
+        let key = key.to_string();
+        let Some(target) = transfers_actions::cancel_target(&key) else {
+            self.as_mut().set_message("这条记录已经不在进行中", false);
+            return;
+        };
+        if !queue::cancel_transfer(target.batch, target.index, target.whole_batch) {
+            self.as_mut().set_message("这条记录已经结束", false);
+            return;
+        }
+        if target.whole_batch {
+            transfers::cancel_batch(target.batch, "");
+            self.as_mut()
+                .set_message(&format!("正在取消：{}", target.name), false);
+        } else {
+            transfers::cancel_file(target.batch, target.index);
+            self.as_mut()
+                .set_message(&format!("正在取消：{}", target.name), false);
+        }
+        self.as_mut().advance_downloads();
+    }
+
     /// 在文件管理器里打开下载目录（没建就顺手建好）。
     pub fn open_download_dir(&self) {
         let dir = self.settings.download_dir_path();
@@ -256,16 +277,16 @@ impl qobject::Kichi {
         }
     }
 
-    /// 打开某个文件夹批次的详情页：只有「已有子文件」的文件夹行有效。
+    /// 展开某个文件夹批次：只有「已有子文件」的父行有效。
     ///
-    /// 无效 key（排队中 / 准备中 / 空文件夹）不会激活详情，
-    /// QML 侧看到 `transferDetailActive` 仍为 false 就留在主列表。
+    /// 无效 key（排队中 / 准备中 / 空文件夹）不会激活子行快照；
+    /// QML 侧看到 `transferDetailActive` 仍为 false 就不插入子行。
     pub fn open_transfer_folder(mut self: Pin<&mut Self>, key: QString) {
         transfers_detail::select_folder(&key.to_string());
         self.as_mut().sync_transfers();
     }
 
-    /// 关闭文件夹详情页，回到传输任务主列表。
+    /// 收起当前文件夹的内联子行。
     pub fn close_transfer_folder(mut self: Pin<&mut Self>) {
         if transfers_detail::clear_selection() {
             self.as_mut().sync_transfers();
@@ -378,7 +399,6 @@ impl qobject::Kichi {
         let (list, active) = transfers_history::snapshot();
         let has_finished = transfers_history::has_finished();
         let live = transfers::live_snapshot();
-        let active_group = transfers_active::snapshot();
         let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
         {
@@ -386,7 +406,6 @@ impl qobject::Kichi {
             rust.transfers = list;
             rust.transfer_revision = rust.transfer_revision.wrapping_add(1);
             rust.transfer_live = live;
-            rust.transfer_active_group = active_group;
             rust.transfer_detail = detail;
             rust.transfer_detail_active = detail_active;
             rust.download_active = active;
@@ -405,12 +424,10 @@ impl qobject::Kichi {
     /// 滚动位置回到顶部（2026-10-27 实测），下载期间就没法往下翻。
     pub(crate) fn sync_transfer_live(mut self: Pin<&mut Self>) {
         let live = transfers::live_snapshot();
-        let active_group = transfers_active::snapshot();
         mark_live_pushed();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.transfer_live = live;
-            rust.transfer_active_group = active_group;
         }
         self.as_mut().notify();
         // 进度也要落盘（2 秒节流 + 字节没变不写）：只在结构事件写盘的话，
@@ -491,7 +508,7 @@ impl qobject::Kichi {
         // 旧线程退出后 `post_finished` 的 epoch 检查保证它们不再改记录。
         transfers::interrupt_active();
         flush_history();
-        // 文件夹详情页的选中不跨会话；记录与「打开位置」都保留
+        // 文件夹展开状态不跨会话；记录与「打开位置」都保留
         transfers_detail::clear_selection();
         self.as_mut().sync_transfers();
     }

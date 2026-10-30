@@ -1,4 +1,4 @@
-//! `transfers_detail.rs` 的单元测试：文件夹详情的选中状态与快照。
+//! `transfers_detail.rs` 的单元测试：文件夹内联展开的选中状态与快照。
 //!
 //! 全部用本地 `Vec<Transfer>` 调 `*_in` 纯函数，不碰进程级记录表。
 
@@ -78,11 +78,23 @@ fn selecting_rejects_invalid_keys_and_empty_folders() {
     );
     assert_eq!(selected, Some(1), "无效 key 不改变原来的选中");
 
-    // 没有子行的文件夹（排队 / 准备中 / 读目录失败）不能进详情
+    // 没有子行的文件夹（排队 / 读目录失败）不能展开
     records.truncate(1);
     let mut empty = None;
     assert!(!select_folder_in(&mut empty, &records, "7:folder"));
     assert_eq!(empty, None);
+}
+
+#[test]
+fn selecting_a_preparing_folder_with_children_is_rejected() {
+    let mut records = folder_batch(&["a.mkv"]);
+    records[0].state = TransferState::Preparing;
+    let mut selected = None;
+    assert!(
+        !select_folder_in(&mut selected, &records, "7:folder"),
+        "准备中不能展开"
+    );
+    assert_eq!(selected, None);
 }
 
 #[test]
@@ -93,7 +105,7 @@ fn detail_snapshot_clears_selection_when_batch_disappears() {
 
     records.clear();
     let (detail, active) = detail_snapshot_in(&mut selected, &records);
-    assert!(!active, "批次被清空 / 淘汰后详情自动关闭");
+    assert!(!active, "批次被清空 / 淘汰后展开自动收起");
     assert!(detail.is_empty());
     assert_eq!(selected, None, "失效的选中必须被清掉");
 }
@@ -138,6 +150,6 @@ fn detail_snapshot_stays_valid_while_selected_folder_is_active() {
     assert!(select_folder_in(&mut selected, &records, "7:folder"));
 
     let (detail, active) = detail_snapshot_in(&mut selected, &records);
-    assert!(active, "下载进行中仍可查看详情");
+    assert!(active, "下载进行中仍可展开查看子行");
     assert_eq!(detail.len(), 2, "已完成的子行也一直显示");
 }
