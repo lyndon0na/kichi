@@ -78,6 +78,8 @@ fn test_session(tag: &str) -> Session {
         device_id: "0".repeat(32),
         user_id: "user-1".into(),
         email: String::new(),
+        display_name: String::new(),
+        avatar_url: String::new(),
     };
     let device_id = saved.device_id.clone();
     Session::new(kichi_core::Config::default(), store, Some(saved), device_id)

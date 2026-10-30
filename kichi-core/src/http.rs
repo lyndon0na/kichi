@@ -30,11 +30,29 @@ impl<'a> Body<'a> {
     }
 }
 
+/// 公开图片的主机策略。头像允许用户批准过的 Google 资料图 CDN，
+/// 缩略图仍然只能走 PikPak。
+#[derive(Clone, Copy)]
+pub(crate) enum PublicImagePolicy {
+    PikPakOnly,
+    Avatar,
+}
+
+impl PublicImagePolicy {
+    fn allows(self, host: Option<&str>) -> bool {
+        if public_asset_host(host) {
+            return true;
+        }
+        matches!(self, Self::Avatar)
+            && normalized_host(host).as_deref() == Some("lh3.googleusercontent.com")
+    }
+}
+
 /// 带 PikPak 身份头的同步 HTTP 客户端（reqwest 内部连接池共享，克隆廉价）。
 #[derive(Clone)]
 pub(crate) struct HttpClient {
     client: Client,
-    /// 公开缩略图专用：不跟随重定向，确保请求始终留在允许的 CDN 主机。
+    /// 公开图片专用：不跟随重定向，确保请求始终留在允许的 CDN 主机。
     public_client: Client,
     config: Config,
     device_id: String,
@@ -54,7 +72,7 @@ impl HttpClient {
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| Error::Network(format!("无法创建缩略图 HTTP 客户端：{e}")))?;
+            .map_err(|e| Error::Network(format!("无法创建公开图片 HTTP 客户端：{e}")))?;
         Ok(Self {
             client,
             public_client,
@@ -68,16 +86,21 @@ impl HttpClient {
         &self.device_id
     }
 
-    /// 下载无需鉴权的公开资源（缩略图）。
+    /// 下载无需鉴权的公开图片（缩略图 / 头像）。
     ///
-    /// 不携带 Bearer / captcha 头，也不把 URL 放进错误文案。只允许
-    /// `mypikpak.com` 的 HTTPS 主机，避免服务端字段异常时请求任意地址。
-    pub(crate) fn fetch_public_bytes(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, Error> {
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|_| Error::InvalidInput("缩略图地址无效".to_owned()))?;
-        if parsed.scheme() != "https" || !public_thumbnail_host(parsed.host_str()) {
+    /// 不携带 Bearer / captcha 头，也不把 URL 放进错误文案。主机由
+    /// [`PublicImagePolicy`] 收窄，避免服务端字段异常时请求任意地址。
+    pub(crate) fn fetch_public_bytes(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        policy: PublicImagePolicy,
+    ) -> Result<Vec<u8>, Error> {
+        let parsed =
+            reqwest::Url::parse(url).map_err(|_| Error::InvalidInput("图片地址无效".to_owned()))?;
+        if parsed.scheme() != "https" || !policy.allows(parsed.host_str()) {
             return Err(Error::InvalidInput(
-                "缩略图地址不在允许的主机范围内".to_owned(),
+                "图片地址不在允许的主机范围内".to_owned(),
             ));
         }
 
@@ -86,30 +109,30 @@ impl HttpClient {
             .get(parsed)
             .send()
             .map_err(|e| Error::Network(network_reason(&e)))?;
-        if !public_thumbnail_host(response.url().host_str()) {
-            return Err(Error::Other("缩略图响应来自不允许的主机".to_owned()));
+        if !policy.allows(response.url().host_str()) {
+            return Err(Error::Other("图片响应来自不允许的主机".to_owned()));
         }
         let status = response.status();
         if !status.is_success() {
-            return Err(Error::Other(format!("缩略图下载失败（HTTP {status}）")));
+            return Err(Error::Other(format!("图片下载失败（HTTP {status}）")));
         }
         if response
             .content_length()
             .is_some_and(|length| length > max_bytes)
         {
-            return Err(Error::Other("缩略图超过大小上限".to_owned()));
+            return Err(Error::Other("图片超过大小上限".to_owned()));
         }
 
         let mut bytes = Vec::new();
         response
             .take(max_bytes + 1)
             .read_to_end(&mut bytes)
-            .map_err(|e| Error::Network(format!("读取缩略图失败：{e}")))?;
+            .map_err(|e| Error::Network(format!("读取图片失败：{e}")))?;
         if bytes.is_empty() {
-            return Err(Error::Other("缩略图响应为空".to_owned()));
+            return Err(Error::Other("图片响应为空".to_owned()));
         }
         if bytes.len() as u64 > max_bytes {
-            return Err(Error::Other("缩略图超过大小上限".to_owned()));
+            return Err(Error::Other("图片超过大小上限".to_owned()));
         }
         Ok(bytes)
     }
@@ -221,11 +244,14 @@ impl HttpClient {
     }
 }
 
-fn public_thumbnail_host(host: Option<&str>) -> bool {
-    let Some(host) = host else {
+fn normalized_host(host: Option<&str>) -> Option<String> {
+    Some(host?.trim_end_matches('.').to_ascii_lowercase())
+}
+
+fn public_asset_host(host: Option<&str>) -> bool {
+    let Some(host) = normalized_host(host) else {
         return false;
     };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
     host == "mypikpak.com" || host.ends_with(".mypikpak.com")
 }
 
@@ -394,13 +420,22 @@ mod tests {
 
     #[test]
     fn public_assets_stay_on_pikpak_hosts() {
-        assert!(public_thumbnail_host(Some(
-            "sg-thumbnail-drive.mypikpak.com"
-        )));
-        assert!(public_thumbnail_host(Some("mypikpak.com")));
-        assert!(!public_thumbnail_host(Some("mypikpak.com.example.org")));
-        assert!(!public_thumbnail_host(Some("evil-mypikpak.com")));
-        assert!(!public_thumbnail_host(None));
+        assert!(public_asset_host(Some("sg-thumbnail-drive.mypikpak.com")));
+        assert!(public_asset_host(Some("mypikpak.com")));
+        assert!(!public_asset_host(Some("mypikpak.com.example.org")));
+        assert!(!public_asset_host(Some("evil-mypikpak.com")));
+        assert!(!public_asset_host(None));
+    }
+
+    #[test]
+    fn google_avatar_host_is_only_allowed_for_avatars() {
+        assert!(PublicImagePolicy::Avatar.allows(Some("lh3.googleusercontent.com")));
+        assert!(PublicImagePolicy::Avatar.allows(Some("lh3.googleusercontent.com.")));
+        assert!(PublicImagePolicy::Avatar.allows(Some("user.mypikpak.com")));
+        assert!(!PublicImagePolicy::PikPakOnly.allows(Some("lh3.googleusercontent.com")));
+        assert!(!PublicImagePolicy::Avatar.allows(Some("googleusercontent.com")));
+        assert!(!PublicImagePolicy::Avatar.allows(Some("lh4.googleusercontent.com")));
+        assert!(!PublicImagePolicy::Avatar.allows(Some("lh3.googleusercontent.com.example")));
     }
 
     #[test]

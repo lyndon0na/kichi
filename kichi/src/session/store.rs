@@ -170,6 +170,8 @@ mod tests {
             device_id: "d".into(),
             user_id: "u".into(),
             email: "e@example.com".into(),
+            display_name: "昵称".into(),
+            avatar_url: "https://user.mypikpak.com/avatar/1".into(),
         }
     }
 

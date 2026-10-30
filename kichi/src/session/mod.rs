@@ -4,9 +4,11 @@
 //! 纪律（为将来拆 daemon 留路）：QML 只消费本模块产出的数据；
 //! 所有阻塞网络调用都经 `run_async` 丢到后台线程，结果回到 Qt 线程。
 
+pub mod avatar_cache;
 pub mod download;
 mod download_naming;
 mod download_resume;
+mod identity;
 pub(crate) mod limits;
 pub mod media;
 pub mod partials;
@@ -63,6 +65,12 @@ pub struct PersistedSession {
     pub user_id: String,
     #[serde(default)]
     pub email: String,
+    /// `/v1/user/me` 返回的昵称；旧会话没有这个字段。
+    #[serde(default)]
+    pub display_name: String,
+    /// `/v1/user/me` 返回的头像地址；只供 Rust 下载器使用，不直接交给 QML。
+    #[serde(default)]
+    pub avatar_url: String,
 }
 
 impl PersistedSession {
@@ -232,16 +240,6 @@ impl Session {
         })
     }
 
-    pub fn email(&self) -> Option<String> {
-        self.with_inner(|inner| {
-            inner
-                .current
-                .as_ref()
-                .map(|s| s.email.clone())
-                .filter(|e| !e.is_empty())
-        })
-    }
-
     pub fn device_id(&self) -> String {
         self.with_inner(|inner| inner.device_id.clone())
     }
@@ -263,33 +261,14 @@ impl Session {
             device_id: device_id.clone(),
             user_id: outcome.user_id.clone(),
             email: username.trim().to_owned(),
+            display_name: String::new(),
+            avatar_url: String::new(),
         };
         store::save(&self.store_path, &saved)?;
         // 可能是换账号登录：旧账号的 client（以及里面的连接）不能留着
         self.clients.clear();
         self.with_inner(|inner| inner.current = Some(saved));
         Ok(())
-    }
-
-    /// 用更完整的身份信息补全会话（`/v1/user/me`，尽力而为）。
-    pub fn enrich_identity(&self, name: &str, email: &str) {
-        let label = if !email.is_empty() { email } else { name };
-        if label.is_empty() {
-            return;
-        }
-        let updated = self.with_inner(|inner| {
-            let saved = inner.current.as_mut()?;
-            if saved.email == label {
-                return None;
-            }
-            saved.email = label.to_owned();
-            Some(saved.clone())
-        });
-        if let Some(saved) = updated {
-            if let Err(err) = store::save(&self.store_path, &saved) {
-                eprintln!("[kichi] 会话信息更新未能落盘：{err}");
-            }
-        }
     }
 
     fn replace_tokens(&self, tokens: kichi_core::TokenPair) -> Result<(), StoreError> {
@@ -432,14 +411,6 @@ impl Session {
     pub fn fetch_thumbnail(&self, url: &str) -> Result<Vec<u8>, Failure> {
         let client = self.drive()?;
         client.fetch_thumbnail(url).map_err(Failure::from)
-    }
-
-    /// 取当前用户并回填身份（阻塞）。
-    pub fn refresh_identity(&self) -> Result<(), Failure> {
-        let client = self.drive()?;
-        let me = client.me().map_err(Failure::from)?;
-        self.enrich_identity(&me.name, &me.email);
-        Ok(())
     }
 
     /// 给条目改名（阻塞）。

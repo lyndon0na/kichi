@@ -27,6 +27,8 @@ fn main() {
     session::subtitle_cache::sweep();
     // 文件列表缩略图：删 30 天前的，并把总大小收到 64 MiB 以内。
     session::thumbnail_cache::sweep();
+    // 账号头像：删 30 天前的，并把总大小收到 8 MiB 以内。
+    session::avatar_cache::sweep();
 
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();

@@ -94,6 +94,14 @@ impl qobject::Kichi {
                     rust.status_message = QString::default();
                     rust.login_running = false;
                     rust.session_restoring = false;
+                    rust.account = QString::default();
+                    rust.display_name = QString::default();
+                    rust.avatar_path = QString::default();
+                    rust.quota_used_text = QString::default();
+                    rust.quota_limit_text = QString::default();
+                    rust.quota_loading = false;
+                    rust.quota_ratio = -1.0;
+                    rust.quota_vip = false;
                 }
                 self.as_mut().reset_files();
                 self.as_mut().reset_thumbnails();
@@ -203,8 +211,17 @@ impl qobject::Kichi {
             rust.status_message = QString::default();
             rust.login_running = false;
             rust.session_restoring = false;
+            rust.account = QString::default();
+            rust.display_name = QString::default();
+            rust.avatar_path = QString::default();
+            rust.quota_used_text = QString::default();
+            rust.quota_limit_text = QString::default();
+            rust.quota_loading = false;
+            rust.quota_ratio = -1.0;
+            rust.quota_vip = false;
         }
         self.as_mut().notify();
+        self.as_mut().sync_identity_from_session();
         self.as_mut().refresh_identity_and_quota();
         self.as_mut().refresh_files();
         self.as_ref().start_task_polling();
@@ -271,7 +288,9 @@ impl qobject::Kichi {
     }
 
     /// 后台刷新身份与容量（身份失败不阻断容量）。
-    fn refresh_identity_and_quota(self: Pin<&mut Self>) {
+    fn refresh_identity_and_quota(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().quota_loading = true;
+        self.as_mut().notify();
         let session = self.backend.session.clone();
         run_in_background(
             move || Ok((session.refresh_identity(), session.quota())),
@@ -279,24 +298,81 @@ impl qobject::Kichi {
                 let (identity, quota) = match result {
                     Ok(pair) => pair,
                     Err(err) => {
+                        qichi.as_mut().rust_mut().quota_loading = false;
                         qichi.as_mut().on_failure(err);
                         return;
                     }
                 };
                 match identity {
                     Ok(()) => {
-                        if let Some(email) = qichi.as_mut().rust().backend.session.email() {
-                            qichi.as_mut().rust_mut().account = QString::from(email.as_str());
-                        }
+                        qichi.as_mut().sync_identity_from_session();
+                        qichi.as_mut().refresh_avatar_in_background();
                     }
-                    // 身份查询失败只提示，不影响容量
-                    Err(err) => qichi
-                        .as_mut()
-                        .set_message(&format!("账号信息获取失败：{err}")),
+                    // 网络失败时仍先显示已持久化的昵称 / 邮箱 / 头像，不能一直停在骨架。
+                    Err(err) => {
+                        qichi.as_mut().sync_identity_from_session();
+                        qichi
+                            .as_mut()
+                            .set_message(&format!("账号信息获取失败：{err}"));
+                    }
                 }
+                qichi.as_mut().rust_mut().quota_loading = false;
                 match quota {
                     Ok(quota) => qichi.as_mut().on_quota(quota),
                     Err(err) => qichi.as_mut().on_failure(err),
+                }
+            },
+        );
+    }
+
+    /// 把会话里已持久化的身份同步到 QML；头像只读本地缓存。
+    fn sync_identity_from_session(mut self: Pin<&mut Self>) {
+        let (account, display_name, avatar) = {
+            let session = &self.as_ref().backend.session;
+            (
+                session.email().unwrap_or_default(),
+                session.display_name().unwrap_or_default(),
+                session
+                    .cached_avatar_path()
+                    .map(|path| super::reveal::file_uri(&path)),
+            )
+        };
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.account = QString::from(account.as_str());
+            rust.display_name = QString::from(display_name.as_str());
+            rust.avatar_path = QString::from(avatar.unwrap_or_default().as_str());
+        }
+        self.as_mut().notify();
+    }
+
+    /// 头像下载独立于身份 / 容量请求，慢网络不会拖住昵称和容量显示。
+    fn refresh_avatar_in_background(self: Pin<&mut Self>) {
+        let session = self.backend.session.clone();
+        let Some(user_id) = session.user_id() else {
+            return;
+        };
+        run_in_background(
+            move || session.refresh_avatar(),
+            move |mut qichi, result| {
+                if qichi.as_ref().backend.session.user_id().as_deref() != Some(user_id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(Some(path)) => {
+                        qichi.as_mut().rust_mut().avatar_path =
+                            QString::from(super::reveal::file_uri(&path).as_str());
+                        qichi.as_mut().notify();
+                    }
+                    Ok(None) => {
+                        let changed = !qichi.as_ref().avatar_path.is_empty();
+                        qichi.as_mut().rust_mut().avatar_path = QString::default();
+                        if changed {
+                            qichi.as_mut().notify();
+                        }
+                    }
+                    // 头像是装饰性数据：失败就保留旧缓存 / 首字母，不打断账号区。
+                    Err(err) => eprintln!("[kichi] 头像更新失败：{err}"),
                 }
             },
         );

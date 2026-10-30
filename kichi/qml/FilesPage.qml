@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 文件页（S3）：面包屑导航 + 目录列表。
-// 只调 backend 的 Q_INVOKABLE；配额只在侧栏账号卡里显示（SideBar.qml），这里不重复。
+// 只调 backend 的 Q_INVOKABLE；配额只在侧栏账号区里显示（AccountCard.qml），这里不重复。
 // 播放（S5）：右键菜单点「播放」→ 立刻弹固定的清晰度菜单（原画 / 1080P / 720P / 480P），
 // 选中某一档后才去请求直链。
 // 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入只筛当前目录，

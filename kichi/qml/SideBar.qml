@@ -116,10 +116,12 @@ Rectangle {
 
         AccountCard {
             Layout.fillWidth: true
-            Layout.bottomMargin: theme.gapXs
             account: bar.backend ? String(bar.backend.account) : ""
+            displayName: bar.backend ? String(bar.backend.displayName) : ""
+            avatarPath: bar.backend ? String(bar.backend.avatarPath) : ""
             quotaUsed: bar.backend ? bar.backend.quotaUsed : ""
             quotaLimit: bar.backend ? bar.backend.quotaLimit : ""
+            quotaLoading: bar.backend ? bar.backend.quotaLoading : false
             quotaRatio: bar.backend ? bar.backend.quotaRatio : -1
             vip: bar.backend ? bar.backend.quotaVip : false
         }

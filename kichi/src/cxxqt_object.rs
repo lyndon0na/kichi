@@ -40,8 +40,14 @@ pub mod qobject {
         /// 登录请求在途：只给登录页用，后台任务不得修改
         #[qproperty(bool, login_running, cxx_name = "loginRunning", READ, NOTIFY = changed)]
         #[qproperty(QString, account, READ, NOTIFY = changed)]
+        /// `/v1/user/me` 的昵称；空串时 QML 从账号里取用户名兜底
+        #[qproperty(QString, display_name, cxx_name = "displayName", READ, NOTIFY = changed)]
+        /// 已下载到本机的头像 `file://` URI；空串时 QML 画昵称首字母
+        #[qproperty(QString, avatar_path, cxx_name = "avatarPath", READ, NOTIFY = changed)]
         #[qproperty(QString, quota_used_text, cxx_name = "quotaUsed", READ, NOTIFY = changed)]
         #[qproperty(QString, quota_limit_text, cxx_name = "quotaLimit", READ, NOTIFY = changed)]
+        /// 容量请求在途；账号身份和容量分别加载，避免昵称缓存让两者一起“完成”
+        #[qproperty(bool, quota_loading, cxx_name = "quotaLoading", READ, NOTIFY = changed)]
         /// 容量占用比例 0..1；`-1` = 不限量 / 未知，QML 据此隐藏进度条
         #[qproperty(f64, quota_ratio, cxx_name = "quotaRatio", READ, NOTIFY = changed)]
         #[qproperty(bool, quota_vip, cxx_name = "quotaVip", READ, NOTIFY = changed)]
@@ -612,8 +618,11 @@ pub struct KichiRust {
     pub(crate) session_restoring: bool,
     pub(crate) captcha_required: bool,
     pub(crate) account: QString,
+    pub(crate) display_name: QString,
+    pub(crate) avatar_path: QString,
     pub(crate) quota_used_text: QString,
     pub(crate) quota_limit_text: QString,
+    pub(crate) quota_loading: bool,
     pub(crate) quota_ratio: f64,
     pub(crate) quota_vip: bool,
     /// 当前目录的列表项（QML 直接当 model 用）
@@ -830,8 +839,11 @@ impl Default for KichiRust {
             session_restoring: false,
             captcha_required: false,
             account: QString::default(),
+            display_name: QString::default(),
+            avatar_path: QString::default(),
             quota_used_text: QString::default(),
             quota_limit_text: QString::default(),
+            quota_loading: false,
             quota_ratio: -1.0,
             quota_vip: false,
             files: QVariantList::default(),
@@ -1046,6 +1058,17 @@ impl KichiRust {
         if state == State::SignedIn {
             self.session_restoring = true;
             self.status_message = QString::from("正在恢复会话……");
+            self.account = QString::from(self.backend.session.email().unwrap_or_default().as_str());
+            self.display_name = QString::from(
+                self.backend
+                    .session
+                    .display_name()
+                    .unwrap_or_default()
+                    .as_str(),
+            );
+            if let Some(path) = self.backend.session.cached_avatar_path() {
+                self.avatar_path = QString::from(reveal::file_uri(&path).as_str());
+            }
             return;
         }
         let notice = self.backend.restored_notice().to_owned();

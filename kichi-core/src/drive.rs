@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer};
 
 use crate::captcha::CaptchaSource;
-use crate::http::{Body, HttpClient};
+use crate::http::{Body, HttpClient, PublicImagePolicy};
 use crate::types::{EntryKind, FileEntry, Quota, TrashEntry};
 use crate::{Config, Error};
 
@@ -45,12 +45,16 @@ pub struct DriveClient {
 /// 当前用户摘要。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct UserInfo {
-    #[serde(default)]
+    /// 官方字段名是 `sub`；旧响应若直接给 `id` 也兼容。
+    #[serde(default, rename = "sub", alias = "id")]
     pub id: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub email: String,
+    /// 头像地址。只留在 Rust 侧，由 `Session` 下载到本地缓存后 QML 才可读。
+    #[serde(default)]
+    pub picture: String,
 }
 
 #[derive(Deserialize)]
@@ -306,9 +310,19 @@ impl DriveClient {
         }))
     }
 
-    /// 当前用户（name / email 用来在界面上显示身份）。
+    /// 当前用户（昵称 / 头像 / 邮箱用来在界面上显示身份）。
     pub fn me(&self) -> Result<UserInfo, Error> {
         self.get(&self.config.user_me_url())
+    }
+
+    /// 下载当前账号头像。
+    ///
+    /// 头像 URL 与缩略图一样按不可信外部输入处理：只允许 HTTPS +
+    /// `mypikpak.com`，或经用户批准的 Google 资料图主机
+    /// `lh3.googleusercontent.com`；不跟随重定向，最多 2 MiB。
+    pub fn fetch_avatar(&self, url: &str) -> Result<Vec<u8>, Error> {
+        self.http
+            .fetch_public_bytes(url, 2 * 1024 * 1024, PublicImagePolicy::Avatar)
     }
 
     /// 下载列表下发的小缩略图。
@@ -316,7 +330,8 @@ impl DriveClient {
     /// `thumbnail_link` 指向 PikPak 缩略图 CDN，不带签名或查询参数。这里仍把它
     /// 当作不可信外部输入：只允许 HTTPS + `mypikpak.com` 主机，并限制体积。
     pub fn fetch_thumbnail(&self, url: &str) -> Result<Vec<u8>, Error> {
-        self.http.fetch_public_bytes(url, 4 * 1024 * 1024)
+        self.http
+            .fetch_public_bytes(url, 4 * 1024 * 1024, PublicImagePolicy::PikPakOnly)
     }
 
     /// 列出一个文件夹（`parent_id` 为 `None` 表示根目录）。
@@ -696,6 +711,21 @@ mod tests {
         };
         assert_eq!(quota.usage, 123);
         assert_eq!(quota.limit, 10_995_116_277_760);
+    }
+
+    #[test]
+    fn user_info_parses_nickname_avatar_and_email() {
+        let raw = r#"{
+            "sub":"user-1",
+            "name":"夏日用户",
+            "picture":"https://user.mypikpak.com/avatar/1",
+            "email":"mail@example.com"
+        }"#;
+        let user: UserInfo = serde_json::from_str(raw).expect("用户信息应可解析");
+        assert_eq!(user.id, "user-1");
+        assert_eq!(user.name, "夏日用户");
+        assert_eq!(user.picture, "https://user.mypikpak.com/avatar/1");
+        assert_eq!(user.email, "mail@example.com");
     }
 
     #[test]
