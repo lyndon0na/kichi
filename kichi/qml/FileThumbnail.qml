@@ -5,7 +5,8 @@ import QtQuick.Effects
 // 文件列表的首列：固定 36×24，不随内容改变列位置。
 //
 // 图片 / 视频加载成功时铺满裁切；文件夹、不支持预览、远程失败、
-// 本地图片解码失败都退回原来的 FileIcon。视频成功缩略图右下角有小角标。
+// 本地图片解码失败都退回原来的 FileIcon。视频成功缩略图保留右下角播放角标；
+// 真正加载播放时再由 VideoLoadingOverlay 覆盖状态。
 Item {
     id: control
 
@@ -25,7 +26,6 @@ Item {
     readonly property bool showVideoBadge: imageReady
                                             && entry !== null
                                             && entry.video === true
-
     implicitWidth: 36
     implicitHeight: 24
 
@@ -171,7 +171,7 @@ Item {
                 anchors.fill: parent
 
                 ShapePath {
-                    fillColor: control.theme.onMediaBadge
+                    fillColor: control.theme.mediaForeground
                     strokeColor: "transparent"
 
                     PathSvg {

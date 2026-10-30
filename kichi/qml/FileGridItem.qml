@@ -15,6 +15,8 @@ ItemDelegate {
     readonly property var gridView: GridView.view
     property int rowIndex: -1
     property bool selected: false
+    /// 当前条目正在取播放直链 / 等待播放器窗口
+    property bool playLoading: false
 
     // 数值由 FilesPage 从 FileListDensity 下发，和网格列宽一起计算。
     property int contentPadding: 5
@@ -88,6 +90,24 @@ ItemDelegate {
         }
     }
 
+    // 盖在缩略图底部的加载条。放在委托根上而不是 contentItem 里：
+    // 整卡 MouseArea 的 z=1 会吃掉缩略图内部控件的点击，状态条必须再高一层。
+    VideoLoadingOverlay {
+        objectName: "gridVideoLoading"
+
+        x: card.leftPadding
+        y: card.topPadding
+        width: card.thumbnailWidth
+        height: card.thumbnailHeight
+        cornerRadius: card.thumbnailRadius
+        visible: card.playLoading
+        z: 2
+        onCancelRequested: {
+            if (card.backend)
+                card.backend.cancelPlayLoading()
+        }
+    }
+
     function activate(point) {
         if (!card.backend || !card.entry)
             return
@@ -133,10 +153,10 @@ ItemDelegate {
 
                 anchors.fill: parent
                 radius: card.thumbnailRadius
-                videoBadgeSize: card.videoBadgeSize
                 backend: card.backend
                 entry: card.entry
                 iconPixelSize: card.iconPixelSize
+                videoBadgeSize: card.videoBadgeSize
             }
 
             // 网格没有整行左侧的 3px 竖条，选中态用同色细环 + 卡片淡底，

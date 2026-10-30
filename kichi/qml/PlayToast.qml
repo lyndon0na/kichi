@@ -10,15 +10,19 @@ import QtQuick.Layouts
 // （docs/pitfalls.md 第 6 / 18 条）。`visible` 必须是真 false，不只是透明。
 //
 // 三个状态（优先级：错误 > 加载 > 回退提示）：
-// - 加载：取链或等 mpv 窗口出现。延迟 400 ms 才出现，避免一闪而过；
+// - 加载：仅当加载中的缩略图不在当前文件页时兜底显示，延迟 400 ms；
 // - 错误：播放失败。立即出现，[关闭] 清掉；
 // - 提示：档位回退说明（ADR 0003），3 秒后自己收起。
 Rectangle {
     id: toast
 
     property var backend: null
+    /// 文件页已在自己的缩略图里画出加载 / 取消；那里不要再叠一条底部提示。
+    property bool inlineLoading: false
 
-    readonly property bool loading: toast.backend !== null && toast.backend.playLoading === true
+    readonly property bool loading: toast.backend !== null
+                                    && toast.backend.playLoading === true
+                                    && !toast.inlineLoading
     readonly property bool failed: toast.backend !== null && toast.backend.playError !== ""
     readonly property bool notice: toast.backend !== null
                                    && toast.backend.playNotice !== ""
@@ -91,6 +95,8 @@ Rectangle {
         }
     }
 
+    onInlineLoadingChanged: toast.sync()
+
     /// 按后端当前属性决定状态；只在状态真的变了时动定时器 / 显隐。
     function sync() {
         if (toast.backend === null) {
@@ -100,7 +106,7 @@ Rectangle {
         var key = "idle"
         if (toast.failed)
             key = "error:" + toast.backend.playError
-        else if (toast.loading)
+        else if (toast.backend.playLoading && !toast.inlineLoading)
             key = "loading:" + toast.backend.playLoadingName
         else if (toast.notice)
             key = "notice:" + toast.backend.playNotice

@@ -99,11 +99,14 @@ Item {
                                              palette.text.b,
                                              theme.darkMode ? 0.12 : 0.06)
 
-    /// 视频缩略图角标：深色遮罩 + 高对比前景，不跟内容底色绑定
+    /// 视频缩略图状态条：深色遮罩 + 高对比前景，不跟内容底色绑定
     readonly property color mediaBadge: Qt.rgba(palette.shadow.r, palette.shadow.g,
                                                 palette.shadow.b,
-                                                theme.darkMode ? 0.78 : 0.68)
-    readonly property color onMediaBadge: palette.brightText
+                                                0.82)
+    /// 深色图片遮罩上的文字始终用白色。
+    /// KDE 浅色主题下 `palette.brightText` 不保证是浅色，直接用它会把
+    /// 「正在加载 / 取消」画成黑字。
+    readonly property color mediaForeground: "#ffffff"
 
     // —— 状态色（全应用仅存的字面量颜色，深色主题用浅一档的变体保证对比度） ——
     readonly property color danger: theme.darkMode ? "#f08c84" : "#c0392b"

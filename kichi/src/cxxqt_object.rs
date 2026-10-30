@@ -77,9 +77,11 @@ pub mod qobject {
         #[qproperty(QString, share_created_expiration, cxx_name = "shareCreatedExpiration", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
-        /// 取链或等 mpv 窗口出现：底部浮动提示条据此显示「正在加载…」
+        /// 取链或等 mpv 窗口出现：文件缩略图据此显示加载状态
         #[qproperty(bool, play_loading, cxx_name = "playLoading", READ, NOTIFY = changed)]
-        /// 提示条里的文件名
+        /// 正在加载的文件 id（缩略图按 id 对位，不能按文件名猜）
+        #[qproperty(QString, play_loading_id, cxx_name = "playLoadingId", READ, NOTIFY = changed)]
+        /// 正在加载的文件名
         #[qproperty(QString, play_loading_name, cxx_name = "playLoadingName", READ, NOTIFY = changed)]
         /// 非空 = 提示条显示错误态（播放失败），[关闭] 清空
         #[qproperty(QString, play_error, cxx_name = "playError", READ, NOTIFY = changed)]
@@ -691,9 +693,11 @@ pub struct KichiRust {
     pub(crate) play_id: String,
     /// 已选中档位、正在取直链（此时菜单关闭**不是**取消播放）
     pub(crate) play_pending: bool,
-    /// 取链或等 mpv 窗口出现：提示条显示「正在加载「xxx」…」
+    /// 取链或等 mpv 窗口出现：对应文件缩略图显示加载状态
     pub(crate) play_loading: bool,
-    /// 提示条里的文件名
+    /// 正在加载的文件 id
+    pub(crate) play_loading_id: QString,
+    /// 正在加载的文件名
     pub(crate) play_loading_name: QString,
     /// 非空 = 提示条显示错误态（播放失败）
     pub(crate) play_error: QString,
@@ -864,6 +868,7 @@ impl Default for KichiRust {
             play_id: String::new(),
             play_pending: false,
             play_loading: false,
+            play_loading_id: QString::default(),
             play_loading_name: QString::default(),
             play_error: QString::default(),
             play_notice: QString::default(),

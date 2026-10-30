@@ -137,6 +137,18 @@ TestCase {
         compare(toast.visible, false)
     }
 
+    // 文件页已经在缩略图里显示加载 / 取消时，底部提示条不能再叠一层。
+    function test_inline_loading_suppresses_toast() {
+        toast.inlineLoading = true
+        startLoading()
+        wait(600)
+        compare(toast.shown, false)
+        compare(toast.visible, false)
+
+        toast.inlineLoading = false
+        tryCompare(toast, "shown", true, 1200)
+    }
+
     // 点「取消」调一次接口，提示条自己收起。
     function test_cancel_button_calls_backend_once() {
         startLoading()

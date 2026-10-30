@@ -579,12 +579,14 @@ ApplicationWindow {
         }
     }
 
-    // 播放加载 / 错误提示条：底部居中浮动，只占自身尺寸（踩坑第 6 / 18 条）。
+    // 播放错误 / 回退提示条：文件页加载态在缩略图内，离开文件页时这里兜底显示取消。
+    // 底部居中浮动，只占自身尺寸（踩坑第 6 / 18 条）。
     // ApplicationWindow 的 contentItem 已经把 footer 的高度扣掉，
     // 所以贴 parent.bottom 就已经在底栏之上。
     PlayToast {
         id: playToast
         backend: backend
+        inlineLoading: root.currentPage === 0
     }
 
     // 底栏：单行单槽。默认显示当前页面 / 目录上下文；进度、错误和需要留意的

@@ -22,6 +22,7 @@ TestCase {
             property alias transferRow: transferRow
             property alias narrowButton: narrowButton
             property alias searchResults: searchResults
+            property alias searchBackend: fakeSearchBackend
 
             QtObject {
                 id: fakeSearchBackend
@@ -31,6 +32,7 @@ TestCase {
                 property bool searchSettled: true
                 property bool searchTruncated: false
                 property string searchQuery: "file"
+                property int cancelPlayCalls: 0
                 property var searchResults: [{
                     id: "search-result",
                     name: "搜索结果里同样很长的文件名用于确认名称截断提示.mkv",
@@ -51,6 +53,10 @@ TestCase {
                 function searchRevealFolder() {}
                 function downloadEntry() {}
                 function stopSearch() {}
+
+                function cancelPlayLoading() {
+                    cancelPlayCalls += 1
+                }
             }
 
             FileRow {
@@ -223,5 +229,18 @@ TestCase {
 
         hoverCenter(harness.searchResults, label)
         verify(label.toolTipRequested)
+    }
+
+    function test_search_result_loading_is_cancellable() {
+        harness.searchResults.playLoadingId = "search-result"
+        wait(30)
+
+        const spinner = findChild(harness.searchResults, "searchPlayLoading")
+        const cancel = findChild(harness.searchResults, "searchPlayCancel")
+        verify(spinner !== null && cancel !== null)
+        compare(spinner.visible, true)
+        compare(cancel.visible, true)
+        mouseClick(cancel)
+        compare(harness.searchBackend.cancelPlayCalls, 1)
     }
 }

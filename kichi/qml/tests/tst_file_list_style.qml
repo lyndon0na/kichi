@@ -5,7 +5,7 @@ import ".."
 // 文件 / 回收站列表的新表格语言：
 // - 两页始终使用固定缩略图槽；
 // - 文件夹、空路径、下载失败都退回文件图标；
-// - 视频加载成功后显示播放角标；
+// - 视频保留常驻播放角标，播放加载时缩略图可取消；
 // - 回收站保持「名称 / 删除时间 / 大小」列序。
 TestCase {
     name: "FileListStyle"
@@ -19,6 +19,9 @@ TestCase {
         property string cachedUri: ""
         property int requestCount: 0
         property string requestedId: ""
+        property bool playLoading: false
+        property string playLoadingId: ""
+        property int cancelPlayCalls: 0
 
         signal thumbnailReady(string id, string path)
 
@@ -33,6 +36,12 @@ TestCase {
 
         function finish(id, path) {
             thumbnailReady(id, path)
+        }
+
+        function cancelPlayLoading() {
+            cancelPlayCalls += 1
+            playLoading = false
+            playLoadingId = ""
         }
     }
 
@@ -128,6 +137,9 @@ TestCase {
         fakeBackend.cachedUri = ""
         fakeBackend.requestCount = 0
         fakeBackend.requestedId = ""
+        fakeBackend.playLoading = false
+        fakeBackend.playLoadingId = ""
+        fakeBackend.cancelPlayCalls = 0
     }
 
     function pageEntry(id, name, video, hasThumbnail) {
@@ -227,7 +239,36 @@ TestCase {
         compare(findChild(thumbnail, "thumbnailEffect").maskSource,
                 findChild(thumbnail, "thumbnailMask"))
         compare(findChild(thumbnail, "thumbnailMaskShape").radius, 3)
-        verify(findChild(thumbnail, "videoBadge").visible)
+        const badge = findChild(thumbnail, "videoBadge")
+        verify(badge !== null)
+        compare(badge.visible, true)
+        compare(badge.width, 12)
+    }
+
+    function test_loading_video_row_cancels_without_selecting() {
+        harness = harnessComponent.createObject(parent, { visible: true })
+        verify(harness !== null)
+        wait(20)
+
+        const row = findChild(harness, "fileRow")
+        row.entry = pageEntry("video-loading", "第01话.mp4", true, false)
+        row.playLoading = true
+        wait(20)
+
+        const overlay = findChild(row, "rowVideoLoading")
+        const compactCancel = findChild(overlay, "videoLoadingCompactCancel")
+        verify(overlay !== null && compactCancel !== null)
+        compare(overlay.visible, true)
+        compare(findChild(row, "rowPlayCancel"), null)
+
+        const spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'selectRequested' }",
+            row)
+        spy.target = row
+        mouseClick(compactCancel)
+        compare(fakeBackend.cancelPlayCalls, 1)
+        compare(spy.count, 0, "取消加载不能顺带选中或播放视频")
+        spy.destroy()
     }
 
     function test_trash_columns_keep_deleted_before_size() {

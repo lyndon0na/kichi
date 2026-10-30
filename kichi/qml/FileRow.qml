@@ -18,6 +18,8 @@ ItemDelegate {
     readonly property var listView: ListView.view
     /// 在列表里的下标（Shift 区间选择用）
     property int rowIndex: -1
+    /// 当前条目正在取播放直链 / 等待播放器窗口
+    property bool playLoading: false
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
     property int thumbnailSlotWidth: 36
     property int thumbnailSlotHeight: 24
@@ -95,6 +97,25 @@ ItemDelegate {
         onDoubleClicked: function (mouse) {
             if (mouse.button === Qt.LeftButton)
                 row.activate(Qt.point(mouse.x, mouse.y))
+        }
+    }
+
+    // 列表缩略图太小，放不下文字状态条；转圈覆盖整块缩略图，点击即取消。
+    // 悬停提示会说明这个动作，名称后不再额外占一个「取消」按钮。
+    VideoLoadingOverlay {
+        objectName: "rowVideoLoading"
+
+        x: row.leftPadding
+        y: Math.round((row.rowHeight - row.thumbnailSlotHeight) / 2)
+        width: row.thumbnailSlotWidth
+        height: row.thumbnailSlotHeight
+        compact: true
+        cornerRadius: 3
+        visible: row.playLoading
+        z: 2
+        onCancelRequested: {
+            if (row.backend)
+                row.backend.cancelPlayLoading()
         }
     }
 

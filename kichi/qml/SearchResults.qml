@@ -14,6 +14,8 @@ Item {
     property var backend: null
     // 当前选中的结果 id（本视图内生效；与目录列表的选中互不干扰）
     property string selectedId: ""
+    // 正在加载的视频 id：图标位置换成可点击的转圈，点击即取消
+    property string playLoadingId: ""
     // 行高 / 字号 / 列宽由 FilesPage 下发，与目录列表同一套密度
     property int rowHeight: 60
     property int textPixelSize: 16
@@ -44,6 +46,11 @@ Item {
     readonly property bool emptyAndSettled: root.backend !== null
                                             && root.backend.searchSettled
                                             && root.backend.searchResults.length === 0
+
+    function isPlayLoading(id) {
+        return root.playLoadingId.length > 0
+                && root.playLoadingId === String(id)
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -109,6 +116,7 @@ Item {
             delegate: ItemDelegate {
                 id: row
                 width: results.width - metrics.scrollBarSlot
+                readonly property bool playLoading: root.isPlayLoading(modelData.id)
                 // 两行：名字一行、所在文件夹一行。ItemDelegate 的内容区
                 // 默认有上下留白，固定高度会把第二行挤到外面重叠
                 height: Math.max(root.rowHeight, contentItem.implicitHeight + 18)
@@ -128,7 +136,7 @@ Item {
                 highlighted: root.selectedId.length > 0 && root.selectedId === modelData.id
                 onClicked: root.selectedId = modelData.id
                 onDoubleClicked: {
-                    if (!root.backend)
+                    if (!root.backend || row.playLoading)
                         return
                     if (modelData.kind === "folder") {
                         root.backend.searchOpenFolder(modelData.id)
@@ -168,14 +176,58 @@ Item {
                         Layout.fillWidth: true
                         spacing: 10
 
-                        FileIcon {
+                        Item {
+                            objectName: "searchTypeSlot"
+
                             Layout.preferredWidth: root.iconPixelSize
                             Layout.preferredHeight: root.iconPixelSize
                             Layout.alignment: Qt.AlignVCenter
-                            kind: modelData.kind
-                            fileName: modelData.name
-                            color: palette.text
-                            opacity: modelData.kind === "folder" ? 0.95 : 0.55
+
+                            FileIcon {
+                                anchors.fill: parent
+                                visible: !row.playLoading
+                                kind: modelData.kind
+                                fileName: modelData.name
+                                color: palette.text
+                                opacity: modelData.kind === "folder" ? 0.95 : 0.55
+                            }
+
+                            Button {
+                                id: searchPlayCancel
+                                objectName: "searchPlayCancel"
+
+                                anchors.fill: parent
+                                visible: row.playLoading
+                                hoverEnabled: true
+                                padding: 0
+                                Accessible.name: qsTr("取消视频加载")
+
+                                background: Rectangle {
+                                    radius: theme.radiusSmall
+                                    color: searchPlayCancel.down
+                                           ? theme.surfacePressed
+                                           : searchPlayCancel.hovered
+                                             ? theme.surfaceHover
+                                             : theme.surfaceClear
+                                }
+
+                                contentItem: KLoadingSpinner {
+                                    objectName: "searchPlayLoading"
+
+                                    anchors.centerIn: parent
+                                    width: root.iconPixelSize
+                                    height: root.iconPixelSize
+                                    running: searchPlayCancel.visible
+                                    color: theme.textSecondary
+                                }
+
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("点击取消视频加载")
+                                onClicked: {
+                                    if (root.backend)
+                                        root.backend.cancelPlayLoading()
+                                }
+                            }
                         }
 
                         // 类型标签：长列表里一眼分出「文件夹 / 文件」

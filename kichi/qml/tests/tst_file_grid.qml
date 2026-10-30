@@ -13,6 +13,10 @@ TestCase {
     width: 760
     height: 560
 
+    KTheme {
+        id: themeProbe
+    }
+
     QtObject {
         id: fakeBackend
 
@@ -37,6 +41,9 @@ TestCase {
         property string shareCreatedPassCode: ""
         property string shareCreatedExpiration: ""
         property int thumbnailRequests: 0
+        property bool playLoading: false
+        property string playLoadingId: ""
+        property int cancelPlayCalls: 0
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
@@ -49,6 +56,12 @@ TestCase {
 
         function requestThumbnail(id) {
             thumbnailRequests += 1
+        }
+
+        function cancelPlayLoading() {
+            cancelPlayCalls += 1
+            playLoading = false
+            playLoadingId = ""
         }
 
         function setFileView(view) {
@@ -84,6 +97,8 @@ TestCase {
 
         FileGridItem {
             backend: fakeBackend
+            playLoading: fakeBackend.playLoading
+                         && fakeBackend.playLoadingId === (entry ? entry.id : "")
         }
     }
 
@@ -151,6 +166,9 @@ TestCase {
         fakeBackend.searchActive = false
         fakeBackend.filesRevision = 1
         fakeBackend.thumbnailRequests = 0
+        fakeBackend.playLoading = false
+        fakeBackend.playLoadingId = ""
+        fakeBackend.cancelPlayCalls = 0
     }
 
     function test_grid_item_uses_three_by_two_thumbnail_and_two_line_name() {
@@ -207,6 +225,55 @@ TestCase {
         compare(findChild(gridItem, "gridMeta"), null, "网格不再显示类型 / 时间 / 大小")
         compare(auditBadge.visible, false)
         compare(fakeBackend.thumbnailRequests, 0, "文件夹不应请求缩略图")
+    }
+
+    function test_grid_video_loading_strip_cancels_without_selection() {
+        density = densityComponent.createObject(parent)
+        verify(density !== null)
+        const video = entry(4, "file")
+        fakeBackend.playLoading = true
+        fakeBackend.playLoadingId = video.id
+        gridItem = gridItemComponent.createObject(parent, {
+            width: 200,
+            height: density.gridItemHeight(200),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(200),
+            entry: video
+        })
+        verify(gridItem !== null)
+        wait(30)
+
+        const overlay = findChild(gridItem, "gridVideoLoading")
+        verify(overlay !== null)
+        const strip = findChild(overlay, "videoLoadingStrip")
+        const spinner = findChild(overlay, "videoLoadingSpinner")
+        const cancel = findChild(overlay, "videoLoadingCancel")
+        const message = findChild(overlay, "videoLoadingText")
+        const cancelText = findChild(overlay, "videoLoadingCancelText")
+        verify(strip !== null && spinner !== null && cancel !== null
+               && message !== null && cancelText !== null)
+        compare(overlay.visible, true)
+        compare(strip.visible, true)
+        compare(strip.height, 34)
+        compare(strip.topLeftRadius, 0)
+        compare(strip.bottomLeftRadius, density.gridThumbnailRadius(200))
+        compare(themeProbe.mediaForeground, "#ffffff")
+        compare(spinner.color, "#ffffff")
+        compare(message.color, "#ffffff")
+        compare(cancelText.color, "#ffffff")
+
+        const spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'selectRequested' }",
+            gridItem)
+        spy.target = gridItem
+        mouseClick(cancel)
+        compare(fakeBackend.cancelPlayCalls, 1)
+        compare(spy.count, 0, "取消加载不能顺带选中视频")
+        tryCompare(overlay, "visible", false)
+        spy.destroy()
     }
 
     function test_grid_item_marks_audit_files_on_the_thumbnail() {

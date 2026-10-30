@@ -6,9 +6,9 @@
 //! 直链只活在 Rust 侧的局部变量里，QML 拿到的菜单里**没有 URL**，
 //! 也就没有把签名链接写进界面日志或剪贴板的机会。
 //!
-//! 等待过程有提示条（`qml/PlayToast.qml`）：取链 + 等 mpv 窗口出现期间
-//! `playLoading` 为真，提示条上的「取消」调 `cancelPlayLoading`；
-//! 出窗口 / 失败 / 取消时收起。
+//! 等待过程中 `playLoading` + `playLoadingId` 指向当前文件，文件缩略图据此
+//! 显示加载状态并提供取消；离开文件页时 `PlayToast.qml` 接替显示取消入口。
+//! 出窗口 / 失败 / 取消时两处状态一起收起。
 //! 底栏（`statusMessage`）不参与加载提示；无提醒时它显示当前页面上下文。
 
 use std::pin::Pin;
@@ -53,7 +53,7 @@ impl qobject::Kichi {
             return;
         };
         // 新的播放取消上一次「还在加载」的那次（已在播放的 mpv 不受影响）：
-        // 否则它被 epoch 作废后，提示条会永远停在「正在加载…」
+        // 否则它被 epoch 作废后，旧缩略图会永远停在「正在加载…」
         self.as_mut().cancel_play_loading();
         // 在点播放这一刻快照字幕计划：菜单开着时目录刷新不影响本次播放。
         // 两条路径（直接播 / 先弹菜单）都要有，所以放在分支之前。
@@ -125,6 +125,7 @@ impl qobject::Kichi {
             rust.play_menu = QVariantList::default();
             rust.play_pending = true;
             rust.play_loading = true;
+            rust.play_loading_id = QString::from(rust.play_id.as_str());
             rust.play_loading_name = QString::from(name);
             rust.play_error = QString::default();
             rust.play_notice = QString::default();
@@ -321,6 +322,7 @@ impl qobject::Kichi {
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.play_loading = false;
+                    rust.play_loading_id = QString::default();
                     rust.play_loading_name = QString::default();
                     rust.play_cancel = None;
                     rust.play_error = QString::default();
@@ -348,6 +350,7 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.play_loading = false;
+            rust.play_loading_id = QString::default();
             rust.play_loading_name = QString::default();
             rust.play_error = QString::default();
             rust.play_notice = QString::default();
@@ -395,6 +398,7 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.play_loading = false;
+            rust.play_loading_id = QString::default();
             rust.play_loading_name = QString::default();
             rust.play_cancel = None;
         }
@@ -406,6 +410,7 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.play_loading = false;
+            rust.play_loading_id = QString::default();
             rust.play_loading_name = QString::default();
             rust.play_cancel = None;
             rust.play_notice = QString::default();
@@ -468,6 +473,7 @@ impl qobject::Kichi {
             rust.play_id.clear();
             rust.play_pending = false;
             rust.play_loading = false;
+            rust.play_loading_id = QString::default();
             rust.play_loading_name = QString::default();
             rust.play_error = QString::default();
             rust.play_notice = QString::default();
