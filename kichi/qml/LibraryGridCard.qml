@@ -24,6 +24,8 @@ FileGridItem {
     nameLineHeight: density ? density.gridNameLineHeight : 19
     nameBlockHeight: density ? density.gridNameBlockHeight : 38
     thumbnailRadius: density ? density.gridThumbnailRadius(width) : 8
+    thumbnailDecodeWidth: density ? density.gridThumbnailDecodeWidth : 640
+    thumbnailDecodeHeight: density ? density.gridThumbnailDecodeHeight : 427
     textPixelSize: density ? density.namePixelSize : 14
     detailPixelSize: density ? density.metaPixelSize : 12
     detailLineHeight: density ? density.gridDetailLineHeight : 17

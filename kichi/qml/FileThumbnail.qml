@@ -17,6 +17,9 @@ Item {
     /// 视频角标尺寸：列表用小角标，网格可以放大
     property int videoBadgeSize: 16
     property int videoBadgeMargin: 2
+    /// 非零时使用固定解码尺寸，避免网格卡片随窗口缩放时反复解码。
+    property int decodeWidth: 0
+    property int decodeHeight: 0
     /// 播放加载态优先于可播放角标：转圈出现时只保留一个视觉焦点。
     property bool loading: false
     /// 播放器已经真正开播、尚未退出
@@ -28,6 +31,7 @@ Item {
     property string requestedId: ""
 
     readonly property bool imageReady: localUri.length > 0 && preview.status === Image.Ready
+    readonly property bool hasFixedDecodeSize: decodeWidth > 0 && decodeHeight > 0
     readonly property bool showVideoBadge: entry !== null
                                             && entry.video === true
                                             && entry.playable === true
@@ -102,8 +106,12 @@ Item {
             cache: true
             mipmap: true
             fillMode: Image.PreserveAspectCrop
-            sourceSize.width: Math.max(1, Math.round(control.width * 2))
-            sourceSize.height: Math.max(1, Math.round(control.height * 2))
+            sourceSize.width: control.hasFixedDecodeSize
+                               ? control.decodeWidth
+                               : Math.max(1, Math.round(control.width * 2))
+            sourceSize.height: control.hasFixedDecodeSize
+                                ? control.decodeHeight
+                                : Math.max(1, Math.round(control.height * 2))
             // MultiEffect 读取隐藏的源图，避免原图在圆角遮罩外露出来。
             visible: false
 

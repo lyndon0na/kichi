@@ -302,6 +302,44 @@ TestCase {
         compare(fakeBackend.thumbnailRequests, 0, "文件夹不应请求缩略图")
     }
 
+    function test_grid_thumbnail_decode_size_does_not_follow_card_width() {
+        density = densityComponent.createObject(parent)
+        verify(density !== null)
+        const initialWidth = 180
+        gridItem = gridItemComponent.createObject(parent, {
+            width: initialWidth,
+            height: density.gridItemHeight(initialWidth),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(initialWidth),
+            thumbnailDecodeWidth: density.gridThumbnailDecodeWidth,
+            thumbnailDecodeHeight: density.gridThumbnailDecodeHeight,
+            entry: entry(10, "file")
+        })
+        verify(gridItem !== null)
+        wait(20)
+
+        const thumbnail = findChild(gridItem, "gridThumbnail")
+        verify(thumbnail !== null)
+        const image = findChild(thumbnail, "thumbnailImage")
+        verify(image !== null)
+        compare(image.sourceSize.width, density.gridThumbnailDecodeWidth)
+        compare(image.sourceSize.height, density.gridThumbnailDecodeHeight)
+
+        const resizedWidth = 260
+        gridItem.width = resizedWidth
+        gridItem.height = density.gridItemHeight(resizedWidth)
+        wait(20)
+
+        compare(thumbnail.width, resizedWidth - density.gridCardPadding * 2)
+        compare(image.sourceSize.width, density.gridThumbnailDecodeWidth,
+                "卡片变宽时不能改变缩略图解码宽度")
+        compare(image.sourceSize.height, density.gridThumbnailDecodeHeight,
+                "卡片变宽时不能改变缩略图解码高度")
+    }
+
     function test_grid_video_loading_centers_spinner_and_cancels_without_selection() {
         density = densityComponent.createObject(parent)
         verify(density !== null)

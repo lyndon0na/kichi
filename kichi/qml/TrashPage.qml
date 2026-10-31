@@ -274,6 +274,8 @@ Item {
                         nameLineHeight: density.gridNameLineHeight
                         nameBlockHeight: density.gridNameBlockHeight
                         thumbnailRadius: density.gridThumbnailRadius(width)
+                        thumbnailDecodeWidth: density.gridThumbnailDecodeWidth
+                        thumbnailDecodeHeight: density.gridThumbnailDecodeHeight
                         textPixelSize: density.namePixelSize
                         detailPixelSize: density.metaPixelSize
                         detailLineHeight: density.gridDetailLineHeight
