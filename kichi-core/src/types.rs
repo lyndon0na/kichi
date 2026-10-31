@@ -104,7 +104,7 @@ impl TaskPhase {
 }
 
 /// 离线下载任务。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OfflineTask {
     pub id: String,
     pub name: String,

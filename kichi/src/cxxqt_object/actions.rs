@@ -78,7 +78,7 @@ impl qobject::Kichi {
             // 恢复成功由已登录界面本身表达，底栏不常驻启动提示。
             self.as_mut().set_message("");
             self.as_mut().refresh_identity_and_quota();
-            self.as_mut().refresh_files();
+            self.as_mut().refresh_files_background();
             self.as_ref().start_task_polling();
         }
     }
@@ -224,12 +224,21 @@ impl qobject::Kichi {
         self.as_mut().notify();
         self.as_mut().sync_identity_from_session();
         self.as_mut().refresh_identity_and_quota();
-        self.as_mut().refresh_files();
+        self.as_mut().refresh_files_background();
         self.as_ref().start_task_polling();
     }
 
     /// 错误统一出口：按类别更新属性，不吞错误。
     pub(crate) fn on_failure(mut self: Pin<&mut Self>, failure: Failure) {
+        self.as_mut().on_failure_inner(failure, true);
+    }
+
+    /// 列表自动校准失败：仍更新底栏 / 登录态，但不发系统通知、不弹窗。
+    pub(crate) fn on_refresh_failure(mut self: Pin<&mut Self>, failure: Failure) {
+        self.as_mut().on_failure_inner(failure, false);
+    }
+
+    fn on_failure_inner(mut self: Pin<&mut Self>, failure: Failure, notify_limited: bool) {
         match failure {
             Failure::Captcha { url } => {
                 let message = match &url {
@@ -253,7 +262,9 @@ impl qobject::Kichi {
                 // 配额/限速要解释清楚，否则用户会以为客户端坏了
                 let text = crate::session::rate_limit_text(&limited);
                 self.as_mut().set_message(&text);
-                self.as_mut().notify_rate_limited(&text);
+                if notify_limited {
+                    self.as_mut().notify_rate_limited(&text);
+                }
             }
             other => self.as_mut().set_message(&other.to_string()),
         }

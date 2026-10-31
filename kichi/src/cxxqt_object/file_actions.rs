@@ -126,7 +126,7 @@ impl qobject::Kichi {
                         .as_mut()
                         .end_file_action("folder", &format!("已新建文件夹「{for_message}」"));
                     if qichi.as_ref().rust().current_dir_id.to_string() == parent_for_cache {
-                        qichi.as_mut().refresh_files();
+                        qichi.as_mut().refresh_files_background();
                     }
                 }
                 Err(err) => {
@@ -516,15 +516,7 @@ impl qobject::Kichi {
 
     /// 操作期间用户若已请求刷新 / 导航，等写操作收尾后读取用户当前所在目录。
     fn resume_pending_file_refresh(mut self: Pin<&mut Self>) {
-        let pending = {
-            let mut rust = self.as_mut().rust_mut();
-            let pending = rust.refresh_pending;
-            rust.refresh_pending = false;
-            pending
-        };
-        if pending {
-            self.as_mut().refresh_files();
-        }
+        self.as_mut().resume_pending_files_request();
     }
 }
 

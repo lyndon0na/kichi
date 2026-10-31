@@ -678,6 +678,30 @@ TestCase {
         tryCompare(backend, "refreshCalls", 2)
     }
 
+    function test_header_refresh_feedback_keeps_cached_count() {
+        push([task("t1", "running", 10), task("t2", "completed", 100)])
+        var status = findChild(taskHeader, "tasksHeaderStatus")
+        var refresh = findChild(taskHeader, "tasksRefreshButton")
+        verify(status !== null && refresh !== null)
+        compare(status.text, "1 条任务进行中 · 共 2 条")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        backend.tasksLoading = true
+        backend.changed()
+        wait(20)
+        compare(status.text, "1 条任务进行中 · 共 2 条")
+        compare(refresh.text, "刷新中…")
+        compare(refresh.enabled, false)
+
+        backend.tasksLoading = false
+        backend.changed()
+        wait(20)
+        compare(status.text, "1 条任务进行中 · 共 2 条")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+    }
+
     function test_loading_state_replaces_empty_message() {
         compare(list.count, 0)
         compare(backend.tasksLoading, false)

@@ -29,6 +29,7 @@ TestCase {
         property string searchStatus: ""
         property string searchQuery: ""
         property bool filesLoading: false
+        property bool filesRefreshing: false
         property bool filesStale: false
         property int filesRevision: 1
         property var breadcrumb: ["全部文件"]
@@ -228,6 +229,7 @@ TestCase {
         fakeBackend.searchStatus = ""
         fakeBackend.searchQuery = ""
         fakeBackend.filesLoading = false
+        fakeBackend.filesRefreshing = false
         fakeBackend.filesRevision = 1
         fakeBackend.thumbnailRequests = 0
         fakeBackend.playLoading = false
@@ -872,5 +874,38 @@ TestCase {
         mouseClick(refresh)
         wait(20)
         compare(fakeBackend.refreshCalls, 1)
+    }
+
+    function test_refresh_button_feedback_is_manual_only() {
+        fakeBackend.contentView = "list"
+        fakeBackend.filesLoading = false
+        fakeBackend.filesRefreshing = false
+        headerActions = headerActionsComponent.createObject(parent, { visible: true })
+        verify(headerActions !== null)
+        wait(30)
+
+        const refresh = findChild(headerActions, "filesRefreshButton")
+        verify(refresh !== null)
+        compare(refresh.text, qsTr("刷新"))
+        compare(refresh.enabled, true)
+
+        // TTL 后台校准不会置 loading / refreshing；按钮和文字必须保持原样。
+        fakeBackend.filesRevision += 1
+        fakeBackend.changed()
+        wait(20)
+        compare(refresh.text, qsTr("刷新"))
+        compare(refresh.enabled, true)
+
+        fakeBackend.filesRefreshing = true
+        fakeBackend.changed()
+        wait(20)
+        compare(refresh.text, qsTr("刷新中…"))
+        compare(refresh.enabled, false)
+
+        fakeBackend.filesRefreshing = false
+        fakeBackend.changed()
+        wait(20)
+        compare(refresh.text, qsTr("刷新"))
+        compare(refresh.enabled, true)
     }
 }

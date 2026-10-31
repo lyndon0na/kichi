@@ -55,10 +55,10 @@ pub mod qobject {
         #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
         /// 当前目录 id（根为空串）：界面按它记忆 / 恢复滚动位置
         #[qproperty(QString, current_dir_id, cxx_name = "currentDirId", READ, NOTIFY = changed)]
-        /// 目录列表请求在途：文件页自己的加载态
+        /// 首次读取或用户手动刷新：文件页自己的可见加载态
         #[qproperty(bool, listing, cxx_name = "filesLoading", READ, NOTIFY = changed)]
-        /// 已有目录快照时的后台校准：旧列表继续可操作
-        #[qproperty(bool, files_background_refreshing, cxx_name = "filesRefreshing", READ, NOTIFY = changed)]
+        /// 用户手动刷新已有目录；TTL 自动校准不会置位
+        #[qproperty(bool, files_manual_refreshing, cxx_name = "filesRefreshing", READ, NOTIFY = changed)]
         /// 正在从离线任务打开 / 定位的产物 id；空串表示没有这项操作
         #[qproperty(QString, task_folder_loading_id, cxx_name = "taskFolderLoadingId", READ, NOTIFY = changed)]
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
@@ -67,6 +67,7 @@ pub mod qobject {
         /// 回收站表格（QML 直接当 model 用）。
         /// 不能叫 `trashEntries`：这个名字已被下面的移入回收站 invokable 占用。
         #[qproperty(QVariantList, trash_rows, cxx_name = "trashFiles", READ, NOTIFY = changed)]
+        /// 首次读取或用户手动刷新：TTL 自动校准不会置位
         #[qproperty(bool, trash_loading, cxx_name = "trashLoading", READ, NOTIFY = changed)]
         #[qproperty(bool, trash_loaded, cxx_name = "trashLoaded", READ, NOTIFY = changed)]
         #[qproperty(QString, trash_error, cxx_name = "trashError", READ, NOTIFY = changed)]
@@ -75,13 +76,15 @@ pub mod qobject {
         /// 有云端条目从回收站还原，下次显示文件页时需要重新拉取
         #[qproperty(bool, files_stale, cxx_name = "filesStale", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
-        /// 有一轮离线任务列表请求在途：QML 据此显示加载态
+        /// 首次读取或用户手动刷新在途：QML 据此显示可见加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, shares, READ, NOTIFY = changed)]
+        /// 首次读取或用户手动刷新：TTL 自动校准不会置位
         #[qproperty(bool, shares_loading, cxx_name = "sharesLoading", READ, NOTIFY = changed)]
         /// 资料库三页共用的当前集合；`libraryKind` 标明这些行属于哪一页。
         #[qproperty(QVariantList, library_rows, cxx_name = "libraryRows", READ, NOTIFY = changed)]
         #[qproperty(QString, library_kind, cxx_name = "libraryKind", READ, NOTIFY = changed)]
+        /// 首次读取或用户手动刷新：TTL 自动校准不会置位
         #[qproperty(bool, library_loading, cxx_name = "libraryLoading", READ, NOTIFY = changed)]
         #[qproperty(bool, library_loaded, cxx_name = "libraryLoaded", READ, NOTIFY = changed)]
         #[qproperty(QString, library_error, cxx_name = "libraryError", READ, NOTIFY = changed)]
@@ -635,6 +638,7 @@ pub mod qobject {
 }
 
 use cxx_qt_lib::{QString, QStringList, QVariant};
+use kichi_core::MyShare;
 
 /// Qt 的 `QVariantList`（即 `QList<QVariant>` 的别名）。
 ///
@@ -734,15 +738,17 @@ pub struct KichiRust {
     pub(crate) files_revision: i32,
     /// 访问过的目录快照：进入已有目录先恢复，过期再后台校准。
     pub(crate) files_cache: files_cache::FilesCache,
-    /// 任意目录请求在途；与只表示首次加载遮罩的 `listing` 分开。
+    /// 任意目录请求在途；自动校准不改变任何可见加载属性。
     pub(crate) files_request_running: bool,
-    /// 已有旧列表时正在后台校准目录。
-    pub(crate) files_background_refreshing: bool,
+    /// 用户手动刷新已有目录。
+    pub(crate) files_manual_refreshing: bool,
     /// 回收站表格（QML 直接当 model 用）
     pub(crate) trash_rows: QVariantList,
     /// 回收站领域对象：保留完整列表与总数，不依赖 QML 传来的显示数据
     pub(crate) trash_list: Vec<kichi_core::TrashEntry>,
     pub(crate) trash_loading: bool,
+    /// 任意回收站请求在途；与可见加载态分开，自动校准不碰按钮。
+    pub(crate) trash_request_running: bool,
     pub(crate) trash_loaded: bool,
     /// 最近一次回收站请求开始 / 完成的时刻：切页时按 TTL 决定是否校准。
     pub(crate) trash_refresh_at: Option<std::time::Instant>,
@@ -781,6 +787,8 @@ pub struct KichiRust {
     pub(crate) task_folder_loading_id: QString,
     /// 列表在途时又收到刷新请求：本次完成后再补一次，不能静默丢掉
     pub(crate) refresh_pending: bool,
+    /// 补发的那次刷新是否来自用户按钮；自动校准始终为 false。
+    pub(crate) refresh_pending_manual: bool,
     /// 目录请求代数：退出登录 / 重登后旧结果作废
     pub(crate) list_epoch: u64,
     /// 当前离线任务（QML 直接当 model 用）
@@ -789,6 +797,10 @@ pub struct KichiRust {
     pub(crate) task_list: Vec<kichi_core::OfflineTask>,
     /// 有任务请求在途
     pub(crate) tasks_loading: bool,
+    /// 至少成功读过一次任务列表；空列表也算有效缓存。
+    pub(crate) tasks_loaded: bool,
+    /// 任意任务列表请求在途；后台轮询和切页校准不会改变可见加载态。
+    pub(crate) tasks_request_running: bool,
     /// 最近一次任务列表请求开始 / 成功刷新的时刻：手动 / 切页刷新据此做短冷却
     pub(crate) task_refresh_at: Option<std::time::Instant>,
     /// 任务请求代数：退出登录 / 重登后旧结果作废
@@ -797,6 +809,12 @@ pub struct KichiRust {
     pub(crate) shares: QVariantList,
     /// 分享列表请求在途
     pub(crate) shares_loading: bool,
+    /// 至少成功读过一次分享列表；空列表也算有效缓存。
+    pub(crate) shares_loaded: bool,
+    /// 任意分享列表请求在途；自动校准不改变可见加载态。
+    pub(crate) shares_request_running: bool,
+    /// 最近一次成功读取的分享领域对象，用于判断数据是否真的变化。
+    pub(crate) share_list: Vec<MyShare>,
     /// 列表在途时又要求强制刷新（创建 / 撤销完成）：本轮结束后补一次
     pub(crate) share_refresh_pending: bool,
     /// 分享列表短冷却（切页 / 手动刷新合并请求）
@@ -812,6 +830,8 @@ pub struct KichiRust {
     /// 三个资料库集合各自的最近一次成功快照，切页时先复用。
     pub(crate) library_cache: std::collections::HashMap<&'static str, library::LibraryCache>,
     pub(crate) library_loading: bool,
+    /// 任意资料库请求在途；自动校准不改变可见加载态。
+    pub(crate) library_request_running: bool,
     pub(crate) library_loaded: bool,
     pub(crate) library_error: QString,
     /// 同一资料库页最近一次请求开始 / 成功的时刻：自动与手动刷新共用短冷却
@@ -989,10 +1009,11 @@ impl Default for KichiRust {
             files_revision: 0,
             files_cache: files_cache::FilesCache::default(),
             files_request_running: false,
-            files_background_refreshing: false,
+            files_manual_refreshing: false,
             trash_rows: QVariantList::default(),
             trash_list: Vec::new(),
             trash_loading: false,
+            trash_request_running: false,
             trash_loaded: false,
             trash_refresh_at: None,
             trash_error: QString::default(),
@@ -1013,14 +1034,20 @@ impl Default for KichiRust {
             listing: false,
             task_folder_loading_id: QString::default(),
             refresh_pending: false,
+            refresh_pending_manual: false,
             list_epoch: 0,
             tasks: QVariantList::default(),
             task_list: Vec::new(),
             tasks_loading: false,
+            tasks_loaded: false,
+            tasks_request_running: false,
             task_refresh_at: None,
             tasks_epoch: 0,
             shares: QVariantList::default(),
             shares_loading: false,
+            shares_loaded: false,
+            shares_request_running: false,
+            share_list: Vec::new(),
             share_refresh_pending: false,
             share_refresh_at: None,
             shares_epoch: 0,
@@ -1029,6 +1056,7 @@ impl Default for KichiRust {
             library_entries: Vec::new(),
             library_cache: std::collections::HashMap::new(),
             library_loading: false,
+            library_request_running: false,
             library_loaded: false,
             library_error: QString::default(),
             library_refresh_at: None,

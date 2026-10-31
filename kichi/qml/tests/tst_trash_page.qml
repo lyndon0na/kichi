@@ -321,4 +321,36 @@ TestCase {
         wait(20)
         compare(backend.refreshCount, 1)
     }
+
+    function test_header_refresh_feedback_keeps_cached_count() {
+        publish([entry("a", false), entry("b", true)])
+        var summary = findChild(header, "trashSelectionSummary")
+        var refresh = findChild(header, "trashRefreshButton")
+        verify(summary !== null && refresh !== null)
+        compare(summary.text, "共 2 项")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        // 后台校准不改 trashLoading，计数和按钮都不闪。
+        backend.trashRevision += 1
+        backend.changed()
+        wait(20)
+        compare(summary.text, "共 2 项")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        backend.trashLoading = true
+        backend.changed()
+        wait(20)
+        compare(summary.text, "共 2 项")
+        compare(refresh.text, "刷新中…")
+        compare(refresh.enabled, false)
+
+        backend.trashLoading = false
+        backend.changed()
+        wait(20)
+        compare(summary.text, "共 2 项")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+    }
 }

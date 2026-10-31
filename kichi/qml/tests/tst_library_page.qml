@@ -412,6 +412,38 @@ TestCase {
         compare(backend.refreshKind, "recent-saved")
     }
 
+    function test_header_refresh_feedback_keeps_cached_count() {
+        publish([row("one", false), row("two", false)], true)
+        var status = findChild(header, "libraryHeaderStatus")
+        var refresh = findChild(header, "libraryRefreshButton")
+        verify(status !== null && refresh !== null)
+        compare(status.text, "共 2 项")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        // TTL 自动校准不进入可见 loading，计数和按钮完全不动。
+        backend.libraryRevision += 1
+        backend.changed()
+        wait(20)
+        compare(status.text, "共 2 项")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        backend.libraryLoading = true
+        backend.changed()
+        wait(20)
+        compare(status.text, "正在刷新…")
+        compare(refresh.text, "刷新中…")
+        compare(refresh.enabled, false)
+
+        backend.libraryLoading = false
+        backend.changed()
+        wait(20)
+        compare(status.text, "共 2 项")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+    }
+
     function test_right_click_opens_common_menu_and_reveals_location() {
         publish([row("movie", true)], true)
         var list = findChild(page, "libraryList")

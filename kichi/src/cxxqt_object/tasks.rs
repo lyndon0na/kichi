@@ -72,41 +72,66 @@ fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
 impl qobject::Kichi {
     /// 按需读取任务列表（刷新按钮、进入页面都走这里）。
     pub fn refresh_tasks(mut self: Pin<&mut Self>) {
-        self.as_mut().refresh_tasks_inner(false);
+        self.as_mut().refresh_tasks_inner(false, true);
+    }
+
+    /// 后台轮询 / 切页校准：不发可见加载反馈。
+    fn refresh_tasks_background(mut self: Pin<&mut Self>) {
+        self.as_mut().refresh_tasks_inner(false, false);
     }
 
     /// 页面重新可见：后台轮询已经维护列表，短时间内不额外发请求。
     pub fn ensure_tasks_fresh(mut self: Pin<&mut Self>) {
         let now = Instant::now();
-        if self.tasks_loading
-            || self
-                .task_refresh_at
-                .is_some_and(|at| now.saturating_duration_since(at) < TASKS_PAGE_TTL)
+        if self.tasks_request_running
+            || self.tasks_loaded
+                && self
+                    .task_refresh_at
+                    .is_some_and(|at| now.saturating_duration_since(at) < TASKS_PAGE_TTL)
         {
             return;
         }
-        self.as_mut().refresh_tasks_inner(false);
+        self.as_mut().refresh_tasks_inner(false, false);
     }
 
     /// 提交 / 删除后的强制刷新：绕过短冷却，但仍只允许一轮请求在途。
     fn refresh_tasks_force(mut self: Pin<&mut Self>) {
-        self.as_mut().refresh_tasks_inner(true);
+        self.as_mut().refresh_tasks_inner(true, false);
     }
 
-    fn refresh_tasks_inner(mut self: Pin<&mut Self>, force: bool) {
+    fn refresh_tasks_inner(mut self: Pin<&mut Self>, force: bool, manual: bool) {
         let session = self.backend.session.clone();
-        let my_epoch = {
+        let has_cache = self.tasks_loaded;
+        if self.tasks_request_running {
+            let show_manual = {
+                let mut rust = self.as_mut().rust_mut();
+                let show = manual && has_cache && !rust.tasks_loading;
+                if show {
+                    rust.tasks_loading = true;
+                }
+                show
+            };
+            if show_manual {
+                self.as_mut().notify();
+            }
+            return;
+        }
+        let (my_epoch, visible) = {
             let now = Instant::now();
             let mut rust = self.as_mut().rust_mut();
-            if rust.tasks_loading || (!force && !refresh_due(rust.task_refresh_at, now)) {
+            if !force && !refresh_due(rust.task_refresh_at, now) {
                 return;
             }
-            rust.tasks_loading = true;
+            let visible = manual || !has_cache;
+            rust.tasks_loading = visible;
+            rust.tasks_request_running = true;
             rust.task_refresh_at = Some(now);
-            rust.tasks_epoch
+            (rust.tasks_epoch, visible)
         };
         // 加载态要立刻显示，不能等网络回来才通知 QML。
-        self.as_mut().notify();
+        if visible {
+            self.as_mut().notify();
+        }
         run_in_background(
             move || session.offline_tasks(),
             move |mut qichi, result| {
@@ -116,7 +141,12 @@ impl qobject::Kichi {
                 match result {
                     Ok(tasks) => qichi.as_mut().show_tasks(tasks, true),
                     Err(err) => {
-                        qichi.as_mut().rust_mut().tasks_loading = false;
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.tasks_loading = false;
+                            rust.tasks_request_running = false;
+                            rust.task_refresh_at = Some(Instant::now());
+                        }
                         qichi.as_mut().on_tasks_failure(err);
                     }
                 }
@@ -244,6 +274,8 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.tasks_epoch = rust.tasks_epoch.wrapping_add(1);
             rust.tasks_loading = false;
+            rust.tasks_request_running = false;
+            rust.tasks_loaded = false;
             rust.task_refresh_at = None;
             rust.tasks = QVariantList::default();
             rust.task_list.clear();
@@ -311,15 +343,25 @@ impl qobject::Kichi {
             list.append(QVariant::from(&task_map(task)));
         }
         let next_wait = next_interval(&tasks);
+        let notify;
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.tasks = list;
-            rust.task_list = tasks;
+            let changed = rust.task_list != tasks;
+            let visible = rust.tasks_loading;
+            if changed {
+                rust.tasks = list;
+                rust.task_list = tasks;
+            }
             rust.tasks_loading = false;
+            rust.tasks_request_running = false;
+            rust.tasks_loaded = true;
             rust.task_refresh_at = Some(Instant::now());
+            notify = changed || visible;
         }
         schedule_poll_wait(next_wait);
-        self.as_mut().notify();
+        if notify {
+            self.as_mut().notify();
+        }
 
         let notify_enabled = self.notify_enabled;
         for task in finished_now {
@@ -330,8 +372,8 @@ impl qobject::Kichi {
 
 /// 后台轮询循环：按间隔拉列表，结果回投到主线程。
 ///
-/// 所有请求都回到主线程调用 [`qobject::Kichi::refresh_tasks`]，与切页 / 手动刷新
-/// 共用 `tasks_loading` 单飞保护。每 TICK 醒来一次检查退出或间隔变化。
+/// 所有请求都回到主线程调用后台刷新入口，与切页 / 手动刷新共用内部单飞保护。
+/// 每 TICK 醒来一次检查退出或间隔变化。
 fn poll_loop(generation: u64) {
     loop {
         let interval = poll_wait().load(Ordering::SeqCst);
@@ -343,7 +385,7 @@ fn poll_loop(generation: u64) {
         }
         super::actions::enqueue_ui(move |mut qichi| {
             if still_polling(generation) {
-                qichi.as_mut().refresh_tasks();
+                qichi.as_mut().refresh_tasks_background();
             }
         });
     }

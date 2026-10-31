@@ -136,6 +136,31 @@ TestCase {
         tryCompare(backend, "refreshCalls", 3)
     }
 
+    function test_header_refresh_feedback_keeps_cached_count() {
+        push([share("a"), share("b")])
+        waitForRendering(list)
+        var status = findChild(header, "shareHeaderStatus")
+        var refresh = findChild(header, "refreshShares")
+        verify(status !== null && refresh !== null)
+        compare(status.text, "共 2 个分享链接")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        backend.sharesLoading = true
+        backend.changed()
+        wait(20)
+        compare(status.text, "共 2 个分享链接")
+        compare(refresh.text, "刷新中…")
+        compare(refresh.enabled, false)
+
+        backend.sharesLoading = false
+        backend.changed()
+        wait(20)
+        compare(status.text, "共 2 个分享链接")
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+    }
+
     function test_table_has_file_icon_and_selection_actions_without_checkboxes() {
         push([share("a")])
         waitForRendering(list)

@@ -12,6 +12,7 @@ RowLayout {
     readonly property int entryCount: target ? target.entries.length : 0
     readonly property bool busy: target ? target.busy : false
     readonly property bool backendReady: target !== null && target.backend !== null
+    readonly property bool refreshing: backendReady && target.backend.trashLoading
 
     readonly property KTheme theme: KTheme { parent: root }
 
@@ -61,7 +62,7 @@ RowLayout {
     KButton {
         objectName: "trashRefreshButton"
         Layout.alignment: Qt.AlignVCenter
-        text: qsTr("刷新")
+        text: root.refreshing ? qsTr("刷新中…") : qsTr("刷新")
         iconName: "refresh"
         variant: "ghost"
         enabled: root.backendReady && !root.busy

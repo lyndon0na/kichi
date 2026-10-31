@@ -22,44 +22,61 @@ const SHARES_REFRESH_TTL: Duration = Duration::from_secs(30);
 
 impl qobject::Kichi {
     pub fn refresh_shares(mut self: Pin<&mut Self>) {
-        self.as_mut().refresh_shares_inner(false);
+        self.as_mut().refresh_shares_inner(false, true);
     }
 
     pub fn ensure_shares_fresh(mut self: Pin<&mut Self>) {
         let now = Instant::now();
-        if self.shares_loading
-            || self
-                .share_refresh_at
-                .is_some_and(|at| now.saturating_duration_since(at) < SHARES_REFRESH_TTL)
+        if self.shares_request_running
+            || self.shares_loaded
+                && self
+                    .share_refresh_at
+                    .is_some_and(|at| now.saturating_duration_since(at) < SHARES_REFRESH_TTL)
         {
             return;
         }
-        self.as_mut().refresh_shares_inner(false);
+        self.as_mut().refresh_shares_inner(false, false);
     }
 
     fn refresh_shares_force(mut self: Pin<&mut Self>) {
-        self.as_mut().refresh_shares_inner(true);
+        self.as_mut().refresh_shares_inner(true, false);
     }
 
-    fn refresh_shares_inner(mut self: Pin<&mut Self>, force: bool) {
+    fn refresh_shares_inner(mut self: Pin<&mut Self>, force: bool, manual: bool) {
         let session = self.backend.session.clone();
-        let epoch = {
-            let now = Instant::now();
-            let mut rust = self.as_mut().rust_mut();
-            if rust.shares_loading {
+        let has_cache = self.shares_loaded;
+        if self.shares_request_running {
+            let show_manual = {
+                let mut rust = self.as_mut().rust_mut();
                 if force {
                     rust.share_refresh_pending = true;
                 }
-                return;
+                let show = manual && has_cache && !rust.shares_loading;
+                if show {
+                    rust.shares_loading = true;
+                }
+                show
+            };
+            if show_manual {
+                self.as_mut().notify();
             }
+            return;
+        }
+        let (epoch, visible) = {
+            let now = Instant::now();
+            let mut rust = self.as_mut().rust_mut();
             if !force && !refresh_due(rust.share_refresh_at, now) {
                 return;
             }
-            rust.shares_loading = true;
+            let visible = manual || !has_cache;
+            rust.shares_loading = visible;
+            rust.shares_request_running = true;
             rust.share_refresh_at = Some(now);
-            rust.shares_epoch
+            (rust.shares_epoch, visible)
         };
-        self.as_mut().notify();
+        if visible {
+            self.as_mut().notify();
+        }
         run_in_background(
             move || session.shares(),
             move |mut qichi, result| {
@@ -69,8 +86,13 @@ impl qobject::Kichi {
                 match result {
                     Ok(shares) => qichi.as_mut().show_shares(shares),
                     Err(err) => {
-                        qichi.as_mut().rust_mut().shares_loading = false;
-                        qichi.as_mut().on_failure(err);
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.shares_loading = false;
+                            rust.shares_request_running = false;
+                            rust.share_refresh_at = Some(Instant::now());
+                        }
+                        qichi.as_mut().on_refresh_failure(err);
                     }
                 }
                 let again = {
@@ -242,6 +264,9 @@ impl qobject::Kichi {
             rust.share_action_epoch = rust.share_action_epoch.wrapping_add(1);
             rust.shares = QVariantList::default();
             rust.shares_loading = false;
+            rust.shares_request_running = false;
+            rust.shares_loaded = false;
+            rust.share_list.clear();
             rust.share_refresh_pending = false;
             rust.share_refresh_at = None;
             rust.share_action_running = false;
@@ -263,13 +288,24 @@ impl qobject::Kichi {
         for share in &shares {
             list.append(QVariant::from(&share_map(share)));
         }
+        let notify;
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.shares = list;
+            let changed = rust.share_list != shares;
+            let visible = rust.shares_loading;
+            if changed {
+                rust.shares = list;
+                rust.share_list = shares;
+            }
             rust.shares_loading = false;
+            rust.shares_request_running = false;
+            rust.shares_loaded = true;
             rust.share_refresh_at = Some(Instant::now());
+            notify = changed || visible;
         }
-        self.as_mut().notify();
+        if notify {
+            self.as_mut().notify();
+        }
     }
 
     fn finish_share_action(mut self: Pin<&mut Self>, action: &str, message: &str) {

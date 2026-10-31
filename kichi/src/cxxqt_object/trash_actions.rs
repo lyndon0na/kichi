@@ -250,7 +250,7 @@ impl qobject::Kichi {
             true,
             QString::from(message.as_str()),
         );
-        self.as_mut().refresh_trash_with_status(None);
+        self.as_mut().refresh_trash_with_status(None, false);
     }
 
     fn finish_trash_failure(
@@ -288,7 +288,8 @@ impl qobject::Kichi {
             QString::from(message.as_str()),
         );
         if completed > 0 {
-            self.as_mut().refresh_trash_with_status(Some(message));
+            self.as_mut()
+                .refresh_trash_with_status(Some(message), false);
         }
     }
 }

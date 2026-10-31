@@ -11,6 +11,8 @@ RowLayout {
 
     readonly property bool searching: backend !== null && backend.searchActive
     readonly property bool loading: backend !== null && backend.filesLoading
+    readonly property bool manualRefreshing: backend !== null
+                                            && backend.filesRefreshing === true
 
     readonly property KTheme theme: KTheme { parent: root }
 
@@ -48,7 +50,7 @@ RowLayout {
     KButton {
         objectName: "filesRefreshButton"
         Layout.alignment: Qt.AlignVCenter
-        text: qsTr("刷新")
+        text: root.manualRefreshing ? qsTr("刷新中…") : qsTr("刷新")
         iconName: "refresh"
         iconSize: 14
         variant: "ghost"
@@ -56,6 +58,7 @@ RowLayout {
         leftPadding: 8
         rightPadding: 8
         enabled: root.backend !== null && !root.searching && !root.loading
+                 && !root.manualRefreshing
         showTextToolTip: false
         ToolTip.visible: hovered
         ToolTip.text: qsTr("刷新当前文件夹")

@@ -27,7 +27,7 @@ const TRASH_REFRESH_TTL: Duration = Duration::from_secs(30);
 impl qobject::Kichi {
     /// 重新读取全账号回收站。
     pub fn refresh_trash(mut self: Pin<&mut Self>) {
-        self.as_mut().refresh_trash_with_status(None);
+        self.as_mut().refresh_trash_with_status(None, true);
     }
 
     /// 页面重新可见：有缓存且仍新鲜时不再发请求。
@@ -41,7 +41,7 @@ impl qobject::Kichi {
         if loaded && last.is_some_and(|at| now.saturating_duration_since(at) < TRASH_REFRESH_TTL) {
             return;
         }
-        self.refresh_trash_with_status(None);
+        self.refresh_trash_with_status(None, false);
     }
 
     /// 退出登录时清空回收站状态，并让在途请求作废。
@@ -52,6 +52,7 @@ impl qobject::Kichi {
             rust.trash_rows = QVariantList::default();
             rust.trash_list.clear();
             rust.trash_loading = false;
+            rust.trash_request_running = false;
             rust.trash_loaded = false;
             rust.trash_refresh_at = None;
             rust.trash_error = QString::default();
@@ -71,6 +72,7 @@ impl qobject::Kichi {
         // 让操作开始前发出的回收站请求失效，避免它把旧快照写回来。
         rust.trash_epoch = rust.trash_epoch.wrapping_add(1);
         rust.trash_loading = false;
+        rust.trash_request_running = false;
         rust.trash_loaded = false;
         rust.trash_refresh_at = None;
     }
@@ -78,20 +80,35 @@ impl qobject::Kichi {
     pub(super) fn refresh_trash_with_status(
         mut self: Pin<&mut Self>,
         final_status: Option<String>,
+        manual: bool,
     ) {
-        if self.trash_loading || self.file_action_running {
+        if self.file_action_running {
+            return;
+        }
+        let has_cache = self.trash_loaded || !self.trash_list.is_empty();
+        if self.trash_request_running {
+            if manual && has_cache && !self.trash_loading {
+                self.as_mut().rust_mut().trash_loading = true;
+                self.as_mut().notify();
+            }
             return;
         }
         let session = self.backend.session.clone();
-        let epoch = {
+        let (epoch, visible) = {
             let mut rust = self.as_mut().rust_mut();
-            rust.trash_loading = true;
-            rust.trash_error = QString::default();
+            let visible = manual || !has_cache;
+            rust.trash_loading = visible;
+            rust.trash_request_running = true;
+            if visible {
+                rust.trash_error = QString::default();
+            }
             rust.trash_refresh_at = Some(Instant::now());
             rust.trash_epoch = rust.trash_epoch.wrapping_add(1);
-            rust.trash_epoch
+            (rust.trash_epoch, visible)
         };
-        self.as_mut().notify();
+        if visible {
+            self.as_mut().notify();
+        }
 
         run_in_background(
             move || session.list_trash(),
@@ -103,30 +120,41 @@ impl qobject::Kichi {
                     Ok(mut entries) => {
                         sort_trash_entries(&mut entries);
                         let files = trash_list_from(&entries);
+                        let notify;
                         {
                             let mut rust = qichi.as_mut().rust_mut();
-                            rust.trash_rows = files;
-                            rust.trash_list = entries;
+                            let changed = rust.trash_list != entries;
+                            if changed {
+                                rust.trash_rows = files;
+                                rust.trash_list = entries;
+                                rust.trash_revision = rust.trash_revision.wrapping_add(1);
+                            }
                             rust.trash_loading = false;
+                            rust.trash_request_running = false;
                             rust.trash_loaded = true;
                             rust.trash_refresh_at = Some(Instant::now());
                             rust.trash_error = QString::default();
-                            rust.trash_revision = rust.trash_revision.wrapping_add(1);
                             if let Some(status) = final_status {
                                 rust.status_message = QString::from(status.as_str());
                             }
+                            notify = changed || visible;
                         }
-                        qichi.as_mut().notify();
+                        if notify {
+                            qichi.as_mut().notify();
+                        }
                     }
                     Err(err) => {
                         let text = err.to_string();
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.trash_loading = false;
+                            rust.trash_request_running = false;
                             rust.trash_refresh_at = Some(Instant::now());
-                            rust.trash_error = QString::from(text.as_str());
+                            if !has_cache {
+                                rust.trash_error = QString::from(text.as_str());
+                            }
                         }
-                        qichi.as_mut().on_failure(err);
+                        qichi.as_mut().on_refresh_failure(err);
                     }
                 }
             },

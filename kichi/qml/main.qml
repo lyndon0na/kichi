@@ -774,6 +774,9 @@ ApplicationWindow {
                     ? root.crumbs[root.crumbs.length - 1] : qsTr("全部文件")
             if (backend.filesLoading)
                 return qsTr("正在读取「%1」…").arg(folder)
+            if (backend.filesRefreshing)
+                return qsTr("%1 · 共 %2 项 · 正在刷新…")
+                        .arg(folder).arg(backend.files.length)
             return qsTr("%1 · 共 %2 项").arg(folder).arg(backend.files.length)
         }
         if (root.currentPage === pageIds.shares) {
