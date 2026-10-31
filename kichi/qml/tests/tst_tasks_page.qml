@@ -141,6 +141,10 @@ TestCase {
         compare(model.get(1).key, "t2")
     }
 
+    function test_scroll_stops_at_bounds() {
+        compare(list.boundsBehavior, Flickable.StopAtBounds)
+    }
+
     function test_table_layout_uses_compact_rows() {
         push([task("t1", "running", 10)])
 

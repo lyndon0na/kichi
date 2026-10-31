@@ -28,6 +28,25 @@ if [[ -n "$raw" ]]; then
     exit 1
 fi
 
+# —— 规则：滚动视图不能越过边界回弹（docs/pitfalls.md 第 13 条）——
+# Qt Quick 默认是 DragAndOvershootBounds，会像移动端一样在首尾橡皮筋回弹。
+# 生产 QML 里出现可滚视图的文件都必须显式声明 StopAtBounds。
+scroll_files="$(grep -rlE '(^|[^A-Za-z])(ListView|GridView|Flickable)[[:space:]]*\{' \
+        kichi/qml --include='*.qml' | grep -v '/tests/' || true)"
+missing_bounds=""
+while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    if ! grep -qE 'boundsBehavior:[[:space:]]*Flickable\.StopAtBounds' "$file"; then
+        missing_bounds+="$file"$'\n'
+    fi
+done <<<"$scroll_files"
+if [[ -n "$missing_bounds" ]]; then
+    echo "qml-lint: 可滚视图缺少 boundsBehavior: Flickable.StopAtBounds" >&2
+    echo "（见 docs/pitfalls.md 第 13 条）：" >&2
+    printf '%s' "$missing_bounds" >&2
+    exit 1
+fi
+
 # —— 规则：进度条只有一种做法（docs/pitfalls.md 第 15 条）——
 # breeze 风格的 ProgressBar 在宽度变化时会逐帧刷 TypeError（见 pitfalls 第 15 条），
 # 页面里一律 KProgressBar；下面这段静态检查当场拦住裸写法。

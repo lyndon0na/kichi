@@ -118,6 +118,10 @@ TestCase {
         compare(model.get(0).key, "b")
     }
 
+    function test_scroll_stops_at_bounds() {
+        compare(list.boundsBehavior, Flickable.StopAtBounds)
+    }
+
     function test_rows_reorder_when_a_share_is_removed() {
         push([share("a"), share("b"), share("c")])
         push([share("c"), share("b")])

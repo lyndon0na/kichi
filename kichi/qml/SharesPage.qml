@@ -108,6 +108,7 @@ Item {
             clip: true
             spacing: 2
             model: shareRows
+            boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: KScrollBar {}
             focus: page.active
             Keys.onPressed: function (event) {

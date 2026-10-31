@@ -109,6 +109,7 @@ Item {
             clip: true
             spacing: 0
             model: taskRows
+            boundsBehavior: Flickable.StopAtBounds
 
             // 列表铺到窗口右缘，条画在右侧 10px 车道里
             ScrollBar.vertical: KScrollBar {}
