@@ -64,12 +64,12 @@ Item {
         const entry = entries[index]
         if (!entry)
             return
-        if (entry.playable === true) {
+        if (entry.kind === "folder") {
+            page.backend.openLibraryEntry(entry.id)
+        } else if (entry.playable === true) {
             page.playEntry(entry.id, libraryList.mapToItem(null,
                                                          libraryList.width / 2,
                                                          Math.max(24, libraryList.height / 2)))
-        } else {
-            page.backend.openLibraryEntry(entry.id)
         }
     }
 
@@ -140,6 +140,7 @@ Item {
                     }
 
                     delegate: LibraryRow {
+                        id: row
                         width: ListView.view.width - metrics.scrollBarSlot
                         entry: modelData
                         backend: page.backend

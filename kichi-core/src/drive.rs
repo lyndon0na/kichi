@@ -384,6 +384,19 @@ impl DriveClient {
         let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
         Ok((files, next))
     }
+
+    /// 读取单个条目的完整文件信息（只读）。
+    ///
+    /// 资料库事件通常带 `reference_resource`；只有资源缺失或不足以识别
+    /// 文件 / 文件夹时才回退到这里，避免为整页事件逐条发详情请求。
+    pub fn file_entry(&self, id: &str) -> Result<FileEntry, Error> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(Error::InvalidInput("条目 id 为空".into()));
+        }
+        let dto: FileDto = self.get(&self.config.file_url(id))?;
+        Ok(dto.into_entry())
+    }
 }
 
 /// 文件列表的查询参数（单独成函数便于单测）。
@@ -491,6 +504,28 @@ pub(crate) fn audit_flagged(status: &str) -> bool {
 }
 
 impl FileDto {
+    /// 事件参考资源的 id；缺失时为空串。
+    pub(crate) fn event_resource_id(&self) -> &str {
+        self.id.trim()
+    }
+
+    /// 事件里的参考资源是否足以直接构造列表行。
+    ///
+    /// 时间与缩略图可能本来就不下发，不算「不完整」；身份字段缺失、
+    /// 类型未知或与事件 `file_id` 不一致时才必须补一次详情请求。
+    pub(crate) fn is_complete_event_resource(&self, expected_id: &str) -> bool {
+        let id = self.id.trim();
+        !id.is_empty()
+            && id == expected_id.trim()
+            && !self.name.trim().is_empty()
+            && EntryKind::from_api_kind(&self.kind).is_some()
+    }
+
+    pub(crate) fn into_complete_event_entry(self, expected_id: &str) -> Option<FileEntry> {
+        self.is_complete_event_resource(expected_id)
+            .then(|| self.into_entry())
+    }
+
     /// 转换成领域类型。
     pub(crate) fn into_entry(self) -> FileEntry {
         let is_folder = self.kind == "drive#folder";
@@ -637,7 +672,7 @@ pub(crate) fn is_media(name: &str, category: &str, mime: &str, extension: &str) 
 }
 
 /// RFC3339 时间；官方可能给 `null`、空串或无法解析的值，一律按“没有时间”处理。
-fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+pub(crate) fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where
     D: Deserializer<'de>,
 {

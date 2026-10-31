@@ -1,10 +1,10 @@
-//! 资料库三页共用的状态、刷新与打开位置。
+//! 资料库三页共用的状态、刷新与文件夹打开。
 
 use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
-use kichi_core::{EntryKind, FileEntry, LibraryKind};
+use kichi_core::{EntryKind, LibraryKind};
 
 use super::actions::run_in_background;
 use super::files::{Crumb, ROOT_NAME};
@@ -13,18 +13,6 @@ use super::QVariantList;
 
 #[path = "library_view.rs"]
 mod library_view;
-
-enum OpenResult {
-    Folder {
-        trail: Vec<(String, String)>,
-        entries: Vec<FileEntry>,
-    },
-    Location {
-        trail: Vec<(String, String)>,
-        entries: Vec<FileEntry>,
-        target_id: String,
-    },
-}
 
 impl qobject::Kichi {
     /// 刷新当前资料库页面。与文件目录共用 `filesLoading` 时容易混淆，因此使用
@@ -100,7 +88,7 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 从资料库打开文件夹本身；文件则跳到其父目录并通知界面选中目标。
+    /// 从资料库打开文件夹本身。普通文件没有双击动作，也不跳到父目录定位。
     pub fn open_library_entry(mut self: Pin<&mut Self>, id: QString) {
         if self.listing {
             self.as_mut().set_message("文件列表正在加载，请稍后再打开");
@@ -118,11 +106,15 @@ impl qobject::Kichi {
                 .set_message("该条目已不在资料库中，请刷新后重试");
             return;
         };
+        if target.kind != EntryKind::Folder {
+            self.as_mut()
+                .set_message("资料库双击只打开文件夹或可播放文件");
+            return;
+        }
 
         self.as_mut().exit_search();
         let session = self.backend.session.clone();
         let previous_crumbs = self.crumbs.clone();
-        let target_kind = target.kind;
         let target_name = target.name.clone();
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
@@ -138,48 +130,20 @@ impl qobject::Kichi {
         let work_id = target_id.clone();
         run_in_background(
             move || {
-                if target_kind == EntryKind::Folder {
-                    let trail = session.folder_trail(&work_id)?;
-                    let folder_id = trail
-                        .last()
-                        .map(|(id, _)| id.clone())
-                        .ok_or_else(|| crate::session::Failure::Other("目录路径为空".to_owned()))?;
-                    let entries = session.list_dir(Some(&folder_id))?;
-                    return Ok(OpenResult::Folder { trail, entries });
-                }
-
-                let (_, parent_id) = session.parent_of(&work_id)?;
-                let (trail, list_parent) = if parent_id.trim().is_empty() {
-                    (Vec::new(), None)
-                } else {
-                    (session.folder_trail(&parent_id)?, Some(parent_id))
-                };
-                let entries = session.list_dir(list_parent.as_deref())?;
-                if !entries.iter().any(|entry| entry.id == work_id) {
-                    return Err(crate::session::Failure::Other(
-                        "目标条目不在所在目录中，可能已被移动或删除".to_owned(),
-                    ));
-                }
-                Ok(OpenResult::Location {
-                    trail,
-                    entries,
-                    target_id: work_id,
-                })
+                let trail = session.folder_trail(&work_id)?;
+                let folder_id = trail
+                    .last()
+                    .map(|(id, _)| id.clone())
+                    .ok_or_else(|| crate::session::Failure::Other("目录路径为空".to_owned()))?;
+                let entries = session.list_dir(Some(&folder_id))?;
+                Ok::<_, crate::session::Failure>((trail, entries))
             },
             move |mut qichi, result| {
                 if qichi.as_ref().rust().list_epoch != epoch {
                     return;
                 }
                 match result {
-                    Ok(result) => {
-                        let target = match &result {
-                            OpenResult::Folder { .. } => None,
-                            OpenResult::Location { target_id, .. } => Some(target_id.clone()),
-                        };
-                        let (trail, entries) = match result {
-                            OpenResult::Folder { trail, entries } => (trail, entries),
-                            OpenResult::Location { trail, entries, .. } => (trail, entries),
-                        };
+                    Ok((trail, entries)) => {
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.crumb_backup = None;
@@ -193,12 +157,7 @@ impl qobject::Kichi {
                         qichi.as_mut().sync_breadcrumb();
                         qichi.as_mut().clear_status_message();
                         qichi.as_mut().show_entries(entries);
-                        match target {
-                            Some(target) => qichi
-                                .as_mut()
-                                .library_location_ready(QString::from(target.as_str())),
-                            None => qichi.as_mut().library_folder_ready(),
-                        }
+                        qichi.as_mut().library_folder_ready();
                     }
                     Err(err) => {
                         {

@@ -142,11 +142,6 @@ ApplicationWindow {
         function onLibraryFolderReady() {
             root.currentPage = pageIds.files
         }
-
-        function onLibraryLocationReady(targetId) {
-            root.currentPage = pageIds.files
-            filesPage.revealEntryById(targetId)
-        }
     }
 
     property int lastTrayShow: 0

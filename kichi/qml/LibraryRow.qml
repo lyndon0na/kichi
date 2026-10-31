@@ -13,6 +13,9 @@ ItemDelegate {
     property bool playLoading: false
     property bool playing: false
     readonly property bool showPlayingState: row.playing && !row.playLoading
+    readonly property bool activatable: row.entry !== null
+                                        && (row.entry.kind === "folder"
+                                            || row.entry.playable === true)
 
     property int thumbnailSlotWidth: 36
     property int thumbnailSlotHeight: 24
@@ -49,10 +52,10 @@ ItemDelegate {
     function activate(point) {
         if (!row.backend || !row.entry)
             return
-        if (row.entry.playable === true)
-            row.playRequested(row.entry.id, point)
-        else
+        if (row.entry.kind === "folder")
             row.activateRequested(row.entry.id)
+        else if (row.entry.playable === true)
+            row.playRequested(row.entry.id, point)
     }
 
     function pointerOver(item, x, y) {
@@ -68,8 +71,7 @@ ItemDelegate {
         z: 1
         acceptedButtons: Qt.LeftButton
         hoverEnabled: true
-        cursorShape: row.entry && row.entry.playable === true
-                     ? Qt.PointingHandCursor : Qt.ArrowCursor
+        cursorShape: row.activatable ? Qt.PointingHandCursor : Qt.ArrowCursor
         onPressedChanged: row.rowPressed = pressed
         onContainsMouseChanged: row.rowHovered = containsMouse
 

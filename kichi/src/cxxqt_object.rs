@@ -204,11 +204,6 @@ pub mod qobject {
         #[cxx_name = "libraryFolderReady"]
         fn library_folder_ready(self: Pin<&mut Self>);
 
-        /// 资料库条目的父目录已就绪，界面切到文件页并选中目标。
-        #[qsignal]
-        #[cxx_name = "libraryLocationReady"]
-        fn library_location_ready(self: Pin<&mut Self>, target_id: QString);
-
         #[qinvokable]
         #[cxx_name = "login"]
         fn login(
@@ -321,7 +316,7 @@ pub mod qobject {
         #[cxx_name = "refreshLibrary"]
         fn refresh_library(self: Pin<&mut Self>, kind: QString);
 
-        /// 从资料库打开文件夹，或跳到文件 / 文件夹所在位置。
+        /// 从资料库打开文件夹；普通文件与可播放文件不使用这个入口。
         #[qinvokable]
         #[cxx_name = "openLibraryEntry"]
         fn open_library_entry(self: Pin<&mut Self>, id: QString);
@@ -747,7 +742,7 @@ pub struct KichiRust {
     pub(crate) library_rows: QVariantList,
     /// 当前模型对应的资料库页面键值
     pub(crate) library_kind: QString,
-    /// 当前资料库条目（播放查找、缩略图与打开位置共用）
+    /// 当前资料库条目（播放查找、缩略图与文件夹打开共用）
     pub(crate) library_entries: Vec<kichi_core::LibraryEntry>,
     pub(crate) library_loading: bool,
     pub(crate) library_loaded: bool,

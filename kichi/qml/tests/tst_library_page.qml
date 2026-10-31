@@ -4,7 +4,7 @@ import ".."
 
 // 资料库三页共用的表格骨架。
 // 三个数据源分支只替换后端的 libraryRows，页面本身必须能正确刷新、空态、
-// 选中与打开文件夹，否则单独实现某一条查询时很难定位问题。
+// 选中、直接打开与播放，否则单独实现某一条查询时很难定位问题。
 TestCase {
     name: "LibraryPage"
     when: windowShown
@@ -96,11 +96,11 @@ TestCase {
         page = null
     }
 
-    function row(id, playable) {
+    function row(id, playable, kind) {
         return {
             id: id,
             name: id + ".mkv",
-            kind: "file",
+            kind: kind || "file",
             sizeText: "1.0 GB",
             modifiedText: "2026-10-30 12:00",
             createdText: "2026-10-29 12:00",
@@ -135,7 +135,7 @@ TestCase {
     }
 
     function test_rows_use_backend_order_and_selection() {
-        publish([row("new", false), row("old", false)], true)
+        publish([row("new", false, "folder"), row("old", false, "folder")], true)
         var list = findChild(page, "libraryList")
         verify(list !== null)
         compare(list.count, 2)
@@ -154,6 +154,38 @@ TestCase {
         list.currentIndex = 0
         page.activateCurrent()
         compare(backend.playedId, "movie")
+    }
+
+    function test_double_click_playable_row_requests_play_without_runtime_error() {
+        publish([row("movie", true)], true)
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+        mouseDoubleClickSequence(item, 30, 20)
+        tryCompare(backend, "playedId", "movie")
+    }
+
+    function test_plain_file_double_click_does_not_open_location() {
+        publish([row("document", false)], true)
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+        mouseDoubleClickSequence(item, 30, 20)
+        wait(20)
+        compare(backend.openedId, "")
+        compare(backend.playedId, "")
+    }
+
+    function test_double_click_folder_opens_folder_itself() {
+        publish([row("folder", false, "folder")], true)
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+        mouseDoubleClickSequence(item, 30, 20)
+        tryCompare(backend, "openedId", "folder")
     }
 
     function test_loading_and_error_suppress_empty_hint() {
