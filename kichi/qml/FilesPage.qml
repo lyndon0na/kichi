@@ -12,6 +12,9 @@ Item {
     id: page
 
     property var backend: null
+    // 清晰度菜单全应用只保留一个可见实例：文件页和离线任务页播放时共用它，
+    // 资料库页使用自己的菜单。否则隐藏页面也会响应同一个 playMenu 信号。
+    property bool playMenuEnabled: true
     // 多选状态（纯逻辑在 FileSelection.qml）
     FileSelection {
         id: selection
@@ -582,6 +585,6 @@ Item {
     // 锚点由上面的点击处直接赋值（窗口坐标），这里不要再写 anchorPoint 绑定
     FilesPagePlayMenu {
         id: playMenu
-        backend: page.backend
+        backend: page.playMenuEnabled ? page.backend : null
     }
 }

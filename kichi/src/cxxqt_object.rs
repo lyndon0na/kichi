@@ -204,6 +204,11 @@ pub mod qobject {
         #[cxx_name = "libraryFolderReady"]
         fn library_folder_ready(self: Pin<&mut Self>);
 
+        /// 资料库右键定位成功后切到文件页，并在目标父目录中选中条目。
+        #[qsignal]
+        #[cxx_name = "libraryLocationReady"]
+        fn library_location_ready(self: Pin<&mut Self>, target_id: QString);
+
         #[qinvokable]
         #[cxx_name = "login"]
         fn login(
@@ -320,6 +325,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "openLibraryEntry"]
         fn open_library_entry(self: Pin<&mut Self>, id: QString);
+
+        /// 从资料库跳到文件页，加载目标父目录并选中文件或文件夹。
+        #[qinvokable]
+        #[cxx_name = "revealLibraryEntry"]
+        fn reveal_library_entry(self: Pin<&mut Self>, id: QString) -> bool;
 
         /// 创建一个可包含多个文件 / 文件夹的分享。
         #[qinvokable]
@@ -747,6 +757,8 @@ pub struct KichiRust {
     pub(crate) library_loading: bool,
     pub(crate) library_loaded: bool,
     pub(crate) library_error: QString,
+    /// 同一资料库页最近一次请求开始 / 成功的时刻：自动与手动刷新共用短冷却
+    pub(crate) library_refresh_at: Option<std::time::Instant>,
     /// 集合真正替换时 +1
     pub(crate) library_revision: i32,
     /// 资料库请求代数：退出登录 / 切页后旧结果作废
@@ -953,6 +965,7 @@ impl Default for KichiRust {
             library_loading: false,
             library_loaded: false,
             library_error: QString::default(),
+            library_refresh_at: None,
             library_revision: 0,
             library_epoch: 0,
             share_action_running: false,

@@ -1,6 +1,7 @@
-//! 资料库三页共用的状态、刷新与文件夹打开。
+//! 资料库三页共用的状态、刷新、文件夹打开与文件页定位。
 
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
@@ -10,6 +11,9 @@ use super::actions::run_in_background;
 use super::files::{Crumb, ROOT_NAME};
 use super::qobject;
 use super::QVariantList;
+
+/// 同一资料库页的自动 / 手动刷新短冷却，与分享、离线任务页保持一致。
+const REFRESH_COOLDOWN: Duration = Duration::from_secs(3);
 
 #[path = "library_view.rs"]
 mod library_view;
@@ -22,17 +26,33 @@ impl qobject::Kichi {
             self.as_mut().set_message("未知的资料库页面");
             return;
         };
+        let now = Instant::now();
         let session = self.backend.session.clone();
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
+            let current_kind = rust.library_kind.to_string();
+            if !should_start_refresh(
+                &current_kind,
+                kind.key(),
+                rust.library_loading,
+                rust.library_refresh_at,
+                now,
+            ) {
+                return;
+            }
+            let switching = current_kind != kind.key();
+            if switching {
+                rust.library_rows = QVariantList::default();
+                rust.library_entries.clear();
+                rust.library_loaded = false;
+                // 新页面先回到顶部；同一页刷新则保留列表和当前行。
+                rust.library_revision = rust.library_revision.wrapping_add(1);
+            }
             rust.library_epoch = rust.library_epoch.wrapping_add(1);
             rust.library_kind = QString::from(kind.key());
-            rust.library_rows = QVariantList::default();
-            rust.library_entries.clear();
             rust.library_loading = true;
-            rust.library_loaded = false;
+            rust.library_refresh_at = Some(now);
             rust.library_error = QString::default();
-            rust.library_revision = rust.library_revision.wrapping_add(1);
             rust.library_epoch
         };
         self.as_mut().notify();
@@ -53,6 +73,7 @@ impl qobject::Kichi {
                             rust.library_loading = false;
                             rust.library_loaded = true;
                             rust.library_error = QString::default();
+                            rust.library_refresh_at = Some(Instant::now());
                             rust.library_revision = rust.library_revision.wrapping_add(1);
                         }
                         qichi.as_mut().notify();
@@ -64,6 +85,7 @@ impl qobject::Kichi {
                             rust.library_loading = false;
                             rust.library_loaded = false;
                             rust.library_error = QString::from(text.as_str());
+                            rust.library_refresh_at = Some(Instant::now());
                         }
                         qichi.as_mut().on_failure(err);
                     }
@@ -83,6 +105,7 @@ impl qobject::Kichi {
             rust.library_loading = false;
             rust.library_loaded = false;
             rust.library_error = QString::default();
+            rust.library_refresh_at = None;
             rust.library_revision = rust.library_revision.wrapping_add(1);
         }
         self.as_mut().notify();
@@ -170,5 +193,157 @@ impl qobject::Kichi {
                 }
             },
         );
+    }
+
+    /// 从资料库跳到文件页，加载目标所在父目录并在列表中选中它。
+    ///
+    /// 文件夹本人不进入；右键「打开文件夹」仍走 [`Self::open_library_entry`]。
+    pub fn reveal_library_entry(mut self: Pin<&mut Self>, id: QString) -> bool {
+        if self.listing {
+            self.as_mut().set_message("文件列表正在加载，请稍后再定位");
+            return false;
+        }
+        let target_id = id.to_string();
+        let target = self
+            .library_entries
+            .iter()
+            .map(|entry| &entry.entry)
+            .find(|entry| entry.id == target_id)
+            .map(|entry| (entry.kind, entry.name.clone()));
+        let Some((expected_kind, target_name)) = target else {
+            self.as_mut()
+                .set_message("该条目已不在资料库中，请刷新后重试");
+            return false;
+        };
+
+        self.as_mut().exit_search();
+        let session = self.backend.session.clone();
+        let previous_crumbs = self.crumbs.clone();
+        let epoch = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.listing = true;
+            rust.task_folder_loading_id = QString::from(target_id.as_str());
+            rust.refresh_pending = false;
+            rust.list_epoch = rust.list_epoch.wrapping_add(1);
+            rust.list_epoch
+        };
+        self.as_mut()
+            .set_message(&format!("正在定位「{target_name}」……"));
+
+        let target_for_work = target_id.clone();
+        let target_for_result = target_id.clone();
+        run_in_background(
+            move || {
+                let (_name, parent_id) = session.parent_of(&target_for_work)?;
+                let (trail, list_parent) = if parent_id.trim().is_empty() {
+                    (Vec::new(), None)
+                } else {
+                    (session.folder_trail(&parent_id)?, Some(parent_id))
+                };
+                let entries = session.list_dir(list_parent.as_deref())?;
+                let found = entries
+                    .iter()
+                    .any(|entry| entry.id == target_for_work && entry.kind == expected_kind);
+                if !found {
+                    return Err(crate::session::Failure::Other(
+                        "目标条目不在所在目录中，可能已被移动或删除".to_owned(),
+                    ));
+                }
+                Ok((trail, entries))
+            },
+            move |mut qichi, result| {
+                if qichi.as_ref().rust().list_epoch != epoch {
+                    {
+                        let mut rust = qichi.as_mut().rust_mut();
+                        rust.task_folder_loading_id = QString::default();
+                    }
+                    qichi.as_mut().notify();
+                    return;
+                }
+                match result {
+                    Ok((trail, entries)) => {
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.task_folder_loading_id = QString::default();
+                            rust.crumb_backup = None;
+                            rust.crumbs = vec![Crumb {
+                                id: String::new(),
+                                name: ROOT_NAME.to_owned(),
+                            }];
+                            rust.crumbs
+                                .extend(trail.into_iter().map(|(id, name)| Crumb { id, name }));
+                        }
+                        qichi.as_mut().sync_breadcrumb();
+                        qichi.as_mut().clear_status_message();
+                        qichi.as_mut().show_entries(entries);
+                        qichi
+                            .as_mut()
+                            .library_location_ready(QString::from(target_for_result.as_str()));
+                    }
+                    Err(err) => {
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.listing = false;
+                            rust.task_folder_loading_id = QString::default();
+                            rust.crumbs = previous_crumbs;
+                        }
+                        qichi.as_mut().on_failure(err);
+                    }
+                }
+            },
+        );
+        true
+    }
+}
+
+/// 同一页才受冷却和单飞限制；切到另一个资料库集合必须立即换数据。
+fn should_start_refresh(
+    current_kind: &str,
+    wanted_kind: &str,
+    loading: bool,
+    last_refresh: Option<Instant>,
+    now: Instant,
+) -> bool {
+    if current_kind != wanted_kind {
+        return true;
+    }
+    !loading
+        && last_refresh.is_none_or(|last| now.saturating_duration_since(last) >= REFRESH_COOLDOWN)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switching_library_kind_ignores_cooldown_and_inflight_guard() {
+        let now = Instant::now();
+        assert!(should_start_refresh(
+            "recent-saved",
+            "starred",
+            true,
+            Some(now),
+            now
+        ));
+    }
+
+    #[test]
+    fn same_library_kind_coalesces_inflight_and_cooldown() {
+        let now = Instant::now();
+        assert!(!should_start_refresh("starred", "starred", true, None, now));
+        assert!(!should_start_refresh(
+            "starred",
+            "starred",
+            false,
+            Some(now - Duration::from_millis(2999)),
+            now
+        ));
+        assert!(should_start_refresh(
+            "starred",
+            "starred",
+            false,
+            Some(now - REFRESH_COOLDOWN),
+            now
+        ));
     }
 }

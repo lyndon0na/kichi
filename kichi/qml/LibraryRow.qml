@@ -34,6 +34,8 @@ ItemDelegate {
 
     signal activateRequested(string id)
     signal playRequested(string id, point position)
+    signal contextMenu(point position)
+    signal selectRequested(int index)
 
     KTheme { id: theme }
 
@@ -69,17 +71,17 @@ ItemDelegate {
 
         anchors.fill: parent
         z: 1
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
         cursorShape: row.activatable ? Qt.PointingHandCursor : Qt.ArrowCursor
         onPressedChanged: row.rowPressed = pressed
         onContainsMouseChanged: row.rowHovered = containsMouse
 
-        onClicked: {
-            if (row.listView) {
-                row.listView.currentIndex = row.rowIndex
-                row.listView.forceActiveFocus()
-            }
+        onClicked: function (mouse) {
+            if (row.listView)
+                row.selectRequested(row.rowIndex)
+            if (mouse.button === Qt.RightButton && row.entry)
+                row.contextMenu(Qt.point(mouse.x, mouse.y))
         }
 
         onDoubleClicked: function (mouse) {

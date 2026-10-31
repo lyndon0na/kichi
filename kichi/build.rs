@@ -21,6 +21,8 @@ const QML_FILES: &[&str] = &[
     "qml/LibraryPage.qml",
     "qml/LibraryRow.qml",
     "qml/LibraryTableHeader.qml",
+    "qml/LibraryContextMenu.qml",
+    "qml/LibraryHeaderControls.qml",
     "qml/RecentSavedPage.qml",
     "qml/PlaybackHistoryPage.qml",
     "qml/StarredPage.qml",

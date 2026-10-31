@@ -142,6 +142,12 @@ ApplicationWindow {
         function onLibraryFolderReady() {
             root.currentPage = pageIds.files
         }
+
+        // 资料库右键定位：父目录已就绪后切到文件页并选中目标。
+        function onLibraryLocationReady(targetId) {
+            root.currentPage = pageIds.files
+            filesPage.revealEntryById(targetId)
+        }
     }
 
     property int lastTrayShow: 0
@@ -261,6 +267,20 @@ ApplicationWindow {
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         target: trashPage
+                    }
+
+                    LibraryHeaderControls {
+                        id: libraryHeaderControls
+
+                        visible: pageIds.libraryPages.indexOf(root.currentPage) >= 0
+                        target: root.currentPage === pageIds.recentSaved
+                                ? recentSavedPage
+                                : root.currentPage === pageIds.playbackHistory
+                                  ? playbackHistoryPage : starredPage
+                        anchors.left: pageTitleLabel.right
+                        anchors.leftMargin: theme.gapSm
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
                     }
 
                     RowLayout {
@@ -540,6 +560,8 @@ ApplicationWindow {
                     FilesPage {
                         id: filesPage
                         backend: backend
+                        playMenuEnabled: root.currentPage === pageIds.files
+                                         || root.currentPage === pageIds.tasks
                     }
 
                     SharesPage {
@@ -581,15 +603,21 @@ ApplicationWindow {
                     }
 
                     RecentSavedPage {
+                        id: recentSavedPage
                         backend: backend
+                        active: root.currentPage === pageIds.recentSaved
                     }
 
                     PlaybackHistoryPage {
+                        id: playbackHistoryPage
                         backend: backend
+                        active: root.currentPage === pageIds.playbackHistory
                     }
 
                     StarredPage {
+                        id: starredPage
                         backend: backend
+                        active: root.currentPage === pageIds.starred
                     }
                 }
             }

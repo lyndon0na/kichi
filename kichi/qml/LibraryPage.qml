@@ -8,10 +8,13 @@ Item {
     id: page
 
     property var backend: null
+    property bool active: false
     property string kind: ""
     property string primaryHeader: ""
     property string secondaryHeader: ""
     property string emptyText: ""
+    property alias contextMenu: libraryMenu.menu
+    property alias blankContextMenu: libraryMenu.blankMenu
 
     readonly property bool activeCollection: page.backend !== null
                                             && page.backend.libraryKind === page.kind
@@ -20,6 +23,7 @@ Item {
     readonly property bool loaded: page.activeCollection && page.backend.libraryLoaded
     readonly property string errorText: page.activeCollection ? page.backend.libraryError : ""
     property int lastRevision: -1
+    property string currentEntryId: ""
 
     FileListDensity {
         id: density
@@ -45,7 +49,7 @@ Item {
     }
 
     function refresh() {
-        if (!page.backend || page.kind.length === 0)
+        if (!page.backend || page.kind.length === 0 || page.loading)
             return
         page.backend.refreshLibrary(page.kind)
     }
@@ -73,9 +77,63 @@ Item {
         }
     }
 
-    onVisibleChanged: {
-        if (!visible)
+    function selectIndex(index, focus) {
+        if (entries.length === 0) {
+            libraryList.currentIndex = -1
+            page.currentEntryId = ""
             return
+        }
+        const next = Math.max(0, Math.min(index, entries.length - 1))
+        libraryList.currentIndex = next
+        const entry = entries[next]
+        page.currentEntryId = entry && entry.id ? String(entry.id) : ""
+        if (focus !== false)
+            libraryList.forceActiveFocus()
+    }
+
+    function indexOfCurrentEntry() {
+        if (page.currentEntryId.length === 0)
+            return -1
+        for (let i = 0; i < page.entries.length; ++i) {
+            const entry = page.entries[i]
+            if (entry && String(entry.id) === page.currentEntryId)
+                return i
+        }
+        return -1
+    }
+
+    function openEntryMenu(entry, point) {
+        if (!page.backend || !entry)
+            return
+        libraryMenu.openFor(entry, point)
+    }
+
+    function openBlankMenu(point) {
+        if (!page.backend)
+            return
+        libraryMenu.openBlankAt(point)
+    }
+
+    function handleKey(event) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            page.activateCurrent()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Up) {
+            page.selectIndex(libraryList.currentIndex - 1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Down) {
+            page.selectIndex(libraryList.currentIndex + 1)
+            event.accepted = true
+        }
+    }
+
+    onActiveChanged: {
+        if (!active) {
+            playMenu.close()
+            page.contextMenu.close()
+            page.blankContextMenu.close()
+            return
+        }
         page.refresh()
         Qt.callLater(function () { libraryList.forceActiveFocus() })
     }
@@ -127,15 +185,25 @@ Item {
                     clip: true
                     spacing: 0
                     model: page.entries
-                    currentIndex: page.entries.length > 0 ? 0 : -1
+                    currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: KScrollBar {}
                     focus: true
                     highlightFollowsCurrentItem: false
                     Keys.onPressed: function (event) {
-                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                            page.activateCurrent()
-                            event.accepted = true
+                        page.handleKey(event)
+                    }
+
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: function (point) {
+                            if (!page.backend)
+                                return
+                            const x = point.position.x
+                            const y = point.position.y
+                            if (libraryList.indexAt(x, y + libraryList.contentY) >= 0)
+                                return
+                            page.openBlankMenu(libraryList.mapToItem(null, x, y))
                         }
                     }
 
@@ -165,8 +233,15 @@ Item {
                             if (page.backend)
                                 page.backend.openLibraryEntry(id)
                         }
+                        onSelectRequested: function (index) {
+                            page.selectIndex(index)
+                        }
                         onPlayRequested: function (id, point) {
                             page.playEntry(id, row.mapToItem(null, point.x, point.y))
+                        }
+                        onContextMenu: function (point) {
+                            page.openEntryMenu(entry,
+                                               row.mapToItem(null, point.x, point.y))
                         }
                     }
                 }
@@ -174,7 +249,7 @@ Item {
 
             BusyIndicator {
                 anchors.centerIn: parent
-                visible: page.loading
+                visible: page.loading && page.entries.length === 0
                 running: visible
                 width: 28
                 height: 28
@@ -194,10 +269,11 @@ Item {
             }
 
             Label {
+                objectName: "libraryFailureHint"
                 anchors.centerIn: parent
                 width: Math.min(parent.width - 40, 420)
                 visible: page.activeCollection && !page.loaded && !page.loading
-                         && page.errorText.length > 0
+                         && page.errorText.length > 0 && page.entries.length === 0
                 text: qsTr("资料库读取失败\n请稍后重试")
                 horizontalAlignment: Text.AlignHCenter
                 color: theme.textMuted
@@ -208,6 +284,37 @@ Item {
 
     FilesPagePlayMenu {
         id: playMenu
+        objectName: "libraryPlayMenu"
+        backend: page.active ? page.backend : null
+    }
+
+    LibraryContextMenu {
+        id: libraryMenu
+        backend: page.backend
+        onPlayRequested: function (id, point) {
+            page.playEntry(id, point)
+        }
+        onOpenFolderRequested: function (id) {
+            if (page.backend)
+                page.backend.openLibraryEntry(id)
+        }
+        onRevealLocationRequested: function (id) {
+            if (page.backend)
+                page.backend.revealLibraryEntry(id)
+        }
+        onDownloadRequested: function (id) {
+            if (page.backend)
+                page.backend.downloadEntry(id)
+        }
+        onShareRequested: function (entry) {
+            if (entry)
+                shareDialog.openFor(entry, [entry.id])
+        }
+        onRefreshRequested: page.refresh()
+    }
+
+    ShareDialog {
+        id: shareDialog
         backend: page.backend
     }
 
@@ -220,7 +327,18 @@ Item {
             if (page.lastRevision === page.backend.libraryRevision)
                 return
             page.lastRevision = page.backend.libraryRevision
-            libraryList.currentIndex = page.entries.length > 0 ? 0 : -1
+            if (page.entries.length === 0) {
+                libraryList.currentIndex = -1
+                page.currentEntryId = ""
+            } else {
+                let nextIndex = page.indexOfCurrentEntry()
+                if (nextIndex < 0) {
+                    nextIndex = Math.max(0, Math.min(
+                                             libraryList.currentIndex,
+                                             page.entries.length - 1))
+                }
+                page.selectIndex(nextIndex, false)
+            }
             if (page.visible)
                 Qt.callLater(function () { libraryList.forceActiveFocus() })
         }
