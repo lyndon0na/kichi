@@ -36,6 +36,8 @@ const FIRST_SIGNAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// `observe_property` 的请求号：回包 `request_id` 用它区分是哪个属性的结果。
 const VO_CONF_REQ: u64 = 1;
 const AUDIO_REQ: u64 = 2;
+const TIME_POS_REQ: u64 = 3;
+const DURATION_REQ: u64 = 4;
 /// `sub-add` 的请求号起点；第 N 条字幕用 `SUB_ADD_REQ_BASE + N`。
 pub const SUB_ADD_REQ_BASE: u64 = 1000;
 
@@ -69,6 +71,13 @@ pub enum StartOutcome {
     Cancelled,
 }
 
+/// 开播后尝试读取一条 mpv 消息；超时与断流分开，避免播放循环空转。
+pub enum PlaybackRead {
+    Message(Value),
+    Timeout,
+    Closed,
+}
+
 /// `<temp_dir>/kichi-play/<pid>-<毫秒>-<计数器>.sock`。
 ///
 /// 与旧清单共用目录；每次播放独立文件名，绝不复用（mpv 自己会以 0600 建它）。
@@ -100,6 +109,10 @@ pub struct Connection {
     writer: UnixStream,
     /// 最近一次从 mpv 日志里抓到的 HTTP 失败原因（`403 Forbidden` 之类）
     pub last_http_error: Option<String>,
+    /// 就绪前已经看到的播放进度；`wait_playing` 用它初始化，避免漏掉
+    /// `duration` 这种只变化一次的属性。
+    pub(crate) latest_time_pos: Option<f64>,
+    pub(crate) latest_duration: Option<f64>,
 }
 
 impl Connection {
@@ -111,10 +124,12 @@ impl Connection {
         self.writer.flush()
     }
 
-    /// 订阅「窗口已创建」与「音频参数」两个属性。
+    /// 订阅窗口 / 音频就绪信号与播放进度。
     pub fn observe_start(&mut self) -> std::io::Result<()> {
         self.send(&json!({"command": ["observe_property", VO_CONF_REQ, "vo-configured"]}))?;
-        self.send(&json!({"command": ["observe_property", AUDIO_REQ, "audio-params"]}))
+        self.send(&json!({"command": ["observe_property", AUDIO_REQ, "audio-params"]}))?;
+        self.send(&json!({"command": ["observe_property", TIME_POS_REQ, "time-pos"]}))?;
+        self.send(&json!({"command": ["observe_property", DURATION_REQ, "duration"]}))
     }
 
     /// 让 mpv 在出错时把日志经 IPC 送过来：HTTP 状态码只在日志里。
@@ -182,6 +197,7 @@ impl Connection {
                 continue;
             };
             line.clear();
+            self.remember_playback_property(&value);
             let Some(request) = value.get("request_id").and_then(Value::as_u64) else {
                 continue;
             };
@@ -205,9 +221,54 @@ impl Connection {
         self.send(&json!({"command": ["set_property", "idle", false]}))
     }
 
+    /// 精确跳到指定秒数。失败由调用方只记日志，不影响播放。
+    pub fn seek_absolute(&mut self, seconds: u64) -> std::io::Result<()> {
+        self.send(&json!({
+            "command": ["seek", seconds as f64, "absolute+exact"]
+        }))
+    }
+
     /// 让 mpv 退出（取消 / kichi 退出）。
     pub fn quit(&mut self) -> std::io::Result<()> {
         self.send(&json!({"command": ["quit"]}))
+    }
+
+    /// 记住 `time-pos` / `duration` 的最新有效值。
+    pub(crate) fn remember_playback_property(&mut self, value: &Value) {
+        if value.get("event").and_then(Value::as_str) != Some("property-change") {
+            return;
+        }
+        let Some(seconds) = finite_number(value.get("data")) else {
+            return;
+        };
+        match value
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "time-pos" if seconds >= 0.0 => self.latest_time_pos = Some(seconds),
+            "duration" if seconds > 0.0 => self.latest_duration = Some(seconds),
+            _ => {}
+        }
+    }
+
+    /// 开播后持续读取属性变化。坏 JSON 当成一次读超时，下一轮继续。
+    pub fn read_playback_event(&mut self) -> std::io::Result<PlaybackRead> {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Ok(0) => Ok(PlaybackRead::Closed),
+            Ok(_) => {
+                let value = serde_json::from_str::<Value>(line.trim()).unwrap_or(Value::Null);
+                if value.is_null() {
+                    Ok(PlaybackRead::Timeout)
+                } else {
+                    self.remember_playback_property(&value);
+                    Ok(PlaybackRead::Message(value))
+                }
+            }
+            Err(err) if is_timeout(&err) => Ok(PlaybackRead::Timeout),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -240,6 +301,8 @@ pub fn try_connect(socket: &Path) -> Option<Connection> {
         reader,
         writer: stream,
         last_http_error: None,
+        latest_time_pos: None,
+        latest_duration: None,
     })
 }
 
@@ -277,6 +340,7 @@ pub fn watch(conn: &mut Connection, cancel: &Cancel) -> StartOutcome {
         let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
         };
+        conn.remember_playback_property(&value);
         signals += 1;
         // HTTP 层的真实原因（403 / 404 / 超时）只出现在 log-message 里：
         // 记下来给用户看，否则只能笼统说「无法播放」
@@ -287,6 +351,11 @@ pub fn watch(conn: &mut Connection, cancel: &Cancel) -> StartOutcome {
             return outcome;
         }
     }
+}
+
+fn finite_number(value: Option<&Value>) -> Option<f64> {
+    let number = value?.as_f64()?;
+    number.is_finite().then_some(number)
 }
 
 /// mpv 的 log-message 里有没有 HTTP 层的失败（`http: HTTP error 403 Forbidden`）。
@@ -510,6 +579,44 @@ mod tests {
             Some(Duration::from_millis(200)),
         );
         assert_eq!(outcome, StartOutcome::Ready);
+    }
+
+    #[test]
+    fn progress_properties_are_remembered_and_seek_is_sent() {
+        let socket = temp_socket("progress");
+        let server = fake_mpv(
+            &socket,
+            &[
+                r#"{"event":"property-change","name":"duration","data":120.5}"#,
+                r#"{"event":"property-change","name":"time-pos","data":42.25}"#,
+                r#"{"event":"property-change","name":"vo-configured","data":true}"#,
+            ],
+            Some(Duration::from_millis(250)),
+        );
+        let cancel = Cancel::default();
+        let mut conn = connect(&socket, &cancel).expect("连上假 mpv");
+        conn.observe_start().expect("发 observe");
+        conn.seek_absolute(40).expect("发 seek");
+        conn.loadfile("https://cdn.invalid/file?sign=SECRET")
+            .expect("发 loadfile");
+        assert_eq!(watch(&mut conn, &cancel), StartOutcome::Ready);
+        assert_eq!(conn.latest_duration, Some(120.5));
+        assert_eq!(conn.latest_time_pos, Some(42.25));
+        drop(conn);
+        let received = server.join().expect("假 mpv 线程结束");
+        let _ = std::fs::remove_file(&socket);
+        assert!(
+            received
+                .iter()
+                .any(|line| line.contains(r#""seek",40.0,"absolute+exact""#)),
+            "应当发送精确 seek：{received:?}"
+        );
+        assert!(
+            received
+                .iter()
+                .any(|line| line.contains(r#""duration""#) && line.contains("observe_property")),
+            "应当观察 duration：{received:?}"
+        );
     }
 
     #[test]

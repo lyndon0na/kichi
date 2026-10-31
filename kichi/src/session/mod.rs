@@ -13,6 +13,7 @@ pub(crate) mod limits;
 pub mod media;
 pub mod partials;
 pub mod paths;
+mod playback_history;
 pub mod search;
 mod shards;
 mod shares;

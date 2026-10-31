@@ -41,6 +41,8 @@ pub const PATH_TASKS: &str = "/drive/v1/tasks";
 pub const PATH_SHARE: &str = "/drive/v1/share";
 /// 分享列表
 pub const PATH_SHARE_LIST: &str = "/drive/v1/share/list";
+/// 账号事件（播放历史 / 上报播放进度）
+pub const PATH_EVENTS: &str = "/drive/v1/events";
 
 /// `KICHI_*` 环境变量名。
 pub mod env_key {
@@ -156,6 +158,9 @@ impl Config {
     pub fn share_list_url(&self) -> String {
         join(&self.drive_base, PATH_SHARE_LIST)
     }
+    pub fn events_url(&self) -> String {
+        join(&self.drive_base, PATH_EVENTS)
+    }
     /// 分享写操作（如 `batchDelete`）拼在 `/drive/v1/share:<action>`。
     pub fn share_action_url(&self, action: &str) -> String {
         format!("{}:{action}", self.share_url())
@@ -205,6 +210,10 @@ mod tests {
         assert_eq!(
             cfg.share_action_url("batchDelete"),
             "https://api-drive.mypikpak.com/drive/v1/share:batchDelete"
+        );
+        assert_eq!(
+            cfg.events_url(),
+            "https://api-drive.mypikpak.com/drive/v1/events"
         );
     }
 

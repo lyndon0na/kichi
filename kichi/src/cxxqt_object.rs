@@ -586,7 +586,8 @@ mod files;
 mod folder_picker;
 mod notifications;
 mod play;
-mod play_subtitles;
+mod play_history;
+mod play_prepare;
 mod queue;
 mod queue_collect;
 mod queue_worker;
@@ -728,6 +729,8 @@ pub struct KichiRust {
     pub(crate) play_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
     /// 播放请求代数：退出登录 / 重登后旧结果作废
     pub(crate) play_epoch: u64,
+    /// 官方播放历史的上报队列（同一文件串行，旧请求不会覆盖新进度）。
+    pub(crate) play_progress: play_history::ProgressReporter,
     /// 点播放时快照的字幕计划（菜单开着时目录刷新不影响本次播放）
     pub(crate) play_subtitle_plan: crate::session::subtitles::SubtitlePlan,
     /// 持久化设置（启动时读一次，改动即落盘）
@@ -897,6 +900,7 @@ impl Default for KichiRust {
             play_notice: QString::default(),
             play_cancel: None,
             play_epoch: 0,
+            play_progress: play_history::ProgressReporter::default(),
             play_subtitle_plan: crate::session::subtitles::SubtitlePlan::None,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),

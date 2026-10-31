@@ -19,12 +19,13 @@
 
 pub mod ipc;
 mod launch;
+mod progress;
 pub mod session;
 pub mod subtitles;
 
 use kichi_core::PlayOption;
 
-pub use session::{shutdown_all, start, StartEvent};
+pub use session::{shutdown_all, start, PlaybackExtras, StartEvent};
 
 /// 默认播放器命令（flatpak 包名，2026-10-26 实测可用）。
 pub const DEFAULT_PLAYER: &str = "flatpak run io.mpv.Mpv";

@@ -23,7 +23,7 @@ use super::actions::{enqueue_ui, run_in_background};
 use super::qobject;
 use super::QVariantList;
 use crate::player::subtitles::{LateSubtitles, SubtitleAssets};
-use crate::player::{self, mask_url, PlayerConfig, StartEvent};
+use crate::player::{self, mask_url, PlaybackExtras, PlayerConfig, StartEvent};
 use crate::session::download::Cancel;
 use crate::session::subtitles::SubtitlePlan;
 
@@ -60,7 +60,7 @@ impl qobject::Kichi {
         let plan = {
             let this = self.as_ref();
             let rust = this.rust();
-            super::play_subtitles::plan_for(&id, &rust.entries, &rust.search_index)
+            super::play_prepare::plan_for(&id, &rust.entries, &rust.search_index)
         };
         self.as_mut().rust_mut().play_subtitle_plan = plan;
         // 设置里指定了档位：等同用户在菜单里点了那一项，不弹菜单
@@ -157,6 +157,7 @@ impl qobject::Kichi {
             settings.player_command_override(),
             settings.player_args_override(),
         );
+        let wants_history = config.is_mpv();
         let plan = {
             let mut rust = self.as_mut().rust_mut();
             std::mem::take(&mut rust.play_subtitle_plan)
@@ -176,7 +177,16 @@ impl qobject::Kichi {
         run_in_background(
             {
                 let cancel = cancel.clone();
-                move || super::play_subtitles::run_work(session, id, cancel, audit_flagged, plan)
+                move || {
+                    super::play_prepare::run_work(
+                        session,
+                        id,
+                        cancel,
+                        audit_flagged,
+                        plan,
+                        wants_history,
+                    )
+                }
             },
             move |mut qichi, result| {
                 if qichi.as_ref().rust().play_epoch != epoch {
@@ -187,11 +197,9 @@ impl qobject::Kichi {
                     return;
                 }
                 match result {
-                    Ok((options, prep)) => {
-                        qichi
-                            .as_mut()
-                            .start_tier(&options, tier, &playback_id, &name, epoch, prep)
-                    }
+                    Ok(work) => qichi
+                        .as_mut()
+                        .start_tier(work, tier, &playback_id, &name, epoch),
                     Err(err) => match err {
                         // 登录失效 / 人机验证 / 限速必须全局可见：走统一出口，
                         // 但如果因此切走了登录页，提示条不该继续挂着
@@ -216,18 +224,18 @@ impl qobject::Kichi {
     /// `kichi_core::types::resolve`）。
     fn start_tier(
         mut self: Pin<&mut Self>,
-        all: &[PlayOption],
+        work: super::play_prepare::PlayWork,
         tier: Tier,
         id: &str,
         name: &str,
         epoch: u64,
-        prep: crate::session::subtitles::SubtitlePrep,
     ) {
+        let all = &work.options;
         let crate::session::subtitles::SubtitlePrep {
             assets: subtitles,
             note: subtitle_note,
             late,
-        } = prep;
+        } = work.subtitles;
         if all.is_empty() {
             self.as_mut()
                 .fail_play_loading(&format!("「{name}」没有可播放的链接"));
@@ -246,12 +254,21 @@ impl qobject::Kichi {
         let title = player::title_for(&option, name);
         // 回退过就在提示条里说清楚实际播的是哪一档，别让用户以为自己看到的是那档
         // （ADR 0003：不静默替换；说明走提示条，底栏保持页面上下文）
-        let notice = super::play_subtitles::combine_notes(
+        let notice = super::play_prepare::combine_notes(
             note.map(|note| format!("「{name}」没有{note}，已播放{}", option.label)),
             subtitle_note,
         );
-        self.as_mut()
-            .start_player(&option, id, &title, epoch, notice, subtitles, late);
+        let notice = super::play_prepare::combine_notes(notice, work.history_note);
+        self.as_mut().start_player(
+            &option,
+            id,
+            &title,
+            epoch,
+            notice,
+            subtitles,
+            late,
+            work.resume,
+        );
     }
 
     /// 启动外部播放器（URL 过期时先重取一次）。
@@ -268,6 +285,7 @@ impl qobject::Kichi {
         notice: Option<String>,
         subtitles: Option<SubtitleAssets>,
         late: Option<LateSubtitles>,
+        resume: Option<kichi_core::PlaybackProgress>,
     ) {
         if option.is_expired(None) {
             self.as_mut()
@@ -300,8 +318,11 @@ impl qobject::Kichi {
             &option.url,
             title,
             cancel,
-            subtitles,
-            late,
+            PlaybackExtras {
+                subtitles,
+                late,
+                resume,
+            },
             move |event| {
                 let playback_id = playback_id.clone();
                 let event_notice = event_notice.clone();
@@ -332,7 +353,12 @@ impl qobject::Kichi {
     ) {
         // 已经切到下一次播放：旧会话的失败 / 取消不再打扰当前界面；
         // 但旧播放器真正退出时仍要清掉它自己的「播放中」标记。
-        if self.as_ref().rust().play_epoch != epoch && !matches!(event, StartEvent::Stopped) {
+        if self.as_ref().rust().play_epoch != epoch
+            && !matches!(
+                event,
+                StartEvent::Progress { .. } | StartEvent::Stopped { .. }
+            )
+        {
             return;
         }
         match event {
@@ -342,7 +368,7 @@ impl qobject::Kichi {
                 }
                 self.as_mut().update_active_play_session(epoch, id, true);
                 let notice =
-                    super::play_subtitles::combine_notes(notice, subtitle_note).unwrap_or_default();
+                    super::play_prepare::combine_notes(notice, subtitle_note).unwrap_or_default();
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.play_loading = false;
@@ -356,7 +382,13 @@ impl qobject::Kichi {
                 }
                 self.finish_play();
             }
-            StartEvent::Stopped => {
+            StartEvent::Progress { progress } => {
+                self.as_mut().queue_play_progress(id, epoch, progress);
+            }
+            StartEvent::Stopped { progress } => {
+                if let Some(progress) = progress {
+                    self.as_mut().queue_play_progress(id, epoch, progress);
+                }
                 if self.as_mut().update_active_play_session(epoch, id, false) {
                     self.as_mut().notify();
                 }
@@ -532,7 +564,9 @@ impl qobject::Kichi {
             if let Some(cancel) = rust.play_cancel.take() {
                 cancel.cancel();
             }
-            rust.play_epoch = rust.play_epoch.wrapping_add(1);
+            let reset_epoch = rust.play_epoch.wrapping_add(1);
+            rust.play_epoch = reset_epoch;
+            rust.play_progress.reset(reset_epoch);
             rust.play_menu = QVariantList::default();
             rust.play_title = QString::default();
             rust.play_id.clear();
