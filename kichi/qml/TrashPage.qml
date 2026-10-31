@@ -20,6 +20,7 @@ Item {
     KTheme { id: theme }
 
     readonly property var entries: backend ? backend.trashFiles : []
+    readonly property var trashRows: entryRows.model
     readonly property int selectedCount: selection.count
     readonly property bool busy: backend !== null && (backend.trashLoading || backend.fileActionRunning)
     readonly property bool gridMode: backend !== null
@@ -28,6 +29,11 @@ Item {
     property var scrollByView: ({ "list": 0, "grid": 0 })
     property bool pendingScrollRestore: false
     property real pendingScrollY: 0
+
+    EntryRows {
+        id: entryRows
+        source: page.entries
+    }
 
     function selectedEntry() {
         const ids = selection.idList()
@@ -127,8 +133,12 @@ Item {
             page.rememberScroll()
             return
         }
-        if (backend)
-            backend.refreshTrash()
+        if (backend) {
+            if (typeof backend.ensureTrashFresh === "function")
+                backend.ensureTrashFresh()
+            else
+                backend.refreshTrash()
+        }
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
             page.pendingScrollRestore = true
@@ -185,7 +195,7 @@ Item {
                     visible: !page.gridMode
                     clip: true
                     spacing: 0
-                    model: page.entries
+                    model: page.trashRows
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: KScrollBar {}
                     focus: true
@@ -201,7 +211,6 @@ Item {
                     delegate: TrashRow {
                         id: row
                         width: ListView.view.width - metrics.scrollBarSlot
-                        entry: modelData
                         backend: page.backend
                         rowIndex: index
                         highlighted: !!entry && selection.isSelected(entry.id)
@@ -239,7 +248,7 @@ Item {
 
                 anchors.fill: parent
                 visible: page.gridMode
-                model: page.entries
+                model: page.trashRows
                 density: density
                 metrics: metrics
                 reserveDetail: true
@@ -256,7 +265,6 @@ Item {
 
                         width: trashGrid.itemWidth
                         height: trashGrid.itemHeight
-                        entry: modelData
                         backend: page.backend
                         rowIndex: index
                         activationEnabled: false
@@ -362,7 +370,14 @@ Item {
         }
 
         function onFileActionDone(action, ok) {
-            if (ok && (action === "untrash" || action === "trashDelete"))
+            if (!ok)
+                return
+            if (action === "trash") {
+                if (page.visible && typeof page.backend.ensureTrashFresh === "function")
+                    page.backend.ensureTrashFresh()
+                return
+            }
+            if (action === "untrash" || action === "trashDelete")
                 selection.clear()
         }
     }

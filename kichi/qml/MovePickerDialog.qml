@@ -25,7 +25,7 @@ KDialog {
     property string sourceParentId: ""
     /// 目标路径：根 → 当前目标，元素为 { id, name }
     property var path: []
-    /// 操作失败原因（结果回来才填，弹窗不关）
+    /// 同步校验失败原因；网络失败在窗口关闭后由底栏提示
     property string actionError: ""
 
     property int seenRevision: -1
@@ -128,10 +128,11 @@ KDialog {
         if (!canApply)
             return
         actionError = ""
-        if (mode === "move")
-            backend.moveEntries(sourceIds, targetId, targetLabel)
-        else
-            backend.copyEntries(sourceIds, targetId, targetLabel)
+        const accepted = mode === "move"
+                       ? backend.moveEntries(sourceIds, targetId, targetLabel)
+                       : backend.copyEntries(sourceIds, targetId, targetLabel)
+        if (accepted === true)
+            picker.close()
     }
 
     function subject() {

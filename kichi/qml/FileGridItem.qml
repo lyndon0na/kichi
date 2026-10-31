@@ -10,7 +10,8 @@ ItemDelegate {
     id: card
 
     property var backend: null
-    property var entry: null
+    required property var entry
+    required property int index
     readonly property var gridView: GridView.view
     property int rowIndex: -1
     property bool selected: false

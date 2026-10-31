@@ -346,29 +346,12 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 星标写请求成功后同步搜索视图里的同一批条目。
-    ///
-    /// 文件页随后还会刷新当前目录；搜索结果不是目录模型，必须在这里单独更新，
-    /// 否则星标成功但结果行仍停在旧状态。
-    pub(crate) fn apply_search_starred_change(
-        mut self: Pin<&mut Self>,
-        ids: &[String],
-        starred: bool,
-    ) {
+    /// 文件写入的乐观修改已经直接改过 `entries` / `search_index`，这里只重建
+    /// 搜索结果行和计数。全盘结果与本地筛选共用同一个出口。
+    pub(crate) fn rebuild_search_view_from_state(mut self: Pin<&mut Self>) {
         if !self.search_active {
             return;
         }
-        let wanted: std::collections::HashSet<String> = ids
-            .iter()
-            .map(|id| id.trim())
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if wanted.is_empty() {
-            return;
-        }
-
-        let query = self.search_query.to_string();
         let folder = self
             .crumbs
             .last()
@@ -376,35 +359,7 @@ impl qobject::Kichi {
             .unwrap_or_else(|| ROOT_NAME.to_owned());
         {
             let mut rust = self.as_mut().rust_mut();
-            for hit in rust.search_index.values_mut() {
-                if wanted.contains(&hit.entry.id) {
-                    hit.entry.starred = starred;
-                }
-            }
-
-            let mut rows = QVariantList::default();
-            let displayed = if rust.search_index.is_empty() {
-                // 当前目录的本地筛选不进 search_index；直接从更新后的 entries 重算。
-                let filtered: Vec<FileEntry> = rust
-                    .entries
-                    .iter()
-                    .filter(|entry| kichi_core::search::matches(&entry.name, &query))
-                    .cloned()
-                    .collect();
-                for entry in &filtered {
-                    rows.append(QVariant::from(&current_dir_map(entry, &folder)));
-                }
-                filtered.len()
-            } else {
-                let ordered = ordered_hits(&rust.search_index);
-                for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
-                    rows.append(QVariant::from(&hit_map(hit)));
-                }
-                ordered.len().min(SEARCH_LIST_LIMIT)
-            };
-
-            rust.search_results = rows;
-            rust.search_displayed = displayed;
+            rebuild_visible_search(&mut rust, &folder);
         }
         self.as_mut().notify();
     }
@@ -476,6 +431,38 @@ fn current_dir_map(entry: &FileEntry, folder: &str) -> QVariantMap {
     map.insert_clone(&QString::from("folderText"), &text(folder));
     map.insert_clone(&QString::from("folderId"), &text(""));
     map
+}
+
+/// 搜索视图按当前领域状态重建 QML 行。
+///
+/// 调用方已经改完 `entries` / `search_index`；这里只同步展示计数，
+/// 不改扫描进度和结束状态。
+fn rebuild_visible_search(rust: &mut super::KichiRust, folder: &str) {
+    let query = rust.search_query.to_string();
+    let mut rows = QVariantList::default();
+    if rust.search_index.is_empty() {
+        let filtered: Vec<FileEntry> = rust
+            .entries
+            .iter()
+            .filter(|entry| kichi_core::search::matches(&entry.name, &query))
+            .cloned()
+            .collect();
+        for entry in &filtered {
+            rows.append(QVariant::from(&current_dir_map(entry, folder)));
+        }
+        rust.search_hits = i32::try_from(filtered.len()).unwrap_or(i32::MAX);
+        rust.search_displayed = filtered.len();
+        rust.search_truncated = false;
+    } else {
+        let ordered = ordered_hits(&rust.search_index);
+        for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
+            rows.append(QVariant::from(&hit_map(hit)));
+        }
+        rust.search_hits = i32::try_from(ordered.len()).unwrap_or(i32::MAX);
+        rust.search_displayed = ordered.len().min(SEARCH_LIST_LIMIT);
+        rust.search_truncated = ordered.len() > SEARCH_LIST_LIMIT;
+    }
+    rust.search_results = rows;
 }
 
 /// 一条命中 → QML 小 map：条目字段与目录列表完全一致，外加「所在文件夹」。

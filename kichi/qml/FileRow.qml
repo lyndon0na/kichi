@@ -10,7 +10,8 @@ import QtQuick.Layouts
 ItemDelegate {
     id: row
 
-    property var entry: null
+    required property var entry
+    required property int index
     property var backend: null
     // 列表视图本身。⚠ 只能取在委托根上：`ListView.view` 附加属性只在委托根
     // 有效，写在下层 MouseArea 里永远是 null（子项拿不到），

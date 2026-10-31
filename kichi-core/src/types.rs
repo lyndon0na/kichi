@@ -43,7 +43,7 @@ impl EntryKind {
 }
 
 /// 文件或文件夹（列表项）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     pub id: String,
     pub name: String,
@@ -69,7 +69,7 @@ pub struct FileEntry {
 }
 
 /// 回收站条目：普通文件字段 + 原父目录与删除时间。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrashEntry {
     pub entry: FileEntry,
     /// 删除前所在目录；根目录为空串。仅作原始元数据保留，

@@ -35,7 +35,11 @@ Item {
     readonly property bool showCreatedColumn: width >= 680
 
     onActiveChanged: {
-        if (active)
+        if (!active)
+            return
+        if (page.backend && typeof page.backend.ensureTasksFresh === "function")
+            page.backend.ensureTasksFresh()
+        else
             page.refresh()
     }
 

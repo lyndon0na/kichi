@@ -42,6 +42,7 @@ TestCase {
         property bool starredValue: false
 
         signal changed()
+        signal fileActionDone(string action, bool ok, string message)
         signal thumbnailReady(string id, string path)
         signal shareActionDone(string action, bool ok, string message)
 

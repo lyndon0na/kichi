@@ -8,9 +8,8 @@ import QtQuick.Layouts
 // 顺序与系统标准按钮一致，两套页脚的「最右一个」都是取消）。
 //
 // 为什么不用 `standardButtons`：QQC2 的 Dialog 点在 Ok（AcceptRole）上会自己
-// `close()`，而这两个操作都是异步请求——失败原因回来时对话框已经不可见，
-// 用户只看到「点了确定就消失了」。页脚按钮只发信号，由弹窗自己决定什么时候关：
-// 成功收起，失败停在原地显示原因（见 `FilesPageMenu.qml` 的 onFileActionDone）。
+// `close()`，而这两个操作都是异步请求。页脚按钮只发信号，由弹窗自己决定何时关：
+// 需要等待结果的弹窗可留在原地，乐观文件操作则在请求被接受后立即收起。
 //
 // ⚠ Dialog 的 `footer` 是**整宽、贴底**摆放的，不吃 Dialog.padding
 //   （2026-10-28 实测：footer.x = 0、footer.width = dialog.width、

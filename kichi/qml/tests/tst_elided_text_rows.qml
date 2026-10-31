@@ -65,6 +65,7 @@ TestCase {
                 id: fileRow
                 y: 10
                 width: 760
+                index: -1
                 rowHeight: 48
                 backend: fakeSearchBackend
                 entry: harness.entry("files")
@@ -80,6 +81,7 @@ TestCase {
                 x: 780
                 y: 10
                 width: 190
+                index: -1
                 backend: fakeSearchBackend
                 entry: harness.entry("grid")
                 detailText: "所在文件夹：" + fakeSearchBackend.searchResults[0].folderText
@@ -90,6 +92,7 @@ TestCase {
                 id: trashRow
                 y: 250
                 width: 760
+                index: -1
                 rowHeight: 48
                 entry: harness.entry("trash")
             }

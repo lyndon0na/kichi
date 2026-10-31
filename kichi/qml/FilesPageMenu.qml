@@ -73,7 +73,6 @@ Item {
             text: qsTr("播放")
             visible: root.targetPlayable && root.targetCount === 1
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
                      && root.backend.playMenu.length === 0
             onTriggered: {
                 // targetPoint 已经是窗口坐标，直接交给清晰度菜单
@@ -118,7 +117,8 @@ Item {
                 }
                 return root.targetStarred ? qsTr("取消星标") : qsTr("加星标")
             }
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
             onTriggered: {
                 if (root.backend)
                     root.backend.setStarred(root.targetIds, !root.targetStarred)
@@ -130,7 +130,8 @@ Item {
             text: root.targetCount > 1
                   ? qsTr("分享选中的 %1 项…").arg(root.targetCount)
                   : qsTr("分享…")
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
                      && !root.backend.shareActionRunning
             onTriggered: root.shareRequested(root.target, root.targetIds)
         }
@@ -144,7 +145,8 @@ Item {
                   ? qsTr("移动到…（%1 项）").arg(root.targetCount)
                   : qsTr("移动到…")
             visible: !root.fromSearch
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
             onTriggered: root.moveRequested(root.target, root.targetIds)
         }
 
@@ -153,7 +155,8 @@ Item {
                   ? qsTr("复制到…（%1 项）").arg(root.targetCount)
                   : qsTr("复制到…")
             visible: !root.fromSearch
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
             onTriggered: root.copyRequested(root.target, root.targetIds)
         }
 
@@ -161,7 +164,8 @@ Item {
 
         MenuItem {
             text: qsTr("重命名…")
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
                      && root.targetCount === 1
             onTriggered: dialogs.openRename(root.target)
         }
@@ -170,7 +174,8 @@ Item {
             text: root.targetCount > 1
                   ? qsTr("移至回收站…（%1 项）").arg(root.targetCount)
                   : qsTr("移至回收站…")
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
             onTriggered: dialogs.openTrash(root.target, root.targetIds)
         }
     }
@@ -183,14 +188,14 @@ Item {
 
         MenuItem {
             text: qsTr("新建文件夹…")
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !root.backend.filesLoading
+                     && !root.backend.fileActionRunning
             onTriggered: dialogs.openNewFolder()
         }
 
         MenuItem {
             text: qsTr("刷新")
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
             onTriggered: root.refreshRequested()
         }
     }

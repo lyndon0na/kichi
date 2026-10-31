@@ -7,7 +7,8 @@ import QtQuick.Layouts
 ItemDelegate {
     id: row
 
-    property var entry: null
+    required property var entry
+    required property int index
     property var backend: null
     readonly property var listView: ListView.view
     property int rowIndex: -1

@@ -468,8 +468,7 @@ ApplicationWindow {
                                 iconName: "arrow-up"
                                 iconSize: 14
                                 iconOpacity: 0.65
-                                enabled: !backend.filesLoading && !backend.fileActionRunning
-                                         && root.crumbs.length > 1
+                                enabled: !backend.filesLoading && root.crumbs.length > 1
                                 ToolTip.visible: hovered
                                 ToolTip.text: qsTr("上一级（回到上级目录）")
                                 onClicked: filesPage.goUp()

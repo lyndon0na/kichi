@@ -30,7 +30,10 @@ Item {
     onActiveChanged: {
         if (!active)
             return
-        page.refresh()
+        if (page.backend && typeof page.backend.ensureSharesFresh === "function")
+            page.backend.ensureSharesFresh()
+        else
+            page.refresh()
         Qt.callLater(function () { list.forceActiveFocus() })
     }
 

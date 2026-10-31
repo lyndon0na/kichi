@@ -4,10 +4,8 @@ import ".."
 
 // 文件页写操作弹窗（重命名 / 新建文件夹 / 批量回收站）。
 //
-// 为什么要有：QQC2 的 Dialog 配 `standardButtons` 时，点 Ok（AcceptRole）会
-// 当场 close()；而这些都是异步请求，失败原因回来时对话框已经不可见，
-// 用户只看到「点了确定就消失了」。这里锁住规则：
-// 点确定不关、失败原因留在原地、成功才收起、请求进行中不能再点。
+// 文件写入先乐观更新，Rust 接受请求后弹窗立即关闭；网络失败由底栏提示，
+// 不能因为等待响应继续挡住界面。这里同时锁住同步校验失败仍留在弹窗。
 //
 // 运行：
 //   QT_QPA_PLATFORM=offscreen /usr/lib64/qt6/bin/qmltestrunner \
@@ -21,6 +19,7 @@ TestCase {
     // 替代 Kichi 桥接对象：只提供弹窗用到的属性 / 方法 / 信号。
     QtObject {
         id: backend
+        property bool filesLoading: false
         property bool fileActionRunning: false
         property int renameCount: 0
         property string renamedName: ""
@@ -34,15 +33,18 @@ TestCase {
             renameCount += 1
             renamedName = name
             fileActionRunning = true
+            return true
         }
         function createFolder(name) {
             folderCount += 1
             createdName = name
             fileActionRunning = true
+            return true
         }
         function trashEntries(ids) {
             lastTrashIds = ids.slice()
             fileActionRunning = true
+            return true
         }
         /// 模拟 Rust 收尾：先清「进行中」，再发结果
         function finish(action, ok, message) {
@@ -100,7 +102,7 @@ TestCase {
                "确定应在左、取消在右（实际 ok.x=" + okX + " cancel.x=" + cancelX + "）")
     }
 
-    function test_failed_rename_stays_open_with_the_reason() {
+    function test_rename_closes_immediately_and_failure_does_not_reopen() {
         var dialog = startRename()
         findChild(dialog, "renameNameField").text = "新名字.mkv"
         var ok = findChild(dialog, "dialogFooterOk")
@@ -110,14 +112,11 @@ TestCase {
 
         compare(backend.renameCount, 1, "点确定只发一次改名请求")
         compare(backend.renamedName, "新名字.mkv")
-        verify(dialog.opened, "请求还没回来：对话框不关")
+        verify(!dialog.opened, "本地条目已更新，请求发出后立即关窗")
 
         backend.finish("rename", false, "同名文件已存在")
         wait(40)
-        verify(dialog.opened, "失败后对话框留在原地")
-        var error = findChild(dialog, "renameError")
-        verify(error !== null && error.visible, "失败原因看得到")
-        compare(error.text, "同名文件已存在")
+        verify(!dialog.opened, "网络失败由底栏提示，不能重新弹窗")
     }
 
     function test_successful_rename_closes_the_dialog() {
@@ -125,14 +124,14 @@ TestCase {
         findChild(dialog, "renameNameField").text = "新名字.mkv"
         mouseClick(findChild(dialog, "dialogFooterOk"))
         wait(40)
-        verify(dialog.opened, "成功之前仍然开着")
+        verify(!dialog.opened, "发出请求后立即收起")
 
         backend.finish("rename", true, "已改名为「新名字.mkv」")
         wait(40)
-        verify(!dialog.opened, "成功后收起")
+        verify(!dialog.opened, "成功后保持关闭")
     }
 
-    function test_failed_new_folder_stays_open_with_the_reason() {
+    function test_new_folder_closes_immediately_even_if_network_fails() {
         menu.openNewFolder()
         wait(60)
         var dialog = findChild(menu, "folderDialog")
@@ -142,13 +141,11 @@ TestCase {
         wait(40)
         compare(backend.folderCount, 1, "点确定只发一次请求")
         compare(backend.createdName, "新文件夹")
+        verify(!dialog.opened, "临时文件夹已插入，立即关窗")
 
         backend.finish("folder", false, "同名文件夹已存在")
         wait(40)
-        verify(dialog.opened, "失败后对话框留在原地")
-        var error = findChild(dialog, "folderError")
-        verify(error !== null && error.visible, "失败原因看得到")
-        compare(error.text, "同名文件夹已存在")
+        verify(!dialog.opened, "失败只回滚并走底栏提示")
     }
 
     function test_ok_is_disabled_while_an_action_is_running() {
@@ -221,7 +218,7 @@ TestCase {
                 "标题和正文之间只保留一个 Dialog.spacing")
     }
 
-    function test_batch_trash_shows_count_and_keeps_reason() {
+    function test_batch_trash_shows_count_and_closes_immediately() {
         menu.openTrash({ id: "id-1", name: "a.mkv", kind: "file" },
                        ["id-1", "id-2"])
         wait(60)
@@ -233,15 +230,10 @@ TestCase {
         mouseClick(findChild(dialog, "dialogFooterOk"))
         wait(40)
         compare(backend.lastTrashIds.length, 2, "批量 id 一次交给后端")
-        verify(dialog.opened, "请求还没回来：对话框不关")
+        verify(!dialog.opened, "条目已从列表移除，确认框立即关闭")
 
         backend.finish("trash", false, "部分条目失败")
         wait(40)
-        verify(dialog.opened, "失败后留在原地")
-        compare(findChild(dialog, "trashError").text, "部分条目失败")
-
-        backend.finish("trash", true, "已移入回收站")
-        wait(40)
-        verify(!dialog.opened, "成功后收起")
+        verify(!dialog.opened, "失败由底栏提示，不能把确认框重新弹出")
     }
 }

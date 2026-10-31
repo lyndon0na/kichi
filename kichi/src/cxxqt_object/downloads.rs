@@ -20,6 +20,7 @@ use std::time::Instant;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QStringList};
 
+use super::file_optimistic::is_unconfirmed_create;
 use super::qobject;
 use super::queue;
 use super::queue_collect;
@@ -103,6 +104,11 @@ impl qobject::Kichi {
     /// 用户想去看看它；第一次下载不打断用户当前所在页面。
     pub fn download_entry(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
+        if is_unconfirmed_create(self.as_ref().rust(), &id) {
+            self.as_mut()
+                .set_message("文件夹正在同步真实 id，请稍后再下载");
+            return;
+        }
         // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
         let Some(entry) = self.as_ref().rust().find_entry(&id) else {
             self.as_mut()
@@ -130,11 +136,15 @@ impl qobject::Kichi {
     /// 那会打断用户正在看的目录。结果用状态栏一句话说清楚。
     pub fn download_entries(mut self: Pin<&mut Self>, ids: QStringList) {
         let dir = self.settings.download_dir_path();
-        let (mut added, mut already, mut missing) = (0u32, 0u32, 0u32);
+        let (mut added, mut already, mut missing, mut pending) = (0u32, 0u32, 0u32, 0u32);
         for raw in ids.iter() {
             let id = raw.to_string();
             let id = id.trim();
             if id.is_empty() {
+                continue;
+            }
+            if is_unconfirmed_create(self.as_ref().rust(), id) {
+                pending += 1;
                 continue;
             }
             // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
@@ -152,7 +162,15 @@ impl qobject::Kichi {
         if added > 0 {
             self.as_mut().advance_downloads();
         }
-        if added > 0 && already == 0 && missing == 0 {
+        if pending > 0 {
+            let waiting = format!("{pending} 个文件夹正在同步真实 id，请稍后再下载");
+            if added > 0 {
+                self.as_mut()
+                    .set_message(&format!("已加入下载队列：{added} 项；{waiting}"));
+            } else {
+                self.as_mut().set_message(&waiting);
+            }
+        } else if added > 0 && already == 0 && missing == 0 {
             self.as_mut().clear_status_message();
         } else {
             let message = batch_message(added, already, missing);

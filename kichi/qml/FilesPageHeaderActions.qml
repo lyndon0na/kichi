@@ -11,8 +11,6 @@ RowLayout {
 
     readonly property bool searching: backend !== null && backend.searchActive
     readonly property bool loading: backend !== null && backend.filesLoading
-    readonly property bool actionRunning: backend !== null
-                                          && backend.fileActionRunning
 
     readonly property KTheme theme: KTheme { parent: root }
 
@@ -29,7 +27,6 @@ RowLayout {
         leftPadding: 8
         rightPadding: 8
         enabled: root.backend !== null && !root.searching && !root.loading
-                 && !root.actionRunning
         showTextToolTip: false
         ToolTip.visible: hovered
         ToolTip.text: qsTr("在当前文件夹中新建文件夹")
@@ -59,7 +56,6 @@ RowLayout {
         leftPadding: 8
         rightPadding: 8
         enabled: root.backend !== null && !root.searching && !root.loading
-                 && !root.actionRunning
         showTextToolTip: false
         ToolTip.visible: hovered
         ToolTip.text: qsTr("刷新当前文件夹")

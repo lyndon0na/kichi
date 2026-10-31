@@ -37,7 +37,7 @@ impl LibraryKind {
 }
 
 /// 一条资料库记录：文件本体 + 页面需要的排序时间 / 播放进度。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntry {
     pub entry: FileEntry,
     /// 官方事件 id；文件列表来源的页面为空

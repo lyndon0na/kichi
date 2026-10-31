@@ -12,6 +12,7 @@ Item {
     property var metrics: null
     property int currentIndex: -1
     property var rows: []
+    property alias rowModel: rowList
 
     signal keyPressed(var event)
 
@@ -35,6 +36,10 @@ Item {
 
     property alias contentY: groupedList.contentY
     property alias contentHeight: groupedList.contentHeight
+
+    ListModel {
+        id: rowList
+    }
 
     function forceActiveFocus() {
         groupedList.forceActiveFocus()
@@ -82,9 +87,53 @@ Item {
             }
         }
         rows = next
+        syncRowList(next)
         Qt.callLater(function () {
             groupedList.forceLayout()
         })
+    }
+
+    function syncRowList(next) {
+        const wantedKeys = ({})
+        for (let i = 0; i < next.length; ++i)
+            wantedKeys[String(next[i].key)] = true
+
+        for (let stale = rowList.count - 1; stale >= 0; --stale) {
+            if (wantedKeys[String(rowList.get(stale).key)] === undefined)
+                rowList.remove(stale)
+        }
+
+        const present = ({})
+        for (let p = 0; p < rowList.count; ++p)
+            present[String(rowList.get(p).key)] = true
+        for (let add = 0; add < next.length; ++add) {
+            const key = String(next[add].key)
+            if (present[key] === undefined) {
+                rowList.append({ key: key, rowData: next[add] })
+                present[key] = true
+            }
+        }
+
+        for (let target = next.length - 1; target >= 0 && target < rowList.count; --target) {
+            const key = String(next[target].key)
+            if (String(rowList.get(target).key) === key)
+                continue
+            let from = -1
+            for (let scan = target - 1; scan >= 0; --scan) {
+                if (String(rowList.get(scan).key) === key) {
+                    from = scan
+                    break
+                }
+            }
+            if (from >= 0)
+                rowList.move(from, target, 1)
+        }
+
+        for (let at = 0; at < next.length && at < rowList.count; ++at) {
+            rowList.set(at, { key: String(next[at].key), rowData: next[at] })
+        }
+        while (rowList.count > next.length)
+            rowList.remove(rowList.count - 1)
     }
 
     function rowIndexForEntry(entryIndex) {
@@ -139,7 +188,7 @@ Item {
         anchors.fill: parent
         clip: true
         spacing: 0
-        model: root.rows
+        model: root.rowModel
         currentIndex: -1
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: KScrollBar {}
@@ -166,19 +215,19 @@ Item {
         delegate: Item {
             id: visualRow
 
-            required property var modelData
+            required property var rowData
 
             width: groupedList.width - root.scrollBarSlot
-            height: modelData.rowType === "header"
+            height: rowData.rowType === "header"
                     ? root.headerHeight : root.cellHeight
 
             LibraryDateSection {
-                objectName: "libraryDateSection_" + visualRow.modelData.key
-                visible: visualRow.modelData.rowType === "header"
+                objectName: "libraryDateSection_" + visualRow.rowData.key
+                visible: visualRow.rowData.rowType === "header"
                 width: visualRow.width
                 height: root.headerHeight
-                title: visualRow.modelData.rowType === "header"
-                       ? visualRow.modelData.title : ""
+                title: visualRow.rowData.rowType === "header"
+                       ? visualRow.rowData.title : ""
                 contentPadding: root.sideMargin
                 rightPadding: root.sideMargin
             }
@@ -186,17 +235,20 @@ Item {
             Repeater {
                 id: cardRepeater
 
-                model: visualRow.modelData.rowType === "items"
-                       ? visualRow.modelData.cards : []
+                model: visualRow.rowData.rowType === "items"
+                       ? visualRow.rowData.cards.length : 0
 
                 delegate: LibraryGridCard {
-                    objectName: "libraryGridCard_" + modelData.entryIndex
+                    readonly property var cardData:
+                        visualRow.rowData.cards[index]
+
+                    objectName: "libraryGridCard_" + cardData.entryIndex
                     x: root.sideMargin + index * root.cellSlotWidth
                     width: root.itemWidth
                     height: root.itemHeight
                     libraryPage: root.libraryPage
-                    entryData: modelData.entry
-                    entryIndex: modelData.entryIndex
+                    entryData: cardData.entry
+                    entryIndex: cardData.entryIndex
                     density: root.density
 
                     onEntrySelected: function (entryIndex, modifiers) {

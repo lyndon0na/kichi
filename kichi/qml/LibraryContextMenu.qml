@@ -48,7 +48,6 @@ Item {
             text: qsTr("播放")
             visible: root.targetPlayable
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
                      && root.backend.playMenu.length === 0
             onTriggered: root.playRequested(root.targetId, root.targetPoint)
         }
@@ -117,6 +116,7 @@ Item {
             objectName: "libraryRefreshItem"
             text: qsTr("刷新")
             enabled: root.backend !== null && !root.backend.libraryLoading
+                     && !root.backend.fileActionRunning
             onTriggered: root.refreshRequested()
         }
     }

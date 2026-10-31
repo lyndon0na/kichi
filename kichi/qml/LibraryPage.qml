@@ -29,6 +29,7 @@ Item {
                                      && page.backend.contentView === "grid"
     readonly property bool dateGrouped: page.dateSectionsEnabled
                                         && page.kind === "playback-history"
+    readonly property var libraryRows: entryRows.model
     readonly property var activeView: page.gridMode
                                       ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid)
                                       : libraryList
@@ -39,6 +40,10 @@ Item {
     FileListDensity {
         id: density
         objectName: "libraryDensity"
+    }
+    EntryRows {
+        id: entryRows
+        source: page.entries
     }
     UiMetrics { id: metrics }
     KTheme { id: theme }
@@ -63,6 +68,15 @@ Item {
         if (!page.backend || page.kind.length === 0 || page.loading)
             return
         page.backend.refreshLibrary(page.kind)
+    }
+
+    function ensureFresh() {
+        if (!page.backend || page.kind.length === 0 || page.loading)
+            return
+        if (typeof page.backend.ensureLibraryFresh === "function")
+            page.backend.ensureLibraryFresh(page.kind)
+        else
+            page.refresh()
     }
 
     function rememberScroll() {
@@ -230,7 +244,7 @@ Item {
             page.blankContextMenu.close()
             return
         }
-        page.refresh()
+        page.ensureFresh()
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
             page.pendingScrollRestore = true
@@ -302,7 +316,7 @@ Item {
                     visible: !page.gridMode
                     clip: true
                     spacing: 0
-                    model: page.entries
+                    model: page.libraryRows
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: KScrollBar {}
@@ -339,7 +353,6 @@ Item {
                     delegate: LibraryRow {
                         id: row
                         width: ListView.view.width - metrics.scrollBarSlot
-                        entry: modelData
                         backend: page.backend
                         rowIndex: index
                         highlighted: ListView.isCurrentItem
@@ -382,7 +395,7 @@ Item {
                 objectName: "libraryGridContainer"
                 anchors.fill: parent
                 visible: page.gridMode && !page.dateGrouped
-                model: page.entries
+                model: page.libraryRows
                 density: density
                 metrics: metrics
                 reserveDetail: true
@@ -406,7 +419,6 @@ Item {
                         width: libraryGrid.itemWidth
                         height: libraryGrid.itemHeight
                         libraryPage: page
-                        entryData: modelData
                         entryIndex: index
                         density: density
 
@@ -550,6 +562,11 @@ Item {
             }
             if (page.visible)
                 Qt.callLater(page.focusActiveView)
+        }
+
+        function onFileActionDone(action, ok) {
+            if (page.visible && ok)
+                page.ensureFresh()
         }
     }
 }

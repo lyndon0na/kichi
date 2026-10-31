@@ -40,6 +40,7 @@ Item {
             return page.heldSearchEntries
         return page.searching ? page.backend.searchResults : page.backend.files
     }
+    readonly property var fileRows: entryRows.model
     readonly property var activeFileView: page.gridMode ? fileGrid : fileList
     readonly property string playLoadingId: {
         if (!page.backend || typeof page.backend.playLoadingId !== "string")
@@ -104,6 +105,12 @@ Item {
     FileListDensity {
         id: density
         objectName: "fileListDensity"
+    }
+
+    // Rust 发布新数组时只做行级差异，切页 / 后台校准都不会重灌列表。
+    EntryRows {
+        id: entryRows
+        source: page.displayEntries
     }
 
     // 页面尺寸常量（滚动条车道 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -230,8 +237,12 @@ Item {
                 page.backend.exitSearch()
             return
         }
-        if (page.backend && page.backend.filesStale)
-            page.backend.refreshFiles()
+        if (page.backend) {
+            if (typeof page.backend.ensureFilesFresh === "function")
+                page.backend.ensureFilesFresh()
+            else if (page.backend.filesStale)
+                page.backend.refreshFiles()
+        }
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
         page.focusActiveView()
@@ -253,7 +264,10 @@ Item {
             page.clearHeldSearchEntries()
     }
     onDisplayEntriesChanged: {
-        selection.prune(page.displayEntries)
+        // 乐观移除 / 回滚期间保留选择，失败恢复后才能仍然指向原来的条目；
+        // 操作成功由 handleFileActionDone 清掉移走 / 回收站的选择。
+        if (!page.backend || !page.backend.fileActionRunning)
+            selection.prune(page.displayEntries)
         Qt.callLater(interaction.tryRevealPending)
     }
 
@@ -313,7 +327,7 @@ Item {
                     // 只靠 1px 底部分隔线区分，不再用行间缝隙。
                     spacing: 0
                     visible: !page.gridMode
-                    model: page.displayEntries
+                    model: page.fileRows
                     boundsBehavior: Flickable.StopAtBounds
                     // 列表铺满到页面右缘，条画在右侧 10px 车道里；
                     // 委托宽度减去车道，文字永远停在条左边
@@ -359,7 +373,6 @@ Item {
                     delegate: FileRow {
                         id: row
                         width: ListView.view.width - metrics.scrollBarSlot
-                        entry: modelData
                         backend: page.backend
                         rowIndex: index
                         thumbnailSlotWidth: density.thumbnailSlotWidth
@@ -424,7 +437,7 @@ Item {
 
                 anchors.fill: parent
                 visible: page.gridMode
-                model: page.displayEntries
+                model: page.fileRows
                 density: density
                 metrics: metrics
                 reserveDetail: true
@@ -449,7 +462,6 @@ Item {
 
                         width: fileGrid.itemWidth
                         height: fileGrid.itemHeight
-                        entry: modelData
                         backend: page.backend
                         rowIndex: index
                         contentPadding: density.gridCardPadding

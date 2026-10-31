@@ -166,7 +166,7 @@ QtObject {
             return
         // 搜索批次更新不一定改 filesRevision；结果模型一变就先清掉已消失的选择。
         if (ctl.searching) {
-            if (ctl.selection)
+            if (ctl.selection && !ctl.backend.fileActionRunning)
                 ctl.selection.prune(ctl.entries)
             return
         }
@@ -174,7 +174,7 @@ QtObject {
         if (revision === seenFilesRevision)
             return
         seenFilesRevision = revision
-        if (ctl.selection)
+        if (ctl.selection && !ctl.backend.fileActionRunning)
             ctl.selection.prune(ctl.backend.files)
         if (restoreScrollPending) {
             restoreScrollPending = false
@@ -221,18 +221,12 @@ QtObject {
         ctl.backend.refreshFiles()
     }
 
-    /// 文件操作结果回到界面：需要刷新的动作先记住滚动位置，移走/删掉的清空选择。
+    /// 文件操作结果回到界面：乐观模型已原位更新，移走 / 删掉的清空选择。
     function handleFileActionDone(action, ok) {
         if (!ok)
             return
         if (action === "trash" || action === "move")
             ctl.selection.clear()
-        if (action === "trash" || action === "move"
-                || action === "rename" || action === "folder"
-                || action === "star" || action === "unstar") {
-            rememberScroll()
-            restoreScrollPending = true
-        }
     }
 
     // —— 键盘快捷键（挂在列表控件上，避开 Wayland 下窗口级 Keys 不可靠）——

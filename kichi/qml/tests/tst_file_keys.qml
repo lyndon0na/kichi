@@ -29,12 +29,24 @@ TestCase {
             height: 280
             // 故意不自动拿焦点：焦点先前在登录页的输入框上
             focus: false
-            model: [
-                { id: "a", name: "a.mkv", kind: "file", playable: true,
-                  sizeText: "1 MB", modifiedText: "今天", auditFlag: false },
-                { id: "b", name: "b", kind: "folder", playable: false,
-                  sizeText: "", modifiedText: "", auditFlag: false },
-            ]
+            model: ListModel {
+                Component.onCompleted: {
+                    append({
+                        key: "a",
+                        entry: {
+                            id: "a", name: "a.mkv", kind: "file", playable: true,
+                            sizeText: "1 MB", modifiedText: "今天", auditFlag: false
+                        }
+                    })
+                    append({
+                        key: "b",
+                        entry: {
+                            id: "b", name: "b", kind: "folder", playable: false,
+                            sizeText: "", modifiedText: "", auditFlag: false
+                        }
+                    })
+                }
+            }
             Keys.onPressed: function (event) {
                 keysSeen += 1
                 event.accepted = true
@@ -42,7 +54,6 @@ TestCase {
             delegate: FileRow {
                 width: ListView.view.width
                 height: 40
-                entry: modelData
             }
         }
     }

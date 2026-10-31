@@ -59,6 +59,7 @@ TestCase {
                 objectName: "fileRow"
                 y: 48
                 width: 620
+                index: -1
                 rowHeight: 48
                 backend: fakeBackend
                 entry: ({
@@ -79,6 +80,7 @@ TestCase {
                 objectName: "trashRow"
                 y: 104
                 width: 620
+                index: -1
                 rowHeight: 48
                 backend: fakeBackend
                 entry: ({

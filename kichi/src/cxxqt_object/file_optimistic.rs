@@ -1,0 +1,388 @@
+//! 文件页写操作的本地先行动作。
+//!
+//! 请求发出前先改当前目录快照，界面立即看到结果；云端失败时用操作前快照
+//! 原位回滚。新建文件夹成功时官方不回 id，因此临时行会保留到下一次目录
+//! 校准发现真实条目为止，期间不可进入。
+
+use std::collections::HashSet;
+use std::pin::Pin;
+
+use chrono::Utc;
+use cxx_qt::CxxQtType;
+use kichi_core::{EntryKind, FileEntry};
+
+use super::files::{list_from_with_pending, sort_entries};
+use super::{qobject, KichiRust};
+use crate::session::SearchHit;
+
+const TEMP_FOLDER_PREFIX: &str = "kichi-pending-folder-";
+
+pub(crate) struct PendingCreate {
+    entry: FileEntry,
+    known_ids: HashSet<String>,
+}
+
+impl PendingCreate {
+    fn matching_new_id(
+        &self,
+        entries: &[FileEntry],
+        already_matched: &HashSet<String>,
+    ) -> Option<String> {
+        entries
+            .iter()
+            .find(|entry| {
+                entry.kind == EntryKind::Folder
+                    && entry.name == self.entry.name
+                    && entry.parent_id == self.entry.parent_id
+                    && !self.known_ids.contains(&entry.id)
+                    && !already_matched.contains(&entry.id)
+            })
+            .map(|entry| entry.id.clone())
+    }
+}
+
+enum MutationKind {
+    Rename,
+    Create(Box<PendingCreate>),
+    Remove,
+}
+
+pub(crate) struct FileMutation {
+    dir_id: String,
+    before_entries: Vec<FileEntry>,
+    search_before: Vec<SearchHit>,
+    kind: MutationKind,
+}
+
+impl qobject::Kichi {
+    pub(crate) fn optimistic_rename(mut self: Pin<&mut Self>, id: &str, name: &str) -> bool {
+        let id = id.trim();
+        if id.is_empty() {
+            return false;
+        }
+        let before_entries = self.entries.clone();
+        let index = before_entries.iter().position(|entry| entry.id == id);
+        let has_search_hit = self.search_active && self.search_index.contains_key(id);
+        if index.is_none() && !has_search_hit {
+            return false;
+        }
+        let mut next = before_entries.clone();
+        if let Some(index) = index {
+            next[index].name = name.to_owned();
+        }
+        let related_ids = HashSet::from([id.to_owned()]);
+        let search_before = self.search_hits_for(&related_ids);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            if let Some(hit) = rust.search_index.get_mut(id) {
+                hit.entry.name = name.to_owned();
+            }
+            rust.file_mutation = Some(FileMutation {
+                dir_id: rust.current_dir_id.to_string(),
+                before_entries,
+                search_before,
+                kind: MutationKind::Rename,
+            });
+        }
+        self.as_mut().publish_optimistic_entries(next);
+        true
+    }
+
+    pub(crate) fn optimistic_create_folder(mut self: Pin<&mut Self>, name: &str) -> bool {
+        let before_entries = self.entries.clone();
+        let parent_id = self.current_dir_id.to_string();
+        let seq = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.file_mutation_seq = rust.file_mutation_seq.wrapping_add(1);
+            rust.file_mutation_seq
+        };
+        let temp_id = format!("{TEMP_FOLDER_PREFIX}{seq}");
+        let now = Utc::now();
+        let entry = FileEntry {
+            id: temp_id.clone(),
+            name: name.to_owned(),
+            kind: EntryKind::Folder,
+            size: 0,
+            created_at: Some(now),
+            modified_at: Some(now),
+            parent_id,
+            md5: None,
+            audit_flagged: false,
+            starred: false,
+            media: false,
+            video: false,
+            thumbnail_url: String::new(),
+        };
+        let known_ids = before_entries.iter().map(|item| item.id.clone()).collect();
+        let mut next = before_entries.clone();
+        next.push(entry.clone());
+        let search_before = Vec::new();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pending_entry_ids.insert(temp_id);
+            rust.file_mutation = Some(FileMutation {
+                dir_id: rust.current_dir_id.to_string(),
+                before_entries,
+                search_before,
+                kind: MutationKind::Create(Box::new(PendingCreate { entry, known_ids })),
+            });
+        }
+        self.as_mut().publish_optimistic_entries(next);
+        true
+    }
+
+    pub(crate) fn optimistic_remove_entries(mut self: Pin<&mut Self>, ids: &[String]) -> bool {
+        let wanted: HashSet<String> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if wanted.is_empty() {
+            return false;
+        }
+        let before_entries = self.entries.clone();
+        let search_before = self.search_hits_for(&wanted);
+        let mut next = before_entries.clone();
+        next.retain(|entry| !wanted.contains(&entry.id));
+        if next.len() == before_entries.len() && search_before.is_empty() {
+            return false;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.search_index.retain(|id, _| !wanted.contains(id));
+            rust.file_mutation = Some(FileMutation {
+                dir_id: rust.current_dir_id.to_string(),
+                before_entries,
+                search_before,
+                kind: MutationKind::Remove,
+            });
+        }
+        self.as_mut().publish_optimistic_entries(next);
+        true
+    }
+
+    /// 成功：清掉回滚快照。新建文件夹转成“等待真实 id”的临时行。
+    pub(crate) fn commit_file_mutation(mut self: Pin<&mut Self>) {
+        let Some(mutation) = self.as_mut().rust_mut().file_mutation.take() else {
+            return;
+        };
+        self.as_mut().mark_library_caches_stale(None);
+        if let MutationKind::Create(pending) = mutation.kind {
+            self.as_mut().rust_mut().unresolved_create.push(*pending);
+        }
+    }
+
+    /// 失败：当前目录仍停在操作前位置时恢复完整快照；已经导航离开则只修复
+    /// 搜索结果，不把用户新打开的目录覆盖回旧数据。
+    pub(crate) fn rollback_file_mutation(mut self: Pin<&mut Self>) {
+        let Some(mutation) = self.as_mut().rust_mut().file_mutation.take() else {
+            return;
+        };
+        let same_dir = self.current_dir_id.to_string() == mutation.dir_id;
+        if let MutationKind::Create(pending) = &mutation.kind {
+            self.as_mut()
+                .rust_mut()
+                .pending_entry_ids
+                .remove(&pending.entry.id);
+        }
+        if same_dir {
+            {
+                let mut rust = self.as_mut().rust_mut();
+                let mut entries = mutation.before_entries.clone();
+                sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
+                let files = list_from_with_pending(&entries, &rust.pending_entry_ids);
+                rust.entries = entries;
+                rust.files = files;
+                rust.files_revision = rust.files_revision.wrapping_add(1);
+                rust.files_stale = false;
+            }
+            self.as_mut().notify();
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            for hit in mutation.search_before {
+                rust.search_index.insert(hit.id().to_owned(), hit);
+            }
+        }
+        self.as_mut().rebuild_search_view_from_state();
+    }
+
+    pub(crate) fn optimistic_starred(
+        mut self: Pin<&mut Self>,
+        ids: &[String],
+        starred: bool,
+    ) -> Vec<(String, bool)> {
+        let wanted: HashSet<String> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let mut before = Vec::new();
+        for id in &wanted {
+            if let Some(entry) = self.entries.iter().find(|entry| entry.id == *id) {
+                before.push((id.clone(), entry.starred));
+            } else if let Some(hit) = self.search_index.get(id) {
+                before.push((id.clone(), hit.entry.starred));
+            }
+        }
+        for entry in &mut self.as_mut().rust_mut().entries {
+            if wanted.contains(&entry.id) {
+                entry.starred = starred;
+            }
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            for hit in rust.search_index.values_mut() {
+                if wanted.contains(&hit.entry.id) {
+                    hit.entry.starred = starred;
+                }
+            }
+        }
+        let entries = self.entries.clone();
+        self.as_mut().publish_optimistic_entries(entries);
+        before
+    }
+
+    pub(crate) fn restore_starred(mut self: Pin<&mut Self>, changes: &[(String, bool)]) {
+        if changes.is_empty() {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            for (id, starred) in changes {
+                if let Some(entry) = rust.entries.iter_mut().find(|entry| entry.id == *id) {
+                    entry.starred = *starred;
+                }
+                if let Some(hit) = rust.search_index.get_mut(id) {
+                    hit.entry.starred = *starred;
+                }
+            }
+        }
+        let entries = self.entries.clone();
+        self.as_mut().publish_optimistic_entries(entries);
+    }
+
+    fn publish_optimistic_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
+            rust.files = list_from_with_pending(&entries, &rust.pending_entry_ids);
+            rust.entries = entries;
+            rust.files_revision = rust.files_revision.wrapping_add(1);
+            rust.files_stale = false;
+        }
+        self.as_mut().notify();
+        self.as_mut().rebuild_search_view_from_state();
+    }
+
+    fn search_hits_for(&self, ids: &HashSet<String>) -> Vec<SearchHit> {
+        if !self.search_active {
+            return Vec::new();
+        }
+        ids.iter()
+            .filter_map(|id| self.search_index.get(id).cloned())
+            .collect()
+    }
+}
+
+/// 官方目录已经返回时，把尚未换到真实 id 的临时文件夹合回去。
+///
+/// 只认本次新建后出现的新 id，避免同目录里原本就叫这个名字的文件夹
+/// 被误当成刚创建成功。
+pub(crate) fn merge_unresolved_create(
+    rust: &mut KichiRust,
+    mut entries: Vec<FileEntry>,
+) -> Vec<FileEntry> {
+    // 用户已经切到别的目录时，临时行不能跟着这一次目录结果塞进去。
+    // 保留待确认状态，等回到原父目录后的下一次读取再换真实 id。
+    let current_dir = rust.current_dir_id.to_string();
+    let pending_creates = std::mem::take(&mut rust.unresolved_create);
+    let mut unresolved = Vec::with_capacity(pending_creates.len());
+    let mut matched_ids = HashSet::new();
+    for pending in pending_creates {
+        if pending.entry.parent_id != current_dir {
+            unresolved.push(pending);
+            continue;
+        }
+        if let Some(real_id) = pending.matching_new_id(&entries, &matched_ids) {
+            matched_ids.insert(real_id);
+            rust.pending_entry_ids.remove(&pending.entry.id);
+            continue;
+        }
+        let temp_id = pending.entry.id.clone();
+        entries.push(pending.entry.clone());
+        rust.pending_entry_ids.insert(temp_id);
+        unresolved.push(pending);
+    }
+    rust.unresolved_create = unresolved;
+    entries
+}
+
+pub(crate) fn is_unconfirmed_create(rust: &KichiRust, id: &str) -> bool {
+    rust.pending_entry_ids.contains(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn folder(id: &str, name: &str, parent_id: &str) -> FileEntry {
+        FileEntry {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind: EntryKind::Folder,
+            size: 0,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).single(),
+            modified_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).single(),
+            parent_id: parent_id.to_owned(),
+            md5: None,
+            audit_flagged: false,
+            starred: false,
+            media: false,
+            video: false,
+            thumbnail_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn pending_create_only_resolves_to_a_new_matching_folder() {
+        let old = folder("old", "新建文件夹", "parent");
+        let pending = PendingCreate {
+            entry: folder("temp", "新建文件夹", "parent"),
+            known_ids: HashSet::from([old.id.clone()]),
+        };
+        assert!(pending
+            .matching_new_id(std::slice::from_ref(&old), &HashSet::new())
+            .is_none());
+        let real = folder("real", "新建文件夹", "parent");
+        assert!(pending
+            .matching_new_id(&[old, real], &HashSet::new())
+            .is_some());
+    }
+
+    #[test]
+    fn multiple_pending_creates_consume_distinct_real_ids() {
+        let old = folder("old", "新建文件夹", "parent");
+        let pending = PendingCreate {
+            entry: folder("temp", "新建文件夹", "parent"),
+            known_ids: HashSet::from([old.id.clone()]),
+        };
+        let real_a = folder("real-a", "新建文件夹", "parent");
+        let real_b = folder("real-b", "新建文件夹", "parent");
+        let entries = [old, real_a, real_b];
+        let mut matched = HashSet::new();
+
+        let first = pending
+            .matching_new_id(&entries, &matched)
+            .expect("第一个真实目录");
+        matched.insert(first.clone());
+        let second = pending
+            .matching_new_id(&entries, &matched)
+            .expect("第二个真实目录");
+
+        assert_ne!(first, second);
+    }
+}

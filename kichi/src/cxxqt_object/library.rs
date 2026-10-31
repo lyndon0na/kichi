@@ -15,48 +15,106 @@ use super::QVariantList;
 
 /// 同一资料库页的自动 / 手动刷新短冷却，与分享、离线任务页保持一致。
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(3);
+/// 页面重新可见时，资料库缓存超过这个时间才在后台校准。
+const LIBRARY_REFRESH_TTL: Duration = Duration::from_secs(30);
 
 #[path = "library_view.rs"]
 mod library_view;
 
+/// 一个资料库集合的最近一次快照。
+///
+/// 三页共用桥接属性，但底层数据不能共用一份：切到另一页时先把对应快照放回
+/// 属性，再静默校准；切回上一页仍能看到上次内容和滚动位置。
+#[derive(Clone)]
+pub(crate) struct LibraryCache {
+    pub(crate) rows: QVariantList,
+    pub(crate) entries: Vec<kichi_core::LibraryEntry>,
+    pub(crate) loaded: bool,
+    pub(crate) error: String,
+    pub(crate) refresh_at: Option<Instant>,
+}
+
+impl LibraryCache {
+    fn is_fresh(&self, now: Instant) -> bool {
+        self.loaded
+            && self
+                .refresh_at
+                .is_some_and(|at| now.saturating_duration_since(at) < LIBRARY_REFRESH_TTL)
+    }
+}
+
+/// 资料库星标的乐观快照；失败时只恢复发起操作的那个集合。
+pub(crate) struct LibraryStarSnapshot {
+    pub(crate) kind: LibraryKind,
+    entries: Vec<kichi_core::LibraryEntry>,
+    rows: QVariantList,
+    refresh_at: Option<Instant>,
+    cache: Option<LibraryCache>,
+}
+
 impl qobject::Kichi {
+    /// 手动刷新资料库页面：绕过切页 TTL，但仍合并短时间内的重复点击 / 在途请求。
+    pub fn refresh_library(self: Pin<&mut Self>, kind: QString) {
+        self.refresh_library_inner(kind, false);
+    }
+
+    /// 页面重新可见：先恢复该集合的缓存，缓存新鲜时不再发请求。
+    pub fn ensure_library_fresh(self: Pin<&mut Self>, kind: QString) {
+        self.refresh_library_inner(kind, true);
+    }
+
     /// 刷新当前资料库页面。与文件目录共用 `filesLoading` 时容易混淆，因此使用
     /// 独立 loading / error 状态；请求按 epoch 作废，快速切页不会贴错集合。
-    pub fn refresh_library(mut self: Pin<&mut Self>, kind: QString) {
+    fn refresh_library_inner(mut self: Pin<&mut Self>, kind: QString, cache_first: bool) {
         let Some(kind) = LibraryKind::from_key(&kind.to_string()) else {
             self.as_mut().set_message("未知的资料库页面");
             return;
         };
         let now = Instant::now();
         let session = self.backend.session.clone();
-        let epoch = {
+        let (epoch, restored) = {
             let mut rust = self.as_mut().rust_mut();
             let current_kind = rust.library_kind.to_string();
-            if !should_start_refresh(
-                &current_kind,
-                kind.key(),
-                rust.library_loading,
-                rust.library_refresh_at,
-                now,
-            ) {
-                return;
-            }
             let switching = current_kind != kind.key();
+            let mut restored = false;
             if switching {
-                rust.library_rows = QVariantList::default();
-                rust.library_entries.clear();
-                rust.library_loaded = false;
-                // 新页面先回到顶部；同一页刷新则保留列表和当前行。
-                rust.library_revision = rust.library_revision.wrapping_add(1);
+                if rust.library_cache.contains_key(kind.key()) {
+                    restored = restore_library_cache(&mut rust, kind);
+                } else {
+                    clear_library_view(&mut rust, kind);
+                }
             }
-            rust.library_epoch = rust.library_epoch.wrapping_add(1);
-            rust.library_kind = QString::from(kind.key());
-            rust.library_loading = true;
-            rust.library_refresh_at = Some(now);
-            rust.library_error = QString::default();
-            rust.library_epoch
+
+            let can_request = !rust.file_action_running;
+            let should_request = can_request
+                && if switching {
+                    // 切集合时先恢复目标缓存；只有“切页”模式允许新鲜缓存直接复用。
+                    !(cache_first && restored && library_cache_is_fresh(&rust, kind, now))
+                } else if cache_first {
+                    !rust.library_loading && !library_cache_is_fresh(&rust, kind, now)
+                } else {
+                    !rust.library_loading
+                        && rust.library_refresh_at.is_none_or(|last| {
+                            now.saturating_duration_since(last) >= REFRESH_COOLDOWN
+                        })
+                };
+
+            if should_request {
+                (Some(begin_library_refresh(&mut rust, kind, now)), restored)
+            } else {
+                if switching || restored {
+                    // 立即作废上一集合的在途结果；缓存本身已在上面恢复。
+                    rust.library_epoch = rust.library_epoch.wrapping_add(1);
+                }
+                (None, restored)
+            }
         };
-        self.as_mut().notify();
+        if restored || epoch.is_some() {
+            self.as_mut().notify();
+        }
+        let Some(epoch) = epoch else {
+            return;
+        };
 
         run_in_background(
             move || session.load_library(kind),
@@ -67,26 +125,48 @@ impl qobject::Kichi {
                 match result {
                     Ok(entries) => {
                         let rows = library_view::list_from(&entries, kind);
+                        let refresh_at = Instant::now();
                         {
                             let mut rust = qichi.as_mut().rust_mut();
-                            rust.library_rows = rows;
-                            rust.library_entries = entries;
-                            rust.library_loading = false;
-                            rust.library_loaded = true;
-                            rust.library_error = QString::default();
-                            rust.library_refresh_at = Some(Instant::now());
-                            rust.library_revision = rust.library_revision.wrapping_add(1);
+                            rust.library_cache.insert(
+                                kind.key(),
+                                LibraryCache {
+                                    rows: rows.clone(),
+                                    entries: entries.clone(),
+                                    loaded: true,
+                                    error: String::new(),
+                                    refresh_at: Some(refresh_at),
+                                },
+                            );
+                            if rust.library_kind.to_string() == kind.key() {
+                                let changed = rust.library_entries != entries;
+                                rust.library_rows = rows;
+                                rust.library_entries = entries;
+                                rust.library_loading = false;
+                                rust.library_loaded = true;
+                                rust.library_error = QString::default();
+                                rust.library_refresh_at = Some(refresh_at);
+                                if changed {
+                                    rust.library_revision = rust.library_revision.wrapping_add(1);
+                                }
+                            }
                         }
                         qichi.as_mut().notify();
                     }
                     Err(err) => {
                         let text = err.to_string();
+                        let refresh_at = Instant::now();
                         {
                             let mut rust = qichi.as_mut().rust_mut();
-                            rust.library_loading = false;
-                            rust.library_loaded = false;
-                            rust.library_error = QString::from(text.as_str());
-                            rust.library_refresh_at = Some(Instant::now());
+                            if let Some(cache) = rust.library_cache.get_mut(kind.key()) {
+                                cache.error = text.clone();
+                                cache.refresh_at = Some(refresh_at);
+                            }
+                            if rust.library_kind.to_string() == kind.key() {
+                                rust.library_loading = false;
+                                rust.library_error = QString::from(text.as_str());
+                                rust.library_refresh_at = Some(refresh_at);
+                            }
                         }
                         qichi.as_mut().on_failure(err);
                     }
@@ -103,6 +183,7 @@ impl qobject::Kichi {
             rust.library_rows = QVariantList::default();
             rust.library_kind = QString::default();
             rust.library_entries.clear();
+            rust.library_cache.clear();
             rust.library_loading = false;
             rust.library_loaded = false;
             rust.library_error = QString::default();
@@ -112,18 +193,13 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 星标写请求成功后更新当前资料库快照。
-    ///
-    /// 最近保存 / 播放历史只改星标标记；已加星标页取消星标时直接移除该行，
-    /// 不额外发一轮资料库查询。
-    pub(crate) fn apply_library_starred_change(
+    /// 资料库星标先改当前集合与对应缓存；请求失败再用快照恢复。
+    pub(crate) fn optimistic_library_starred(
         mut self: Pin<&mut Self>,
         ids: &[String],
         starred: bool,
-    ) {
-        let Some(kind) = LibraryKind::from_key(&self.library_kind.to_string()) else {
-            return;
-        };
+    ) -> Option<LibraryStarSnapshot> {
+        let kind = LibraryKind::from_key(&self.library_kind.to_string())?;
         let wanted: HashSet<String> = ids
             .iter()
             .map(|id| id.trim())
@@ -131,19 +207,75 @@ impl qobject::Kichi {
             .map(str::to_owned)
             .collect();
         if wanted.is_empty() {
-            return;
+            return None;
         }
 
-        {
+        let now = Instant::now();
+        let (snapshot, changed) = {
             let mut rust = self.as_mut().rust_mut();
-            let changed = update_starred_entries(&mut rust.library_entries, kind, &wanted, starred);
-            if !changed {
-                return;
+            let snapshot = LibraryStarSnapshot {
+                kind,
+                entries: rust.library_entries.clone(),
+                rows: rust.library_rows.clone(),
+                refresh_at: rust.library_refresh_at,
+                cache: rust.library_cache.get(kind.key()).cloned(),
+            };
+            let changed_view =
+                update_starred_entries(&mut rust.library_entries, kind, &wanted, starred);
+            if changed_view {
+                rust.library_rows = library_view::list_from(&rust.library_entries, kind);
+                rust.library_revision = rust.library_revision.wrapping_add(1);
+                rust.library_refresh_at = Some(now);
             }
-            rust.library_rows = library_view::list_from(&rust.library_entries, kind);
-            rust.library_revision = rust.library_revision.wrapping_add(1);
+            let mut changed_cache = false;
+            if let Some(cache) = rust.library_cache.get_mut(kind.key()) {
+                if update_starred_entries(&mut cache.entries, kind, &wanted, starred) {
+                    cache.rows = library_view::list_from(&cache.entries, kind);
+                    cache.refresh_at = Some(now);
+                    changed_cache = true;
+                }
+            }
+            (snapshot, changed_view || changed_cache)
+        };
+        if !changed {
+            return None;
         }
         self.as_mut().notify();
+        Some(snapshot)
+    }
+
+    pub(crate) fn rollback_library_starred(
+        mut self: Pin<&mut Self>,
+        snapshot: LibraryStarSnapshot,
+    ) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            if rust.library_kind.to_string() == snapshot.kind.key() {
+                rust.library_entries = snapshot.entries;
+                rust.library_rows = snapshot.rows;
+                rust.library_refresh_at = snapshot.refresh_at;
+                rust.library_revision = rust.library_revision.wrapping_add(1);
+            }
+            if let Some(cache) = snapshot.cache {
+                rust.library_cache.insert(snapshot.kind.key(), cache);
+            }
+        }
+        self.as_mut().notify();
+    }
+
+    /// 文件写操作成功后让资料库缓存后台校准；`except` 是已经就地更新过的集合。
+    pub(crate) fn mark_library_caches_stale(mut self: Pin<&mut Self>, except: Option<LibraryKind>) {
+        let mut rust = self.as_mut().rust_mut();
+        // 操作前发出的资料库请求不能把旧快照写回来。
+        if rust.library_loading {
+            rust.library_epoch = rust.library_epoch.wrapping_add(1);
+            rust.library_loading = false;
+        }
+        for (kind, cache) in &mut rust.library_cache {
+            if except.is_none_or(|updated| updated.key() != *kind) {
+                cache.refresh_at = None;
+            }
+        }
     }
 
     /// 从资料库打开文件夹本身。普通文件没有双击动作，也不跳到父目录定位。
@@ -331,6 +463,47 @@ impl qobject::Kichi {
     }
 }
 
+fn clear_library_view(rust: &mut super::KichiRust, kind: LibraryKind) {
+    rust.library_kind = QString::from(kind.key());
+    rust.library_rows = QVariantList::default();
+    rust.library_entries.clear();
+    rust.library_loading = false;
+    rust.library_loaded = false;
+    rust.library_error = QString::default();
+    rust.library_refresh_at = None;
+    rust.library_revision = rust.library_revision.wrapping_add(1);
+}
+
+fn restore_library_cache(rust: &mut super::KichiRust, kind: LibraryKind) -> bool {
+    let Some(cache) = rust.library_cache.get(kind.key()) else {
+        return false;
+    };
+    rust.library_kind = QString::from(kind.key());
+    rust.library_rows = cache.rows.clone();
+    rust.library_entries = cache.entries.clone();
+    rust.library_loading = false;
+    rust.library_loaded = cache.loaded;
+    rust.library_error = QString::from(cache.error.as_str());
+    rust.library_refresh_at = cache.refresh_at;
+    rust.library_revision = rust.library_revision.wrapping_add(1);
+    true
+}
+
+fn library_cache_is_fresh(rust: &super::KichiRust, kind: LibraryKind, now: Instant) -> bool {
+    rust.library_cache
+        .get(kind.key())
+        .is_some_and(|cache| cache.is_fresh(now))
+}
+
+fn begin_library_refresh(rust: &mut super::KichiRust, kind: LibraryKind, now: Instant) -> u64 {
+    rust.library_epoch = rust.library_epoch.wrapping_add(1);
+    rust.library_kind = QString::from(kind.key());
+    rust.library_loading = true;
+    rust.library_refresh_at = Some(now);
+    rust.library_error = QString::default();
+    rust.library_epoch
+}
+
 fn update_starred_entries(
     entries: &mut Vec<kichi_core::LibraryEntry>,
     kind: LibraryKind,
@@ -432,56 +605,24 @@ mod starred_state_tests {
             true
         ));
     }
-}
-
-/// 同一页才受冷却和单飞限制；切到另一个资料库集合必须立即换数据。
-fn should_start_refresh(
-    current_kind: &str,
-    wanted_kind: &str,
-    loading: bool,
-    last_refresh: Option<Instant>,
-    now: Instant,
-) -> bool {
-    if current_kind != wanted_kind {
-        return true;
-    }
-    !loading
-        && last_refresh.is_none_or(|last| now.saturating_duration_since(last) >= REFRESH_COOLDOWN)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
-    fn switching_library_kind_ignores_cooldown_and_inflight_guard() {
+    fn cached_library_snapshot_expires_after_ttl() {
         let now = Instant::now();
-        assert!(should_start_refresh(
-            "recent-saved",
-            "starred",
-            true,
-            Some(now),
-            now
-        ));
-    }
+        let mut cache = LibraryCache {
+            rows: QVariantList::default(),
+            entries: vec![entry("a", true)],
+            loaded: true,
+            error: String::new(),
+            refresh_at: Some(now - LIBRARY_REFRESH_TTL + Duration::from_millis(1)),
+        };
+        assert!(cache.is_fresh(now));
 
-    #[test]
-    fn same_library_kind_coalesces_inflight_and_cooldown() {
-        let now = Instant::now();
-        assert!(!should_start_refresh("starred", "starred", true, None, now));
-        assert!(!should_start_refresh(
-            "starred",
-            "starred",
-            false,
-            Some(now - Duration::from_millis(2999)),
-            now
-        ));
-        assert!(should_start_refresh(
-            "starred",
-            "starred",
-            false,
-            Some(now - REFRESH_COOLDOWN),
-            now
-        ));
+        cache.refresh_at = Some(now - LIBRARY_REFRESH_TTL);
+        assert!(!cache.is_fresh(now));
+
+        cache.refresh_at = Some(now);
+        cache.loaded = false;
+        assert!(!cache.is_fresh(now));
     }
 }

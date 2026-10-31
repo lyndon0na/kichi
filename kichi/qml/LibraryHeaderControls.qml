@@ -47,7 +47,8 @@ RowLayout {
         text: qsTr("刷新")
         iconName: "refresh"
         variant: "ghost"
-        enabled: root.target !== null && !root.loading
+        enabled: root.target !== null && root.target.backend !== null && !root.loading
+                 && !root.target.backend.fileActionRunning
         onClicked: {
             if (root.target)
                 root.target.refresh()

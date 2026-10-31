@@ -4,17 +4,21 @@
 //! 排序（文件夹优先）属于展示策略，也在这里做，session 层保留官方顺序。
 
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
 use kichi_core::{EntryKind, FileEntry, TaskPhase};
 
 use super::actions::{format_size, run_in_background};
+use super::file_optimistic::{is_unconfirmed_create, merge_unresolved_create};
 use super::qobject;
 use super::QVariantList;
 
 /// 根目录在面包屑里的名字。
 pub(crate) const ROOT_NAME: &str = "全部文件";
+/// 页面重新可见时，离上次目录读取超过这么久才在后台校准。
+const FILES_REFRESH_TTL: Duration = Duration::from_secs(30);
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -35,13 +39,42 @@ impl Crumb {
 }
 
 impl qobject::Kichi {
-    /// 重新读取当前目录（登录完成、刷新按钮、进出目录都走这里）。
-    pub fn refresh_files(mut self: Pin<&mut Self>) {
+    /// 强制重新读取当前目录（登录完成、刷新按钮、进出目录都走这里）。
+    pub fn refresh_files(self: Pin<&mut Self>) {
+        self.refresh_files_inner(true);
+    }
+
+    /// 页面重新可见：缓存仍新鲜就不发请求，过期也只做静默后台校准。
+    pub fn ensure_files_fresh(self: Pin<&mut Self>) {
+        self.refresh_files_inner(false);
+    }
+
+    fn refresh_files_inner(mut self: Pin<&mut Self>, force: bool) {
         if self.listing {
             // 列表在途时又有人要刷新（例如移动完成）：记下来，本次读完再补一次。
             // 直接 return 会让源目录停留在旧数据上。
-            self.as_mut().rust_mut().refresh_pending = true;
+            if force {
+                self.as_mut().rust_mut().refresh_pending = true;
+            }
             return;
+        }
+        if self.file_action_running {
+            // 乐观状态还没提交时不能让服务端旧快照覆盖它。
+            if force {
+                self.as_mut().rust_mut().refresh_pending = true;
+            }
+            return;
+        }
+        if !force {
+            let now = Instant::now();
+            let due = self
+                .files_refresh_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= FILES_REFRESH_TTL);
+            if self.files_stale || due {
+                // 继续走下面的后台请求；旧列表保持可见。
+            } else {
+                return;
+            }
         }
         let Some(current) = self.crumbs.last().cloned() else {
             return;
@@ -67,11 +100,20 @@ impl qobject::Kichi {
                 match result {
                     Ok(entries) => {
                         // 读到了：这一跳算成功，不再需要回滚快照
-                        qichi.as_mut().rust_mut().crumb_backup = None;
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.crumb_backup = None;
+                            rust.files_stale = false;
+                        }
                         qichi.as_mut().show_entries(entries);
                     }
                     Err(err) => {
                         // 读失败：把面包屑退回跳转前，别让路径指着一个没读到的目录
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.files_refresh_at = Some(Instant::now());
+                            rust.files_stale = false;
+                        }
                         qichi.as_mut().restore_crumbs_on_failure();
                         qichi.as_mut().on_failure(err);
                     }
@@ -84,7 +126,7 @@ impl qobject::Kichi {
                     pending
                 };
                 if again {
-                    qichi.as_mut().refresh_files();
+                    qichi.as_mut().refresh_files_inner(true);
                 }
             },
         );
@@ -106,6 +148,11 @@ impl qobject::Kichi {
                 .set_message("该文件夹已不在当前列表中，请刷新后重试");
             return;
         };
+        if is_unconfirmed_create(self.as_ref().rust(), &id) {
+            self.as_mut()
+                .set_message("文件夹正在同步真实 id，请稍后再打开");
+            return;
+        }
         self.as_mut().clear_status_message();
         {
             let mut rust = self.as_mut().rust_mut();
@@ -356,6 +403,10 @@ impl qobject::Kichi {
             rust.entries.clear();
             rust.files = QVariantList::default();
             rust.files_revision = rust.files_revision.wrapping_add(1);
+            rust.files_refresh_at = None;
+            rust.file_mutation = None;
+            rust.unresolved_create.clear();
+            rust.pending_entry_ids.clear();
             rust.crumbs = vec![Crumb::root()];
             rust.crumb_backup = None;
             // 选择器也一并清空：旧账号的目录不能留在界面上
@@ -385,16 +436,25 @@ impl qobject::Kichi {
     }
 
     /// 把目录列表写回属性（只在主线程调用）。
-    pub(crate) fn show_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
-        sort_entries(&mut entries, self.sort_field, self.sort_ascending);
-        let files = list_from(&entries);
+    pub(crate) fn show_entries(mut self: Pin<&mut Self>, entries: Vec<FileEntry>) {
+        let (entries, files, changed) = {
+            let mut rust = self.as_mut().rust_mut();
+            let mut entries = merge_unresolved_create(&mut rust, entries);
+            sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
+            let changed = rust.entries != entries;
+            let files = changed.then(|| list_from_with_pending(&entries, &rust.pending_entry_ids));
+            (entries, files, changed)
+        };
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.files = files;
-            rust.entries = entries;
+            if changed {
+                rust.files = files.unwrap_or_default();
+                rust.entries = entries;
+                // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
+                rust.files_revision = rust.files_revision.wrapping_add(1);
+            }
             rust.listing = false;
-            // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
-            rust.files_revision = rust.files_revision.wrapping_add(1);
+            rust.files_refresh_at = Some(Instant::now());
             rust.files_stale = false;
         }
         self.as_mut().notify();
@@ -499,9 +559,21 @@ pub(crate) fn sort_entries(
 
 /// 条目 → QML 模型。
 pub(crate) fn list_from(entries: &[FileEntry]) -> QVariantList {
+    list_from_with_pending(entries, &std::collections::HashSet::new())
+}
+
+pub(crate) fn list_from_with_pending(
+    entries: &[FileEntry],
+    pending_ids: &std::collections::HashSet<String>,
+) -> QVariantList {
     let mut files = QVariantList::default();
     for entry in entries {
-        files.append(QVariant::from(&entry_map(entry)));
+        let mut map = entry_map(entry);
+        map.insert_clone(
+            &QString::from("pending"),
+            &QVariant::from(&pending_ids.contains(&entry.id)),
+        );
+        files.append(QVariant::from(&map));
     }
     files
 }
@@ -562,6 +634,7 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
         &QString::from("hasThumbnail"),
         &QVariant::from(&(entry.kind == EntryKind::File && !entry.thumbnail_url.is_empty())),
     );
+    map.insert_clone(&QString::from("pending"), &QVariant::from(&false));
     map
 }
 

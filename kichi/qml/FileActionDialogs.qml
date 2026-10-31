@@ -10,7 +10,7 @@ import QtQuick.Layouts
 // 菜单只管「点哪一项」，这里管「结果怎么显示」。
 //
 // 统一规则（docs/pitfalls.md 第 28 条）：不用 standardButtons。
-// 点确定不关窗，结果回来才决定——失败原因留在弹窗里，成功才收起。
+// 写入被 Rust 接受后立刻关窗；数据已经乐观更新，网络失败由底栏提示并回滚。
 Item {
     id: root
 
@@ -42,7 +42,8 @@ Item {
 
         footer: DialogFooter {
             outerMargin: renameDialog.padding
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            okEnabled: root.backend !== null && !root.backend.filesLoading
+                       && !root.backend.fileActionRunning
             onOkClicked: root.submitRename(nameField.text)
             onCancelClicked: renameDialog.close()
         }
@@ -105,7 +106,8 @@ Item {
 
         footer: DialogFooter {
             outerMargin: folderDialog.padding
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            okEnabled: root.backend !== null && !root.backend.filesLoading
+                       && !root.backend.fileActionRunning
             onOkClicked: root.submitNewFolder(folderField.text)
             onCancelClicked: folderDialog.close()
         }
@@ -157,7 +159,8 @@ Item {
         footer: DialogFooter {
             outerMargin: trashDialog.padding
             okText: qsTr("移入回收站")
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            okEnabled: root.backend !== null && !root.backend.filesLoading
+                       && !root.backend.fileActionRunning
             onOkClicked: root.submitTrash()
             onCancelClicked: trashDialog.close()
         }
@@ -240,7 +243,8 @@ Item {
         if (trimmed === root.targetName)
             return
         renameDialog.errorText = ""
-        root.backend.renameEntry(root.targetId, trimmed)
+        if (root.backend.renameEntry(root.targetId, trimmed) === true)
+            renameDialog.close()
     }
 
     function submitNewFolder(text) {
@@ -248,17 +252,19 @@ Item {
         if (trimmed.length === 0 || !root.backend)
             return
         folderDialog.errorText = ""
-        root.backend.createFolder(trimmed)
+        if (root.backend.createFolder(trimmed) === true)
+            folderDialog.close()
     }
 
     function submitTrash() {
         if (!root.backend || root.targetIds.length === 0)
             return
         trashDialog.errorText = ""
-        root.backend.trashEntries(root.targetIds)
+        if (root.backend.trashEntries(root.targetIds) === true)
+            trashDialog.close()
     }
 
-    // 结果留在各自的弹窗里：失败原地显示原因，成功才收起
+    // 本地校验失败会同步返回 false；网络结果回来时窗口通常已经关闭。
     Connections {
         target: root.backend
 

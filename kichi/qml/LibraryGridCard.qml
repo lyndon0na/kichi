@@ -5,7 +5,7 @@ FileGridItem {
     id: card
 
     property var libraryPage: null
-    property var entryData: null
+    property alias entryData: card.entry
     property int entryIndex: -1
     property var density: null
 
@@ -14,7 +14,6 @@ FileGridItem {
     signal entryPlayRequested(string id, point position)
     signal entryContextMenuRequested(var entry, point position)
 
-    entry: entryData
     rowIndex: entryIndex
     backend: libraryPage ? libraryPage.backend : null
     downloadNonPlayable: false

@@ -32,6 +32,8 @@ const POLL_IDLE: Duration = Duration::from_secs(5 * 60);
 const TICK: Duration = Duration::from_secs(1);
 /// 手动 / 切页刷新的短冷却：避免来回切页把请求打成连续 GET。
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(3);
+/// 切回任务页时，后台轮询结果在这么久内可直接复用。
+const TASKS_PAGE_TTL: Duration = Duration::from_secs(30);
 
 /// 轮询线程的全局开关（进程内唯一）。
 fn poll_running() -> &'static AtomicBool {
@@ -70,6 +72,19 @@ fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
 impl qobject::Kichi {
     /// 按需读取任务列表（刷新按钮、进入页面都走这里）。
     pub fn refresh_tasks(mut self: Pin<&mut Self>) {
+        self.as_mut().refresh_tasks_inner(false);
+    }
+
+    /// 页面重新可见：后台轮询已经维护列表，短时间内不额外发请求。
+    pub fn ensure_tasks_fresh(mut self: Pin<&mut Self>) {
+        let now = Instant::now();
+        if self.tasks_loading
+            || self
+                .task_refresh_at
+                .is_some_and(|at| now.saturating_duration_since(at) < TASKS_PAGE_TTL)
+        {
+            return;
+        }
         self.as_mut().refresh_tasks_inner(false);
     }
 

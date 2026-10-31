@@ -123,6 +123,7 @@ TestCase {
         id: gridItemComponent
 
         FileGridItem {
+            index: -1
             backend: fakeBackend
             playLoading: fakeBackend.playLoading
                          && fakeBackend.playLoadingId === (entry ? entry.id : "")

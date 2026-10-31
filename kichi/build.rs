@@ -46,6 +46,7 @@ const QML_FILES: &[&str] = &[
     "qml/SearchNavigationOverlay.qml",
     "qml/FileListHeader.qml",
     "qml/FileListDensity.qml",
+    "qml/EntryRows.qml",
     "qml/FileRow.qml",
     "qml/FileGridItem.qml",
     "qml/ContentGridView.qml",

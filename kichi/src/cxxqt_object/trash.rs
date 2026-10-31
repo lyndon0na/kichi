@@ -4,6 +4,7 @@
 //! 只能从本模块进入，且 QML 必须先完成危险操作确认。
 
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
@@ -20,10 +21,27 @@ mod trash_view;
 pub(crate) use trash_actions::TrashActionState;
 use trash_view::{sort_trash_entries, trash_list_from};
 
+/// 切回回收站时，列表缓存超过这个时间才在后台校准。
+const TRASH_REFRESH_TTL: Duration = Duration::from_secs(30);
+
 impl qobject::Kichi {
     /// 重新读取全账号回收站。
     pub fn refresh_trash(mut self: Pin<&mut Self>) {
         self.as_mut().refresh_trash_with_status(None);
+    }
+
+    /// 页面重新可见：有缓存且仍新鲜时不再发请求。
+    pub fn ensure_trash_fresh(self: Pin<&mut Self>) {
+        let now = Instant::now();
+        let (loaded, last) = {
+            let qichi = self.as_ref();
+            let rust = qichi.rust();
+            (rust.trash_loaded, rust.trash_refresh_at)
+        };
+        if loaded && last.is_some_and(|at| now.saturating_duration_since(at) < TRASH_REFRESH_TTL) {
+            return;
+        }
+        self.refresh_trash_with_status(None);
     }
 
     /// 退出登录时清空回收站状态，并让在途请求作废。
@@ -35,6 +53,7 @@ impl qobject::Kichi {
             rust.trash_list.clear();
             rust.trash_loading = false;
             rust.trash_loaded = false;
+            rust.trash_refresh_at = None;
             rust.trash_error = QString::default();
             rust.trash_revision = rust.trash_revision.wrapping_add(1);
             rust.trash_action = None;
@@ -48,7 +67,12 @@ impl qobject::Kichi {
 
     /// 文件页的「移入回收站」成功后让缓存失效；下次进入回收站会重新拉取。
     pub(crate) fn mark_trash_stale(mut self: Pin<&mut Self>) {
-        self.as_mut().rust_mut().trash_loaded = false;
+        let mut rust = self.as_mut().rust_mut();
+        // 让操作开始前发出的回收站请求失效，避免它把旧快照写回来。
+        rust.trash_epoch = rust.trash_epoch.wrapping_add(1);
+        rust.trash_loading = false;
+        rust.trash_loaded = false;
+        rust.trash_refresh_at = None;
     }
 
     pub(super) fn refresh_trash_with_status(
@@ -63,6 +87,7 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.trash_loading = true;
             rust.trash_error = QString::default();
+            rust.trash_refresh_at = Some(Instant::now());
             rust.trash_epoch = rust.trash_epoch.wrapping_add(1);
             rust.trash_epoch
         };
@@ -84,6 +109,7 @@ impl qobject::Kichi {
                             rust.trash_list = entries;
                             rust.trash_loading = false;
                             rust.trash_loaded = true;
+                            rust.trash_refresh_at = Some(Instant::now());
                             rust.trash_error = QString::default();
                             rust.trash_revision = rust.trash_revision.wrapping_add(1);
                             if let Some(status) = final_status {
@@ -97,6 +123,7 @@ impl qobject::Kichi {
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.trash_loading = false;
+                            rust.trash_refresh_at = Some(Instant::now());
                             rust.trash_error = QString::from(text.as_str());
                         }
                         qichi.as_mut().on_failure(err);

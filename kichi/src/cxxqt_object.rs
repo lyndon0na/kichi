@@ -243,6 +243,11 @@ pub mod qobject {
         #[cxx_name = "refreshFiles"]
         fn refresh_files(self: Pin<&mut Self>);
 
+        /// 页面重新可见时调用：缓存新鲜则不请求，过期则后台校准。
+        #[qinvokable]
+        #[cxx_name = "ensureFilesFresh"]
+        fn ensure_files_fresh(self: Pin<&mut Self>);
+
         /// 请求某条文件的缩略图。QML 只传 id，远程地址和缓存路径都留在 Rust 侧。
         #[qinvokable]
         #[cxx_name = "requestThumbnail"]
@@ -256,6 +261,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshTrash"]
         fn refresh_trash(self: Pin<&mut Self>);
+
+        /// 页面重新可见：缓存新鲜时直接显示，过期才静默后台校准。
+        #[qinvokable]
+        #[cxx_name = "ensureTrashFresh"]
+        fn ensure_trash_fresh(self: Pin<&mut Self>);
 
         /// 从回收站还原选中条目（支持超过一批的数量，会按 100 条分批）
         #[qinvokable]
@@ -288,6 +298,11 @@ pub mod qobject {
         #[cxx_name = "refreshTasks"]
         fn refresh_tasks(self: Pin<&mut Self>);
 
+        /// 页面重新可见：任务列表由后台轮询维护，缓存新鲜时不再额外请求。
+        #[qinvokable]
+        #[cxx_name = "ensureTasksFresh"]
+        fn ensure_tasks_fresh(self: Pin<&mut Self>);
+
         #[qinvokable]
         #[cxx_name = "addTask"]
         fn add_task(self: Pin<&mut Self>, url: QString);
@@ -316,10 +331,20 @@ pub mod qobject {
         #[cxx_name = "refreshShares"]
         fn refresh_shares(self: Pin<&mut Self>);
 
+        /// 页面重新可见：分享缓存新鲜时不再请求，过期才后台校准。
+        #[qinvokable]
+        #[cxx_name = "ensureSharesFresh"]
+        fn ensure_shares_fresh(self: Pin<&mut Self>);
+
         /// 读取资料库某一页；`kind` 只接受 recent-saved / playback-history / starred。
         #[qinvokable]
         #[cxx_name = "refreshLibrary"]
         fn refresh_library(self: Pin<&mut Self>, kind: QString);
+
+        /// 页面重新可见时调用：先恢复该集合缓存，过期再静默后台校准。
+        #[qinvokable]
+        #[cxx_name = "ensureLibraryFresh"]
+        fn ensure_library_fresh(self: Pin<&mut Self>, kind: QString);
 
         /// 从资料库打开文件夹；普通文件与可播放文件不使用这个入口。
         #[qinvokable]
@@ -515,22 +540,22 @@ pub mod qobject {
         #[cxx_name = "chooseDownloadDir"]
         fn choose_download_dir(self: Pin<&mut Self>);
 
-        /// 给条目改名（成功后自动刷新当前目录）
+        /// 给条目改名（当前列表先更新，失败自动回滚）
         #[qinvokable]
         #[cxx_name = "renameEntry"]
-        fn rename_entry(self: Pin<&mut Self>, id: QString, name: QString);
+        fn rename_entry(self: Pin<&mut Self>, id: QString, name: QString) -> bool;
 
         /// 在当前目录下新建文件夹
         #[qinvokable]
         #[cxx_name = "createFolder"]
-        fn create_folder(self: Pin<&mut Self>, name: QString);
+        fn create_folder(self: Pin<&mut Self>, name: QString) -> bool;
 
         /// 把条目移入回收站（可恢复，界面上要二次确认）。支持多选批量。
         #[qinvokable]
         #[cxx_name = "trashEntries"]
-        fn trash_entries(self: Pin<&mut Self>, ids: QStringList);
+        fn trash_entries(self: Pin<&mut Self>, ids: QStringList) -> bool;
 
-        /// 批量加星标 / 取消星标；文件页成功后刷新当前目录并恢复滚动位置。
+        /// 批量加星标 / 取消星标；当前列表先更新，失败自动回滚。
         #[qinvokable]
         #[cxx_name = "setStarred"]
         fn set_starred(self: Pin<&mut Self>, ids: QStringList, starred: bool);
@@ -548,7 +573,7 @@ pub mod qobject {
             ids: QStringList,
             target_id: QString,
             target_name: QString,
-        );
+        ) -> bool;
 
         /// 把条目复制到目标文件夹（空 id = 根目录）
         #[qinvokable]
@@ -558,7 +583,7 @@ pub mod qobject {
             ids: QStringList,
             target_id: QString,
             target_name: QString,
-        );
+        ) -> bool;
 
         /// 当前目录栈（根 → 当前）：`[{ id, name }]`，选择器据此确定起点
         #[qinvokable]
@@ -615,7 +640,7 @@ use cxx_qt_lib::{QString, QStringList, QVariant};
 /// cxx 桥接里的类型别名要求 Rust 类型 Id 与声明名一致，因此包一层
 /// `#[repr(transparent)]` 让桥接可以直接使用 Qt 的类型名。
 #[repr(transparent)]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct QVariantList(cxx_qt_lib::QList<QVariant>);
 
 unsafe impl cxx::ExternType for QVariantList {
@@ -651,6 +676,7 @@ mod actions;
 mod backend;
 mod downloads;
 mod file_actions;
+mod file_optimistic;
 mod file_targets;
 mod files;
 mod folder_picker;
@@ -703,12 +729,16 @@ pub struct KichiRust {
     pub(crate) current_dir_id: QString,
     /// 每次成功列目录 +1：界面据此做一次性滚动恢复
     pub(crate) files_revision: i32,
+    /// 最近一次目录读取成功 / 失败的时刻：切页时按 TTL 决定是否后台校准。
+    pub(crate) files_refresh_at: Option<std::time::Instant>,
     /// 回收站表格（QML 直接当 model 用）
     pub(crate) trash_rows: QVariantList,
     /// 回收站领域对象：保留完整列表与总数，不依赖 QML 传来的显示数据
     pub(crate) trash_list: Vec<kichi_core::TrashEntry>,
     pub(crate) trash_loading: bool,
     pub(crate) trash_loaded: bool,
+    /// 最近一次回收站请求开始 / 完成的时刻：切页时按 TTL 决定是否校准。
+    pub(crate) trash_refresh_at: Option<std::time::Instant>,
     pub(crate) trash_error: QString,
     /// 回收站列表真正替换时才 +1
     pub(crate) trash_revision: i32,
@@ -718,6 +748,14 @@ pub struct KichiRust {
     pub(crate) trash_action: Option<trash::TrashActionState>,
     /// 文件页有恢复操作完成，下次显示时重新拉取当前目录
     pub(crate) files_stale: bool,
+    /// 当前文件写操作的乐观快照；一次只允许一个写操作。
+    pub(crate) file_mutation: Option<file_optimistic::FileMutation>,
+    /// 新建成功但还没换到官方 id 的临时文件夹（允许连续新建多个）。
+    pub(crate) unresolved_create: Vec<file_optimistic::PendingCreate>,
+    /// 临时条目 id：目录校准前不可进入 / 当成真实云端条目使用。
+    pub(crate) pending_entry_ids: std::collections::HashSet<String>,
+    /// 临时文件夹 id 的单调序号。
+    pub(crate) file_mutation_seq: u64,
     /// 面包屑显示名（根 → 当前）
     pub(crate) breadcrumb: QStringList,
     /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
@@ -764,6 +802,8 @@ pub struct KichiRust {
     pub(crate) library_kind: QString,
     /// 当前资料库条目（播放查找、缩略图与文件夹打开共用）
     pub(crate) library_entries: Vec<kichi_core::LibraryEntry>,
+    /// 三个资料库集合各自的最近一次成功快照，切页时先复用。
+    pub(crate) library_cache: std::collections::HashMap<&'static str, library::LibraryCache>,
     pub(crate) library_loading: bool,
     pub(crate) library_loaded: bool,
     pub(crate) library_error: QString,
@@ -940,15 +980,21 @@ impl Default for KichiRust {
             files: QVariantList::default(),
             current_dir_id: QString::default(),
             files_revision: 0,
+            files_refresh_at: None,
             trash_rows: QVariantList::default(),
             trash_list: Vec::new(),
             trash_loading: false,
             trash_loaded: false,
+            trash_refresh_at: None,
             trash_error: QString::default(),
             trash_revision: 0,
             trash_epoch: 0,
             trash_action: None,
             files_stale: false,
+            file_mutation: None,
+            unresolved_create: Vec::new(),
+            pending_entry_ids: std::collections::HashSet::new(),
+            file_mutation_seq: 0,
             breadcrumb,
             entries: Vec::new(),
             thumbnail_requests: std::collections::HashSet::new(),
@@ -972,6 +1018,7 @@ impl Default for KichiRust {
             library_rows: QVariantList::default(),
             library_kind: QString::default(),
             library_entries: Vec::new(),
+            library_cache: std::collections::HashMap::new(),
             library_loading: false,
             library_loaded: false,
             library_error: QString::default(),

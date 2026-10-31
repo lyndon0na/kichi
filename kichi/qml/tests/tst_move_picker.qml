@@ -5,7 +5,7 @@ import ".."
 // 移动 / 复制的目标文件夹选择器。
 //
 // 锁住几条容易回归的规则：源目录不能当目标、源文件夹不能进入、
-// 失败原因留在弹窗、成功才关、列表只按 revision 重灌。
+// 请求被接受后立即关窗、列表只按 revision 重灌。
 TestCase {
     name: "MovePickerDialog"
     when: windowShown
@@ -59,6 +59,7 @@ TestCase {
             lastTargetId = targetId
             fileActionRunning = true
             changed()
+            return true
         }
 
         function copyEntries(ids, targetId, targetName) {
@@ -67,6 +68,7 @@ TestCase {
             lastTargetId = targetId
             fileActionRunning = true
             changed()
+            return true
         }
 
         function finish(action, ok, message) {
@@ -157,7 +159,7 @@ TestCase {
         compare(picker.path.length, before, "源文件夹不能进入（否则能绕到它的子目录）")
     }
 
-    function test_move_calls_backend_and_keeps_failure_visible() {
+    function test_move_calls_backend_and_closes_before_network_result() {
         openMove({ id: "f1", name: "file.mkv", kind: "file" }, ["f1"], [])
         picker.enterFolder({ id: "A", name: "A" })
         wait(40)
@@ -170,12 +172,11 @@ TestCase {
         compare(backend.moveCount, 1)
         compare(backend.lastIds.join(","), "f1")
         compare(backend.lastTargetId, "B")
-        verify(picker.opened, "请求没回来：不关")
+        verify(!picker.opened, "本地源行已移除，选择器立即关闭")
 
         backend.finish("move", false, "目标里已有同名条目")
         wait(40)
-        verify(picker.opened, "失败后留在原地")
-        compare(findChild(picker, "movePickerActionError").text, "目标里已有同名条目")
+        verify(!picker.opened, "网络失败由底栏提示，不能重新弹窗")
     }
 
     function test_success_closes_the_picker() {
@@ -186,9 +187,10 @@ TestCase {
         wait(40)
         mouseClick(okButton())
         wait(40)
+        verify(!picker.opened, "请求被接受后立即关闭")
         backend.finish("move", true, "已移动")
         wait(40)
-        verify(!picker.opened, "成功后收起")
+        verify(!picker.opened, "成功后保持关闭")
     }
 
     function test_copy_mode_uses_copy_endpoint() {

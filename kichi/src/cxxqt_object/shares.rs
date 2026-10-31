@@ -8,6 +8,7 @@ use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant
 use kichi_core::{EntryKind, MyShare};
 
 use super::actions::run_in_background;
+use super::file_optimistic::is_unconfirmed_create;
 use super::qobject;
 use super::QVariantList;
 use crate::session::Failure;
@@ -16,9 +17,23 @@ type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 /// 切页 / 手动刷新的短冷却。
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(3);
+/// 页面重新可见时，分享列表缓存超过这个时间才后台校准。
+const SHARES_REFRESH_TTL: Duration = Duration::from_secs(30);
 
 impl qobject::Kichi {
     pub fn refresh_shares(mut self: Pin<&mut Self>) {
+        self.as_mut().refresh_shares_inner(false);
+    }
+
+    pub fn ensure_shares_fresh(mut self: Pin<&mut Self>) {
+        let now = Instant::now();
+        if self.shares_loading
+            || self
+                .share_refresh_at
+                .is_some_and(|at| now.saturating_duration_since(at) < SHARES_REFRESH_TTL)
+        {
+            return;
+        }
         self.as_mut().refresh_shares_inner(false);
     }
 
@@ -86,6 +101,17 @@ impl qobject::Kichi {
                 QString::from("create"),
                 false,
                 QString::from("没有选中要分享的条目"),
+            );
+            return;
+        }
+        if ids
+            .iter()
+            .any(|id| is_unconfirmed_create(self.as_ref().rust(), id))
+        {
+            self.as_mut().share_action_done(
+                QString::from("create"),
+                false,
+                QString::from("文件夹正在同步真实 id，请稍后再分享"),
             );
             return;
         }
