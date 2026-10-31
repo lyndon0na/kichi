@@ -58,6 +58,9 @@ Item {
     /// 悬停 / 徽标底：比 accentSoft 更淡
     readonly property color accentGhost: Qt.rgba(accent.r, accent.g, accent.b,
                                                  theme.darkMode ? 0.14 : 0.08)
+    /// 完全透明、但 RGB 与 accentGhost 相同的「消失色」。
+    readonly property color accentClear: Qt.rgba(accentGhost.r, accentGhost.g,
+                                                 accentGhost.b, 0)
 
     // —— 文字 ——
     readonly property color textPrimary: palette.text

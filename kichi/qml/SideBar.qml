@@ -52,7 +52,7 @@ Rectangle {
                 background: Rectangle {
                     radius: theme.radiusCard
                     color: navButton.checked ? theme.accentSoft
-                         : navButton.hovered ? theme.surfaceHover : theme.surfaceClear
+                         : navButton.hovered ? theme.accentGhost : theme.accentClear
 
 
                     // 选中竖条：和文件列表的选中语言一致
