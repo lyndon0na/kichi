@@ -32,6 +32,7 @@ pub(crate) struct LibraryCache {
     pub(crate) loaded: bool,
     pub(crate) error: String,
     pub(crate) refresh_at: Option<Instant>,
+    pub(crate) revision: i32,
 }
 
 impl LibraryCache {
@@ -49,6 +50,7 @@ pub(crate) struct LibraryStarSnapshot {
     entries: Vec<kichi_core::LibraryEntry>,
     rows: QVariantList,
     refresh_at: Option<Instant>,
+    data_revision: i32,
     cache: Option<LibraryCache>,
 }
 
@@ -160,6 +162,10 @@ impl qobject::Kichi {
                         let mut notify = false;
                         {
                             let mut rust = qichi.as_mut().rust_mut();
+                            let data_revision = library_data_revision_for(
+                                rust.library_cache.get(kind.key()),
+                                &entries,
+                            );
                             rust.library_cache.insert(
                                 kind.key(),
                                 LibraryCache {
@@ -168,6 +174,7 @@ impl qobject::Kichi {
                                     loaded: true,
                                     error: String::new(),
                                     refresh_at: Some(refresh_at),
+                                    revision: data_revision,
                                 },
                             );
                             if rust.library_kind.to_string() == kind.key() {
@@ -183,6 +190,7 @@ impl qobject::Kichi {
                                 rust.library_loaded = true;
                                 rust.library_error = QString::default();
                                 rust.library_refresh_at = Some(refresh_at);
+                                rust.library_data_revision = data_revision;
                                 notify = changed || visible;
                             } else {
                                 rust.library_request_running = false;
@@ -235,6 +243,7 @@ impl qobject::Kichi {
             rust.library_refresh_at = None;
             rust.library_refresh_pending = None;
             rust.library_revision = rust.library_revision.wrapping_add(1);
+            rust.library_data_revision = 0;
         }
         self.as_mut().notify();
     }
@@ -276,23 +285,31 @@ impl qobject::Kichi {
                 entries: rust.library_entries.clone(),
                 rows: rust.library_rows.clone(),
                 refresh_at: rust.library_refresh_at,
+                data_revision: rust.library_data_revision,
                 cache: rust.library_cache.get(kind.key()).cloned(),
             };
             let changed_view =
                 update_starred_entries(&mut rust.library_entries, kind, &wanted, starred);
+            let mut data_revision = rust.library_data_revision;
             if changed_view {
                 rust.library_rows = library_view::list_from(&rust.library_entries, kind);
                 rust.library_revision = rust.library_revision.wrapping_add(1);
                 rust.library_refresh_at = Some(now);
+                data_revision = data_revision.wrapping_add(1);
             }
             let mut changed_cache = false;
             if let Some(cache) = rust.library_cache.get_mut(kind.key()) {
                 if update_starred_entries(&mut cache.entries, kind, &wanted, starred) {
+                    if !changed_view {
+                        data_revision = data_revision.wrapping_add(1);
+                    }
                     cache.rows = library_view::list_from(&cache.entries, kind);
                     cache.refresh_at = Some(now);
+                    cache.revision = data_revision;
                     changed_cache = true;
                 }
             }
+            rust.library_data_revision = data_revision;
             (snapshot, changed_view || changed_cache)
         };
         if !changed {
@@ -313,6 +330,7 @@ impl qobject::Kichi {
                 rust.library_rows = snapshot.rows;
                 rust.library_refresh_at = snapshot.refresh_at;
                 rust.library_revision = rust.library_revision.wrapping_add(1);
+                rust.library_data_revision = snapshot.data_revision;
             }
             if let Some(cache) = snapshot.cache {
                 rust.library_cache.insert(snapshot.kind.key(), cache);
@@ -532,6 +550,7 @@ fn clear_library_view(rust: &mut super::KichiRust, kind: LibraryKind) {
     rust.library_error = QString::default();
     rust.library_refresh_at = None;
     rust.library_revision = rust.library_revision.wrapping_add(1);
+    rust.library_data_revision = 0;
 }
 
 fn restore_library_cache(rust: &mut super::KichiRust, kind: LibraryKind) -> bool {
@@ -547,6 +566,7 @@ fn restore_library_cache(rust: &mut super::KichiRust, kind: LibraryKind) -> bool
     rust.library_error = QString::from(cache.error.as_str());
     rust.library_refresh_at = cache.refresh_at;
     rust.library_revision = rust.library_revision.wrapping_add(1);
+    rust.library_data_revision = cache.revision;
     true
 }
 
@@ -554,6 +574,18 @@ fn library_cache_is_fresh(rust: &super::KichiRust, kind: LibraryKind, now: Insta
     rust.library_cache
         .get(kind.key())
         .is_some_and(|cache| cache.is_fresh(now))
+}
+
+fn library_data_revision_for(
+    cache: Option<&LibraryCache>,
+    entries: &[kichi_core::LibraryEntry],
+) -> i32 {
+    let revision = cache.map_or(0, |cache| cache.revision);
+    if cache.is_none_or(|cache| cache.entries.as_slice() != entries) {
+        revision.wrapping_add(1)
+    } else {
+        revision
+    }
 }
 
 fn begin_library_refresh(
@@ -684,6 +716,7 @@ mod starred_state_tests {
             loaded: true,
             error: String::new(),
             refresh_at: Some(now - LIBRARY_REFRESH_TTL + Duration::from_millis(1)),
+            revision: 1,
         };
         assert!(cache.is_fresh(now));
 
@@ -693,5 +726,24 @@ mod starred_state_tests {
         cache.refresh_at = Some(now);
         cache.loaded = false;
         assert!(!cache.is_fresh(now));
+    }
+
+    #[test]
+    fn data_revision_only_advances_when_entries_change() {
+        let entries = vec![entry("a", true)];
+        assert_eq!(library_data_revision_for(None, &entries), 1);
+
+        let cache = LibraryCache {
+            rows: QVariantList::default(),
+            entries: entries.clone(),
+            loaded: true,
+            error: String::new(),
+            refresh_at: Some(Instant::now()),
+            revision: 4,
+        };
+        assert_eq!(library_data_revision_for(Some(&cache), &entries), 4);
+
+        let changed = vec![entry("b", true)];
+        assert_eq!(library_data_revision_for(Some(&cache), &changed), 5);
     }
 }

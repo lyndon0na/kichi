@@ -90,6 +90,8 @@ pub mod qobject {
         #[qproperty(QString, library_error, cxx_name = "libraryError", READ, NOTIFY = changed)]
         /// 集合真正替换时 +1；QML 据此把当前行复位并恢复焦点。
         #[qproperty(i32, library_revision, cxx_name = "libraryRevision", READ, NOTIFY = changed)]
+        /// 当前资料库集合的数据版本；仅条目真正变化时 +1，切页恢复缓存不推进。
+        #[qproperty(i32, library_data_revision, cxx_name = "libraryDataRevision", READ, NOTIFY = changed)]
         /// 有创建或撤销分享的写请求在途
         #[qproperty(bool, share_action_running, cxx_name = "shareActionRunning", READ, NOTIFY = changed)]
         /// 刚创建成功的分享结果（QML 弹窗切到成功态后读取）
@@ -852,6 +854,7 @@ pub struct KichiRust {
     pub(crate) library_refresh_pending: Option<kichi_core::LibraryKind>,
     /// 集合真正替换时 +1
     pub(crate) library_revision: i32,
+    pub(crate) library_data_revision: i32,
     /// 资料库请求代数：退出登录 / 切页后旧结果作废
     pub(crate) library_epoch: u64,
     /// 创建 / 撤销分享的写请求在途（防连点）
@@ -1078,6 +1081,7 @@ impl Default for KichiRust {
             library_refresh_at: None,
             library_refresh_pending: None,
             library_revision: 0,
+            library_data_revision: 0,
             library_epoch: 0,
             share_action_running: false,
             share_action_epoch: 0,

@@ -13,6 +13,7 @@ Item {
     property int currentIndex: -1
     property var rows: []
     property alias rowModel: rowList
+    property bool rowsDirty: true
 
     signal keyPressed(var event)
 
@@ -84,6 +85,10 @@ Item {
     }
 
     function rebuildRows() {
+        if (!visible) {
+            rowsDirty = true
+            return
+        }
         const groups = [
             { key: "today", cards: [] },
             { key: "yesterday", cards: [] },
@@ -122,6 +127,8 @@ Item {
         }
         rows = next
         syncRowList(next)
+        rowsDirty = false
+        groupedList.forceLayout()
         Qt.callLater(function () {
             groupedList.forceLayout()
         })
@@ -205,15 +212,31 @@ Item {
             groupedList.positionViewAtIndex(rowIndex, mode)
     }
 
-    onEntriesChanged: rebuildRows()
-    onColumnsChanged: rebuildRows()
-    onVisibleChanged: {
+    onEntriesChanged: {
         if (visible)
+            rebuildRows()
+        else
+            rowsDirty = true
+    }
+    onColumnsChanged: {
+        if (visible)
+            rebuildRows()
+        else
+            rowsDirty = true
+    }
+    onVisibleChanged: {
+        if (visible) {
+            if (rowsDirty)
+                rebuildRows()
             Qt.callLater(function () {
                 groupedList.forceLayout()
             })
+        }
     }
-    Component.onCompleted: rebuildRows()
+    Component.onCompleted: {
+        if (visible)
+            rebuildRows()
+    }
 
     ListView {
         id: groupedList

@@ -19,7 +19,11 @@ Item {
 
     readonly property bool activeCollection: page.backend !== null
                                             && page.backend.libraryKind === page.kind
-    readonly property var entries: page.activeCollection ? page.backend.libraryRows : []
+    /// 每个资料库页保留自己的快照。后端三页共用一份当前集合，切到另一页时
+    /// 不能把本页模型清空，否则切回来会重新灌入整份数据，侧栏切换明显卡顿。
+    property var cachedEntries: []
+    property int acceptedDataRevision: -1
+    readonly property var entries: page.cachedEntries
     readonly property bool loading: page.activeCollection && page.backend.libraryLoading
     readonly property bool loaded: page.activeCollection && page.backend.libraryLoaded
     readonly property string errorText: page.activeCollection ? page.backend.libraryError : ""
@@ -77,6 +81,19 @@ Item {
             page.backend.ensureLibraryFresh(page.kind)
         else
             page.refresh()
+    }
+
+    function acceptBackendEntries() {
+        if (!page.activeCollection)
+            return
+        const revision = page.backend.libraryDataRevision
+        if (typeof revision === "number") {
+            if (page.acceptedDataRevision === revision)
+                return
+            page.acceptedDataRevision = revision
+        }
+        if (page.cachedEntries !== page.backend.libraryRows)
+            page.cachedEntries = page.backend.libraryRows
     }
 
     function rememberScroll() {
@@ -245,6 +262,7 @@ Item {
             return
         }
         page.ensureFresh()
+        page.acceptBackendEntries()
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
             page.pendingScrollRestore = true
@@ -543,6 +561,7 @@ Item {
         function onChanged() {
             if (!page.backend || page.backend.libraryKind !== page.kind)
                 return
+            page.acceptBackendEntries()
             if (page.lastRevision === page.backend.libraryRevision)
                 return
             page.lastRevision = page.backend.libraryRevision

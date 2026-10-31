@@ -20,6 +20,7 @@ TestCase {
         property bool libraryLoaded: false
         property string libraryError: ""
         property int libraryRevision: 0
+        property int libraryDataRevision: 0
         property bool playLoading: false
         property string playLoadingId: ""
         property var playingIds: []
@@ -124,6 +125,7 @@ TestCase {
         backend.libraryLoaded = false
         backend.libraryError = ""
         backend.libraryRevision = 0
+        backend.libraryDataRevision = 0
         backend.refreshCalls = 0
         backend.refreshKind = ""
         backend.openedId = ""
@@ -186,8 +188,45 @@ TestCase {
         backend.libraryRows = rows
         backend.libraryLoaded = loaded !== false
         backend.libraryRevision += 1
+        backend.libraryDataRevision += 1
         backend.changed()
         wait(20)
+    }
+
+    function test_cached_rows_survive_switching_library_collections() {
+        const recentRows = [row("recent-a", false), row("recent-b", false)]
+        publish(recentRows, true)
+        const list = findChild(page, "libraryList")
+        verify(list !== null)
+        compare(list.count, 2)
+
+        const recentRevision = backend.libraryDataRevision
+        page.active = false
+        backend.libraryKind = "starred"
+        backend.libraryRows = [row("starred-a", false, "file", true)]
+        backend.libraryRevision += 1
+        backend.libraryDataRevision += 1
+        backend.changed()
+        wait(20)
+        compare(list.count, 2, "切到别的资料库集合不能清空本页缓存")
+
+        backend.libraryKind = "recent-saved"
+        backend.libraryRows = recentRows
+        backend.libraryRevision += 1
+        backend.libraryDataRevision = recentRevision
+        backend.changed()
+        page.active = true
+        wait(20)
+        compare(list.count, 2, "切回未变化集合时保留原模型")
+
+        const changedRows = [row("recent-c", false), row("recent-d", false)]
+        backend.libraryRows = changedRows
+        backend.libraryRevision += 1
+        backend.libraryDataRevision += 1
+        backend.changed()
+        tryCompare(list, "count", 2)
+        compare(list.itemAtIndex(0).entry.id, "recent-c")
+        compare(list.itemAtIndex(1).entry.id, "recent-d")
     }
 
     function test_entering_page_refreshes_and_empty_state_is_shown() {
