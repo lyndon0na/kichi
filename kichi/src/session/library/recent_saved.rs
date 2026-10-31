@@ -38,7 +38,7 @@ pub(super) fn load(session: &Session) -> Result<Vec<LibraryEntry>, Failure> {
     }
 
     let events = ordered_events(deduped);
-    assemble(events, |id| client.file_entry(id).map_err(Failure::from))
+    assemble(events, |id| client.entry_detail(id).map_err(Failure::from))
 }
 
 fn merge_event(events: &mut HashMap<String, RecentSavedEvent>, candidate: RecentSavedEvent) {

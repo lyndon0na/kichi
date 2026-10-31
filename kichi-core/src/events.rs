@@ -49,10 +49,17 @@ impl PlaybackProgress {
 }
 
 /// 一条官方播放历史。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PlaybackHistoryEntry {
+    /// 事件 id；部分响应可能为空。
+    pub id: String,
     pub file_id: String,
-    pub progress: PlaybackProgress,
+    /// 事件更新时间；用于资料库页排序。
+    pub updated_at: Option<DateTime<Utc>>,
+    /// 进度 0 秒或总时长缺失时仍保留历史，但页面显示为「—」。
+    pub progress: Option<PlaybackProgress>,
+    /// 事件附带的完整文件；不完整时为 `None`，调用方再按需读取只读详情。
+    pub reference_resource: Option<FileEntry>,
 }
 
 /// 一条最近保存事件。
@@ -181,13 +188,13 @@ struct EventDto {
     file_id: String,
     #[serde(default, rename = "type")]
     event_type: String,
+    #[serde(default, alias = "updatedTime", deserialize_with = "lenient_time")]
+    updated_time: Option<DateTime<Utc>>,
+    #[serde(default, alias = "createdTime", deserialize_with = "lenient_time")]
+    created_time: Option<DateTime<Utc>>,
     #[serde(default)]
     params: Option<PlayParamsDto>,
-    #[serde(default, deserialize_with = "lenient_time")]
-    created_time: Option<DateTime<Utc>>,
-    #[serde(default, deserialize_with = "lenient_time")]
-    updated_time: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, alias = "referenceResource")]
     reference_resource: Option<FileDto>,
 }
 
@@ -206,17 +213,28 @@ impl EventDto {
         if !self.event_type.is_empty() && self.event_type != EVENT_TYPE_PLAY {
             return None;
         }
-        let params = self.params?;
-        let file_id = [self.file_id, params.file_id]
+        let params = self.params.unwrap_or_default();
+        let resource_id = self
+            .reference_resource
+            .as_ref()
+            .map(FileDto::event_resource_id)
+            .unwrap_or_default()
+            .to_owned();
+        let file_id = [self.file_id, params.file_id, resource_id]
             .into_iter()
             .map(|id| id.trim().to_owned())
             .find(|id| !id.is_empty())?;
-        let progress = PlaybackProgress {
-            seconds: params.play_seconds,
-            duration: params.play_duration,
-        }
-        .normalized()?;
-        Some(PlaybackHistoryEntry { file_id, progress })
+        let progress = playback_progress(params.play_seconds, params.play_duration);
+        let reference_resource = self
+            .reference_resource
+            .and_then(|resource| resource.into_complete_entry(&file_id));
+        Some(PlaybackHistoryEntry {
+            id: self.id.trim().to_owned(),
+            file_id,
+            updated_at: self.updated_time,
+            progress,
+            reference_resource,
+        })
     }
 
     fn into_recent_saved(self) -> Option<RecentSavedEvent> {
@@ -245,7 +263,7 @@ impl EventDto {
         let occurred_at = self.updated_time.or(self.created_time);
         let resource = self
             .reference_resource
-            .and_then(|resource| resource.into_complete_event_entry(&file_id));
+            .and_then(|resource| resource.into_complete_entry(&file_id));
         Some(RecentSavedEvent {
             event_id,
             file_id,
@@ -253,6 +271,16 @@ impl EventDto {
             resource,
         })
     }
+}
+
+/// 播放历史保留 0 秒事件（界面显示 0%），但总时长缺失时没有可展示进度。
+/// 位置超过总时长时按总时长截断。续播路径还会再走一次 `normalized()`，
+/// 因而 0 秒不会被误当成可恢复位置。
+fn playback_progress(seconds: u64, duration: u64) -> Option<PlaybackProgress> {
+    (duration > 0).then_some(PlaybackProgress {
+        seconds: seconds.min(duration),
+        duration,
+    })
 }
 
 /// 数字字段可能是字符串、数字、null 或空串；坏值按 0 处理，不让整页失败。
@@ -324,13 +352,18 @@ mod tests {
     }
 
     #[test]
-    fn history_parses_strings_numbers_and_skips_bad_rows() {
+    fn history_parses_resource_time_and_lenient_progress() {
         let raw = r#"{
             "events": [
-                {"type":"TYPE_PLAY","file_id":"f1",
-                 "params":{"play_seconds":"115","play_duration":"162"}},
+                {"id":"event-1","type":"TYPE_PLAY","file_id":"f1",
+                 "updated_time":"2026-10-31T08:00:00Z",
+                 "params":{"play_seconds":"115","play_duration":"162"},
+                 "reference_resource":{"name":"movie.mkv","kind":"drive#file",
+                   "size":"2048","file_extension":"mkv"}},
                 {"type":"TYPE_PLAY","fileId":"f2",
-                 "params":{"play_seconds":8,"play_duration":30}},
+                 "updatedTime":"2026-10-30T08:00:00Z",
+                 "params":{"play_seconds":8,"play_duration":30},
+                 "referenceResource":{"id":"f2","name":"incomplete.mkv"}},
                 {"type":"TYPE_PLAY","file_id":"",
                  "params":{"file_id":"f3","play_seconds":"9","play_duration":"30"}},
                 {"type":"TYPE_PLAY","file_id":"zero",
@@ -350,20 +383,55 @@ mod tests {
             .into_iter()
             .filter_map(EventDto::into_history_entry)
             .collect();
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 6, "坏进度不应丢掉整条播放历史");
+        assert_eq!(entries[0].id, "event-1");
         assert_eq!(entries[0].file_id, "f1");
         assert_eq!(
             entries[0].progress,
-            PlaybackProgress {
+            Some(PlaybackProgress {
                 seconds: 115,
                 duration: 162
-            }
+            })
         );
+        assert_eq!(
+            entries[0].updated_at.map(|time| time.to_rfc3339()),
+            Some("2026-10-31T08:00:00+00:00".to_owned())
+        );
+        let resource = entries[0]
+            .reference_resource
+            .as_ref()
+            .expect("完整 reference_resource 应直接保留");
+        assert_eq!(resource.id, "f1", "资源缺 id 时应使用事件文件 id");
+        assert_eq!(resource.name, "movie.mkv");
+        assert!(resource.video);
+
         assert_eq!(entries[1].file_id, "f2");
-        assert_eq!(entries[1].progress.seconds, 8);
+        assert_eq!(
+            entries[1].progress.map(|progress| progress.seconds),
+            Some(8)
+        );
+        assert!(
+            entries[1].reference_resource.is_none(),
+            "缺类型字段的资源应留给会话层补详情"
+        );
         assert_eq!(entries[2].file_id, "f3", "params 里的 file_id 也要兼容");
-        assert_eq!(entries[3].file_id, "clamp");
-        assert_eq!(entries[3].progress.seconds, 20, "位置不能超过总时长");
+        assert_eq!(
+            entries[2].progress.map(|progress| progress.seconds),
+            Some(9)
+        );
+        assert_eq!(entries[3].file_id, "zero");
+        assert_eq!(
+            entries[3].progress.map(|progress| progress.seconds),
+            Some(0)
+        );
+        assert_eq!(entries[4].file_id, "clamp");
+        assert_eq!(
+            entries[4].progress.map(|progress| progress.seconds),
+            Some(20),
+            "位置不能超过总时长"
+        );
+        assert_eq!(entries[5].file_id, "bad");
+        assert_eq!(entries[5].progress, None, "无总时长时页面显示短横线");
         assert_eq!(parsed.next_page_token.as_deref(), Some("tok"));
     }
 
@@ -420,10 +488,12 @@ mod tests {
         assert_eq!(resource.parent_id, "P1");
         assert_eq!(resource.size, 42);
         assert_eq!(resource.thumbnail_url, "https://thumb.mypikpak.com/F1");
-        assert!(
-            entries[1].resource.is_none(),
-            "缺 id 的参考资源必须回退到详情请求"
-        );
+        let resource = entries[1]
+            .resource
+            .as_ref()
+            .expect("资源缺 id 时应使用事件文件 id");
+        assert_eq!(resource.id, "F2");
+        assert_eq!(resource.kind, crate::EntryKind::Folder);
     }
 
     #[test]

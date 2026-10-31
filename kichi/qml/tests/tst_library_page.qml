@@ -166,6 +166,16 @@ TestCase {
         tryCompare(backend, "playedId", "movie")
     }
 
+    function test_row_play_signal_requests_play_from_delegate() {
+        publish([row("movie", true)], true)
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+        item.playRequested("movie", Qt.point(12, 18))
+        tryCompare(backend, "playedId", "movie")
+    }
+
     function test_plain_file_double_click_does_not_open_location() {
         publish([row("document", false)], true)
         var list = findChild(page, "libraryList")

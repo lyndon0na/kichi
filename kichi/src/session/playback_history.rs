@@ -35,8 +35,12 @@ impl Session {
             let (events, next) = client
                 .list_play_history(page_token.as_deref())
                 .map_err(Failure::from)?;
-            if let Some(entry) = events.into_iter().find(|entry| entry.file_id == file_id) {
-                return Ok(Some(entry.progress));
+            if let Some(progress) = events
+                .into_iter()
+                .find(|entry| entry.file_id == file_id)
+                .and_then(|entry| entry.progress)
+            {
+                return Ok(Some(progress));
             }
             match next {
                 Some(token) if seen.insert(token.clone()) => page_token = Some(token),

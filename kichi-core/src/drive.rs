@@ -360,6 +360,21 @@ impl DriveClient {
         Ok((files, next))
     }
 
+    /// 只读读取一个条目的完整列表形状。
+    ///
+    /// 播放历史通常随事件带 `reference_resource`；只有资源缺少名称或类型时，
+    /// 播放历史页才用这个接口补一次。与播放用的 [`DriveClient::file_detail`]
+    /// 不同，这里保留文件夹 / 文件、父目录和缩略图等表格字段。
+    pub fn entry_detail(&self, id: &str) -> Result<FileEntry, Error> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(Error::InvalidInput("文件 id 为空".into()));
+        }
+        let dto: FileDto = self.get(&self.config().file_url(id))?;
+        dto.into_complete_entry(id)
+            .ok_or_else(|| Error::ApiChanged("文件详情缺少可用的 id、名称或类型".to_owned()))
+    }
+
     /// 列出全账号回收站（自动包含各个子目录里的条目）。
     ///
     /// 必须同时使用 `parent_id=*` 和 `trashed=true`：只带后者时官方只返回
@@ -383,19 +398,6 @@ impl DriveClient {
             .collect();
         let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
         Ok((files, next))
-    }
-
-    /// 读取单个条目的完整文件信息（只读）。
-    ///
-    /// 资料库事件通常带 `reference_resource`；只有资源缺失或不足以识别
-    /// 文件 / 文件夹时才回退到这里，避免为整页事件逐条发详情请求。
-    pub fn file_entry(&self, id: &str) -> Result<FileEntry, Error> {
-        let id = id.trim();
-        if id.is_empty() {
-            return Err(Error::InvalidInput("条目 id 为空".into()));
-        }
-        let dto: FileDto = self.get(&self.config.file_url(id))?;
-        Ok(dto.into_entry())
     }
 }
 
@@ -509,23 +511,6 @@ impl FileDto {
         self.id.trim()
     }
 
-    /// 事件里的参考资源是否足以直接构造列表行。
-    ///
-    /// 时间与缩略图可能本来就不下发，不算「不完整」；身份字段缺失、
-    /// 类型未知或与事件 `file_id` 不一致时才必须补一次详情请求。
-    pub(crate) fn is_complete_event_resource(&self, expected_id: &str) -> bool {
-        let id = self.id.trim();
-        !id.is_empty()
-            && id == expected_id.trim()
-            && !self.name.trim().is_empty()
-            && EntryKind::from_api_kind(&self.kind).is_some()
-    }
-
-    pub(crate) fn into_complete_event_entry(self, expected_id: &str) -> Option<FileEntry> {
-        self.is_complete_event_resource(expected_id)
-            .then(|| self.into_entry())
-    }
-
     /// 转换成领域类型。
     pub(crate) fn into_entry(self) -> FileEntry {
         let is_folder = self.kind == "drive#folder";
@@ -577,6 +562,26 @@ impl FileDto {
                 String::new()
             },
         }
+    }
+
+    /// 事件里的 `reference_resource` 只有在带上名称和可识别类型时才足以直接
+    /// 生成表格行；缺少这些字段时必须回退到只读详情请求，不能把未知类型猜成文件。
+    ///
+    /// `fallback_id` 来自事件自身的 `file_id`。资源偶尔不回传 id，这不影响
+    /// 展示或打开，仍以事件的文件 id 为准；显式 id 与事件不一致时不能贴错文件，
+    /// 必须返回 `None` 让调用方补详情。
+    pub(crate) fn into_complete_entry(mut self, fallback_id: &str) -> Option<FileEntry> {
+        let fallback_id = fallback_id.trim();
+        let resource_id = self.id.trim();
+        if fallback_id.is_empty()
+            || (!resource_id.is_empty() && resource_id != fallback_id)
+            || self.name.trim().is_empty()
+            || EntryKind::from_api_kind(&self.kind).is_none()
+        {
+            return None;
+        }
+        self.id = fallback_id.to_owned();
+        Some(self.into_entry())
     }
 
     /// 转换成回收站条目：保留原父目录与删除时间。
@@ -890,6 +895,39 @@ mod tests {
 
         assert_eq!(entries[2].modified_at, None, "空时间应为 None");
         assert!(entries[2].audit_flagged, "非 STATUS_OK 的审核状态应标记");
+    }
+
+    #[test]
+    fn complete_event_resource_requires_name_and_known_kind() {
+        let complete: FileDto = serde_json::from_str(
+            r#"{"name":"movie.mkv","kind":"drive#file","size":"42",
+                "file_extension":"mkv"}"#,
+        )
+        .expect("资源应可解析");
+        let entry = complete
+            .into_complete_entry("event-file")
+            .expect("名称和类型完整时应可直接展示");
+        assert_eq!(entry.id, "event-file", "资源缺 id 时使用事件文件 id");
+        assert!(entry.video);
+
+        let missing_kind: FileDto =
+            serde_json::from_str(r#"{"id":"f1","name":"movie.mkv"}"#).expect("资源应可解析");
+        assert!(
+            missing_kind.into_complete_entry("f1").is_none(),
+            "类型缺失不能猜成普通文件"
+        );
+
+        let missing_name: FileDto =
+            serde_json::from_str(r#"{"id":"f1","kind":"drive#file"}"#).expect("资源应可解析");
+        assert!(missing_name.into_complete_entry("f1").is_none());
+
+        let mismatched_id: FileDto =
+            serde_json::from_str(r#"{"id":"other","name":"movie.mkv","kind":"drive#file"}"#)
+                .expect("资源应可解析");
+        assert!(
+            mismatched_id.into_complete_entry("f1").is_none(),
+            "参考资源不能贴到另一个事件文件上"
+        );
     }
 
     #[test]
