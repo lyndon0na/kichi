@@ -21,6 +21,9 @@ pub(crate) const LIST_LIMIT: u32 = 500;
 /// 文件列表只取已完成、未进回收站的条目。
 pub(crate) const LIST_FILTERS: &str =
     r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#;
+/// 已加星标条目：星标是系统标签，不是列表项上的 `starred` 布尔字段。
+pub(crate) const STARRED_FILTERS: &str =
+    r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"system_tag":{"in":"STAR"},"trashed":{"eq":false}}"#;
 /// 回收站不按完成阶段收窄；`parent_id=*` 才能看到所有目录里删掉的条目。
 pub(crate) const TRASH_FILTERS: &str = r#"{"trashed":{"eq":true}}"#;
 pub(crate) const TRASH_PARENT_ID: &str = "*";

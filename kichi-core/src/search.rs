@@ -8,7 +8,7 @@
 //! 本模块只管「一次请求」与「一个纯函数」；逐页扫描、可中断、路径还原属于
 //! 会话状态，放在 `kichi` 的 `session::search`。
 
-use crate::drive::{DriveClient, FileDto};
+use crate::drive::{DriveClient, FileDto, LIST_FILTERS, STARRED_FILTERS};
 use crate::types::FileEntry;
 use crate::Error;
 
@@ -16,6 +16,48 @@ use crate::Error;
 pub const EVERYTHING_PARENT: &str = "*";
 
 impl DriveClient {
+    /// 全盘列举的一页（`parent_id=*`：根目录 + 所有子目录里的条目）。
+    ///
+    /// 这是搜索与资料库查询共用的底层分页入口；官方**固定每页 400 条**
+    /// （2026-10-26 实测），`next_page_token` 正常翻页。条目自带 `parent_id`
+    /// （见 [`FileHit`]），可据此还原真实路径。
+    pub fn list_all_page(
+        &self,
+        page_token: Option<&str>,
+    ) -> Result<(Vec<FileHit>, Option<String>), Error> {
+        self.list_everything_page(&search_query(page_token), "全盘列举")
+    }
+
+    /// 已加星标的一页（`parent_id=*` + `system_tag in STAR`）。
+    ///
+    /// PikPak 的星标落成系统标签 `STAR`，不是列表项上的 `starred` 布尔值。
+    /// 服务端筛选形状与 pikpak-kotlin（MIT，2026-09-24 实测）一致；这里仍让
+    /// 调用方按 [`FileEntry::starred`] 做一次本地校验。
+    pub fn list_starred_page(
+        &self,
+        page_token: Option<&str>,
+    ) -> Result<(Vec<FileHit>, Option<String>), Error> {
+        self.list_everything_page(&starred_query(page_token), "已加星标")
+    }
+
+    fn list_everything_page(
+        &self,
+        query_params: &[(String, String)],
+        label: &str,
+    ) -> Result<(Vec<FileHit>, Option<String>), Error> {
+        let response: PageResponse =
+            self.get_with_query(&self.config().files_url(), query_params)?;
+        if !response.kind.is_empty() && response.kind != "drive#fileList" {
+            return Err(Error::ApiChanged(format!(
+                "{label}返回了意外的类型：{}",
+                response.kind,
+            )));
+        }
+        let files = response.files.into_iter().map(FileDto::into_hit).collect();
+        let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
+        Ok((files, next))
+    }
+
     /// 全盘列举的一页（`parent_id=*`：根目录 + 所有子目录里的条目）。
     ///
     /// 官方**固定每页 400 条**（2026-10-26 实测），`next_page_token` 正常翻页；
@@ -28,18 +70,7 @@ impl DriveClient {
         if query.trim().is_empty() {
             return Err(Error::InvalidInput("搜索关键词不能为空".into()));
         }
-        let query_params = search_query(page_token);
-        let response: PageResponse =
-            self.get_with_query(&self.config().files_url(), &query_params)?;
-        if !response.kind.is_empty() && response.kind != "drive#fileList" {
-            return Err(Error::ApiChanged(format!(
-                "全盘列举返回了意外的类型：{}",
-                response.kind
-            )));
-        }
-        let files = response.files.into_iter().map(FileDto::into_hit).collect();
-        let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
-        Ok((files, next))
+        self.list_all_page(page_token)
     }
 
     /// 单个条目自身的名字与父目录 id（拼「所在文件夹」路径用）。
@@ -88,11 +119,20 @@ fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
 /// 与目录列表同一组过滤（只取已完成、未进回收站），区别只在于
 /// `parent_id=*`。
 pub(crate) fn search_query(page_token: Option<&str>) -> Vec<(String, String)> {
+    everything_query(page_token, LIST_FILTERS)
+}
+
+/// 已加星标查询参数；单独成函数便于锁住服务端筛选字段。
+pub(crate) fn starred_query(page_token: Option<&str>) -> Vec<(String, String)> {
+    everything_query(page_token, STARRED_FILTERS)
+}
+
+fn everything_query(page_token: Option<&str>, filters: &str) -> Vec<(String, String)> {
     let mut query = vec![
         ("limit".to_owned(), super::drive::LIST_LIMIT.to_string()),
         ("thumbnail_size".to_owned(), "SIZE_MEDIUM".to_owned()),
         ("with_audit".to_owned(), "true".to_owned()),
-        ("filters".to_owned(), super::drive::LIST_FILTERS.to_owned()),
+        ("filters".to_owned(), filters.to_owned()),
         ("parent_id".to_owned(), EVERYTHING_PARENT.to_owned()),
     ];
     if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
@@ -170,5 +210,25 @@ mod tests {
 
         let second = search_query(Some(" page-2 "));
         assert!(second.contains(&("page_token".to_owned(), "page-2".to_owned())));
+    }
+
+    #[test]
+    fn starred_query_uses_the_server_side_system_tag_filter() {
+        let query = starred_query(Some("next"));
+        let get = |key: &str| {
+            query
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("parent_id"), Some("*"));
+        assert_eq!(
+            get("filters"),
+            Some(
+                r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"system_tag":{"in":"STAR"},"trashed":{"eq":false}}"#
+            ),
+            "星标必须由服务端筛选，不能退化为全盘扫描"
+        );
+        assert_eq!(get("page_token"), Some("next"));
     }
 }
