@@ -9,7 +9,6 @@ RowLayout {
     property var target: null
 
     readonly property int selectedCount: target ? target.selectedCount : 0
-    readonly property int shareCount: target ? target.shareCount : 0
     readonly property bool actionRunning: target ? target.actionRunning : false
     readonly property bool loading: target ? target.loading : false
     readonly property string copyNotice: target ? target.copyNotice : ""
@@ -25,9 +24,7 @@ RowLayout {
         text: root.copyNotice.length > 0
               ? root.copyNotice
               : root.selectedCount > 0
-                ? qsTr("已选择 %1 个分享").arg(root.selectedCount)
-                : root.shareCount > 0
-                  ? qsTr("共 %1 个分享链接").arg(root.shareCount) : ""
+                ? qsTr("已选择 %1 个分享").arg(root.selectedCount) : ""
         color: root.copyNotice.length > 0 ? theme.success : theme.textMuted
         font.pixelSize: theme.fontMeta
         elide: Text.ElideRight
@@ -47,9 +44,7 @@ RowLayout {
     KButton {
         objectName: "refreshShares"
         Layout.alignment: Qt.AlignVCenter
-        text: root.loading && root.shareCount > 0
-              ? qsTr("刷新中…")
-              : qsTr("刷新")
+        text: root.loading ? qsTr("刷新中…") : qsTr("刷新")
         iconName: "refresh"
         variant: "ghost"
         enabled: root.target !== null && !root.loading

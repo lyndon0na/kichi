@@ -398,9 +398,10 @@ TestCase {
         tryCompare(list, "contentY", 96)
     }
 
-    function test_header_shows_count_and_refreshes_current_page() {
+    function test_header_shows_actions_without_status_and_refreshes_current_page() {
         publish([row("one", false), row("two", false)], true)
-        compare(findChild(header, "libraryHeaderStatus").text, "共 2 项")
+        compare(findChild(header, "libraryHeaderStatus"), null,
+                "资料库标题旁不再显示条目数或读取状态")
 
         var toggle = findChild(header, "viewToggleButton")
         var refresh = findChild(header, "libraryRefreshButton")
@@ -412,34 +413,29 @@ TestCase {
         compare(backend.refreshKind, "recent-saved")
     }
 
-    function test_header_refresh_feedback_keeps_cached_count() {
+    function test_header_refresh_feedback_keeps_actions_only() {
         publish([row("one", false), row("two", false)], true)
-        var status = findChild(header, "libraryHeaderStatus")
         var refresh = findChild(header, "libraryRefreshButton")
-        verify(status !== null && refresh !== null)
-        compare(status.text, "共 2 项")
+        verify(refresh !== null)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
-        // TTL 自动校准不进入可见 loading，计数和按钮完全不动。
+        // TTL 自动校准不进入可见 loading，按钮完全不动。
         backend.libraryRevision += 1
         backend.changed()
         wait(20)
-        compare(status.text, "共 2 项")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
         backend.libraryLoading = true
         backend.changed()
         wait(20)
-        compare(status.text, "正在刷新…")
         compare(refresh.text, "刷新中…")
         compare(refresh.enabled, false)
 
         backend.libraryLoading = false
         backend.changed()
         wait(20)
-        compare(status.text, "共 2 项")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
     }

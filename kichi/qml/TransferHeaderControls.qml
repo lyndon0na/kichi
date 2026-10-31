@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 传输任务页标题行右侧的状态与全局操作。
+// 传输任务页标题行右侧的全局操作。
 RowLayout {
     id: root
 
@@ -18,15 +18,8 @@ RowLayout {
 
     spacing: theme.gapSm
 
-    ElidedLabel {
-        objectName: "transferHeaderStatus"
+    Item {
         Layout.fillWidth: true
-        Layout.alignment: Qt.AlignVCenter
-        text: root.target ? root.target.statusText : ""
-        color: root.activeCount > 0 || root.queuedCount > 0 || root.pausedCount > 0
-               ? theme.textSecondary : theme.textMuted
-        font.pixelSize: theme.fontMeta
-        elide: Text.ElideRight
     }
 
     KButton {

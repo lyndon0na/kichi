@@ -292,17 +292,19 @@ TestCase {
         compare(findChild(page, "historySectionHeader"), null)
         compare(findChild(page, "transferDetailList"), null)
         compare(list.count, 4, "所有状态只在同一张表里出现")
-        compare(findChild(header, "transferHeaderStatus").text, "1 项传输中 · 1 项等待")
+        compare(findChild(header, "transferHeaderStatus"), null,
+                "传输任务标题旁不再显示状态计数")
     }
 
-    function test_header_counts_queued_rows_only_once() {
+    function test_header_count_properties_count_queued_rows_only_once() {
         backend.publish([
             makeRow("1:0", "a.mkv", "queued"),
             makeRow("2:0", "b.mkv", "queued"),
             makeRow("3:0", "c.mkv", "queued")
         ], 3, 3)
         waitRows(3)
-        compare(findChild(header, "transferHeaderStatus").text, "3 项等待开始")
+        compare(header.activeCount, 3)
+        compare(header.queuedCount, 3)
 
         backend.publish([
             makeRow("1:0", "a.mkv", "running"),
@@ -311,7 +313,8 @@ TestCase {
             makeRow("4:0", "d.mkv", "queued")
         ], 4, 3)
         waitRows(4)
-        compare(findChild(header, "transferHeaderStatus").text, "1 项传输中 · 3 项等待")
+        compare(header.activeCount, 4)
+        compare(header.queuedCount, 3)
     }
 
     function test_rows_and_header_use_fixed_density() {
@@ -725,7 +728,7 @@ TestCase {
         wait(20)
         compare(backend.resumedKey, "42:folder")
         compare(backend.resumeCount, 1)
-        compare(findChild(header, "transferHeaderStatus").text, "1 项传输中 · 1 项已暂停")
+        compare(page.statusText, "1 项传输中 · 1 项已暂停")
     }
 
     function test_paused_child_has_no_individual_actions() {

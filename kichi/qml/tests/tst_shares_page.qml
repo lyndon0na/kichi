@@ -136,27 +136,27 @@ TestCase {
         tryCompare(backend, "refreshCalls", 3)
     }
 
-    function test_header_refresh_feedback_keeps_cached_count() {
+    function test_header_refresh_feedback_hides_idle_count() {
         push([share("a"), share("b")])
         waitForRendering(list)
         var status = findChild(header, "shareHeaderStatus")
         var refresh = findChild(header, "refreshShares")
         verify(status !== null && refresh !== null)
-        compare(status.text, "共 2 个分享链接")
+        compare(status.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
         backend.sharesLoading = true
         backend.changed()
         wait(20)
-        compare(status.text, "共 2 个分享链接")
+        compare(status.text, "")
         compare(refresh.text, "刷新中…")
         compare(refresh.enabled, false)
 
         backend.sharesLoading = false
         backend.changed()
         wait(20)
-        compare(status.text, "共 2 个分享链接")
+        compare(status.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
     }
@@ -250,7 +250,7 @@ TestCase {
     function test_ctrl_a_selects_all_shares() {
         push([share("a"), share("b"), share("c")])
         waitForRendering(list)
-        compare(findChild(header, "shareHeaderStatus").text, "共 3 个分享链接")
+        compare(findChild(header, "shareHeaderStatus").text, "")
         mouseClick(list.itemAtIndex(0), 20, 20)
         compare(page.selectedIdsInOrder().join(","), "a")
         keyClick(Qt.Key_A, Qt.ControlModifier)

@@ -620,17 +620,14 @@ TestCase {
         })
     }
 
-    function test_header_controls_show_task_counts() {
-        compare(findChild(taskHeader, "tasksHeaderStatus").text, "")
+    function test_header_controls_show_actions_without_status() {
+        compare(findChild(taskHeader, "tasksHeaderStatus"), null,
+                "离线任务标题旁不再显示任务数量")
 
         push([
             task("active", "running", 42),
             task("done", "completed", 100)
         ])
-        compare(taskHeader.activeCount, 1)
-        compare(taskHeader.taskCount, 2)
-        compare(findChild(taskHeader, "tasksHeaderStatus").text,
-                "1 条任务进行中 · 共 2 条")
         verify(findChild(taskHeader, "newTaskButton"))
         verify(findChild(taskHeader, "tasksRefreshButton"))
     }
@@ -678,26 +675,22 @@ TestCase {
         tryCompare(backend, "refreshCalls", 2)
     }
 
-    function test_header_refresh_feedback_keeps_cached_count() {
+    function test_header_refresh_feedback_keeps_actions_only() {
         push([task("t1", "running", 10), task("t2", "completed", 100)])
-        var status = findChild(taskHeader, "tasksHeaderStatus")
         var refresh = findChild(taskHeader, "tasksRefreshButton")
-        verify(status !== null && refresh !== null)
-        compare(status.text, "1 条任务进行中 · 共 2 条")
+        verify(refresh !== null)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
         backend.tasksLoading = true
         backend.changed()
         wait(20)
-        compare(status.text, "1 条任务进行中 · 共 2 条")
         compare(refresh.text, "刷新中…")
         compare(refresh.enabled, false)
 
         backend.tasksLoading = false
         backend.changed()
         wait(20)
-        compare(status.text, "1 条任务进行中 · 共 2 条")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
     }

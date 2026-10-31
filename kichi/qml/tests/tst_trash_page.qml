@@ -240,6 +240,7 @@ TestCase {
 
     function test_select_all_restores_every_selected_id() {
         publish([entry("a", false), entry("b", true), entry("c", false)])
+        compare(findChild(header, "trashSelectionSummary").text, "")
         selection.selectAll(backend.trashFiles)
         compare(selection.count, 3)
 
@@ -322,34 +323,34 @@ TestCase {
         compare(backend.refreshCount, 1)
     }
 
-    function test_header_refresh_feedback_keeps_cached_count() {
+    function test_header_refresh_feedback_hides_idle_count() {
         publish([entry("a", false), entry("b", true)])
         var summary = findChild(header, "trashSelectionSummary")
         var refresh = findChild(header, "trashRefreshButton")
         verify(summary !== null && refresh !== null)
-        compare(summary.text, "共 2 项")
+        compare(summary.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
-        // 后台校准不改 trashLoading，计数和按钮都不闪。
+        // 后台校准不改 trashLoading，按钮不闪。
         backend.trashRevision += 1
         backend.changed()
         wait(20)
-        compare(summary.text, "共 2 项")
+        compare(summary.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
         backend.trashLoading = true
         backend.changed()
         wait(20)
-        compare(summary.text, "共 2 项")
+        compare(summary.text, "")
         compare(refresh.text, "刷新中…")
         compare(refresh.enabled, false)
 
         backend.trashLoading = false
         backend.changed()
         wait(20)
-        compare(summary.text, "共 2 项")
+        compare(summary.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
     }
