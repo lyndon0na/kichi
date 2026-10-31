@@ -147,6 +147,8 @@ pub mod qobject {
         #[qproperty(i32, download_active, cxx_name = "downloadActive", READ, NOTIFY = changed)]
         /// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰）
         #[qproperty(bool, transfer_has_finished, cxx_name = "transferHasFinished", READ, NOTIFY = changed)]
+        /// 是否存在可批量重试的失败记录（页头按钮据此显示）
+        #[qproperty(bool, transfer_has_retryable, cxx_name = "transferHasRetryable", READ, NOTIFY = changed)]
         #[qproperty(QString, download_dir, cxx_name = "downloadDir", READ, NOTIFY = changed)]
         #[qproperty(i32, download_parallel, cxx_name = "downloadParallel", READ, NOTIFY = changed)]
         #[qproperty(i32, download_connections, cxx_name = "downloadConnections", READ, NOTIFY = changed)]
@@ -483,6 +485,16 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "retryTransfer"]
         fn retry_transfer(self: Pin<&mut Self>, key: QString);
+
+        /// 重试全部失败记录；文件夹内的失败子文件逐条重试
+        #[qinvokable]
+        #[cxx_name = "retryFailedTransfers"]
+        fn retry_failed_transfers(self: Pin<&mut Self>);
+
+        /// 从历史里移除一条已结束 / 已中断的顶层记录（不删除本地文件或断点）
+        #[qinvokable]
+        #[cxx_name = "removeTransfer"]
+        fn remove_transfer(self: Pin<&mut Self>, key: QString) -> bool;
 
         /// 取消一条正在排队 / 准备 / 下载中的记录。
         ///
@@ -937,6 +949,8 @@ pub struct KichiRust {
     pub(crate) download_active: i32,
     /// 全部历史里有没有可清的已结束批次（不按日期收窄）
     pub(crate) transfer_has_finished: bool,
+    /// 是否存在可批量重试的失败记录
+    pub(crate) transfer_has_retryable: bool,
     /// 有批次在准备（读目录）或执行；QML 不再拿它禁用下载入口
     pub(crate) download_running: bool,
     /// 排队中的批次数（不含正在跑的那一批）
@@ -1118,6 +1132,7 @@ impl Default for KichiRust {
             transfer_detail_active: false,
             download_active: 0,
             transfer_has_finished: false,
+            transfer_has_retryable: false,
             download_running: false,
             download_queued: 0,
             download_dir: QString::default(),

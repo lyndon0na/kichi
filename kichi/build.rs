@@ -89,6 +89,7 @@ const QML_FILES: &[&str] = &[
     "qml/TransferTableHeader.qml",
     "qml/TransferMainRow.qml",
     "qml/TransferStickyRow.qml",
+    "qml/TransferContextMenu.qml",
     "qml/SettingsPage.qml",
     "qml/SettingsDownloads.qml",
     "qml/SettingsAbout.qml",

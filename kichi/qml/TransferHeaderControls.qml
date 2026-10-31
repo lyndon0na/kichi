@@ -12,6 +12,7 @@ RowLayout {
     readonly property int queuedCount: target ? target.queuedCount : 0
     readonly property int pausedCount: target ? target.pausedCount : 0
     readonly property bool hasFinished: target ? target.hasFinished : false
+    readonly property bool hasRetryable: target ? target.hasRetryable : false
     readonly property bool backendReady: target !== null && target.backend !== null
 
     readonly property KTheme theme: KTheme { parent: root }
@@ -23,13 +24,17 @@ RowLayout {
     }
 
     KButton {
-        objectName: "openDownloadDirButton"
+        objectName: "retryFailedButton"
         Layout.alignment: Qt.AlignVCenter
-        text: qsTr("打开下载目录")
+        visible: root.hasRetryable
+        text: qsTr("重试失败项")
         variant: "secondary"
         implicitHeight: 32
-        enabled: root.backendReady
-        onClicked: root.target.backend.openDownloadDir()
+        enabled: root.backendReady && root.hasRetryable
+        onClicked: {
+            if (root.target)
+                root.target.retryFailedTransfers()
+        }
     }
 
     KButton {
@@ -47,10 +52,13 @@ RowLayout {
         objectName: "cancelAllTransfersButton"
         Layout.alignment: Qt.AlignVCenter
         text: qsTr("取消全部")
-        variant: "secondary"
+        variant: "dangerOutline"
         implicitHeight: 32
         enabled: root.backendReady
                  && (root.activeCount > 0 || root.pausedCount > 0)
-        onClicked: root.target.backend.cancelDownloads()
+        onClicked: {
+            if (root.target)
+                root.target.confirmCancelAll()
+        }
     }
 }

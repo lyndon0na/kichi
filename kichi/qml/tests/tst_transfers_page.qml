@@ -22,6 +22,7 @@ TestCase {
         property var transferDetail: []
         property bool transferDetailActive: false
         property bool transferHasFinished: false
+        property bool transferHasRetryable: false
 
         property var detailSets: ({})
         property int openCount: 0
@@ -35,11 +36,13 @@ TestCase {
         property string resumedKey: ""
         property int retryCount: 0
         property string retriedKey: ""
+        property int retryFailedCount: 0
+        property int removeCount: 0
+        property string removedKey: ""
         property int revealCount: 0
         property string revealedKey: ""
         property int clearCount: 0
         property int cancelAllCount: 0
-        property int openDirCount: 0
 
         signal changed()
 
@@ -52,6 +55,7 @@ TestCase {
             transferDetail = []
             transferDetailActive = false
             transferHasFinished = false
+            transferHasRetryable = false
             detailSets = ({})
             openCount = 0
             closeCount = 0
@@ -64,11 +68,13 @@ TestCase {
             resumedKey = ""
             retryCount = 0
             retriedKey = ""
+            retryFailedCount = 0
+            removeCount = 0
+            removedKey = ""
             revealCount = 0
             revealedKey = ""
             clearCount = 0
             cancelAllCount = 0
-            openDirCount = 0
         }
 
         function publish(items, active, queued) {
@@ -78,6 +84,10 @@ TestCase {
             transferHasFinished = items.some(function(item) {
                 return item.state === "done" || item.state === "failed"
                         || item.state === "cancelled"
+            })
+            transferHasRetryable = items.some(function(item) {
+                return item.state === "failed"
+                        && (item.folder !== true || item.childCount === 0)
             })
             transferRevision += 1
             changed()
@@ -143,6 +153,16 @@ TestCase {
             retriedKey = key
         }
 
+        function retryFailedTransfers() {
+            retryFailedCount += 1
+        }
+
+        function removeTransfer(key) {
+            removeCount += 1
+            removedKey = key
+            return true
+        }
+
         function revealTransfer(key) {
             revealCount += 1
             revealedKey = key
@@ -156,9 +176,6 @@ TestCase {
             cancelAllCount += 1
         }
 
-        function openDownloadDir() {
-            openDirCount += 1
-        }
     }
 
     Component {
@@ -498,6 +515,13 @@ TestCase {
         compare(sticky.y, list.y)
         compare(findChild(sticky, "nameText").text, "长目录")
 
+        mouseClick(sticky, 120, sticky.height / 2, Qt.RightButton)
+        var menu = findChild(page, "transferContextMenu")
+        tryVerify(function() { return menu.opened })
+        verify(findChild(menu, "transferRemoveItem").visible,
+               "吸附父行必须能打开同一套右键菜单")
+        menu.close()
+
         list.contentY = 720
         tryVerify(function() { return !sticky.visible })
 
@@ -656,6 +680,114 @@ TestCase {
         mouseClick(findChild(row("30:folder"), "revealLink"))
         wait(20)
         compare(backend.revealedKey, "30:folder")
+    }
+
+    function test_row_right_click_opens_state_specific_actions() {
+        backend.publish([
+            makeRow("80:0", "下载中.mkv", "running", {
+                progress: 20,
+                progressText: "20%"
+            })
+        ], 1, 0)
+        waitRows(1)
+
+        var running = row("80:0")
+        verify(running !== null)
+        mouseClick(running, 120, running.height / 2, Qt.RightButton)
+        var menu = findChild(page, "transferContextMenu")
+        verify(menu !== null)
+        tryVerify(function() { return menu.opened })
+
+        verify(findChild(menu, "transferPauseItem").visible)
+        compare(findChild(menu, "transferResumeItem").visible, false)
+        verify(findChild(menu, "transferCancelItem").visible)
+        compare(findChild(menu, "transferRetryItem").visible, false)
+        compare(findChild(menu, "transferRevealItem").visible, false)
+        compare(findChild(menu, "transferRemoveItem").visible, false)
+
+        mouseClick(findChild(menu, "transferPauseItem"))
+        wait(20)
+        compare(backend.pauseCount, 1)
+        compare(backend.pausedKey, "80:0")
+
+        backend.publish([
+            makeRow("81:0", "已完成.mkv", "done", {
+                progress: 100,
+                path: "/tmp/已完成.mkv"
+            })
+        ], 0, 0)
+        waitRows(1)
+        mouseClick(row("81:0"), 120, 24, Qt.RightButton)
+        tryVerify(function() { return menu.opened })
+        compare(findChild(menu, "transferPauseItem").visible, false)
+        verify(findChild(menu, "transferRevealItem").visible)
+        verify(findChild(menu, "transferRemoveItem").visible)
+    }
+
+    function test_partially_failed_folder_retries_child_but_removes_only_parent_record() {
+        backend.setDetails("82:folder", [
+            makeRow("82:0", "失败子文件.mkv", "failed", {
+                detail: "断网"
+            })
+        ])
+        backend.publish([
+            makeRow("82:folder", "剧集", "failed", {
+                folder: true,
+                childCount: 1,
+                failedCount: 1
+            })
+        ], 0, 0)
+        waitRows(1)
+
+        mouseClick(findChild(row("82:folder"), "rowHeader"))
+        waitRows(2)
+        var menu = findChild(page, "transferContextMenu")
+
+        mouseClick(row("82:0"), 120, 24, Qt.RightButton)
+        tryVerify(function() { return menu.opened })
+        verify(findChild(menu, "transferRetryItem").visible)
+        compare(findChild(menu, "transferRemoveItem").visible, false,
+                "子行不能只从历史里移除")
+        menu.close()
+
+        mouseClick(row("82:folder"), 120, 24, Qt.RightButton)
+        tryVerify(function() { return menu.opened })
+        compare(findChild(menu, "transferRetryItem").visible, false,
+                "部分失败文件夹不能整批重试")
+        verify(findChild(menu, "transferRemoveItem").visible,
+               "顶层文件夹记录可以整批移除")
+    }
+
+    function test_remove_record_requires_confirmation_and_keeps_files_notice() {
+        backend.publish([
+            makeRow("83:folder", "剧集", "failed", {
+                folder: true,
+                childCount: 2,
+                failedCount: 2
+            })
+        ], 0, 0)
+        waitRows(1)
+
+        mouseClick(row("83:folder"), 120, 24, Qt.RightButton)
+        var menu = findChild(page, "transferContextMenu")
+        tryVerify(function() { return menu.opened })
+        mouseClick(findChild(menu, "transferRemoveItem"))
+        wait(40)
+
+        var dialog = findChild(page, "removeRecordConfirmDialog")
+        verify(dialog !== null && dialog.opened)
+        compare(backend.removeCount, 0, "确认前不能移除记录")
+        var message = findChild(dialog, "removeRecordConfirmText").text
+        verify(message.indexOf("2 条子记录") >= 0, "文件夹确认框要说明整批子记录")
+        verify(message.indexOf("断点都会保留") >= 0, "确认框要说明不会删除断点")
+
+        var confirm = findChild(dialog, "removeRecordConfirmButton")
+        verify(confirm !== null)
+        compare(confirm.variant, "danger")
+        mouseClick(confirm)
+        wait(40)
+        compare(backend.removeCount, 1)
+        compare(backend.removedKey, "83:folder")
     }
 
     function test_parent_and_child_cancel_actions_are_separate() {
@@ -845,5 +977,54 @@ TestCase {
         mouseClick(footer.standardButton(Dialog.Ok))
         wait(40)
         compare(backend.clearCount, 1)
+    }
+
+    function test_cancel_all_uses_danger_style_and_confirmation() {
+        backend.publish([
+            makeRow("1:0", "下载中.mkv", "running", {
+                progress: 35,
+                progressText: "35%"
+            })
+        ], 1, 0)
+        waitRows(1)
+
+        var button = findChild(header, "cancelAllTransfersButton")
+        verify(button !== null, "取消全部按钮不存在")
+        compare(button.variant, "dangerOutline")
+        verify(button.enabled, "有进行中任务时取消全部应可用")
+        mouseClick(button)
+        wait(40)
+
+        var dialog = findChild(page, "cancelAllConfirmDialog")
+        verify(dialog !== null && dialog.opened, "取消全部必须先打开确认框")
+        compare(backend.cancelAllCount, 0, "确认前不能取消传输")
+        compare(findChild(dialog, "cancelAllConfirmText").text.indexOf("断点") >= 0,
+                true, "确认框要说明断点会被删除")
+
+        var confirm = findChild(dialog, "cancelAllConfirmButton")
+        verify(confirm !== null)
+        compare(confirm.variant, "danger")
+        mouseClick(confirm)
+        wait(40)
+        compare(backend.cancelAllCount, 1)
+    }
+
+    function test_header_retries_all_failed_items() {
+        compare(findChild(header, "openDownloadDirButton"), null,
+                "传输页标题行不再提供打开下载目录")
+        var button = findChild(header, "retryFailedButton")
+        verify(button !== null)
+        compare(button.visible, false, "没有失败项时不显示批量重试")
+
+        backend.publish([
+            makeRow("90:0", "失败一.mkv", "failed", { detail: "断网" }),
+            makeRow("90:1", "失败二.mkv", "failed", { detail: "超时" })
+        ], 0, 0)
+        waitRows(2)
+        verify(button.visible, "有失败项时显示批量重试")
+        verify(button.enabled)
+        mouseClick(button)
+        wait(20)
+        compare(backend.retryFailedCount, 1)
     }
 }

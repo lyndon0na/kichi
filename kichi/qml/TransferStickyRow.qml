@@ -20,6 +20,7 @@ Item {
     signal cancelRequested(string key)
     signal retryRequested(string key)
     signal revealRequested(string key)
+    signal contextRequested(string key, point position)
 
     objectName: "transferStickyRow"
     implicitHeight: density.rowHeight
@@ -73,5 +74,8 @@ Item {
         onCancelRequested: function(key) { sticky.cancelRequested(key) }
         onRetryRequested: function(key) { sticky.retryRequested(key) }
         onRevealRequested: function(key) { sticky.revealRequested(key) }
+        onContextRequested: function(key, position) {
+            sticky.contextRequested(key, position)
+        }
     }
 }

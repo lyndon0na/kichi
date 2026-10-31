@@ -119,6 +119,54 @@ fn only_failed_or_interrupted_records_can_be_retried() {
 }
 
 #[test]
+fn failed_keys_retry_children_but_not_a_partially_failed_folder_as_a_whole() {
+    let mut records = folder_batch(&[
+        ("done.mkv", TransferState::Done),
+        ("failed.mkv", TransferState::Failed),
+        ("cancelled.mkv", TransferState::Cancelled),
+    ]);
+    records[0].state = TransferState::Failed;
+
+    let mut standalone = record(
+        "standalone-file",
+        EntryKind::File,
+        &[],
+        TransferState::Failed,
+    );
+    standalone.batch = 8;
+    standalone.index = 0;
+    records.push(standalone);
+
+    let mut interrupted = record(
+        "interrupted-file",
+        EntryKind::File,
+        &[],
+        TransferState::Interrupted,
+    );
+    interrupted.batch = 9;
+    interrupted.index = 0;
+    records.push(interrupted);
+
+    assert_eq!(
+        retryable_failed_keys_in(&records),
+        vec!["7:1".to_owned(), "8:0".to_owned()],
+        "失败父行不整批重来；只重试失败子文件和独立失败文件"
+    );
+}
+
+#[test]
+fn failed_keys_include_a_folder_that_failed_before_reading_children() {
+    let mut records = folder_batch(&[]);
+    records[0].state = TransferState::Failed;
+
+    assert_eq!(
+        retryable_failed_keys_in(&records),
+        vec!["7:folder".to_owned()],
+        "没有子行时文件夹自身重新读目录"
+    );
+}
+
+#[test]
 fn cancel_target_distinguishes_parent_and_child_rows() {
     let mut records = folder_batch(&[
         ("a.mkv", TransferState::Running),
@@ -288,6 +336,47 @@ fn removing_the_last_child_drops_the_finished_parent() {
 
     assert!(remove_in(&mut records, "7:0"));
     assert!(records.is_empty(), "最后一个子行被重试后父行也一起消失");
+}
+
+#[test]
+fn removing_a_folder_record_drops_the_whole_batch_only() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Done),
+        ("b.mkv", TransferState::Failed),
+    ]);
+    records[0].state = TransferState::Failed;
+
+    let mut other = record("other-file", EntryKind::File, &[], TransferState::Done);
+    other.batch = 8;
+    other.index = 0;
+    records.push(other);
+
+    assert!(remove_record_in(&mut records, "7:folder"));
+    assert_eq!(records.len(), 1, "文件夹父行与全部子行一起移除");
+    assert_eq!(records[0].batch, 8, "其它批次不受影响");
+}
+
+#[test]
+fn remove_record_rejects_active_and_child_rows() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Done),
+        ("b.mkv", TransferState::Failed),
+    ]);
+    records[0].state = TransferState::Failed;
+
+    assert!(
+        !remove_record_in(&mut records, "7:1"),
+        "子行不单独从历史菜单移除"
+    );
+
+    let mut active = record("active-file", EntryKind::File, &[], TransferState::Running);
+    active.batch = 8;
+    active.index = 0;
+    records.push(active);
+    assert!(
+        !remove_record_in(&mut records, "8:0"),
+        "进行中的任务必须先取消，不能直接移除记录"
+    );
 }
 
 #[test]

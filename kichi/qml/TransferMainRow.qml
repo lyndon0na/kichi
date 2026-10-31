@@ -41,6 +41,7 @@ ItemDelegate {
     signal cancelRequested(string key)
     signal retryRequested(string key)
     signal revealRequested(string key)
+    signal contextRequested(string key, point position)
 
     objectName: "transferRow_" + row.key
     implicitHeight: density.rowHeight
@@ -86,6 +87,16 @@ ItemDelegate {
 
     HoverHandler {
         id: rowHover
+    }
+
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: function(point) {
+            if (row.notice)
+                return
+            row.contextRequested(row.key,
+                                 row.mapToItem(null, point.position.x, point.position.y))
+        }
     }
 
     function pagePhaseActive(phase) {

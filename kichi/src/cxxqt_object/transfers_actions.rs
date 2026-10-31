@@ -175,6 +175,37 @@ pub(crate) fn retry_target(key: &str) -> Option<TransferJob> {
     with_records(|records| retry_target_in(records, key))
 }
 
+/// 是否存在可由页头「重试失败项」一次处理的失败记录。
+pub(crate) fn has_retryable_failed() -> bool {
+    with_records(|records| {
+        records
+            .iter()
+            .any(|record| is_retryable_failed_record(records, record))
+    })
+}
+
+/// 全部失败记录的重试 key；文件夹总账行只在还没有子行时参与，
+/// 部分失败 / 全部失败的文件夹交给各个失败子文件逐条重试。
+pub(crate) fn retryable_failed_keys() -> Vec<String> {
+    with_records(|records| retryable_failed_keys_in(records))
+}
+
+fn retryable_failed_keys_in(records: &[Transfer]) -> Vec<String> {
+    records
+        .iter()
+        .filter(|record| is_retryable_failed_record(records, record))
+        .map(record_key)
+        .collect()
+}
+
+fn is_retryable_failed_record(records: &[Transfer], record: &Transfer) -> bool {
+    record.state == TransferState::Failed
+        && !(is_folder_ledger(record)
+            && records
+                .iter()
+                .any(|row| row.batch == record.batch && row.child))
+}
+
 fn retry_target_in(records: &[Transfer], key: &str) -> Option<TransferJob> {
     let record = records.iter().find(|record| {
         record_key(record) == key
@@ -271,6 +302,33 @@ pub(crate) fn remove(key: &str) -> bool {
         super::transfers::prune_trees();
     }
     removed
+}
+
+/// 从历史里移除一条顶层记录。文件夹批次连同全部子行一起移除；
+/// 只移除记录，不删除已下载文件或断点。
+pub(crate) fn remove_record(key: &str) -> bool {
+    let removed = with_records(|records| remove_record_in(records, key));
+    if removed {
+        super::transfers::prune_trees();
+    }
+    removed
+}
+
+fn remove_record_in(records: &mut Vec<Transfer>, key: &str) -> bool {
+    let Some(index) = records.iter().position(|record| record_key(record) == key) else {
+        return false;
+    };
+    let record = &records[index];
+    if record.child || !(record.state.is_finished() || record.state == TransferState::Interrupted) {
+        return false;
+    }
+    if is_folder_ledger(record) {
+        let batch = record.batch;
+        records.retain(|row| row.batch != batch);
+    } else {
+        records.remove(index);
+    }
+    true
 }
 
 fn remove_in(records: &mut Vec<Transfer>, key: &str) -> bool {

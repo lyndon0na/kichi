@@ -53,6 +53,8 @@ Item {
     readonly property int workingCount: Math.max(activeCount - queuedCount, 0)
     readonly property bool hasFinished: backend !== null
                                          && backend.transferHasFinished
+    readonly property bool hasRetryable: backend !== null
+                                          && backend.transferHasRetryable
     readonly property string statusText: {
         var parts = []
         if (workingCount > 0)
@@ -374,13 +376,67 @@ Item {
         highlightTimer.restart()
     }
 
+    function rowDataForKey(key) {
+        for (var i = 0; i < rows.count; i++) {
+            var item = rows.get(i)
+            if (item.key === key)
+                return item
+        }
+        return null
+    }
+
+    function openRowContext(key, point) {
+        var item = page.rowDataForKey(key)
+        if (item !== null)
+            transferContextMenu.openFor(item, point)
+    }
+
+    function retryFailedTransfers() {
+        if (page.backend)
+            page.backend.retryFailedTransfers()
+    }
+
     readonly property string clearConfirmMessage: qsTr(
         "将清空所有已结束的传输记录（完成 / 失败 / 取消）。\n"
         + "进行中、排队与已中断的记录会保留。确定清空？")
+    readonly property string cancelAllConfirmMessage: qsTr(
+        "将取消所有进行中、排队和已暂停的传输。\n"
+        + "未完成文件的断点会被删除，无法继续；已下载完成的文件会保留。"
+        + "确定取消全部？")
+    property string pendingRemoveKey: ""
+    property string pendingRemoveName: ""
+    property bool pendingRemoveIsFolder: false
+    property int pendingRemoveChildCount: 0
+    readonly property string removeRecordMessage: {
+        if (page.pendingRemoveIsFolder && page.pendingRemoveChildCount > 0) {
+            return qsTr("将从传输历史中移除文件夹「%1」及整批 %2 条子记录。\n"
+                        + "本地已下载文件和断点都会保留。确定移除？")
+                .arg(page.pendingRemoveName)
+                .arg(page.pendingRemoveChildCount)
+        }
+        return qsTr("将从传输历史中移除「%1」。\n"
+                    + "本地已下载文件和断点都会保留。确定移除？")
+            .arg(page.pendingRemoveName)
+    }
 
     function confirmClear() {
         if (page.backend)
             clearDialog.open()
+    }
+
+    function confirmCancelAll() {
+        if (page.backend && (page.activeCount > 0 || page.pausedCount > 0))
+            cancelAllDialog.open()
+    }
+
+    function confirmRemoveRecord(key, name, isFolder, childCount) {
+        if (!page.backend)
+            return
+        page.pendingRemoveKey = key
+        page.pendingRemoveName = name
+        page.pendingRemoveIsFolder = isFolder
+        page.pendingRemoveChildCount = childCount
+        removeRecordDialog.open()
     }
 
     ColumnLayout {
@@ -436,6 +492,9 @@ Item {
                     onRevealRequested: function(rowKey) {
                         page.backend.revealTransfer(rowKey)
                     }
+                    onContextRequested: function(rowKey, point) {
+                        page.openRowContext(rowKey, point)
+                    }
                 }
 
                 Label {
@@ -480,7 +539,38 @@ Item {
                 onRevealRequested: function(rowKey) {
                     page.backend.revealTransfer(rowKey)
                 }
+                onContextRequested: function(rowKey, point) {
+                    page.openRowContext(rowKey, point)
+                }
             }
+        }
+    }
+
+    TransferContextMenu {
+        id: transferContextMenu
+        backend: page.backend
+        onPauseRequested: function(key) {
+            if (page.backend)
+                page.backend.pauseTransfer(key)
+        }
+        onResumeRequested: function(key) {
+            if (page.backend)
+                page.backend.resumeTransfer(key)
+        }
+        onCancelRequested: function(key) {
+            if (page.backend)
+                page.backend.cancelTransfer(key)
+        }
+        onRetryRequested: function(key) {
+            if (page.backend)
+                page.backend.retryTransfer(key)
+        }
+        onRevealRequested: function(key) {
+            if (page.backend)
+                page.backend.revealTransfer(key)
+        }
+        onRemoveRequested: function(key, name, isFolder, childCount) {
+            page.confirmRemoveRecord(key, name, isFolder, childCount)
         }
     }
 
@@ -507,6 +597,68 @@ Item {
         onAccepted: {
             if (page.backend)
                 page.backend.clearFinishedTransfers()
+        }
+    }
+
+    KDialog {
+        id: cancelAllDialog
+        objectName: "cancelAllConfirmDialog"
+        parent: Overlay.overlay
+        title: qsTr("取消全部传输")
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: 420 + leftPadding + rightPadding
+        footer: DialogFooter {
+            objectName: "cancelAllConfirmBox"
+            outerMargin: cancelAllDialog.padding
+            okObjectName: "cancelAllConfirmButton"
+            okText: qsTr("取消全部")
+            okVariant: "danger"
+            onOkClicked: {
+                if (page.backend)
+                    page.backend.cancelDownloads()
+                cancelAllDialog.close()
+            }
+            onCancelClicked: cancelAllDialog.close()
+        }
+
+        Label {
+            objectName: "cancelAllConfirmText"
+            text: page.cancelAllConfirmMessage
+            wrapMode: Text.Wrap
+            width: 420
+        }
+
+    }
+
+    KDialog {
+        id: removeRecordDialog
+        objectName: "removeRecordConfirmDialog"
+        parent: Overlay.overlay
+        title: qsTr("移除传输记录")
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: 440 + leftPadding + rightPadding
+        footer: DialogFooter {
+            objectName: "removeRecordConfirmBox"
+            outerMargin: removeRecordDialog.padding
+            okObjectName: "removeRecordConfirmButton"
+            okText: qsTr("移除")
+            okVariant: "danger"
+            onOkClicked: {
+                var key = page.pendingRemoveKey
+                if (page.backend && key.length > 0)
+                    page.backend.removeTransfer(key)
+                removeRecordDialog.close()
+            }
+            onCancelClicked: removeRecordDialog.close()
+        }
+
+        Label {
+            objectName: "removeRecordConfirmText"
+            text: page.removeRecordMessage
+            wrapMode: Text.Wrap
+            width: 440
         }
     }
 }

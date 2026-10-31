@@ -71,6 +71,7 @@ pub(crate) fn load_history(object: &mut crate::cxxqt_object::KichiRust) {
     object.transfer_revision = object.transfer_revision.wrapping_add(1);
     object.download_active = active;
     object.transfer_has_finished = transfers_history::has_finished();
+    object.transfer_has_retryable = transfers_actions::has_retryable_failed();
 }
 
 /// 强制把记录表写盘（退出 / 登出前调用）。
@@ -358,24 +359,36 @@ impl qobject::Kichi {
         self.as_mut().sync_transfers();
     }
 
+    /// 从历史里移除一条顶层记录。只接受已结束 / 已中断的行；
+    /// 文件夹批次会连同子行一起移除，但不动本地文件或断点。
+    pub fn remove_transfer(mut self: Pin<&mut Self>, key: QString) -> bool {
+        if !transfers_actions::remove_record(&key.to_string()) {
+            self.as_mut()
+                .set_message("这条记录不存在或仍在进行中，不能移除");
+            return false;
+        }
+        self.as_mut().clear_status_message();
+        self.as_mut().sync_transfers();
+        flush_history();
+        true
+    }
+
     /// 重试一条失败 / 已中断的传输记录：按原 id、原下载目录、原子目录重新入队。
     ///
     /// 文件夹总账行（读目录前整体失败或整个中断）整批重来：重新读一遍目录，
     /// 断点能否接上取决于 `partials.json`（改过下载目录 = 从头下）。
     ///
-    /// 顺序：取目标（记录锁）→ 查重 + 登记（调度锁）→ 成功后才删旧行 →
-    /// 先提示再加入、推进队列（`advance` 的启动失败原因可以覆盖提示）。
-    pub fn retry_transfer(mut self: Pin<&mut Self>, key: QString) {
-        let key = key.to_string();
-        let Some(job) = transfers_actions::retry_target(&key) else {
-            self.as_mut().set_message("这条记录已经不能重试了");
-            return;
+    /// 顺序：取目标（记录锁）→ 查重 + 登记（调度锁）→ 成功后才删旧行。
+    /// 调用方负责在批量登记完成后统一推进队列。
+    fn retry_one(self: Pin<&mut Self>, key: &str) -> RetryOutcome {
+        let Some(job) = transfers_actions::retry_target(key) else {
+            return RetryOutcome::Unavailable;
         };
         let source_id = job.id.clone();
         // 读目录前整体失败 / 整个中断的文件夹：整批重来（会重新读一遍目录）。
         // 先把旧行抽出来（`take_whole_folder` 删掉整批），登记失败时再挂回去，历史不丢。
-        let whole_folder = transfers_actions::is_whole_folder(&key)
-            .then(|| transfers_actions::take_whole_folder(&key))
+        let whole_folder = transfers_actions::is_whole_folder(key)
+            .then(|| transfers_actions::take_whole_folder(key))
             .flatten();
         let retry_job = whole_folder
             .as_ref()
@@ -386,21 +399,73 @@ impl qobject::Kichi {
             if let Some((batch, _)) = &whole_folder {
                 transfers_actions::forget_stash(*batch);
             } else {
-                transfers_actions::remove(&key);
+                transfers_actions::remove(key);
             }
-            self.as_mut().clear_status_message();
-            // advance 会 sync；线程起不来时它会用失败原因覆盖上面的提示
-            self.as_mut().advance_downloads();
+            RetryOutcome::Queued
         } else {
             if let Some((batch, restored)) = whole_folder {
                 // 登记失败：把抽走的整批放回去，免得「已中断」行凭空消失
                 transfers_actions::restore_folder(batch, &restored);
-                self.as_mut().sync_transfers();
             }
-            // 同一个文件 id 已在排队 / 下载中：旧行不删，带用户去看已有那一行
-            self.as_mut().set_message("这个条目已在下载队列中");
-            self.as_mut()
-                .locate_transfer(QString::from(source_id.as_str()));
+            RetryOutcome::AlreadyPending(source_id)
+        }
+    }
+
+    /// 重试一条失败 / 已中断的传输记录：按原 id、原下载目录、原子目录重新入队。
+    ///
+    /// 文件夹总账行（读目录前整体失败或整个中断）整批重来：重新读一遍目录，
+    /// 断点能否接上取决于 `partials.json`（改过下载目录 = 从头下）。
+    pub fn retry_transfer(mut self: Pin<&mut Self>, key: QString) {
+        match self.as_mut().retry_one(&key.to_string()) {
+            RetryOutcome::Queued => {
+                self.as_mut().clear_status_message();
+                // advance 会 sync；线程起不来时它会用失败原因覆盖上面的提示
+                self.as_mut().advance_downloads();
+            }
+            RetryOutcome::AlreadyPending(source_id) => {
+                self.as_mut().sync_transfers();
+                // 同一个文件 id 已在排队 / 下载中：旧行不删，带用户去看已有那一行
+                self.as_mut().set_message("这个条目已在下载队列中");
+                self.as_mut()
+                    .locate_transfer(QString::from(source_id.as_str()));
+            }
+            RetryOutcome::Unavailable => {
+                self.as_mut().set_message("这条记录已经不能重试了");
+            }
+        }
+    }
+
+    /// 重试全部失败记录。先一次性登记完，再推进调度器，避免每一条都重建列表。
+    pub fn retry_failed_transfers(mut self: Pin<&mut Self>) {
+        let keys = transfers_actions::retryable_failed_keys();
+        if keys.is_empty() {
+            self.as_mut().set_message("没有可重试的失败项");
+            return;
+        }
+        let (mut queued, mut pending) = (0u32, 0u32);
+        for key in keys {
+            match self.as_mut().retry_one(&key) {
+                RetryOutcome::Queued => queued += 1,
+                RetryOutcome::AlreadyPending(_) => pending += 1,
+                RetryOutcome::Unavailable => {}
+            }
+        }
+        if queued > 0 {
+            if pending > 0 {
+                self.as_mut().set_message(&format!(
+                    "已重试 {queued} 项失败任务；{pending} 项已在下载队列中"
+                ));
+            } else {
+                self.as_mut().clear_status_message();
+            }
+            self.as_mut().advance_downloads();
+        } else {
+            self.as_mut().sync_transfers();
+            if pending > 0 {
+                self.as_mut().set_message("失败项已在下载队列中");
+            } else {
+                self.as_mut().set_message("没有可重试的失败项");
+            }
         }
     }
 
@@ -538,6 +603,7 @@ impl qobject::Kichi {
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
         let (list, active) = transfers_history::snapshot();
         let has_finished = transfers_history::has_finished();
+        let has_retryable = transfers_actions::has_retryable_failed();
         let live = transfers::live_snapshot();
         let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
@@ -550,6 +616,7 @@ impl qobject::Kichi {
             rust.transfer_detail_active = detail_active;
             rust.download_active = active;
             rust.transfer_has_finished = has_finished;
+            rust.transfer_has_retryable = has_retryable;
             rust.download_running = running;
             rust.download_queued = queued;
         }
@@ -652,6 +719,12 @@ impl qobject::Kichi {
         transfers_detail::clear_selection();
         self.as_mut().sync_transfers();
     }
+}
+
+enum RetryOutcome {
+    Queued,
+    AlreadyPending(String),
+    Unavailable,
 }
 
 /// 批量下载之后状态栏那句话。
