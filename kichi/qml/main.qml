@@ -599,6 +599,8 @@ ApplicationWindow {
         readonly property string message: backend.statusMessage
         readonly property string shownText: message.length > 0
                                              ? message : root.pageContextText()
+        readonly property bool taskNavigationLoading: backend !== null
+                && String(backend.taskFolderLoadingId || "").length > 0
 
         implicitHeight: visible ? barHeight : 0
         visible: root.signedIn || message.length > 0
@@ -617,17 +619,32 @@ ApplicationWindow {
             color: theme.hairline
         }
 
-        ElidedLabel {
-            objectName: "statusBarLabel"
+        RowLayout {
             anchors.fill: parent
             anchors.leftMargin: metrics.pageMargin
             anchors.rightMargin: metrics.pageMargin
-            text: statusBar.shownText
-            elide: Text.ElideRight
-            verticalAlignment: Text.AlignVCenter
-            color: statusBar.message.length > 0 ? theme.textSecondary : theme.textMuted
-            font.pixelSize: theme.fontMeta
-            showToolTipWhenUntruncated: true
+            spacing: theme.gapSm
+
+            BusyIndicator {
+                objectName: "statusBarLoadingSpinner"
+                Layout.preferredWidth: 14
+                Layout.preferredHeight: 14
+                Layout.alignment: Qt.AlignVCenter
+                visible: statusBar.taskNavigationLoading
+                running: visible
+            }
+
+            ElidedLabel {
+                objectName: "statusBarLabel"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                text: statusBar.shownText
+                elide: Text.ElideRight
+                verticalAlignment: Text.AlignVCenter
+                color: statusBar.message.length > 0 ? theme.textSecondary : theme.textMuted
+                font.pixelSize: theme.fontMeta
+                showToolTipWhenUntruncated: true
+            }
         }
     }
 

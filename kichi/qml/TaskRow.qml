@@ -55,7 +55,7 @@ ItemDelegate {
                                     && row.fileId.length > 0
     readonly property bool canActivate: (row.canOpenFolder || row.canPlay)
                                         && !row.folderLoading
-    readonly property bool rowHighlighted: row.isActive || row.folderLoading
+    readonly property bool rowHighlighted: row.isActive
     readonly property var thumbnailEntry: ({
         id: row.fileId,
         name: row.name,
@@ -112,8 +112,8 @@ ItemDelegate {
         z: 1
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
-        cursorShape: row.folderLoading ? Qt.BusyCursor
-                      : row.canActivate ? Qt.PointingHandCursor : Qt.ArrowCursor
+        cursorShape: row.canOpenFolder || row.canPlay
+                     ? Qt.PointingHandCursor : Qt.ArrowCursor
 
         onClicked: function (mouse) {
             if (row.folderLoading)
@@ -198,9 +198,8 @@ ItemDelegate {
                 iconPixelSize: 18
                 videoBadgeSize: 16
                 videoBadgeMargin: 2
-                loading: row.playLoading || row.folderLoading
+                loading: row.playLoading
                 playing: row.playing
-                opacity: row.folderLoading ? 0.55 : 1
             }
         }
 
@@ -237,31 +236,8 @@ ItemDelegate {
             KStatusBadge {
                 objectName: "taskStatusBadge"
                 anchors.centerIn: parent
-                visible: !row.folderLoading
-                opacity: row.folderLoading ? 0 : 1
                 text: row.phaseText
                 tone: row.tone
-            }
-
-            RowLayout {
-                objectName: "taskFolderLoadingState"
-                anchors.centerIn: parent
-                visible: row.folderLoading
-                opacity: row.folderLoading ? 1 : 0
-                spacing: theme.gapXs
-
-                BusyIndicator {
-                    objectName: "taskFolderLoadingSpinner"
-                    Layout.preferredWidth: 18
-                    Layout.preferredHeight: 18
-                    running: row.folderLoading
-                }
-
-                Label {
-                    text: qsTr("打开中…")
-                    color: theme.textSecondary
-                    font.pixelSize: theme.fontMeta
-                }
             }
 
             ToolTip.visible: row.phase === "error" && row.detail.length > 0

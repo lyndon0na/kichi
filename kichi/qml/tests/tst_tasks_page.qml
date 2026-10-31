@@ -296,7 +296,7 @@ TestCase {
         compare(thumbnail.showVideoBadge, false)
     }
 
-    function test_folder_opening_shows_loading_and_blocks_repeat_activation() {
+    function test_folder_opening_leaves_row_unchanged_and_blocks_repeat_activation() {
         var folder = task("opening-folder", "completed", 100)
         folder.kind = "folder"
         folder.fileId = "opening-folder-id"
@@ -316,14 +316,17 @@ TestCase {
             return row.folderLoading === true
         })
         compare(row.canActivate, false)
+        compare(row.rowHighlighted, false)
 
-        var loadingState = findChild(row, "taskFolderLoadingState")
-        var spinner = findChild(row, "taskFolderLoadingSpinner")
+        var thumbnail = findChild(row, "taskThumbnail")
         var statusBadge = findChild(row, "taskStatusBadge")
-        verify(loadingState)
-        compare(loadingState.opacity, 1)
-        compare(spinner.running, true)
-        compare(statusBadge.opacity, 0)
+        verify(thumbnail)
+        verify(statusBadge)
+        compare(findChild(row, "taskFolderLoadingState"), null,
+                "任务行不再显示跳转加载态")
+        compare(thumbnail.loading, false, "文件夹跳转不能复用播放加载态")
+        compare(thumbnail.opacity, 1, "缩略图不能因跳转而压暗")
+        compare(statusBadge.opacity, 1)
 
         row.activate(Qt.point(30, 20))
         wait(20)
@@ -333,7 +336,9 @@ TestCase {
         tryVerify(function () {
             return row.folderLoading === false
         })
-        compare(loadingState.opacity, 0)
+        compare(row.canActivate, true)
+        compare(thumbnail.loading, false)
+        compare(thumbnail.opacity, 1)
         compare(statusBadge.opacity, 1)
         row.activate(Qt.point(30, 20))
         wait(20)

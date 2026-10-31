@@ -126,7 +126,7 @@ impl qobject::Kichi {
             return false;
         }
         let id = id.to_string();
-        let file_id = self
+        let target = self
             .task_list
             .iter()
             .find(|task| {
@@ -134,8 +134,8 @@ impl qobject::Kichi {
                     && task.kind == Some(EntryKind::Folder)
                     && task.phase == TaskPhase::Completed
             })
-            .and_then(|task| task.file_id.clone());
-        let Some(file_id) = file_id else {
+            .map(|task| (id.clone(), task.name.clone()));
+        let Some((file_id, task_name)) = target else {
             self.as_mut()
                 .set_message("该离线任务已完成文件夹不在当前列表中，请刷新后重试");
             return false;
@@ -151,7 +151,8 @@ impl qobject::Kichi {
             rust.list_epoch = rust.list_epoch.wrapping_add(1);
             rust.list_epoch
         };
-        self.as_mut().set_message("正在打开文件夹……");
+        self.as_mut()
+            .set_message(&format!("正在打开「{task_name}」……"));
         run_in_background(
             move || {
                 let trail = session.folder_trail(&file_id)?;
@@ -212,7 +213,7 @@ impl qobject::Kichi {
             return false;
         }
         let target_id = id.to_string();
-        let expected_kind = self
+        let target = self
             .task_list
             .iter()
             .find(|task| {
@@ -220,8 +221,8 @@ impl qobject::Kichi {
                     && task.phase == TaskPhase::Completed
                     && matches!(task.kind, Some(EntryKind::File | EntryKind::Folder))
             })
-            .and_then(|task| task.kind);
-        let Some(expected_kind) = expected_kind else {
+            .and_then(|task| task.kind.map(|kind| (kind, task.name.clone())));
+        let Some((expected_kind, task_name)) = target else {
             self.as_mut()
                 .set_message("该离线任务已完成产物不在当前列表中，请刷新后重试");
             return false;
@@ -238,7 +239,8 @@ impl qobject::Kichi {
             rust.list_epoch = rust.list_epoch.wrapping_add(1);
             rust.list_epoch
         };
-        self.as_mut().set_message("正在定位所在位置……");
+        self.as_mut()
+            .set_message(&format!("正在定位「{task_name}」……"));
 
         let target_for_work = target_id.clone();
         let target_for_result = target_id.clone();
