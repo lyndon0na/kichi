@@ -1,5 +1,6 @@
 //! 资料库三页共用的状态、刷新、文件夹打开与文件页定位。
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -106,6 +107,40 @@ impl qobject::Kichi {
             rust.library_loaded = false;
             rust.library_error = QString::default();
             rust.library_refresh_at = None;
+            rust.library_revision = rust.library_revision.wrapping_add(1);
+        }
+        self.as_mut().notify();
+    }
+
+    /// 星标写请求成功后更新当前资料库快照。
+    ///
+    /// 最近保存 / 播放历史只改星标标记；已加星标页取消星标时直接移除该行，
+    /// 不额外发一轮资料库查询。
+    pub(crate) fn apply_library_starred_change(
+        mut self: Pin<&mut Self>,
+        ids: &[String],
+        starred: bool,
+    ) {
+        let Some(kind) = LibraryKind::from_key(&self.library_kind.to_string()) else {
+            return;
+        };
+        let wanted: HashSet<String> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let changed = update_starred_entries(&mut rust.library_entries, kind, &wanted, starred);
+            if !changed {
+                return;
+            }
+            rust.library_rows = library_view::list_from(&rust.library_entries, kind);
             rust.library_revision = rust.library_revision.wrapping_add(1);
         }
         self.as_mut().notify();
@@ -293,6 +328,109 @@ impl qobject::Kichi {
             },
         );
         true
+    }
+}
+
+fn update_starred_entries(
+    entries: &mut Vec<kichi_core::LibraryEntry>,
+    kind: LibraryKind,
+    ids: &HashSet<String>,
+    starred: bool,
+) -> bool {
+    if kind == LibraryKind::Starred && !starred {
+        let before = entries.len();
+        entries.retain(|entry| !ids.contains(&entry.entry.id));
+        return entries.len() != before;
+    }
+
+    let mut changed = false;
+    for entry in entries {
+        if ids.contains(&entry.entry.id) && entry.entry.starred != starred {
+            entry.entry.starred = starred;
+            changed = true;
+        }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod starred_state_tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use kichi_core::{EntryKind, FileEntry, LibraryEntry};
+
+    fn entry(id: &str, starred: bool) -> LibraryEntry {
+        LibraryEntry {
+            entry: FileEntry {
+                id: id.to_owned(),
+                name: format!("{id}.mkv"),
+                kind: EntryKind::File,
+                size: 1,
+                created_at: None,
+                modified_at: Utc.with_ymd_and_hms(2026, 10, 31, 8, 0, 0).single(),
+                parent_id: String::new(),
+                md5: None,
+                audit_flagged: false,
+                starred,
+                media: true,
+                video: true,
+                thumbnail_url: String::new(),
+            },
+            event_id: None,
+            occurred_at: None,
+            progress: None,
+        }
+    }
+
+    fn ids(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn recent_and_history_entries_update_in_place() {
+        let mut entries = vec![entry("a", false), entry("b", false)];
+        assert!(update_starred_entries(
+            &mut entries,
+            LibraryKind::RecentSaved,
+            &ids(&["a"]),
+            true
+        ));
+        assert!(entries[0].entry.starred);
+        assert!(!entries[1].entry.starred);
+    }
+
+    #[test]
+    fn unstarring_removes_rows_from_the_starred_collection_only() {
+        let mut starred = vec![entry("a", true), entry("b", true)];
+        assert!(update_starred_entries(
+            &mut starred,
+            LibraryKind::Starred,
+            &ids(&["a"]),
+            false
+        ));
+        assert_eq!(starred.len(), 1);
+        assert_eq!(starred[0].entry.id, "b");
+
+        let mut history = vec![entry("a", true), entry("b", true)];
+        assert!(update_starred_entries(
+            &mut history,
+            LibraryKind::PlaybackHistory,
+            &ids(&["a"]),
+            false
+        ));
+        assert_eq!(history.len(), 2);
+        assert!(!history[0].entry.starred);
+    }
+
+    #[test]
+    fn no_matching_entry_is_reported_as_unchanged() {
+        let mut entries = vec![entry("a", false)];
+        assert!(!update_starred_entries(
+            &mut entries,
+            LibraryKind::RecentSaved,
+            &ids(&["missing"]),
+            true
+        ));
     }
 }
 

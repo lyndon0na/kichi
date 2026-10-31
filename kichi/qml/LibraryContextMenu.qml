@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 
 // 最近保存 / 播放历史 / 已加星标共用的右键菜单。
-// 资料库页本身只读：菜单只提供打开、定位、下载与分享，不改源条目。
+// 除星标外不修改源条目：改名、移动、复制与回收站仍只在文件页提供。
 Item {
     id: root
 
@@ -14,6 +14,7 @@ Item {
     property string targetName: ""
     property bool targetIsFolder: false
     property bool targetPlayable: false
+    property bool targetStarred: false
     property bool targetPending: false
     property bool targetHasPartial: false
     property point targetPoint: Qt.point(0, 0)
@@ -23,6 +24,7 @@ Item {
     signal playRequested(string id, point position)
     signal openFolderRequested(string id)
     signal revealLocationRequested(string id)
+    signal starRequested(string id, bool starred)
     signal downloadRequested(string id)
     signal shareRequested(var entry)
     signal refreshRequested()
@@ -66,6 +68,14 @@ Item {
                   : qsTr("打开文件所在位置")
             enabled: root.backend !== null && !root.backend.filesLoading
             onTriggered: root.revealLocationRequested(root.targetId)
+        }
+
+        MenuItem {
+            objectName: "libraryStarItem"
+            text: root.targetStarred ? qsTr("取消星标") : qsTr("加星标")
+            enabled: root.backend !== null && !root.backend.fileActionRunning
+                     && !root.backend.libraryLoading
+            onTriggered: root.starRequested(root.targetId, !root.targetStarred)
         }
 
         MenuSeparator {
@@ -119,6 +129,7 @@ Item {
         root.targetName = String(entry.name || "")
         root.targetIsFolder = entry.kind === "folder"
         root.targetPlayable = entry.playable === true
+        root.targetStarred = entry.starred === true
         root.targetPending = typeof root.backend.isDownloadPending === "function"
                              && root.backend.isDownloadPending(root.targetId)
         root.targetHasPartial = !root.targetIsFolder

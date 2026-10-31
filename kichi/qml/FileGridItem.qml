@@ -256,6 +256,31 @@ ItemDelegate {
                 border.color: theme.accent
             }
 
+            Rectangle {
+                id: gridStarBadge
+                objectName: "gridStarBadge"
+                width: 20
+                height: width
+                radius: width / 2
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.margins: 6
+                z: 2
+                color: theme.mediaBadgeSoft
+                visible: card.entry ? card.entry.starred === true : false
+                Accessible.name: qsTr("已加星标")
+
+                NavIcon {
+                    objectName: "gridStar"
+                    anchors.centerIn: parent
+                    width: theme.fontCaption + 2
+                    height: width
+                    name: "star"
+                    color: theme.accent
+                    filled: true
+                }
+            }
+
             KStatusBadge {
                 objectName: "gridAuditBadge"
 

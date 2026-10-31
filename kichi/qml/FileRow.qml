@@ -233,10 +233,12 @@ ItemDelegate {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 4
-                readonly property int extraCount: (rowPlayingStatus.visible ? 1 : 0)
+                readonly property int extraCount: 1
+                                                    + (rowPlayingStatus.visible ? 1 : 0)
                                                     + (auditLabel.visible ? 1 : 0)
                 readonly property real extraWidth:
-                    (rowPlayingStatus.visible ? rowPlayingStatus.implicitWidth : 0)
+                    rowStarSlot.width
+                    + (rowPlayingStatus.visible ? rowPlayingStatus.implicitWidth : 0)
                     + (auditLabel.visible ? auditLabel.implicitWidth : 0)
                     + extraCount * spacing
 
@@ -302,6 +304,27 @@ ItemDelegate {
                     font.pixelSize: row.textPixelSize
                     verticalAlignment: Text.AlignVCenter
                     color: theme.danger
+                }
+
+                // 星标槽始终占位，切换星标不会让文件名和状态左右跳。
+                // 放在状态 / 违规标记之后，保留“播放中”紧贴文件名的既有排布。
+                Item {
+                    id: rowStarSlot
+                    objectName: "fileRowStarSlot"
+                    width: theme.fontBody
+                    height: nameLine.height
+                    Accessible.name: qsTr("已加星标")
+
+                    NavIcon {
+                        objectName: "fileRowStar"
+                        anchors.centerIn: parent
+                        width: theme.fontBody
+                        height: theme.fontBody
+                        name: "star"
+                        color: theme.accent
+                        filled: true
+                        visible: row.entry ? row.entry.starred === true : false
+                    }
                 }
             }
 

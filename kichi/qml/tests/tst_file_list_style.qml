@@ -179,6 +179,54 @@ TestCase {
         compare(trashSlot.width, 36)
     }
 
+    function test_file_row_reserves_a_fixed_star_slot() {
+        harness = harnessComponent.createObject(parent, { visible: true })
+        verify(harness !== null, "表格布局创建失败")
+        wait(30)
+
+        var row = findChild(harness, "fileRow")
+        verify(row !== null)
+        var slot = findChild(row, "fileRowStarSlot")
+        var star = findChild(row, "fileRowStar")
+        verify(slot !== null && star !== null)
+        var width = slot.width
+
+        row.entry = {
+            id: "starred",
+            name: "已加星标.mkv",
+            kind: "file",
+            sizeText: "1.0 GB",
+            modifiedText: "2026-10-30 10:00",
+            hasThumbnail: false,
+            video: false,
+            playable: false,
+            auditFlag: false,
+            starred: true
+        }
+        wait(20)
+        compare(slot.width, width)
+        compare(star.visible, true)
+        compare(star.name, "star")
+        compare(star.filled, true)
+        compare(star.color, themeProbe.accent)
+
+        row.entry = {
+            id: "plain",
+            name: "普通.mkv",
+            kind: "file",
+            sizeText: "1.0 GB",
+            modifiedText: "2026-10-30 10:00",
+            hasThumbnail: false,
+            video: false,
+            playable: false,
+            auditFlag: false,
+            starred: false
+        }
+        wait(20)
+        compare(slot.width, width, "取消星标后槽位宽度不变")
+        compare(star.visible, false)
+    }
+
     function test_folder_and_empty_thumbnail_fall_back_to_icon() {
         thumbnail = thumbnailComponent.createObject(parent, {
             entry: {

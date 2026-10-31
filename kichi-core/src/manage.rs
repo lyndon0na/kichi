@@ -1,4 +1,4 @@
-//! 网盘侧写操作：重命名 / 新建文件夹 / 移动 / 复制 / 回收站恢复与永久删除。
+//! 网盘侧写操作：重命名 / 新建文件夹 / 移动 / 复制 / 星标 / 回收站恢复与永久删除。
 //!
 //! 读操作在 `drive.rs`，这里只放会改云端数据的部分。
 //! 单独成文件：一是职责清晰，二是将来越界操作（彻底删除等）好扩展。
@@ -23,6 +23,8 @@ const MAX_BATCH: usize = 100;
 /// 批量移动 / 复制的动作名，拼在 files URL 后面（`…/files:batchMove`）。
 const ACTION_MOVE: &str = "batchMove";
 const ACTION_COPY: &str = "batchCopy";
+const ACTION_STAR: &str = "star";
+const ACTION_UNSTAR: &str = "unstar";
 
 #[derive(Deserialize)]
 struct BatchTaskAck {
@@ -74,6 +76,20 @@ impl DriveClient {
     /// 把条目复制到 `parent_id` 下。空串表示根目录。
     pub fn copy_to(&self, ids: &[&str], parent_id: &str) -> Result<(), Error> {
         self.batch_to(ACTION_COPY, ids, parent_id)
+    }
+
+    /// 给文件或文件夹加星标 / 取消星标。
+    ///
+    /// 星标在服务端是系统标签 `STAR`，写接口仍沿用批量 `ids` 形状。
+    /// 成功响应可能为空，因此不能复用会解析 `task_id` 的回收站入口。
+    pub fn set_starred(&self, ids: &[&str], starred: bool) -> Result<(), Error> {
+        let (action, body) = star_request(ids, starred)?;
+        self.request_no_response_body(
+            reqwest::Method::POST,
+            &Config::file_action_url(self.config(), action),
+            &[],
+            &body,
+        )
     }
 
     fn batch_to(&self, action: &str, ids: &[&str], parent_id: &str) -> Result<(), Error> {
@@ -140,6 +156,16 @@ fn batch_body(ids: &[&str], parent_id: &str) -> Result<serde_json::Value, Error>
         "ids": ids,
         "to": { "parent_id": parent_id.trim() },
     }))
+}
+
+/// 星标 / 取消星标的动作名与请求体。
+///
+/// 形状由 pikpak-kotlin（MIT，真实账号探针）确认：
+/// `POST /drive/v1/files:<action>`，body 只有去重后的 `ids`。
+fn star_request(ids: &[&str], starred: bool) -> Result<(&'static str, serde_json::Value), Error> {
+    let ids = normalize_ids(ids)?;
+    let action = if starred { ACTION_STAR } else { ACTION_UNSTAR };
+    Ok((action, serde_json::json!({ "ids": ids })))
 }
 
 /// 校验并规范化重命名 / 新建时给的名字。
@@ -260,6 +286,25 @@ mod tests {
         let ids: Vec<String> = (0..101).map(|i| format!("id{i}")).collect();
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         assert!(batch_body(&refs, "x").is_err(), "超过 100 个要挡");
+    }
+
+    #[test]
+    fn star_request_uses_the_observed_endpoint_and_batch_body() {
+        let (action, body) = star_request(&[" b ", "a", "b"], true).expect("应合法");
+        assert_eq!(action, "star");
+        assert_eq!(body, serde_json::json!({"ids": ["a", "b"]}));
+
+        let (action, body) = star_request(&["a"], false).expect("应合法");
+        assert_eq!(action, "unstar");
+        assert_eq!(body, serde_json::json!({"ids": ["a"]}));
+    }
+
+    #[test]
+    fn star_request_rejects_empty_and_oversized_batches() {
+        assert!(star_request(&[], true).is_err());
+        let ids: Vec<String> = (0..101).map(|i| format!("id{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert!(star_request(&refs, false).is_err(), "超过 100 个要挡");
     }
 
     #[test]

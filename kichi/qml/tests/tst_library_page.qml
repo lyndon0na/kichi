@@ -37,6 +37,9 @@ TestCase {
         property string playedId: ""
         property string revealedId: ""
         property string downloadedId: ""
+        property int starCalls: 0
+        property string starredId: ""
+        property bool starredValue: false
 
         signal changed()
         signal thumbnailReady(string id, string path)
@@ -66,6 +69,12 @@ TestCase {
 
         function downloadEntry(id) {
             downloadedId = id
+        }
+
+        function setLibraryStarred(id, starred) {
+            starCalls += 1
+            starredId = id
+            starredValue = starred
         }
 
         function isDownloadPending(id) {
@@ -120,6 +129,9 @@ TestCase {
         backend.playedId = ""
         backend.revealedId = ""
         backend.downloadedId = ""
+        backend.starCalls = 0
+        backend.starredId = ""
+        backend.starredValue = false
         backend.contentView = "list"
 
         page = pageComponent.createObject(parent, {
@@ -146,7 +158,7 @@ TestCase {
         page = null
     }
 
-    function row(id, playable, kind) {
+    function row(id, playable, kind, starred) {
         return {
             id: id,
             name: id + ".mkv",
@@ -158,7 +170,8 @@ TestCase {
             secondaryText: "2026-10-30 12:00",
             hasThumbnail: false,
             video: playable === true,
-            playable: playable === true
+            playable: playable === true,
+            starred: starred === true
         }
     }
 
@@ -458,6 +471,45 @@ TestCase {
         compare(findChild(page, "libraryOpenFolderItem").visible, false)
         compare(findChild(page, "libraryRevealItem").text, "打开文件所在位置")
         page.contextMenu.close()
+    }
+
+    function test_star_menu_updates_the_current_library_entry() {
+        publish([row("plain", false)], true)
+        var list = findChild(page, "libraryList")
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+
+        mouseClick(item, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        var starItem = findChild(page, "libraryStarItem")
+        verify(starItem !== null)
+        compare(starItem.text, "加星标")
+        mouseClick(starItem)
+        tryCompare(backend, "starCalls", 1)
+        compare(backend.starredId, "plain")
+        compare(backend.starredValue, true)
+    }
+
+    function test_starred_menu_offers_unstar() {
+        publish([row("favorite", false, "file", true)], true)
+        var list = findChild(page, "libraryList")
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+        var star = findChild(item, "libraryStar")
+        var slot = findChild(item, "libraryStarSlot")
+        verify(star !== null && slot !== null)
+        compare(star.visible, true)
+        compare(star.filled, true)
+        verify(slot.width > 0, "星标槽必须始终占位")
+
+        mouseClick(item, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        var starItem = findChild(page, "libraryStarItem")
+        compare(starItem.text, "取消星标")
+        mouseClick(starItem)
+        tryCompare(backend, "starCalls", 1)
+        compare(backend.starredId, "favorite")
+        compare(backend.starredValue, false)
     }
 
     function test_blank_right_click_refreshes() {

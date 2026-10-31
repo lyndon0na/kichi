@@ -16,6 +16,12 @@ use super::actions::run_in_background;
 use super::qobject;
 use crate::session::Failure;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StarOrigin {
+    Files,
+    Library,
+}
+
 impl qobject::Kichi {
     /// 改名。
     ///
@@ -107,6 +113,89 @@ impl qobject::Kichi {
                     qichi.as_mut().refresh_files();
                 }
                 Err(err) => qichi.as_mut().fail_file_action("trash", err),
+            },
+        );
+    }
+
+    /// 文件页（含搜索结果）批量加星标 / 取消星标。
+    pub fn set_starred(mut self: Pin<&mut Self>, ids: QStringList, starred: bool) {
+        let ids = clean_ids(ids);
+        let first_name = ids
+            .first()
+            .and_then(|id| self.as_ref().rust().entry_name(id));
+        self.as_mut()
+            .change_starred(ids, first_name, starred, StarOrigin::Files);
+    }
+
+    /// 资料库页单条加星标 / 取消星标。
+    pub fn set_library_starred(mut self: Pin<&mut Self>, id: QString, starred: bool) {
+        let id = id.to_string().trim().to_owned();
+        let name = self
+            .library_entries
+            .iter()
+            .find(|entry| entry.entry.id == id)
+            .map(|entry| entry.entry.name.clone());
+        self.as_mut()
+            .change_starred(vec![id], name, starred, StarOrigin::Library);
+    }
+
+    /// 星标写请求共用入口：文件页成功后额外刷新当前目录。
+    fn change_starred(
+        mut self: Pin<&mut Self>,
+        ids: Vec<String>,
+        first_name: Option<String>,
+        starred: bool,
+        origin: StarOrigin,
+    ) {
+        if !self.as_mut().begin_file_action() {
+            return;
+        }
+        let ids: Vec<String> = ids
+            .into_iter()
+            .map(|id| id.trim().to_owned())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if ids.is_empty() {
+            let action = star_action(starred);
+            self.as_mut()
+                .fail_file_action(action, Failure::Other("没有选中条目".into()));
+            return;
+        }
+
+        let action = star_action(starred);
+        let subject = item_subject(&ids, first_name);
+        let progress = if starred {
+            format!("正在为{subject}加星标……")
+        } else {
+            format!("正在取消{subject}的星标……")
+        };
+        let success = if starred {
+            format!("已为{subject}加星标")
+        } else {
+            format!("已取消{subject}的星标")
+        };
+        let session = self.backend.session.clone();
+        let request_ids = ids.clone();
+        self.as_mut().set_message(&progress);
+        run_in_background(
+            move || {
+                let refs: Vec<&str> = request_ids.iter().map(String::as_str).collect();
+                session.set_starred(&refs, starred)
+            },
+            move |mut qichi, result| match result {
+                Ok(()) => {
+                    if origin == StarOrigin::Files {
+                        qichi.as_mut().apply_files_starred_change(&ids, starred);
+                    } else {
+                        qichi.as_mut().apply_library_starred_change(&ids, starred);
+                    }
+                    qichi.as_mut().end_file_action(action, &success);
+                    // 文件页以服务端重读结果为准；搜索结果已在上一步单独更新。
+                    if origin == StarOrigin::Files {
+                        qichi.as_mut().refresh_files();
+                    }
+                }
+                Err(err) => qichi.as_mut().fail_file_action(action, err),
             },
         );
     }
@@ -254,6 +343,30 @@ impl qobject::Kichi {
         self.as_mut().on_failure(failure);
         self.as_mut()
             .file_action_done(QString::from(action), false, QString::from(text.as_str()));
+    }
+}
+
+fn star_action(starred: bool) -> &'static str {
+    if starred {
+        "star"
+    } else {
+        "unstar"
+    }
+}
+
+impl qobject::Kichi {
+    /// 文件页领域快照与搜索结果都要立即反映星标，目录刷新随后对齐服务端。
+    fn apply_files_starred_change(mut self: Pin<&mut Self>, ids: &[String], starred: bool) {
+        let wanted: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            for entry in &mut rust.entries {
+                if wanted.contains(entry.id.as_str()) {
+                    entry.starred = starred;
+                }
+            }
+        }
+        self.as_mut().apply_search_starred_change(ids, starred);
     }
 }
 

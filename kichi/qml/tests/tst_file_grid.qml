@@ -187,7 +187,8 @@ TestCase {
             hasThumbnail: false,
             video: kind === "file",
             playable: kind === "file",
-            auditFlag: false
+            auditFlag: false,
+            starred: false
         }
     }
 
@@ -430,6 +431,44 @@ TestCase {
         verify(badge !== null && thumbnailBox !== null)
         compare(badge.visible, true)
         compare(badge.parent, thumbnailBox)
+    }
+
+    function test_grid_star_badge_does_not_change_card_geometry() {
+        density = densityComponent.createObject(parent)
+        const starred = entry(8, "file")
+        starred.starred = true
+        gridItem = gridItemComponent.createObject(parent, {
+            width: 200,
+            height: density.gridItemHeight(200),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(200),
+            entry: starred
+        })
+        verify(gridItem !== null)
+        wait(30)
+
+        const badge = findChild(gridItem, "gridStarBadge")
+        const star = findChild(gridItem, "gridStar")
+        verify(badge !== null && star !== null)
+        compare(badge.visible, true)
+        compare(star.filled, true)
+        compare(star.color, themeProbe.accent)
+        const cardWidth = gridItem.width
+        const cardHeight = gridItem.height
+        const thumbnail = findChild(gridItem, "gridThumbnail")
+        const thumbnailWidth = thumbnail.width
+        const thumbnailHeight = thumbnail.height
+
+        gridItem.entry = entry(9, "file")
+        wait(20)
+        compare(badge.visible, false)
+        compare(gridItem.width, cardWidth)
+        compare(gridItem.height, cardHeight)
+        compare(thumbnail.width, thumbnailWidth)
+        compare(thumbnail.height, thumbnailHeight)
     }
 
     function test_selected_grid_item_has_accent_ring() {

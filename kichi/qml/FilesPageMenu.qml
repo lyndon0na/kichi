@@ -22,6 +22,7 @@ Item {
     property string targetName: ""
     property bool targetIsFolder: false
     property bool targetPlayable: false
+    property bool targetStarred: false
     // 这个条目是否已在下载队列里（打开菜单时问一次后端；见 openContext）
     property bool targetPending: false
     // 这个文件是否有可续传的断点（同一次打开菜单时问一次）
@@ -108,6 +109,23 @@ Item {
         }
 
         MenuItem {
+            objectName: "starItem"
+            text: {
+                if (root.targetCount > 1) {
+                    return root.targetStarred
+                            ? qsTr("取消选中的 %1 项星标").arg(root.targetCount)
+                            : qsTr("为选中的 %1 项加星标").arg(root.targetCount)
+                }
+                return root.targetStarred ? qsTr("取消星标") : qsTr("加星标")
+            }
+            enabled: root.backend !== null && !root.backend.fileActionRunning
+            onTriggered: {
+                if (root.backend)
+                    root.backend.setStarred(root.targetIds, !root.targetStarred)
+            }
+        }
+
+        MenuItem {
             objectName: "shareItem"
             text: root.targetCount > 1
                   ? qsTr("分享选中的 %1 项…").arg(root.targetCount)
@@ -187,6 +205,7 @@ Item {
         targetName = entry.name
         targetIsFolder = entry.kind === "folder"
         targetPlayable = entry.playable === true
+        targetStarred = entry.starred === true
         // 每次打开都重新问一次：条目可能刚下完（已释放）或刚被排上
         targetPending = root.backend !== null && root.backend.isDownloadPending(entry.id)
         // 文件夹没有「单文件断点」；只有文件才可能显示「继续下载」

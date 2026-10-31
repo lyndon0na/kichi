@@ -530,6 +530,16 @@ pub mod qobject {
         #[cxx_name = "trashEntries"]
         fn trash_entries(self: Pin<&mut Self>, ids: QStringList);
 
+        /// 批量加星标 / 取消星标；文件页成功后刷新当前目录并恢复滚动位置。
+        #[qinvokable]
+        #[cxx_name = "setStarred"]
+        fn set_starred(self: Pin<&mut Self>, ids: QStringList, starred: bool);
+
+        /// 资料库单条加星标 / 取消星标；已加星标页取消后立即移除该行。
+        #[qinvokable]
+        #[cxx_name = "setLibraryStarred"]
+        fn set_library_starred(self: Pin<&mut Self>, id: QString, starred: bool);
+
         /// 把条目移动到目标文件夹（空 id = 根目录）
         #[qinvokable]
         #[cxx_name = "moveEntries"]

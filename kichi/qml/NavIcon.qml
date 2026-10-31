@@ -16,6 +16,8 @@ Item {
     /// spreadsheet / presentation / archive / code / subtitle / application / torrent
     property string name: ""
     property color color: "transparent"
+    /// 星标等实心状态用；其它图标保持线稿。
+    property bool filled: false
 
     implicitWidth: 18
     implicitHeight: 18
@@ -122,7 +124,7 @@ Item {
         }
 
         ShapePath {
-            fillColor: "transparent"
+            fillColor: icon.filled ? icon.color : "transparent"
             strokeColor: icon.color
             // 描边宽度按图标尺寸成比例（视觉上 = 边长的 9%：18px 约 1.6px、24px 约 2.2px）。
             // 写死像素会让 14px 的小图标描边占 11%，又粗又毛。

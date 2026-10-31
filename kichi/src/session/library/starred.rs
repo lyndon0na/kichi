@@ -3,7 +3,7 @@
 //! 星标是 PikPak 的系统标签，列表项上显式 `starred` 不可靠；`FileEntry`
 //! 已经把显式字段与 `tags[].name == "STAR"` 统一成 `FileEntry::starred`。
 //! 请求仍按它做本地校验，但不再遍历账号里的非星标文件。
-//! 这里不调用任何星标写接口，首版页面保持只读。
+//! 本模块只负责读取与排序；星标写请求走文件页共用的写操作入口。
 
 use std::collections::HashSet;
 

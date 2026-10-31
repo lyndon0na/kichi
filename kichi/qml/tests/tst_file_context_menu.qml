@@ -28,6 +28,9 @@ TestCase {
         property string singleId: ""
         property int batchCount: 0
         property var batchIds: []
+        property int starCount: 0
+        property var starIds: []
+        property bool starValue: false
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
@@ -46,6 +49,11 @@ TestCase {
             batchCount += 1
             batchIds = ids.slice()
         }
+        function setStarred(ids, starred) {
+            starCount += 1
+            starIds = ids.slice()
+            starValue = starred
+        }
     }
 
     Component {
@@ -60,6 +68,9 @@ TestCase {
         backend.singleId = ""
         backend.batchCount = 0
         backend.batchIds = []
+        backend.starCount = 0
+        backend.starIds = []
+        backend.starValue = false
         backend.pending = []
         menu = menuComponent.createObject(parent, {
             width: 600, height: 400, visible: true, backend: backend
@@ -139,6 +150,39 @@ TestCase {
         compare(spy.count, 1)
         compare(spy.signalArguments[0][1].length, 3)
         spy.destroy()
+    }
+
+    function test_star_applies_to_the_whole_selection() {
+        var ids = ["a", "b", "c"]
+        openMenu(ids)
+        var item = findChild(menu, "starItem")
+        verify(item !== null, "菜单里有星标项")
+        verify(item.text.indexOf("3 项") >= 0, "文案带条数，实际：" + item.text)
+
+        mouseClick(item)
+        wait(40)
+        compare(backend.starCount, 1)
+        compare(backend.starIds.length, 3)
+        compare(backend.starValue, true)
+    }
+
+    function test_starred_entry_offers_unstar() {
+        menu.openContext({
+            id: "a",
+            name: "a.mkv",
+            kind: "file",
+            playable: false,
+            starred: true
+        }, Qt.point(20, 20), ["a", "b"], false)
+        wait(60)
+
+        var item = findChild(menu, "starItem")
+        verify(item.text.indexOf("取消") === 0, "实际：" + item.text)
+        mouseClick(item)
+        wait(40)
+        compare(backend.starCount, 1)
+        compare(backend.starIds.length, 2)
+        compare(backend.starValue, false)
     }
 
     function test_context_menu_does_not_offer_open_containing_directory() {

@@ -346,6 +346,69 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
+    /// 星标写请求成功后同步搜索视图里的同一批条目。
+    ///
+    /// 文件页随后还会刷新当前目录；搜索结果不是目录模型，必须在这里单独更新，
+    /// 否则星标成功但结果行仍停在旧状态。
+    pub(crate) fn apply_search_starred_change(
+        mut self: Pin<&mut Self>,
+        ids: &[String],
+        starred: bool,
+    ) {
+        if !self.search_active {
+            return;
+        }
+        let wanted: std::collections::HashSet<String> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+
+        let query = self.search_query.to_string();
+        let folder = self
+            .crumbs
+            .last()
+            .map(|crumb| crumb.name.clone())
+            .unwrap_or_else(|| ROOT_NAME.to_owned());
+        {
+            let mut rust = self.as_mut().rust_mut();
+            for hit in rust.search_index.values_mut() {
+                if wanted.contains(&hit.entry.id) {
+                    hit.entry.starred = starred;
+                }
+            }
+
+            let mut rows = QVariantList::default();
+            let displayed = if rust.search_index.is_empty() {
+                // 当前目录的本地筛选不进 search_index；直接从更新后的 entries 重算。
+                let filtered: Vec<FileEntry> = rust
+                    .entries
+                    .iter()
+                    .filter(|entry| kichi_core::search::matches(&entry.name, &query))
+                    .cloned()
+                    .collect();
+                for entry in &filtered {
+                    rows.append(QVariant::from(&current_dir_map(entry, &folder)));
+                }
+                filtered.len()
+            } else {
+                let ordered = ordered_hits(&rust.search_index);
+                for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
+                    rows.append(QVariant::from(&hit_map(hit)));
+                }
+                ordered.len().min(SEARCH_LIST_LIMIT)
+            };
+
+            rust.search_results = rows;
+            rust.search_displayed = displayed;
+        }
+        self.as_mut().notify();
+    }
+
     /// 全盘扫描结束：三态文案（扫完 / 用户停止 / 官方分页异常）。
     fn finish_scan(mut self: Pin<&mut Self>, end: ScanEnd) {
         {

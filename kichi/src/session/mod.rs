@@ -467,6 +467,12 @@ impl Session {
             .copy_to(ids, parent_id.unwrap_or(""))
             .map_err(Failure::from)
     }
+
+    /// 给文件或文件夹加星标 / 取消星标（阻塞）。
+    pub fn set_starred(&self, ids: &[&str], starred: bool) -> Result<(), Failure> {
+        let client = self.drive()?;
+        client.set_starred(ids, starred).map_err(Failure::from)
+    }
 }
 
 /// 启动恢复的结果。

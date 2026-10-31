@@ -505,6 +505,10 @@ Item {
             if (page.backend)
                 page.backend.revealLibraryEntry(id)
         }
+        onStarRequested: function (id, starred) {
+            if (page.backend)
+                page.backend.setLibraryStarred(id, starred)
+        }
         onDownloadRequested: function (id) {
             if (page.backend)
                 page.backend.downloadEntry(id)

@@ -228,7 +228,8 @@ QtObject {
         if (action === "trash" || action === "move")
             ctl.selection.clear()
         if (action === "trash" || action === "move"
-                || action === "rename" || action === "folder") {
+                || action === "rename" || action === "folder"
+                || action === "star" || action === "unstar") {
             rememberScroll()
             restoreScrollPending = true
         }

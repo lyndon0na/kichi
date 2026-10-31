@@ -162,11 +162,14 @@ ItemDelegate {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 4
+            readonly property int gapCount: playingBadge.visible ? 2 : 1
 
             ElidedLabel {
                 id: nameLabel
                 width: Math.min(implicitWidth,
-                                Math.max(0, parent.width - playingBadge.width - parent.spacing))
+                                Math.max(0, parent.width - starSlot.width
+                                         - playingBadge.width
+                                         - parent.spacing * parent.gapCount))
                 height: parent.height
                 text: row.entry ? row.entry.name : ""
                 font.pixelSize: row.textPixelSize
@@ -176,6 +179,26 @@ ItemDelegate {
                 externallyHovered: row.rowHovered
                                    && row.pointerOver(nameLabel, mouseArea.mouseX,
                                                       mouseArea.mouseY)
+            }
+
+            // 星标槽始终占位，名字右侧的状态变化不会挤动文件名。
+            Item {
+                id: starSlot
+                objectName: "libraryStarSlot"
+                width: theme.fontBody
+                height: parent.height
+                Accessible.name: qsTr("已加星标")
+
+                NavIcon {
+                    objectName: "libraryStar"
+                    anchors.centerIn: parent
+                    width: theme.fontBody
+                    height: theme.fontBody
+                    name: "star"
+                    color: theme.accent
+                    filled: true
+                    visible: row.entry ? row.entry.starred === true : false
+                }
             }
 
             Rectangle {
