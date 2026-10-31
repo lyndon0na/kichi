@@ -18,20 +18,51 @@ Item {
     signal blankContextMenuRequested(point position)
 
     readonly property int sideMargin: root.metrics ? root.metrics.pageMargin : 12
-    readonly property int rightMargin: root.sideMargin
-                                        + (root.metrics ? root.metrics.scrollBarSlot : 10)
-    readonly property real availableWidth: Math.max(
-        0, root.width - root.sideMargin - root.rightMargin)
+    readonly property int scrollBarSlot: root.metrics ? root.metrics.scrollBarSlot : 10
     readonly property real minItemWidth: root.density
                                         ? root.density.gridMinItemWidth : 160
     readonly property int columnGap: root.density ? root.density.gridColumnGap : 14
     readonly property int rowGap: root.density ? root.density.gridRowGap : 18
+    // 末列 cell 尾部自带 columnGap，右 margin 先扣掉这一段。
+    readonly property int noScrollBarRightMargin: Math.max(
+        0, root.sideMargin - root.columnGap)
+    readonly property int scrollBarRightMargin: Math.max(
+        0, root.sideMargin + root.scrollBarSlot - root.columnGap)
+    // 列数按有滚动条时的最窄可用宽度算，避免有无滚动条时列数来回变化。
+    readonly property real layoutAvailableWidth: Math.max(
+        0, root.width - root.sideMargin - root.scrollBarRightMargin)
     readonly property int columns: Math.max(1, Math.floor(
-        (root.availableWidth + root.columnGap)
+        (root.layoutAvailableWidth + root.columnGap)
         / (root.minItemWidth + root.columnGap)))
-    readonly property real cellSlotWidth: root.columns > 0
-        ? Math.max(1, Math.floor(root.availableWidth / root.columns)) : 0
-    readonly property real itemWidth: Math.max(1, root.cellSlotWidth - root.columnGap)
+    readonly property real noScrollBarAvailableWidth: Math.max(
+        0, root.width - root.sideMargin - root.noScrollBarRightMargin)
+    readonly property real noScrollBarCellSlotWidth: Math.max(
+        1, Math.floor(Math.max(0, root.noScrollBarAvailableWidth - 1)
+                      / root.columns))
+    readonly property real noScrollBarRemainder: Math.max(
+        0, root.noScrollBarAvailableWidth
+           - root.columns * root.noScrollBarCellSlotWidth)
+    // 无滚动条时让卡片吸收末列尾间距和取整余量，使左右边距严格一致。
+    readonly property real noScrollBarItemWidth: Math.max(
+        1, root.noScrollBarCellSlotWidth - root.sideMargin
+           + root.noScrollBarRemainder)
+    readonly property real noScrollBarItemHeight: root.density
+        ? root.density.gridItemHeight(root.noScrollBarItemWidth, root.reserveDetail) : 1
+    readonly property int projectedRows: Math.ceil(gridView.count / root.columns)
+    readonly property bool scrollBarVisible: root.projectedRows
+                                             * (root.noScrollBarItemHeight + root.rowGap)
+                                             > root.height
+    readonly property int rightMargin: root.scrollBarVisible
+                                       ? root.scrollBarRightMargin
+                                       : root.noScrollBarRightMargin
+    readonly property real availableWidth: Math.max(
+        0, root.width - root.sideMargin - root.rightMargin)
+    readonly property real cellSlotWidth: root.scrollBarVisible
+        ? Math.max(1, Math.floor(root.availableWidth / root.columns))
+        : root.noScrollBarCellSlotWidth
+    readonly property real itemWidth: root.scrollBarVisible
+        ? Math.max(1, root.cellSlotWidth - root.columnGap)
+        : root.noScrollBarItemWidth
     readonly property real itemHeight: root.density
         ? root.density.gridItemHeight(root.itemWidth, root.reserveDetail) : 1
     readonly property real cellHeight: root.itemHeight + root.rowGap
@@ -62,6 +93,7 @@ Item {
         id: gridView
 
         objectName: root.viewObjectName
+        readonly property bool scrollBarVisible: root.scrollBarVisible
         anchors.fill: parent
         visible: root.visible
         model: root.model

@@ -18,20 +18,54 @@ Item {
 
     readonly property int sideMargin: metrics ? metrics.pageMargin : 12
     readonly property int scrollBarSlot: metrics ? metrics.scrollBarSlot : 10
-    readonly property real availableWidth: Math.max(
-        0, width - sideMargin * 2 - scrollBarSlot)
     readonly property real minItemWidth: density ? density.gridMinItemWidth : 160
     readonly property int columnGap: density ? density.gridColumnGap : 14
     readonly property int rowGap: density ? density.gridRowGap : 18
+    readonly property int headerHeight: density ? density.groupHeaderHeight : 38
+    // 最后一列 cell 尾部自带 columnGap，右 margin 不再重复预留。
+    readonly property int noScrollBarRightMargin: Math.max(
+        0, sideMargin - columnGap)
+    readonly property int scrollBarRightMargin: Math.max(
+        0, sideMargin + scrollBarSlot - columnGap)
+    readonly property real layoutAvailableWidth: Math.max(
+        0, width - sideMargin - scrollBarRightMargin)
     readonly property int columns: Math.max(1, Math.floor(
-        (availableWidth + columnGap) / (minItemWidth + columnGap)))
-    readonly property real cellSlotWidth: columns > 0
-        ? Math.max(1, Math.floor(availableWidth / columns)) : 0
-    readonly property real itemWidth: Math.max(1, cellSlotWidth - columnGap)
+        (layoutAvailableWidth + columnGap) / (minItemWidth + columnGap)))
+    readonly property real noScrollBarAvailableWidth: Math.max(
+        0, width - sideMargin - noScrollBarRightMargin)
+    readonly property real noScrollBarCellSlotWidth: Math.max(
+        1, Math.floor(Math.max(0, noScrollBarAvailableWidth - 1) / columns))
+    readonly property real noScrollBarRemainder: Math.max(
+        0, noScrollBarAvailableWidth - columns * noScrollBarCellSlotWidth)
+    // 无滚动条时让卡片吸收末列尾间距和取整余量，使左右边距严格一致。
+    readonly property real noScrollBarItemWidth: Math.max(
+        1, noScrollBarCellSlotWidth - sideMargin + noScrollBarRemainder)
+    readonly property real noScrollBarItemHeight: density
+        ? density.gridItemHeight(noScrollBarItemWidth, true) : 1
+    readonly property real projectedContentHeight: {
+        let total = 0
+        for (let i = 0; i < rows.length; ++i) {
+            total += rows[i].rowType === "header"
+                     ? headerHeight : noScrollBarItemHeight + rowGap
+        }
+        return total
+    }
+    readonly property bool scrollBarVisible: projectedContentHeight > height
+    readonly property int scrollBarInset: scrollBarVisible ? scrollBarSlot : 0
+    readonly property int rightMargin: scrollBarVisible
+                                       ? scrollBarRightMargin
+                                       : noScrollBarRightMargin
+    readonly property real availableWidth: Math.max(
+        0, width - sideMargin - rightMargin)
+    readonly property real cellSlotWidth: scrollBarVisible
+        ? Math.max(1, Math.floor(availableWidth / columns))
+        : noScrollBarCellSlotWidth
+    readonly property real itemWidth: scrollBarVisible
+        ? Math.max(1, cellSlotWidth - columnGap)
+        : noScrollBarItemWidth
     readonly property real itemHeight: density
         ? density.gridItemHeight(itemWidth, true) : 1
     readonly property real cellHeight: itemHeight + rowGap
-    readonly property int headerHeight: density ? density.groupHeaderHeight : 38
     readonly property int count: entries ? entries.length : 0
 
     property alias contentY: groupedList.contentY
@@ -217,7 +251,7 @@ Item {
 
             required property var rowData
 
-            width: groupedList.width - root.scrollBarSlot
+            width: groupedList.width - root.scrollBarInset
             height: rowData.rowType === "header"
                     ? root.headerHeight : root.cellHeight
 

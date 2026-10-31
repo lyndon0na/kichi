@@ -627,6 +627,20 @@ TestCase {
         verify(grouped !== null)
         tryCompare(grouped, "visible", true)
         tryCompare(grouped, "count", 3)
+        compare(grouped.cellSlotWidth,
+                Math.floor(grouped.availableWidth / grouped.columns))
+        const occupiedWidth = (grouped.columns - 1) * grouped.cellSlotWidth
+                              + grouped.itemWidth
+        verify(occupiedWidth <= grouped.availableWidth)
+        const visualRightMargin = grouped.rightMargin
+                                  + grouped.availableWidth - occupiedWidth
+        const expectedRightMargin = grouped.sideMargin
+                                    + (grouped.scrollBarVisible
+                                       ? grouped.scrollBarSlot : 0)
+        compare(grouped.scrollBarVisible, grouped.contentHeight > grouped.height)
+        verify(visualRightMargin >= expectedRightMargin)
+        verify(visualRightMargin - expectedRightMargin < grouped.columns,
+               "播放历史网格末列不能额外留下整段列间距")
 
         var todayHeader = findChild(grouped, "libraryDateSection_today")
         var yesterdayHeader = findChild(grouped, "libraryDateSection_yesterday")
@@ -652,6 +666,27 @@ TestCase {
 
         mouseDoubleClickSequence(card, 30, 20)
         tryCompare(backend, "playedId", "today")
+    }
+
+    function test_playback_history_grid_drops_scrollbar_lane_when_content_fits() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish([groupedRow("today", "today")], true)
+
+        page.setContentView("grid")
+        var grouped = findChild(page, "libraryGroupedGrid")
+        verify(grouped !== null)
+        tryCompare(grouped, "visible", true)
+        compare(grouped.scrollBarVisible, false)
+        verify(grouped.contentHeight <= grouped.height)
+
+        const occupiedWidth = (grouped.columns - 1) * grouped.cellSlotWidth
+                              + grouped.itemWidth
+        const actualRightMargin = grouped.rightMargin
+                                  + grouped.availableWidth - occupiedWidth
+        compare(actualRightMargin, grouped.sideMargin,
+                "无滚动条时左右页面边距必须一致")
     }
 
     function test_playback_history_hides_empty_date_sections() {

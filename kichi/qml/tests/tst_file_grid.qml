@@ -17,6 +17,10 @@ TestCase {
         id: themeProbe
     }
 
+    UiMetrics {
+        id: uiMetrics
+    }
+
     QtObject {
         id: fakeBackend
 
@@ -666,14 +670,68 @@ TestCase {
             actualColumns += 1
         }
         compare(actualColumns, page.gridColumns, "实际列数不能比计算值少一列")
-        compare(page.gridCellSlotWidth, Math.floor(usableWidth / page.gridColumns))
         const pageDensity = findChild(page, "fileListDensity")
         verify(pageDensity !== null)
+        compare(grid.scrollBarVisible, true)
+        verify(grid.contentHeight > grid.height)
+        compare(page.gridCellSlotWidth, Math.floor(usableWidth / page.gridColumns))
+        const occupiedWidth = (page.gridColumns - 1) * page.gridCellSlotWidth
+                              + page.gridItemWidth
+        verify(occupiedWidth <= usableWidth)
+        const visualRightMargin = page.gridRightMargin
+                                  + usableWidth - occupiedWidth
+        const expectedRightMargin = page.gridSideMargin + uiMetrics.scrollBarSlot
+        verify(visualRightMargin >= expectedRightMargin)
+        verify(visualRightMargin - expectedRightMargin < page.gridColumns,
+               "末列尾间距只能吸收取整误差，不能多留一整段列间距")
+        const lastInRow = grid.itemAtIndex(page.gridColumns - 1)
+        verify(lastInRow !== null)
+        // GridView 委托的 x 从内容原点算起，leftMargin 不在委托坐标里。
+        const actualRightMargin = grid.width - grid.leftMargin
+                                  - lastInRow.x - lastInRow.width
+        verify(actualRightMargin >= expectedRightMargin)
+        verify(actualRightMargin - expectedRightMargin < page.gridColumns,
+               "实际末列右缘不能多留一整段列间距（actual="
+               + actualRightMargin + ", expected=" + expectedRightMargin
+               + ", columns=" + page.gridColumns + "）")
         verify(page.gridItemWidth + pageDensity.gridColumnGap <= page.gridCellSlotWidth)
         const firstThumbnail = findChild(firstItem, "gridThumbnail")
         verify(firstThumbnail !== null)
         compare(firstThumbnail.radius,
                 pageDensity.gridThumbnailRadius(page.gridItemWidth))
+    }
+
+    function test_grid_drops_scrollbar_lane_when_content_fits() {
+        fakeBackend.files = manyEntries(8)
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, {
+            width: 716,
+            height: 800,
+            visible: true
+        })
+        verify(page !== null)
+        wait(60)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        compare(grid.scrollBarVisible, false)
+        verify(grid.contentHeight <= grid.height)
+        const lastInRow = grid.itemAtIndex(page.gridColumns - 1)
+        verify(lastInRow !== null)
+        const actualRightMargin = grid.width - grid.leftMargin
+                                  - lastInRow.x - lastInRow.width
+        compare(actualRightMargin, page.gridSideMargin,
+                "无滚动条时左右页面边距必须一致（actual=" + actualRightMargin
+                + ", columns=" + page.gridColumns + ", x=" + lastInRow.x
+                + ", y=" + lastInRow.y
+                + ", width=" + lastInRow.width + ", grid=" + grid.width
+                + ", margins=" + grid.leftMargin + "/" + grid.rightMargin
+                + ", slot=" + page.gridCellSlotWidth
+                + ", cell=" + grid.cellWidth
+                + ", item0=" + grid.itemAtIndex(0).x + "/"
+                + grid.itemAtIndex(0).y + ", item1=" + grid.itemAtIndex(1).x
+                + "/" + grid.itemAtIndex(1).y + ", item2="
+                + grid.itemAtIndex(2).x + "/" + grid.itemAtIndex(2).y + "）")
     }
 
     function test_search_placeholder_explains_scope_and_enter_action() {
