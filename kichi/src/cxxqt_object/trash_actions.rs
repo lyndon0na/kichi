@@ -242,6 +242,9 @@ impl qobject::Kichi {
                 rust.files_stale = true;
             }
         }
+        if kind == TrashActionKind::Restore {
+            self.as_mut().invalidate_file_caches();
+        }
         self.as_mut().file_action_done(
             QString::from(kind.action_name()),
             true,
@@ -265,6 +268,9 @@ impl qobject::Kichi {
             if kind == TrashActionKind::Restore && completed > 0 {
                 rust.files_stale = true;
             }
+        }
+        if kind == TrashActionKind::Restore && completed > 0 {
+            self.as_mut().invalidate_file_caches();
         }
         self.as_mut().on_failure(failure);
         let message = if completed > 0 {

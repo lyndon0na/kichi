@@ -34,6 +34,7 @@ impl PendingCreate {
                 entry.kind == EntryKind::Folder
                     && entry.name == self.entry.name
                     && entry.parent_id == self.entry.parent_id
+                    && !entry.id.starts_with(TEMP_FOLDER_PREFIX)
                     && !self.known_ids.contains(&entry.id)
                     && !already_matched.contains(&entry.id)
             })
@@ -54,6 +55,11 @@ pub(crate) struct FileMutation {
     kind: MutationKind,
 }
 
+pub(crate) struct StarredSnapshot {
+    dir_id: String,
+    changes: Vec<(String, bool)>,
+}
+
 impl qobject::Kichi {
     pub(crate) fn optimistic_rename(mut self: Pin<&mut Self>, id: &str, name: &str) -> bool {
         let id = id.trim();
@@ -66,6 +72,7 @@ impl qobject::Kichi {
         if index.is_none() && !has_search_hit {
             return false;
         }
+        self.as_mut().cancel_files_refresh_for_mutation();
         let mut next = before_entries.clone();
         if let Some(index) = index {
             next[index].name = name.to_owned();
@@ -89,6 +96,7 @@ impl qobject::Kichi {
     }
 
     pub(crate) fn optimistic_create_folder(mut self: Pin<&mut Self>, name: &str) -> bool {
+        self.as_mut().cancel_files_refresh_for_mutation();
         let before_entries = self.entries.clone();
         let parent_id = self.current_dir_id.to_string();
         let seq = {
@@ -141,6 +149,7 @@ impl qobject::Kichi {
         if wanted.is_empty() {
             return false;
         }
+        self.as_mut().cancel_files_refresh_for_mutation();
         let before_entries = self.entries.clone();
         let search_before = self.search_hits_for(&wanted);
         let mut next = before_entries.clone();
@@ -186,18 +195,25 @@ impl qobject::Kichi {
                 .pending_entry_ids
                 .remove(&pending.entry.id);
         }
+        let mut restored_entries = mutation.before_entries.clone();
+        sort_entries(&mut restored_entries, self.sort_field, self.sort_ascending);
         if same_dir {
             {
                 let mut rust = self.as_mut().rust_mut();
-                let mut entries = mutation.before_entries.clone();
-                sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
-                let files = list_from_with_pending(&entries, &rust.pending_entry_ids);
-                rust.entries = entries;
+                let files = list_from_with_pending(&restored_entries, &rust.pending_entry_ids);
+                rust.files_cache
+                    .replace_entries(mutation.dir_id.clone(), &restored_entries);
+                rust.entries = restored_entries;
                 rust.files = files;
                 rust.files_revision = rust.files_revision.wrapping_add(1);
                 rust.files_stale = false;
             }
             self.as_mut().notify();
+        } else {
+            self.as_mut()
+                .rust_mut()
+                .files_cache
+                .replace_entries(mutation.dir_id.clone(), &restored_entries);
         }
         {
             let mut rust = self.as_mut().rust_mut();
@@ -212,13 +228,16 @@ impl qobject::Kichi {
         mut self: Pin<&mut Self>,
         ids: &[String],
         starred: bool,
-    ) -> Vec<(String, bool)> {
+    ) -> Option<StarredSnapshot> {
         let wanted: HashSet<String> = ids
             .iter()
             .map(|id| id.trim())
             .filter(|id| !id.is_empty())
             .map(str::to_owned)
             .collect();
+        if wanted.is_empty() {
+            return None;
+        }
         let mut before = Vec::new();
         for id in &wanted {
             if let Some(entry) = self.entries.iter().find(|entry| entry.id == *id) {
@@ -227,6 +246,10 @@ impl qobject::Kichi {
                 before.push((id.clone(), hit.entry.starred));
             }
         }
+        if before.is_empty() {
+            return None;
+        }
+        self.as_mut().cancel_files_refresh_for_mutation();
         for entry in &mut self.as_mut().rust_mut().entries {
             if wanted.contains(&entry.id) {
                 entry.starred = starred;
@@ -240,35 +263,52 @@ impl qobject::Kichi {
                 }
             }
         }
+        let dir_id = self.current_dir_id.to_string();
         let entries = self.entries.clone();
         self.as_mut().publish_optimistic_entries(entries);
-        before
+        Some(StarredSnapshot {
+            dir_id,
+            changes: before,
+        })
     }
 
-    pub(crate) fn restore_starred(mut self: Pin<&mut Self>, changes: &[(String, bool)]) {
-        if changes.is_empty() {
+    pub(crate) fn restore_starred(mut self: Pin<&mut Self>, snapshot: StarredSnapshot) {
+        if snapshot.changes.is_empty() {
             return;
         }
+        let same_dir = self.current_dir_id.to_string() == snapshot.dir_id;
         {
             let mut rust = self.as_mut().rust_mut();
-            for (id, starred) in changes {
-                if let Some(entry) = rust.entries.iter_mut().find(|entry| entry.id == *id) {
-                    entry.starred = *starred;
+            if same_dir {
+                for (id, starred) in &snapshot.changes {
+                    if let Some(entry) = rust.entries.iter_mut().find(|entry| entry.id == *id) {
+                        entry.starred = *starred;
+                    }
                 }
+            }
+            rust.files_cache
+                .restore_starred(&snapshot.dir_id, &snapshot.changes);
+            for (id, starred) in &snapshot.changes {
                 if let Some(hit) = rust.search_index.get_mut(id) {
                     hit.entry.starred = *starred;
                 }
             }
         }
-        let entries = self.entries.clone();
-        self.as_mut().publish_optimistic_entries(entries);
+        if same_dir {
+            let entries = self.entries.clone();
+            self.as_mut().publish_optimistic_entries(entries);
+        } else {
+            self.as_mut().rebuild_search_view_from_state();
+        }
     }
 
     fn publish_optimistic_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
+        let dir_id = self.current_dir_id.to_string();
         {
             let mut rust = self.as_mut().rust_mut();
             sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
             rust.files = list_from_with_pending(&entries, &rust.pending_entry_ids);
+            rust.files_cache.replace_entries(dir_id, &entries);
             rust.entries = entries;
             rust.files_revision = rust.files_revision.wrapping_add(1);
             rust.files_stale = false;
@@ -384,5 +424,18 @@ mod tests {
             .expect("第二个真实目录");
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn pending_row_itself_is_never_mistaken_for_a_real_id() {
+        let pending = PendingCreate {
+            entry: folder("kichi-pending-folder-7", "新建文件夹", "parent"),
+            known_ids: HashSet::from(["old".to_owned()]),
+        };
+        let same_pending_row = pending.entry.clone();
+
+        assert!(pending
+            .matching_new_id(&[same_pending_row], &HashSet::new())
+            .is_none());
     }
 }

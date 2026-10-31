@@ -468,7 +468,7 @@ ApplicationWindow {
                                 iconName: "arrow-up"
                                 iconSize: 14
                                 iconOpacity: 0.65
-                                enabled: !backend.filesLoading && root.crumbs.length > 1
+                                enabled: root.crumbs.length > 1
                                 ToolTip.visible: hovered
                                 ToolTip.text: qsTr("上一级（回到上级目录）")
                                 onClicked: filesPage.goUp()
@@ -536,7 +536,9 @@ ApplicationWindow {
 
                                     // 加载中转圈：只跟在当前目录名后面
                                     BusyIndicator {
-                                        visible: crumb.current && backend.filesLoading
+                                        visible: crumb.current
+                                                 && (backend.filesLoading
+                                                     || backend.filesRefreshing)
                                         running: visible
                                         Layout.preferredWidth: 18
                                         Layout.preferredHeight: 18

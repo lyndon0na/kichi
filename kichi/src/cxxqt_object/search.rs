@@ -281,7 +281,7 @@ impl qobject::Kichi {
             }
         }
         self.as_mut().sync_breadcrumb_visible();
-        self.as_mut().refresh_files();
+        self.as_mut().enter_current_dir();
     }
 
     /// 本地筛选的结果直接当列表显示；搜索状态在页面状态行 / 底栏上下文表达。

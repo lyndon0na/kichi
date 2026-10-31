@@ -4,7 +4,7 @@
 //! 排序（文件夹优先）属于展示策略，也在这里做，session 层保留官方顺序。
 
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
@@ -17,8 +17,6 @@ use super::QVariantList;
 
 /// 根目录在面包屑里的名字。
 pub(crate) const ROOT_NAME: &str = "全部文件";
-/// 页面重新可见时，离上次目录读取超过这么久才在后台校准。
-const FILES_REFRESH_TTL: Duration = Duration::from_secs(30);
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -39,7 +37,7 @@ impl Crumb {
 }
 
 impl qobject::Kichi {
-    /// 强制重新读取当前目录（登录完成、刷新按钮、进出目录都走这里）。
+    /// 强制重新读取当前目录（登录完成、手动刷新）。
     pub fn refresh_files(self: Pin<&mut Self>) {
         self.refresh_files_inner(true);
     }
@@ -50,7 +48,7 @@ impl qobject::Kichi {
     }
 
     fn refresh_files_inner(mut self: Pin<&mut Self>, force: bool) {
-        if self.listing {
+        if self.files_request_running || self.listing {
             // 列表在途时又有人要刷新（例如移动完成）：记下来，本次读完再补一次。
             // 直接 return 会让源目录停留在旧数据上。
             if force {
@@ -65,25 +63,25 @@ impl qobject::Kichi {
             }
             return;
         }
-        if !force {
-            let now = Instant::now();
-            let due = self
-                .files_refresh_at
-                .is_none_or(|last| now.saturating_duration_since(last) >= FILES_REFRESH_TTL);
-            if self.files_stale || due {
-                // 继续走下面的后台请求；旧列表保持可见。
-            } else {
-                return;
-            }
-        }
         let Some(current) = self.crumbs.last().cloned() else {
             return;
         };
-        let parent_id = (!current.id.is_empty()).then(|| current.id.clone());
+        let now = Instant::now();
+        let has_snapshot = self.files_cache.contains(&current.id);
+        if !force && !self.files_stale && self.files_cache.is_fresh(&current.id, now) {
+            return;
+        }
+        self.as_mut().start_files_request(current.id, has_snapshot);
+    }
+
+    fn start_files_request(mut self: Pin<&mut Self>, dir_id: String, has_snapshot: bool) {
+        let parent_id = (!dir_id.is_empty()).then(|| dir_id.clone());
         let session = self.backend.session.clone();
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
-            rust.listing = true;
+            rust.files_request_running = true;
+            rust.listing = !has_snapshot;
+            rust.files_background_refreshing = has_snapshot;
             rust.list_epoch = rust.list_epoch.wrapping_add(1);
             rust.list_epoch
         };
@@ -96,25 +94,29 @@ impl qobject::Kichi {
                 if qichi.as_ref().rust().list_epoch != epoch {
                     return;
                 }
-                qichi.as_mut().rust_mut().listing = false;
+                qichi.as_mut().finish_files_request();
                 match result {
                     Ok(entries) => {
                         // 读到了：这一跳算成功，不再需要回滚快照
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.crumb_backup = None;
-                            rust.files_stale = false;
                         }
                         qichi.as_mut().show_entries(entries);
                     }
                     Err(err) => {
-                        // 读失败：把面包屑退回跳转前，别让路径指着一个没读到的目录
                         {
                             let mut rust = qichi.as_mut().rust_mut();
-                            rust.files_refresh_at = Some(Instant::now());
                             rust.files_stale = false;
+                            if has_snapshot {
+                                // 旧快照仍可继续显示；30 秒内不再追打失败目录。
+                                rust.files_cache.defer_refresh(&dir_id, Instant::now());
+                            }
                         }
-                        qichi.as_mut().restore_crumbs_on_failure();
+                        if !has_snapshot {
+                            // 首次进入都没读到：面包屑退回跳转前，别指向空路径。
+                            qichi.as_mut().restore_crumbs_on_failure();
+                        }
                         qichi.as_mut().on_failure(err);
                     }
                 }
@@ -130,6 +132,72 @@ impl qobject::Kichi {
                 }
             },
         );
+    }
+
+    /// 进入当前面包屑所指目录：有快照先恢复，再按 TTL 决定是否后台校准。
+    pub(crate) fn enter_current_dir(mut self: Pin<&mut Self>) {
+        self.as_mut().interrupt_files_request();
+        let Some(current) = self.crumbs.last().cloned() else {
+            return;
+        };
+        let now = Instant::now();
+        if let Some(entries) = self.files_cache.snapshot(&current.id) {
+            {
+                self.as_mut().rust_mut().crumb_backup = None;
+            }
+            self.as_mut().show_cached_entries(entries);
+            if !self.files_stale && self.files_cache.is_fresh(&current.id, now) {
+                return;
+            }
+        }
+        self.refresh_files_inner(false);
+    }
+
+    /// 作废所有目录请求；导航、登录切换和本地乐观写入前调用。
+    pub(crate) fn interrupt_files_request(mut self: Pin<&mut Self>) {
+        let changed = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.list_epoch = rust.list_epoch.wrapping_add(1);
+            rust.refresh_pending = false;
+            let changed =
+                rust.files_request_running || rust.listing || rust.files_background_refreshing;
+            rust.files_request_running = false;
+            rust.listing = false;
+            rust.files_background_refreshing = false;
+            changed
+        };
+        if changed {
+            self.as_mut().notify();
+        }
+    }
+
+    pub(crate) fn cancel_files_refresh_for_mutation(self: Pin<&mut Self>) {
+        self.interrupt_files_request();
+    }
+
+    /// 目标目录被其它目录的写操作改变：保留旧行用于先显示，下次进入立即校准。
+    pub(crate) fn mark_file_dir_stale(mut self: Pin<&mut Self>, dir_id: &str) {
+        self.as_mut().rust_mut().files_cache.mark_stale(dir_id);
+    }
+
+    /// 回收站还原 / 资料库星标等跨目录变化：所有目录下次进入都先校准。
+    pub(crate) fn invalidate_file_caches(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.files_cache.mark_all_stale();
+            rust.files_stale = true;
+        }
+        self.as_mut().notify();
+    }
+
+    fn finish_files_request(mut self: Pin<&mut Self>) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.files_request_running = false;
+            rust.listing = false;
+            rust.files_background_refreshing = false;
+        }
+        self.as_mut().notify();
     }
 
     /// 进入文件夹（id 必须来自当前列表，避免 QML 侧拼错）。
@@ -160,7 +228,7 @@ impl qobject::Kichi {
             rust.crumbs.push(Crumb { id, name });
         }
         self.as_mut().sync_breadcrumb();
-        self.as_mut().refresh_files();
+        self.as_mut().enter_current_dir();
     }
 
     /// 从离线任务打开已完成的产物文件夹。
@@ -351,7 +419,7 @@ impl qobject::Kichi {
 
     /// 回到上一级。
     pub fn open_parent(mut self: Pin<&mut Self>) {
-        if self.listing {
+        if self.listing && !self.files_request_running {
             return;
         }
         let moved = {
@@ -369,12 +437,12 @@ impl qobject::Kichi {
         }
         self.as_mut().clear_status_message();
         self.as_mut().sync_breadcrumb();
-        self.as_mut().refresh_files();
+        self.as_mut().enter_current_dir();
     }
 
     /// 跳到面包屑上的某一级（点击当前目录本身无效果）。
     pub fn open_crumb(mut self: Pin<&mut Self>, index: i32) {
-        if self.listing || index < 0 {
+        if index < 0 || self.listing && !self.files_request_running {
             return;
         }
         let target = index as usize;
@@ -389,7 +457,7 @@ impl qobject::Kichi {
             rust.crumbs.truncate(target + 1);
         }
         self.as_mut().sync_breadcrumb();
-        self.as_mut().refresh_files();
+        self.as_mut().enter_current_dir();
     }
 
     /// 退出登录时清空浏览状态并让在途请求作废。
@@ -403,7 +471,9 @@ impl qobject::Kichi {
             rust.entries.clear();
             rust.files = QVariantList::default();
             rust.files_revision = rust.files_revision.wrapping_add(1);
-            rust.files_refresh_at = None;
+            rust.files_cache.clear();
+            rust.files_request_running = false;
+            rust.files_background_refreshing = false;
             rust.file_mutation = None;
             rust.unresolved_create.clear();
             rust.pending_entry_ids.clear();
@@ -437,6 +507,11 @@ impl qobject::Kichi {
 
     /// 把目录列表写回属性（只在主线程调用）。
     pub(crate) fn show_entries(mut self: Pin<&mut Self>, entries: Vec<FileEntry>) {
+        let dir_id = self
+            .crumbs
+            .last()
+            .map(|crumb| crumb.id.clone())
+            .unwrap_or_default();
         let (entries, files, changed) = {
             let mut rust = self.as_mut().rust_mut();
             let mut entries = merge_unresolved_create(&mut rust, entries);
@@ -449,13 +524,35 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             if changed {
                 rust.files = files.unwrap_or_default();
-                rust.entries = entries;
                 // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
                 rust.files_revision = rust.files_revision.wrapping_add(1);
             }
+            rust.files_cache.store(dir_id, &entries, Instant::now());
+            rust.entries = entries;
+            rust.files_request_running = false;
             rust.listing = false;
-            rust.files_refresh_at = Some(Instant::now());
+            rust.files_background_refreshing = false;
             rust.files_stale = false;
+        }
+        self.as_mut().notify();
+    }
+
+    /// 恢复某个目录的旧快照；即使内容相同也推进 revision，让返回目录时恢复滚动位置。
+    fn show_cached_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
+        let files = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
+            list_from_with_pending(&entries, &rust.pending_entry_ids)
+        };
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.entries = entries;
+            rust.files = files;
+            rust.files_revision = rust.files_revision.wrapping_add(1);
+            rust.files_request_running = false;
+            rust.listing = false;
+            rust.files_background_refreshing = false;
         }
         self.as_mut().notify();
     }
@@ -473,10 +570,12 @@ impl qobject::Kichi {
         }
         let mut entries = self.entries.clone();
         sort_entries(&mut entries, self.sort_field, self.sort_ascending);
-        let files = list_from(&entries);
+        let files = list_from_with_pending(&entries, &self.pending_entry_ids);
+        let dir_id = self.current_dir_id.to_string();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.files = files;
+            rust.files_cache.replace_entries(dir_id, &entries);
             rust.entries = entries;
         }
         self.as_mut().notify();
@@ -555,11 +654,6 @@ pub(crate) fn sort_entries(
             order.reverse()
         }
     });
-}
-
-/// 条目 → QML 模型。
-pub(crate) fn list_from(entries: &[FileEntry]) -> QVariantList {
-    list_from_with_pending(entries, &std::collections::HashSet::new())
 }
 
 pub(crate) fn list_from_with_pending(

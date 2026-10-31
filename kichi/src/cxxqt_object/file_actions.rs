@@ -103,6 +103,7 @@ impl qobject::Kichi {
             .last()
             .map(|crumb| crumb.id.clone())
             .filter(|id| !id.is_empty());
+        let parent_for_cache = parent_id.clone().unwrap_or_default();
         let session = self.backend.session.clone();
         let for_message = name.trim().to_owned();
         if !self.as_mut().optimistic_create_folder(&name) {
@@ -118,12 +119,15 @@ impl qobject::Kichi {
             move |mut qichi, result| match result {
                 Ok(()) => {
                     qichi.as_mut().commit_file_mutation();
-                    // 新建响应没有 id，必须校准目录；若操作期间已经导航，这里只记一次
-                    // pending，由 end_file_action 读取用户当前目录。
-                    qichi.as_mut().refresh_files();
+                    // 新建响应没有 id，必须校准目录；若操作期间已经导航，只让父目录
+                    // 在下次进入时重新读取，不强行刷新用户现在所在的别的目录。
+                    qichi.as_mut().mark_file_dir_stale(&parent_for_cache);
                     qichi
                         .as_mut()
                         .end_file_action("folder", &format!("已新建文件夹「{for_message}」"));
+                    if qichi.as_ref().rust().current_dir_id.to_string() == parent_for_cache {
+                        qichi.as_mut().refresh_files();
+                    }
                 }
                 Err(err) => {
                     qichi.as_mut().rollback_file_mutation();
@@ -276,15 +280,14 @@ impl qobject::Kichi {
         let session = self.backend.session.clone();
         let request_ids = ids.clone();
         let optimistic_before = if origin == StarOrigin::Files {
-            let before = self.as_mut().optimistic_starred(&ids, starred);
-            if before.is_empty() {
+            let Some(before) = self.as_mut().optimistic_starred(&ids, starred) else {
                 self.as_mut()
                     .fail_file_action(action, Failure::Other("条目已不在当前列表中".into()));
                 return;
-            }
-            before
+            };
+            Some(before)
         } else {
-            Vec::new()
+            None
         };
         let library_before = if origin == StarOrigin::Library {
             let Some(snapshot) = self.as_mut().optimistic_library_starred(&ids, starred) else {
@@ -311,6 +314,8 @@ impl qobject::Kichi {
                         }
                         StarOrigin::Library => {
                             qichi.as_mut().mark_library_caches_stale(library_kind);
+                            // 文件页缓存里可能也有同一条目；下次进入时立即校准星标状态。
+                            qichi.as_mut().invalidate_file_caches();
                         }
                     }
                     qichi.as_mut().end_file_action(action, &success);
@@ -318,7 +323,9 @@ impl qobject::Kichi {
                 Err(err) => {
                     match origin {
                         StarOrigin::Files => {
-                            qichi.as_mut().restore_starred(&optimistic_before);
+                            if let Some(snapshot) = optimistic_before {
+                                qichi.as_mut().restore_starred(snapshot);
+                            }
                         }
                         StarOrigin::Library => {
                             if let Some(snapshot) = library_before {
@@ -435,6 +442,7 @@ impl qobject::Kichi {
         }
         let session = self.backend.session.clone();
         let target_for_thread = target.clone();
+        let target_for_cache = target;
         let target_label_for_message = target_label.clone();
         self.as_mut()
             .set_message(&format!("正在{verb}{subject}到「{target_label}」……"));
@@ -453,6 +461,8 @@ impl qobject::Kichi {
                     if action == "move" {
                         qichi.as_mut().commit_file_mutation();
                     }
+                    // 目标目录里新增了条目；下次进入先显示旧快照，再立即后台校准。
+                    qichi.as_mut().mark_file_dir_stale(&target_for_cache);
                     qichi.as_mut().end_file_action(
                         action,
                         &format!("已{verb}{subject}到「{target_label_for_message}」"),
@@ -483,7 +493,6 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.file_action_running = false;
-            rust.files_refresh_at = Some(std::time::Instant::now());
         }
         if action == "trash" {
             self.as_mut().set_message(message);

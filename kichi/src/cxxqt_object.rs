@@ -57,6 +57,8 @@ pub mod qobject {
         #[qproperty(QString, current_dir_id, cxx_name = "currentDirId", READ, NOTIFY = changed)]
         /// 目录列表请求在途：文件页自己的加载态
         #[qproperty(bool, listing, cxx_name = "filesLoading", READ, NOTIFY = changed)]
+        /// 已有目录快照时的后台校准：旧列表继续可操作
+        #[qproperty(bool, files_background_refreshing, cxx_name = "filesRefreshing", READ, NOTIFY = changed)]
         /// 正在从离线任务打开 / 定位的产物 id；空串表示没有这项操作
         #[qproperty(QString, task_folder_loading_id, cxx_name = "taskFolderLoadingId", READ, NOTIFY = changed)]
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
@@ -679,6 +681,7 @@ mod file_actions;
 mod file_optimistic;
 mod file_targets;
 mod files;
+mod files_cache;
 mod folder_picker;
 mod library;
 mod notifications;
@@ -729,8 +732,12 @@ pub struct KichiRust {
     pub(crate) current_dir_id: QString,
     /// 每次成功列目录 +1：界面据此做一次性滚动恢复
     pub(crate) files_revision: i32,
-    /// 最近一次目录读取成功 / 失败的时刻：切页时按 TTL 决定是否后台校准。
-    pub(crate) files_refresh_at: Option<std::time::Instant>,
+    /// 访问过的目录快照：进入已有目录先恢复，过期再后台校准。
+    pub(crate) files_cache: files_cache::FilesCache,
+    /// 任意目录请求在途；与只表示首次加载遮罩的 `listing` 分开。
+    pub(crate) files_request_running: bool,
+    /// 已有旧列表时正在后台校准目录。
+    pub(crate) files_background_refreshing: bool,
     /// 回收站表格（QML 直接当 model 用）
     pub(crate) trash_rows: QVariantList,
     /// 回收站领域对象：保留完整列表与总数，不依赖 QML 传来的显示数据
@@ -980,7 +987,9 @@ impl Default for KichiRust {
             files: QVariantList::default(),
             current_dir_id: QString::default(),
             files_revision: 0,
-            files_refresh_at: None,
+            files_cache: files_cache::FilesCache::default(),
+            files_request_running: false,
+            files_background_refreshing: false,
             trash_rows: QVariantList::default(),
             trash_list: Vec::new(),
             trash_loading: false,
