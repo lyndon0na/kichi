@@ -25,7 +25,7 @@ Item {
     readonly property int createdColumnWidth: 120
     readonly property int actionColumnWidth: 96
     readonly property int headerRowHeight: 34
-    readonly property int rowHeight: 56
+    readonly property int rowHeight: 48
 
     onActiveChanged: {
         if (!active)
@@ -81,11 +81,12 @@ Item {
     Component.onCompleted: syncRows()
 
     ColumnLayout {
+        objectName: "sharesTableLayout"
         anchors.fill: parent
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
-        spacing: theme.gapSm
+        spacing: theme.gapXs
 
         ShareTableHeader {
             Layout.fillWidth: true
@@ -106,7 +107,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 2
+            spacing: 0
             model: shareRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: KScrollBar {}

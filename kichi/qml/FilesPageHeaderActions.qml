@@ -16,7 +16,7 @@ RowLayout {
 
     readonly property KTheme theme: KTheme { parent: root }
 
-    spacing: theme.gapXs
+    spacing: theme.gapSm
 
     KButton {
         objectName: "filesNewFolderButton"

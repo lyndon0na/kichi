@@ -29,7 +29,6 @@ RowLayout {
         visible: root.hasRetryable
         text: qsTr("重试失败项")
         variant: "secondary"
-        implicitHeight: 32
         enabled: root.backendReady && root.hasRetryable
         onClicked: {
             if (root.target)
@@ -43,7 +42,6 @@ RowLayout {
         visible: root.hasFinished
         text: qsTr("清空已完成")
         variant: "ghost"
-        implicitHeight: 32
         enabled: root.backendReady && root.hasFinished
         onClicked: root.target.confirmClear()
     }
@@ -53,7 +51,6 @@ RowLayout {
         Layout.alignment: Qt.AlignVCenter
         text: qsTr("取消全部")
         variant: "dangerOutline"
-        implicitHeight: 32
         enabled: root.backendReady
                  && (root.activeCount > 0 || root.pausedCount > 0)
         onClicked: {

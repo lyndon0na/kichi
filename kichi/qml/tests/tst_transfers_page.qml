@@ -965,6 +965,7 @@ TestCase {
 
         var button = findChild(header, "clearFinishedButton")
         verify(button !== null, "清空按钮不存在")
+        compare(button.implicitHeight, 34)
         verify(button.visible, "有已结束记录时清空按钮应可见")
         mouseClick(button)
         wait(40)
@@ -990,6 +991,7 @@ TestCase {
 
         var button = findChild(header, "cancelAllTransfersButton")
         verify(button !== null, "取消全部按钮不存在")
+        compare(button.implicitHeight, 34)
         compare(button.variant, "dangerOutline")
         verify(button.enabled, "有进行中任务时取消全部应可用")
         mouseClick(button)
@@ -1014,6 +1016,7 @@ TestCase {
                 "传输页标题行不再提供打开下载目录")
         var button = findChild(header, "retryFailedButton")
         verify(button !== null)
+        compare(button.implicitHeight, 34)
         compare(button.visible, false, "没有失败项时不显示批量重试")
 
         backend.publish([

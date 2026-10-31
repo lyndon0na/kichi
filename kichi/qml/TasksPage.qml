@@ -79,12 +79,13 @@ Item {
     }
 
     ColumnLayout {
+        objectName: "tasksTableLayout"
         anchors.fill: parent
         // 右边不留：列表铺到窗口右缘，滚动条贴边
         anchors.leftMargin: metrics.pageMargin
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
-        spacing: theme.gapSm
+        spacing: theme.gapXs
 
         TaskTableHeader {
             Layout.fillWidth: true

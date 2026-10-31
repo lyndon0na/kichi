@@ -19,7 +19,7 @@ ItemDelegate {
     required property string statusTone
     required property int index
 
-    property int rowHeight: 56
+    property int rowHeight: 48
     property int iconColumnWidth: 22
     property int statusColumnWidth: 100
     property int expirationColumnWidth: 64
@@ -53,7 +53,6 @@ ItemDelegate {
     icon.color: "transparent"
 
     background: Rectangle {
-        radius: theme.radiusSmall
         // MouseArea 位于内容层下方，不能可靠接收整行 hover；
         // ItemDelegate 自己的 hovered 不受子项遮挡影响。
         color: row.highlighted
@@ -67,7 +66,7 @@ ItemDelegate {
         Rectangle {
             visible: row.highlighted
             width: 3
-            height: parent.height - 20
+            height: Math.max(0, parent.height - 28)
             radius: 1.5
             anchors.left: parent.left
             anchors.leftMargin: 1

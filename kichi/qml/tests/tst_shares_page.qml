@@ -122,6 +122,22 @@ TestCase {
         compare(list.boundsBehavior, Flickable.StopAtBounds)
     }
 
+    function test_table_uses_uniform_flat_density() {
+        push([share("a")])
+        waitForRendering(list)
+
+        var header = findChild(page, "sharesTableHeader")
+        verify(header)
+        compare(header.implicitHeight, 34)
+        compare(list.spacing, 0)
+        compare(findChild(page, "sharesTableLayout").spacing, 4)
+
+        var row = list.itemAtIndex(0)
+        verify(row)
+        compare(row.implicitHeight, 48)
+        compare(row.background.radius, 0)
+    }
+
     function test_rows_reorder_when_a_share_is_removed() {
         push([share("a"), share("b"), share("c")])
         push([share("c"), share("b")])

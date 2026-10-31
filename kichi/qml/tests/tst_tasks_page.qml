@@ -152,6 +152,7 @@ TestCase {
         verify(header)
         compare(header.implicitHeight, 34)
         compare(list.spacing, 0)
+        compare(findChild(page, "tasksTableLayout").spacing, 4)
 
         var row = null
         tryVerify(function () {
