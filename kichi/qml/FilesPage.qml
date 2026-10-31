@@ -211,24 +211,6 @@ Item {
             page.holdSearchEntriesUntilLoaded(entries, statusText, truncated)
     }
 
-    function revealEntryFolder(entry) {
-        if (!page.backend || !entry || page.holdingSearchEntries)
-            return
-        if (!page.showingSearchEntries) {
-            // 普通目录里条目本来就在当前文件夹：重新读取它，作为明确的“打开”反馈。
-            page.revealEntryById(entry.id)
-            interaction.refreshFiles()
-            return
-        }
-        // 本地筛选仍停留在当前目录：退出筛选即可；全盘结果才需要导航到 folderId。
-        if (page.backend.searchScanned === 0) {
-            page.revealEntryById(entry.id)
-            page.backend.exitSearch()
-            return
-        }
-        page.revealSearchFolder(entry)
-    }
-
     // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
     // （搜索框里的字由 FilesPageSearchBar 自己跟着 searchActive 清）
     onVisibleChanged: {
@@ -555,9 +537,6 @@ Item {
         onPlayRequested: function (anchor) {
             // 右键菜单给的已经是窗口坐标，直接当清晰度菜单的锚点
             playMenu.anchorPoint = anchor
-        }
-        onRevealRequested: function (entry) {
-            page.revealEntryFolder(entry)
         }
         onMoveRequested: function (entry, ids) {
             movePicker.openForMove(entry, ids, interaction.folderIdsFor(ids))

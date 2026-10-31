@@ -33,14 +33,9 @@ Item {
     readonly property int targetCount: targetIds.length
     // 搜索结果里的条目没有「源目录」上下文，暂不提供移动 / 复制
     property bool fromSearch: false
-    readonly property bool targetHasFolderLocation: target !== null
-                                                    && (target.folderId !== undefined
-                                                        || (backend !== null
-                                                            && backend.currentDirId !== undefined))
 
     // 菜单里点「播放」：页面把位置交给清晰度菜单，再让后端取档位
     signal playRequested(point anchor)
-    signal revealRequested(var entry)
     signal moveRequested(var entry, var ids)
     signal copyRequested(var entry, var ids)
     signal shareRequested(var entry, var ids)
@@ -85,16 +80,6 @@ Item {
                 if (root.backend)
                     root.backend.requestPlay(root.targetId)
             }
-        }
-
-        MenuItem {
-            objectName: "revealFolderItem"
-            text: qsTr("打开所在目录")
-            visible: root.targetCount === 1
-                     && root.targetHasFolderLocation
-            enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
-            onTriggered: root.revealRequested(root.target)
         }
 
         // 下载到本地（文件直接下；文件夹递归下，保留层级）。

@@ -31,7 +31,6 @@ TestCase {
         property bool filesLoading: false
         property bool filesStale: false
         property int filesRevision: 1
-        property string currentDirId: ""
         property var breadcrumb: ["全部文件"]
         property var playMenu: []
         property string sortField: "name"
@@ -228,7 +227,6 @@ TestCase {
         fakeBackend.searchQuery = ""
         fakeBackend.filesLoading = false
         fakeBackend.filesRevision = 1
-        fakeBackend.currentDirId = ""
         fakeBackend.thumbnailRequests = 0
         fakeBackend.playLoading = false
         fakeBackend.playLoadingId = ""
@@ -544,31 +542,6 @@ TestCase {
         })
         compare(grid.currentIndex, 20)
         verify(grid.contentY > 0, "网格视图也必须滚动到目标")
-    }
-
-    function test_normal_directory_context_menu_refreshes_current_location() {
-        fakeBackend.currentDirId = "folder-current"
-        fakeBackend.files = [entry(1, "file")]
-        fakeBackend.fileView = "list"
-        fakeBackend.refreshCalls = 0
-        page = pageComponent.createObject(parent, { visible: true })
-        verify(page !== null)
-        wait(80)
-
-        const list = findChild(page, "fileList")
-        verify(list !== null)
-        const row = list.itemAtIndex(0)
-        verify(row !== null)
-        row.contextMenu(Qt.point(40, 20))
-        wait(40)
-
-        const reveal = findChild(page, "revealFolderItem")
-        verify(reveal !== null)
-        verify(reveal.visible, "普通目录里的文件右键也应显示「打开所在目录」")
-        mouseClick(reveal)
-        wait(40)
-        compare(fakeBackend.refreshCalls, 1,
-                "条目已经在当前目录时，打开所在目录应重新读取当前目录")
     }
 
     function test_grid_layout_fills_width_without_a_phantom_column() {
