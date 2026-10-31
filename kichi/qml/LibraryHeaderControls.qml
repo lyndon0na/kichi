@@ -32,6 +32,15 @@ RowLayout {
         elide: Text.ElideRight
     }
 
+    ContentViewToggle {
+        Layout.alignment: Qt.AlignVCenter
+        backend: root.target ? root.target.backend : null
+        onViewRequested: function (view) {
+            if (root.target)
+                root.target.setContentView(view)
+        }
+    }
+
     KButton {
         objectName: "libraryRefreshButton"
         Layout.alignment: Qt.AlignVCenter

@@ -21,6 +21,7 @@ TestCase {
         property bool filesStale: false
         property bool fileActionRunning: false
         property string statusMessage: ""
+        property string contentView: "list"
 
         property int refreshCount: 0
         property var lastUntrashIds: []
@@ -30,6 +31,11 @@ TestCase {
 
         function refreshTrash() {
             refreshCount += 1
+        }
+
+        function setContentView(view) {
+            contentView = view === "grid" ? "grid" : "list"
+            changed()
         }
 
         function untrashEntries(ids) {
@@ -76,6 +82,7 @@ TestCase {
         backend.filesStale = false
         backend.fileActionRunning = false
         backend.statusMessage = ""
+        backend.contentView = "list"
         backend.refreshCount = 0
         backend.lastUntrashIds = []
         backend.lastDeleteIds = []
@@ -162,6 +169,55 @@ TestCase {
         compare(findChild(row, "fileThumbnail").width, 36)
         compare(findChild(row, "fileThumbnail").height, 24)
         verify(findChild(row, "trashRowDivider") !== null)
+    }
+
+    function test_grid_mode_uses_the_shared_cards_and_supports_selection() {
+        publish([entry("a", false), entry("b", true)])
+        const list = findChild(page, "trashList")
+        const grid = findChild(page, "trashGrid")
+        verify(list !== null && grid !== null)
+        compare(list.visible, true)
+        compare(grid.visible, false)
+
+        page.setContentView("grid")
+        tryCompare(backend, "contentView", "grid")
+        compare(list.visible, false)
+        compare(grid.visible, true)
+        compare(grid.count, 2)
+
+        const card = grid.itemAtIndex(1)
+        verify(card !== null)
+        compare(card.activationEnabled, false, "回收站网格双击不能执行动作")
+        const detail = findChild(card, "gridDetail")
+        verify(detail !== null)
+        verify(detail.text.indexOf("26-10-28 12:34") >= 0)
+
+        mouseClick(card, 20, 20)
+        compare(selection.count, 1)
+        verify(selection.isSelected("b"))
+    }
+
+    function test_list_and_grid_keep_independent_scroll_positions() {
+        const rows = []
+        for (let i = 0; i < 40; ++i)
+            rows.push(entry("item-" + i, false))
+        publish(rows)
+
+        const list = findChild(page, "trashList")
+        verify(list !== null)
+        list.contentY = 144
+        wait(30)
+
+        page.setContentView("grid")
+        const grid = findChild(page, "trashGrid")
+        verify(grid !== null)
+        tryCompare(grid, "visible", true)
+        grid.contentY = 96
+        wait(30)
+
+        page.setContentView("list")
+        tryCompare(backend, "contentView", "list")
+        tryCompare(list, "contentY", 144)
     }
 
     function test_context_menu_uses_row_window_coordinates() {
@@ -253,9 +309,12 @@ TestCase {
         publish([entry("a", false), entry("b", true), entry("c", false)])
         var refresh = findChild(header, "trashRefreshButton")
         var deleteButton = findChild(header, "trashDeleteButton")
+        var toggle = findChild(header, "viewToggleButton")
         verify(refresh !== null && refresh.visible && refresh.enabled)
         compare(refresh.text, "刷新")
         verify(refresh.x > deleteButton.x, "刷新按钮应在最右侧")
+        verify(toggle !== null && toggle.x < refresh.x,
+               "视图切换应排在刷新之前")
         verify(findChild(header, "trashClearButton") === null, "回收站不再提供清空入口")
 
         mouseClick(refresh)

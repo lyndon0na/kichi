@@ -69,7 +69,7 @@ Item {
     readonly property int gridNameLineCount: 2
     readonly property int gridNameLineHeight: Math.round(namePixelSize * 1.35)
     readonly property int gridNameBlockHeight: gridNameLineHeight * gridNameLineCount
-    // 搜索结果在网格名片下多一行所在文件夹；普通网格不占这一行。
+    // 文件类内容页的网格都在名称下保留一行说明。
     readonly property int gridDetailLineHeight: Math.round(metaPixelSize * 1.35)
 
     /// 网格缩略图在大卡片上按宽度略微增大圆角，避免固定半径看起来仍是直角。

@@ -49,6 +49,15 @@ RowLayout {
         onClicked: root.target.deleteSelected()
     }
 
+    ContentViewToggle {
+        Layout.alignment: Qt.AlignVCenter
+        backend: root.target ? root.target.backend : null
+        onViewRequested: function (view) {
+            if (root.target)
+                root.target.setContentView(view)
+        }
+    }
+
     KButton {
         objectName: "trashRefreshButton"
         Layout.alignment: Qt.AlignVCenter

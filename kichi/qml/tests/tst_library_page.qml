@@ -30,6 +30,7 @@ TestCase {
         property string shareCreatedUrl: ""
         property string shareCreatedPassCode: ""
         property string shareCreatedExpiration: ""
+        property string contentView: "list"
         property int refreshCalls: 0
         property string refreshKind: ""
         property string openedId: ""
@@ -44,6 +45,11 @@ TestCase {
         function refreshLibrary(kind) {
             refreshCalls += 1
             refreshKind = kind
+        }
+
+        function setContentView(view) {
+            contentView = view === "grid" ? "grid" : "list"
+            changed()
         }
 
         function openLibraryEntry(id) {
@@ -114,6 +120,7 @@ TestCase {
         backend.playedId = ""
         backend.revealedId = ""
         backend.downloadedId = ""
+        backend.contentView = "list"
 
         page = pageComponent.createObject(parent, {
             visible: true,
@@ -311,9 +318,74 @@ TestCase {
         compare(list.itemAtIndex(0).entry.id, "three")
     }
 
+    function test_grid_mode_uses_shared_cards_and_keeps_direct_actions() {
+        publish([row("folder", false, "folder"),
+                 row("movie", true),
+                 row("document", false)], true)
+        var list = findChild(page, "libraryList")
+        var grid = findChild(page, "libraryGrid")
+        verify(list !== null && grid !== null)
+
+        page.setContentView("grid")
+        tryCompare(backend, "contentView", "grid")
+        compare(list.visible, false)
+        compare(grid.visible, true)
+        compare(grid.count, 3)
+
+        var movieCard = grid.itemAtIndex(1)
+        verify(movieCard !== null)
+        compare(movieCard.downloadNonPlayable, false)
+        var detail = findChild(movieCard, "gridDetail")
+        verify(detail !== null)
+        compare(detail.text, "1.0 GB · 26-10-30 12:00")
+
+        mouseDoubleClickSequence(movieCard, 30, 20)
+        tryCompare(backend, "playedId", "movie")
+
+        var folderCard = grid.itemAtIndex(0)
+        verify(folderCard !== null)
+        mouseDoubleClickSequence(folderCard, 30, 20)
+        tryCompare(backend, "openedId", "folder")
+
+        var documentCard = grid.itemAtIndex(2)
+        verify(documentCard !== null)
+        mouseDoubleClickSequence(documentCard, 30, 20)
+        wait(20)
+        compare(backend.openedId, "folder", "普通文件双击不能跳到所在位置")
+        compare(backend.playedId, "movie", "普通文件双击不能播放")
+    }
+
+    function test_list_and_grid_keep_independent_scroll_positions() {
+        const rows = []
+        for (let i = 0; i < 40; ++i)
+            rows.push(row("item-" + i, false))
+        publish(rows, true)
+
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        list.contentY = 96
+        wait(30)
+
+        page.setContentView("grid")
+        var grid = findChild(page, "libraryGrid")
+        verify(grid !== null)
+        tryCompare(grid, "visible", true)
+        grid.contentY = 80
+        wait(30)
+
+        page.setContentView("list")
+        tryCompare(backend, "contentView", "list")
+        tryCompare(list, "contentY", 96)
+    }
+
     function test_header_shows_count_and_refreshes_current_page() {
         publish([row("one", false), row("two", false)], true)
         compare(findChild(header, "libraryHeaderStatus").text, "共 2 项")
+
+        var toggle = findChild(header, "viewToggleButton")
+        var refresh = findChild(header, "libraryRefreshButton")
+        verify(toggle !== null && refresh !== null)
+        verify(toggle.x < refresh.x, "视图切换应排在刷新之前")
 
         mouseClick(findChild(header, "libraryRefreshButton"))
         tryCompare(backend, "refreshCalls", 1)

@@ -2,7 +2,7 @@ import QtQuick
 import QtTest
 import ".."
 
-// 文件页网格视图回归：
+// 文件类内容页网格基础组件回归：
 // - 网格使用 3:2 缩略图，普通目录只显示最多两行文件名；
 // - 类型 / 大小 / 修改时间不占卡片文字区，违规状态留在缩略图角标；
 // - 列表 / 网格切换沿用同一份文件和选择模型；
@@ -22,7 +22,7 @@ TestCase {
 
         property var files: []
         property var searchResults: []
-        property string fileView: "list"
+        property string contentView: "list"
         property bool searchActive: false
         property bool searchSettled: true
         property bool searchTruncated: false
@@ -73,8 +73,8 @@ TestCase {
             playLoadingId = ""
         }
 
-        function setFileView(view) {
-            fileView = view === "grid" ? "grid" : "list"
+        function setContentView(view) {
+            contentView = view === "grid" ? "grid" : "list"
         }
 
         function openDir(id) {}
@@ -152,7 +152,7 @@ TestCase {
     Component {
         id: viewToggleComponent
 
-        FilesPageViewToggle {
+        ContentViewToggle {
             width: 100
             height: 34
             backend: fakeBackend
@@ -219,7 +219,7 @@ TestCase {
         headerActions = null
         fakeBackend.files = []
         fakeBackend.searchResults = []
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         fakeBackend.searchActive = false
         fakeBackend.searchSettled = true
         fakeBackend.searchTruncated = false
@@ -458,7 +458,7 @@ TestCase {
 
     function test_page_switches_between_list_and_grid_and_keeps_scroll() {
         fakeBackend.files = manyEntries(30)
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         page = pageComponent.createObject(parent, { visible: true })
         verify(page !== null)
         wait(50)
@@ -471,26 +471,79 @@ TestCase {
         list.contentY = 48
         wait(30)
 
-        page.setFileView("grid")
+        page.setContentView("grid")
         wait(50)
-        compare(fakeBackend.fileView, "grid")
+        compare(fakeBackend.contentView, "grid")
         compare(list.visible, false)
         compare(grid.visible, true)
         grid.contentY = 96
         wait(30)
 
-        page.setFileView("list")
+        page.setContentView("list")
         wait(50)
-        compare(fakeBackend.fileView, "list")
+        compare(fakeBackend.contentView, "list")
         compare(list.visible, true)
         compare(grid.visible, false)
         tryCompare(list, "contentY", 48)
     }
 
+    function test_file_grid_shows_size_or_folder_and_modified_time() {
+        fakeBackend.files = [entry(1, "folder"), entry(2, "file")]
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        const folderCard = grid.itemAtIndex(0)
+        const fileCard = grid.itemAtIndex(1)
+        verify(folderCard !== null && fileCard !== null)
+
+        const folderDetail = findChild(folderCard, "gridDetail")
+        const fileDetail = findChild(fileCard, "gridDetail")
+        verify(folderDetail !== null && fileDetail !== null)
+        compare(folderDetail.visible, true)
+        compare(fileDetail.visible, true)
+        compare(folderDetail.text, qsTr("文件夹 · 26-10-30 10:00"))
+        compare(fileDetail.text, qsTr("1.2 GB · 26-10-30 10:00"))
+        compare(folderCard.height, page.gridItemHeight)
+        compare(fileCard.height, page.gridItemHeight)
+    }
+
+    function test_global_view_change_keeps_files_grid_scroll_while_page_is_hidden() {
+        fakeBackend.files = manyEntries(30)
+        fakeBackend.contentView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(50)
+
+        const list = findChild(page, "fileList")
+        const grid = findChild(page, "fileGrid")
+        verify(list !== null && grid !== null)
+        list.contentY = 48
+        wait(30)
+
+        page.setContentView("grid")
+        wait(50)
+        grid.contentY = 96
+        wait(30)
+        page.setContentView("list")
+        wait(50)
+        tryCompare(list, "contentY", 48)
+
+        page.visible = false
+        wait(30)
+        fakeBackend.contentView = "grid"
+        wait(50)
+        page.visible = true
+        tryCompare(grid, "contentY", 96)
+    }
+
     function test_page_binds_multiple_playing_ids_to_rows() {
         fakeBackend.files = manyEntries(4)
         fakeBackend.playingIds = ["entry-0", "entry-2"]
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         page = pageComponent.createObject(parent, { visible: true })
         verify(page !== null)
         wait(80)
@@ -516,7 +569,7 @@ TestCase {
 
     function test_reveal_entry_selects_and_scrolls_the_target() {
         fakeBackend.files = manyEntries(30)
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         page = pageComponent.createObject(parent, { visible: true })
         verify(page !== null)
         wait(80)
@@ -531,7 +584,7 @@ TestCase {
         compare(list.currentIndex, 20)
         verify(list.contentY > 0, "目标不在首屏时必须滚动到目标")
 
-        page.setFileView("grid")
+        page.setContentView("grid")
         wait(80)
         const grid = findChild(page, "fileGrid")
         verify(grid !== null)
@@ -546,7 +599,7 @@ TestCase {
 
     function test_grid_layout_fills_width_without_a_phantom_column() {
         fakeBackend.files = manyEntries(30)
-        fakeBackend.fileView = "grid"
+        fakeBackend.contentView = "grid"
         page = pageComponent.createObject(parent, {
             width: 716,
             height: 560,
@@ -592,7 +645,7 @@ TestCase {
     }
 
     function test_view_toggle_switches_with_one_click_and_stays_available_during_search() {
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         viewToggle = viewToggleComponent.createObject(parent, { visible: true })
         verify(viewToggle !== null)
         wait(30)
@@ -611,7 +664,7 @@ TestCase {
         compare(spy.count, 1)
         compare(spy.signalArguments[0][0], "grid")
 
-        fakeBackend.fileView = "grid"
+        fakeBackend.contentView = "grid"
         fakeBackend.searchActive = true
         compare(button.text, qsTr("网格"))
         compare(button.enabled, true)
@@ -628,7 +681,7 @@ TestCase {
         fakeBackend.searchSettled = true
         fakeBackend.searchStatus = "搜索完成"
         fakeBackend.searchQuery = "第 2"
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         page = pageComponent.createObject(parent, { visible: true })
         verify(page !== null)
         wait(80)
@@ -650,9 +703,9 @@ TestCase {
         mouseClick(listRow, detailPoint.x, detailPoint.y)
         compare(fakeBackend.searchRevealCalls, 1)
 
-        page.setFileView("grid")
+        page.setContentView("grid")
         wait(80)
-        compare(fakeBackend.fileView, "grid")
+        compare(fakeBackend.contentView, "grid")
         compare(list.visible, false)
         compare(grid.visible, true)
         compare(grid.count, 1)
@@ -705,7 +758,7 @@ TestCase {
         fakeBackend.searchSettled = true
         fakeBackend.searchStatus = "搜索完成"
         fakeBackend.searchQuery = "目录 2"
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         page = pageComponent.createObject(parent, { visible: true })
         verify(page !== null)
         wait(80)
@@ -753,7 +806,7 @@ TestCase {
     }
 
     function test_header_actions_show_text_and_keep_refresh_last() {
-        fakeBackend.fileView = "list"
+        fakeBackend.contentView = "list"
         headerActions = headerActionsComponent.createObject(parent, { visible: true })
         verify(headerActions !== null)
         wait(30)
@@ -774,7 +827,7 @@ TestCase {
 
         mouseClick(toggle)
         wait(20)
-        compare(fakeBackend.fileView, "grid")
+        compare(fakeBackend.contentView, "grid")
 
         mouseClick(refresh)
         wait(20)

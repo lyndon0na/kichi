@@ -119,17 +119,18 @@ impl SortField {
     }
 }
 
-/// 文件页的显示方式。
+/// 文件类内容页共用的显示方式。
 ///
-/// 列表是默认值；网格只改变同目录条目的展示，不改变排序、筛选或文件操作。
+/// 我的文件、回收站和三个资料库页共用这一项；任务 / 分享管理页仍用表格。
+/// 列表是默认值；网格只改变展示，不改变数据、排序、筛选或操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FileViewMode {
+pub enum ContentViewMode {
     #[default]
     List,
     Grid,
 }
 
-impl FileViewMode {
+impl ContentViewMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::List => "list",
@@ -146,13 +147,13 @@ impl FileViewMode {
     }
 }
 
-impl Serialize for FileViewMode {
+impl Serialize for ContentViewMode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
-impl<'de> Deserialize<'de> for FileViewMode {
+impl<'de> Deserialize<'de> for ContentViewMode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         Ok(Self::parse(&text))
@@ -176,8 +177,9 @@ pub struct Settings {
     pub auto_subtitles: bool,
     /// 关闭窗口时缩到托盘
     pub close_to_tray: bool,
-    /// 文件页显示方式：列表 / 网格
-    pub file_view: FileViewMode,
+    /// 文件类内容页共用显示方式：列表 / 网格
+    #[serde(alias = "fileView")]
+    pub content_view: ContentViewMode,
     pub sort_field: SortField,
     pub sort_ascending: bool,
     /// 窗口宽高；0 表示还没存过（用默认尺寸）
@@ -206,7 +208,7 @@ impl Default for Settings {
             notify_enabled: true,
             auto_subtitles: true,
             close_to_tray: false,
-            file_view: FileViewMode::List,
+            content_view: ContentViewMode::List,
             sort_field: SortField::Name,
             sort_ascending: true,
             window_width: 0,
@@ -403,7 +405,7 @@ mod tests {
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
             close_to_tray: true,
-            file_view: FileViewMode::Grid,
+            content_view: ContentViewMode::Grid,
             sort_field: SortField::Modified,
             sort_ascending: false,
             window_width: 1280,
@@ -463,9 +465,9 @@ mod tests {
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
         assert_eq!(
-            settings.file_view,
-            FileViewMode::List,
-            "旧设置没有文件视图字段时默认列表"
+            settings.content_view,
+            ContentViewMode::List,
+            "旧设置没有内容视图字段时默认列表"
         );
         assert_eq!(settings.window_width, 0, "负尺寸收回为 0");
         assert_eq!(settings.download_parallel, 3, "旧设置没有并发字段时取默认");
@@ -475,6 +477,25 @@ mod tests {
         );
         assert_eq!(settings.download_rate_mib, 0, "旧设置默认不限速");
         assert!(settings.auto_resume_downloads, "自动续跑默认开启");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_file_view_setting_migrates_to_content_view() {
+        let path = temp_path("legacy-file-view.json");
+        std::fs::write(&path, br#"{"fileView":"grid"}"#).expect("写入旧设置失败");
+        let (settings, warning) = load(&path);
+        assert!(warning.is_none());
+        assert_eq!(
+            settings.content_view,
+            ContentViewMode::Grid,
+            "旧 fileView 应继续生效"
+        );
+
+        save(&path, &settings).expect("保存迁移后的设置失败");
+        let body = std::fs::read_to_string(&path).expect("读取迁移后的设置失败");
+        assert!(body.contains("\"contentView\""));
+        assert!(!body.contains("\"fileView\""));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -519,10 +540,10 @@ mod tests {
         assert_eq!(Quality::parse("nonsense"), Quality::Ask);
         assert_eq!(SortField::parse("size"), SortField::Size);
         assert_eq!(SortField::parse(""), SortField::Name);
-        assert_eq!(FileViewMode::parse("grid"), FileViewMode::Grid);
-        assert_eq!(FileViewMode::parse(" GRID "), FileViewMode::Grid);
-        assert_eq!(FileViewMode::parse("list"), FileViewMode::List);
-        assert_eq!(FileViewMode::parse("nonsense"), FileViewMode::List);
+        assert_eq!(ContentViewMode::parse("grid"), ContentViewMode::Grid);
+        assert_eq!(ContentViewMode::parse(" GRID "), ContentViewMode::Grid);
+        assert_eq!(ContentViewMode::parse("list"), ContentViewMode::List);
+        assert_eq!(ContentViewMode::parse("nonsense"), ContentViewMode::List);
     }
 
     #[test]

@@ -2,11 +2,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 文件页网格视图的一个条目。
+// 文件类内容页共用的网格卡片视觉。
 //
-// 与 FileRow 共用 FileThumbnail / FileSelection / FilePageInteraction：
-// 单击多选、双击进入文件夹或播放、右键菜单都由 FilesPage 接到同一套逻辑上。
-// 这里只负责网格卡片的外观，不另做一套文件操作。
+// 文件、回收站和资料库都复用它。单击选择、右键菜单和双击信号由页面接线；
+// 回收站关闭激活，资料库禁止普通文件通过双击下载。
 ItemDelegate {
     id: card
 
@@ -15,15 +14,20 @@ ItemDelegate {
     readonly property var gridView: GridView.view
     property int rowIndex: -1
     property bool selected: false
+    /// 双击是否执行条目动作；回收站网格关闭这一项，避免误还原 / 误删。
+    property bool activationEnabled: true
+    /// 双击普通不可播放文件是否直接下载；资料库页只打开或播放，不在这里下载。
+    property bool downloadNonPlayable: true
     /// 当前条目正在取播放直链 / 等待播放器窗口
     property bool playLoading: false
     /// 播放器已经真正开播、尚未退出
     property bool playing: false
     readonly property bool showPlayingState: card.playing && !card.playLoading
-    /// 可选的路径说明（搜索结果用它显示所在文件夹）。
+    /// 卡片底部的单行说明：普通文件显示大小 / 修改时间，搜索结果显示所在文件夹。
     property string detailText: ""
     property bool detailClickable: false
-    readonly property bool detailVisible: detailText.length > 0
+    readonly property string detailDisplayText: card.compactGridDate(detailText)
+    readonly property bool detailVisible: detailDisplayText.length > 0
     readonly property bool detailHovered: detailVisible && detailClickable
                                              && mouseArea.containsMouse
                                              && card.pointerOver(gridDetail,
@@ -90,7 +94,10 @@ ItemDelegate {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
         cursorShape: card.detailHovered
-                     || (card.entry && card.entry.kind === "folder")
+                     || (card.activationEnabled && card.entry
+                         && (card.entry.kind === "folder"
+                             || card.entry.playable === true
+                             || card.downloadNonPlayable))
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
         onClicked: function (mouse) {
@@ -133,7 +140,7 @@ ItemDelegate {
     }
 
     function activate(point) {
-        if (!card.backend || !card.entry)
+        if (!card.activationEnabled || !card.backend || !card.entry)
             return
         if (card.entry.kind === "folder") {
             card.folderOpenRequested(card.entry.id)
@@ -143,13 +150,19 @@ ItemDelegate {
             card.playRequested(card.entry.id, point)
             return
         }
-        card.backend.downloadEntry(card.entry.id)
+        if (card.downloadNonPlayable)
+            card.backend.downloadEntry(card.entry.id)
     }
 
     function pointerOver(item, x, y) {
         const topLeft = item.mapToItem(card, 0, 0)
         return x >= topLeft.x && x <= topLeft.x + item.width
                 && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
+    // 网格空间紧，日期只保留两位年份；列表仍显示完整年份。
+    function compactGridDate(text) {
+        return String(text).replace(/\b(19|20)(\d{2})([-/])/g, "$2$3")
     }
 
     contentItem: ColumnLayout {
@@ -287,7 +300,7 @@ ItemDelegate {
             visible: card.detailVisible
             Layout.fillWidth: true
             Layout.preferredHeight: card.detailVisible ? card.detailLineHeight : 0
-            text: card.detailText
+            text: card.detailDisplayText
             font.pixelSize: card.detailPixelSize
             color: card.detailClickable ? theme.accent : theme.textMuted
             maximumLineCount: 1

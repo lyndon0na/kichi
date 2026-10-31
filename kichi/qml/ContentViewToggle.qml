@@ -1,16 +1,15 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 
-// 文件页的列表 / 网格切换按钮。按钮显示当前视图，单击直接切到另一个视图；
-// 搜索结果复用同一套视图，因此搜索期间仍可切换。
+// 文件类内容页共用的列表 / 网格切换按钮。
+// 按钮只发出目标视图，页面负责先记住当前滚动位置，再切换全局设置。
 KButton {
     id: control
 
     property var backend: null
 
     readonly property string currentView: backend !== null
-                                            && backend.fileView === "grid"
+                                            && backend.contentView === "grid"
                                           ? "grid" : "list"
     readonly property string nextView: currentView === "grid" ? "list" : "grid"
 
@@ -26,7 +25,7 @@ KButton {
     rightPadding: 8
     enabled: backend !== null
     showTextToolTip: false
-    Accessible.name: qsTr("当前文件显示方式：%1").arg(text)
+    Accessible.name: qsTr("当前内容显示方式：%1").arg(text)
     ToolTip.visible: hovered
     ToolTip.text: qsTr("点击切换到%1").arg(nextView === "grid"
                                             ? qsTr("网格视图")

@@ -24,7 +24,7 @@ Item {
     readonly property bool searching: page.backend !== null && page.backend.searchActive
     // 目录与搜索结果共用当前显示方式
     readonly property bool gridMode: page.backend !== null
-                                     && page.backend.fileView === "grid"
+                                     && page.backend.contentView === "grid"
     // 从搜索结果进目录时，Rust 会先退出搜索、再异步读目标目录。这里保留
     // 点击瞬间的结果快照，等 filesLoading 结束再换 model，避免闪回原目录。
     property var heldSearchEntries: []
@@ -67,6 +67,22 @@ Item {
         return false
     }
 
+    function gridDetailText(entry) {
+        if (!entry)
+            return ""
+        if (page.showingSearchEntries) {
+            return qsTr("所在文件夹：%1").arg(entry.folderText
+                                              || qsTr("（所在文件夹）"))
+        }
+        const modified = String(entry.modifiedText || "")
+        if (entry.kind === "folder")
+            return modified.length > 0 ? qsTr("文件夹 · %1").arg(modified)
+                                       : qsTr("文件夹")
+        const size = String(entry.sizeText || qsTr("—"))
+        return modified.length > 0 ? qsTr("%1 · %2").arg(size).arg(modified)
+                                   : size
+    }
+
     // 滚动位置记忆 / 导航 / 快捷键 / 操作完成后的收尾（纯逻辑在 FilePageInteraction.qml）
     FilePageInteraction {
         id: interaction
@@ -95,23 +111,14 @@ Item {
         id: metrics
     }
 
-    // 网格列宽：左右各留一份页面内边距，右侧再让出滚动条车道。
-    // GridView 按 cellWidth 向下取整列数，所以 cellWidth 只能等于可用宽度 / 列数；
-    // 若把列间距也算进去，会少排一列，在右侧留下整列空白。
-    readonly property int gridSideMargin: metrics.pageMargin
-    readonly property int gridRightMargin: metrics.scrollBarSlot + gridSideMargin
-    readonly property real gridAvailableWidth: Math.max(
-        0, fileGrid.width - gridSideMargin - gridRightMargin)
-    readonly property int gridColumns: Math.max(1, Math.floor(
-        (gridAvailableWidth + density.gridColumnGap)
-        / (density.gridMinItemWidth + density.gridColumnGap)))
-    readonly property int gridCellSlotWidth: gridColumns > 0
-        ? Math.max(1, Math.floor(gridAvailableWidth / gridColumns)) : 0
-    readonly property real gridItemWidth: Math.max(1, gridCellSlotWidth
-                                                     - density.gridColumnGap)
-    readonly property real gridItemHeight: density.gridItemHeight(gridItemWidth,
-                                                                   page.showingSearchEntries)
-    readonly property real gridCellHeight: gridItemHeight + density.gridRowGap
+    readonly property alias gridSideMargin: fileGrid.sideMargin
+    readonly property alias gridRightMargin: fileGrid.rightMargin
+    readonly property alias gridAvailableWidth: fileGrid.availableWidth
+    readonly property alias gridColumns: fileGrid.columns
+    readonly property alias gridCellSlotWidth: fileGrid.cellSlotWidth
+    readonly property alias gridItemWidth: fileGrid.itemWidth
+    readonly property alias gridItemHeight: fileGrid.itemHeight
+    readonly property alias gridCellHeight: fileGrid.cellHeight
 
     // 面包屑在页头（main.qml）里，不是本页的一行：这里只提供跳转入口。
     // 以前本页顶部还有一行「↑ 全部文件」，和页头各成一条，看着是几块拼的。
@@ -149,20 +156,19 @@ Item {
     }
 
     // 页头的视图列表调这里：先记当前滚动位置，再让目标视图恢复自己的位置。
-    function setFileView(view) {
-        if (!page.backend || typeof page.backend.setFileView !== "function")
+    function setContentView(view) {
+        if (!page.backend || typeof page.backend.setContentView !== "function")
             return
         const next = view === "grid" ? "grid" : "list"
-        if (page.backend.fileView === next)
+        if (page.backend.contentView === next)
             return
         // 搜索结果是临时模型，不写进目录的列表 / 网格滚动记忆。
         if (page.showingSearchEntries) {
-            page.backend.setFileView(next)
+            page.backend.setContentView(next)
             return
         }
         interaction.rememberScroll()
-        interaction.prepareViewSwitch(next)
-        page.backend.setFileView(next)
+        page.backend.setContentView(next)
     }
 
     function focusActiveView() {
@@ -218,6 +224,7 @@ Item {
     // （搜索框里的字由 FilesPageSearchBar 自己跟着 searchActive 清）
     onVisibleChanged: {
         if (!page.visible) {
+            interaction.rememberScroll()
             page.clearHeldSearchEntries()
             if (page.searching && page.backend)
                 page.backend.exitSearch()
@@ -228,10 +235,15 @@ Item {
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
         page.focusActiveView()
-        Qt.callLater(interaction.tryRevealPending)
+        Qt.callLater(function () {
+            interaction.restoreScrollNow()
+            interaction.tryRevealPending()
+        })
     }
 
     onGridModeChanged: {
+        interaction.prepareViewSwitch(page.gridMode ? "grid" : "list")
+        Qt.callLater(interaction.restoreScrollNow)
         Qt.callLater(page.focusActiveView)
         Qt.callLater(interaction.tryRevealPending)
     }
@@ -407,104 +419,84 @@ Item {
             }
 
             // 网格视图：和列表共用同一块内容区、同一个 model 和同一套选择逻辑。
-            // GridView 的 cellWidth 含列间空隙，委托宽度由 FilesPage 统一算好，
-            // 这样最后一列不会钻到滚动条车道下面。
-            GridView {
+            ContentGridView {
                 id: fileGrid
-                objectName: "fileGrid"
 
                 anchors.fill: parent
                 visible: page.gridMode
                 model: page.displayEntries
-                cellWidth: page.gridCellSlotWidth
-                cellHeight: page.gridCellHeight
-                leftMargin: page.gridSideMargin
-                rightMargin: page.gridRightMargin
-                topMargin: 0
-                bottomMargin: 0
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: KScrollBar {}
+                density: density
+                metrics: metrics
+                reserveDetail: true
+                viewObjectName: "fileGrid"
 
-                focus: true
-                Keys.onPressed: function (event) {
+                onKeyPressed: function (event) {
                     interaction.handleKey(event)
-                }
-                onVisibleChanged: {
-                    if (visible)
-                        forceActiveFocus()
                 }
                 onContentHeightChanged: {
                     if (!interaction.tryRevealPending())
                         interaction.restoreScrollNow()
                 }
-
-                // 空白处右键：和列表一样只接住没命中条目的位置。
-                TapHandler {
-                    acceptedButtons: Qt.RightButton
-                    onTapped: function (point) {
-                        if (!page.backend || page.showingSearchEntries)
-                            return
-                        const x = point.position.x
-                        const y = point.position.y
-                        if (fileGrid.indexAt(x, y + fileGrid.contentY) >= 0)
-                            return
-                        menu.openBlankAt(fileGrid.mapToItem(null, x, y))
-                    }
+                onBlankContextMenuRequested: function (point) {
+                    if (!page.backend || page.showingSearchEntries)
+                        return
+                    menu.openBlankAt(fileGrid.mapToItem(null, point.x, point.y))
                 }
 
-                delegate: FileGridItem {
-                    id: gridItem
+                delegate: Component {
+                    FileGridItem {
+                        id: gridItem
 
-                    width: page.gridItemWidth
-                    height: page.gridItemHeight
-                    entry: modelData
-                    backend: page.backend
-                    rowIndex: index
-                    contentPadding: density.gridCardPadding
-                    cardSpacing: density.gridCardSpacing
-                    nameLineHeight: density.gridNameLineHeight
-                    nameBlockHeight: density.gridNameBlockHeight
-                    thumbnailRadius: density.gridThumbnailRadius(width)
-                    textPixelSize: density.namePixelSize
-                    detailPixelSize: density.metaPixelSize
-                    detailLineHeight: density.gridDetailLineHeight
-                    iconPixelSize: density.gridIconPixelSize
-                    videoBadgeSize: density.gridVideoBadgeSize
-                    videoBadgeMargin: density.gridVideoBadgeMargin
-                    playLoading: page.isEntryPlayLoading(entry.id)
-                    playing: page.isEntryPlaying(entry.id)
-                    selected: !!entry && selection.isSelected(entry.id)
-                    detailText: page.showingSearchEntries
-                                ? qsTr("所在文件夹：%1").arg(entry.folderText
-                                                           || qsTr("（所在文件夹）"))
-                                : ""
-                    detailClickable: page.showingSearchEntries && !!entry.folderId
+                        width: fileGrid.itemWidth
+                        height: fileGrid.itemHeight
+                        entry: modelData
+                        backend: page.backend
+                        rowIndex: index
+                        contentPadding: density.gridCardPadding
+                        cardSpacing: density.gridCardSpacing
+                        nameLineHeight: density.gridNameLineHeight
+                        nameBlockHeight: density.gridNameBlockHeight
+                        thumbnailRadius: density.gridThumbnailRadius(width)
+                        textPixelSize: density.namePixelSize
+                        detailPixelSize: density.metaPixelSize
+                        detailLineHeight: density.gridDetailLineHeight
+                        iconPixelSize: density.gridIconPixelSize
+                        videoBadgeSize: density.gridVideoBadgeSize
+                        videoBadgeMargin: density.gridVideoBadgeMargin
+                        playLoading: page.isEntryPlayLoading(entry.id)
+                        playing: page.isEntryPlaying(entry.id)
+                        selected: !!entry && selection.isSelected(entry.id)
+                        detailText: page.gridDetailText(entry)
+                        detailClickable: page.showingSearchEntries && !!entry.folderId
 
-                    onSelectRequested: function (modifiers, itemIndex) {
-                        const entries = page.displayEntries
-                        if (itemIndex < 0 || itemIndex >= entries.length)
-                            return
-                        fileGrid.currentIndex = itemIndex
-                        selection.click(entries[itemIndex].id, itemIndex, modifiers, entries)
-                    }
-                    onFolderOpenRequested: function (id) {
-                        page.openEntryFolder(id)
-                    }
-                    onDetailRequested: {
-                        page.revealSearchFolder(entry)
-                    }
-                    onPlayRequested: function (id, point) {
-                        playMenu.anchorPoint = gridItem.mapToItem(null, point.x, point.y)
-                        if (page.backend)
-                            page.backend.requestPlay(id)
-                    }
-                    onContextMenu: function (point) {
-                        selection.ensureSelected(entry)
-                        fileGrid.forceActiveFocus()
-                        var windowPoint = gridItem.mapToItem(null, point.x, point.y)
-                        menu.openContext(entry, windowPoint, selection.idList(),
-                                         page.searching)
+                        onSelectRequested: function (modifiers, itemIndex) {
+                            const entries = page.displayEntries
+                            if (itemIndex < 0 || itemIndex >= entries.length)
+                                return
+                            fileGrid.currentIndex = itemIndex
+                            selection.click(entries[itemIndex].id, itemIndex,
+                                            modifiers, entries)
+                        }
+                        onFolderOpenRequested: function (id) {
+                            page.openEntryFolder(id)
+                        }
+                        onDetailRequested: {
+                            page.revealSearchFolder(entry)
+                        }
+                        onPlayRequested: function (id, point) {
+                            playMenu.anchorPoint = gridItem.mapToItem(
+                                null, point.x, point.y)
+                            if (page.backend)
+                                page.backend.requestPlay(id)
+                        }
+                        onContextMenu: function (point) {
+                            selection.ensureSelected(entry)
+                            fileGrid.forceActiveFocus()
+                            var windowPoint = gridItem.mapToItem(
+                                null, point.x, point.y)
+                            menu.openContext(entry, windowPoint, selection.idList(),
+                                             page.searching)
+                        }
                     }
                 }
             }

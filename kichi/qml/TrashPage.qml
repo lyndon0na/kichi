@@ -22,6 +22,12 @@ Item {
     readonly property var entries: backend ? backend.trashFiles : []
     readonly property int selectedCount: selection.count
     readonly property bool busy: backend !== null && (backend.trashLoading || backend.fileActionRunning)
+    readonly property bool gridMode: backend !== null
+                                     && backend.contentView === "grid"
+    readonly property var activeView: gridMode ? trashGrid : trashList
+    property var scrollByView: ({ "list": 0, "grid": 0 })
+    property bool pendingScrollRestore: false
+    property real pendingScrollY: 0
 
     function selectedEntry() {
         const ids = selection.idList()
@@ -53,6 +59,43 @@ Item {
         contextMenu.popup(point)
     }
 
+    function rememberScroll() {
+        if (!page.activeView)
+            return
+        const next = ({})
+        const keys = Object.keys(page.scrollByView)
+        for (let i = 0; i < keys.length; ++i)
+            next[keys[i]] = page.scrollByView[keys[i]]
+        next[page.gridMode ? "grid" : "list"] = page.activeView.contentY
+        page.scrollByView = next
+    }
+
+    function setContentView(view) {
+        if (!page.backend || typeof page.backend.setContentView !== "function")
+            return
+        const next = view === "grid" ? "grid" : "list"
+        if (page.backend.contentView === next)
+            return
+        page.rememberScroll()
+        page.backend.setContentView(next)
+    }
+
+    function restoreScroll() {
+        if (!page.pendingScrollRestore || !page.activeView)
+            return
+        if (page.activeView.contentHeight <= 0)
+            return
+        const maxY = Math.max(0, page.activeView.contentHeight
+                                 - page.activeView.height)
+        page.activeView.contentY = Math.max(0, Math.min(page.pendingScrollY, maxY))
+        page.pendingScrollRestore = false
+    }
+
+    function focusActiveView() {
+        if (page.visible && page.activeView)
+            page.activeView.forceActiveFocus()
+    }
+
     function handleKey(event) {
         if (!backend)
             return
@@ -72,12 +115,28 @@ Item {
         }
     }
 
+    onGridModeChanged: {
+        page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+        page.pendingScrollRestore = true
+        Qt.callLater(page.restoreScroll)
+        Qt.callLater(page.focusActiveView)
+    }
+
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
+            page.rememberScroll()
             return
+        }
         if (backend)
             backend.refreshTrash()
-        Qt.callLater(function () { trashList.forceActiveFocus() })
+        if (!page.pendingScrollRestore) {
+            page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+            page.pendingScrollRestore = true
+        }
+        Qt.callLater(function () {
+            page.restoreScroll()
+            page.focusActiveView()
+        })
     }
 
     ColumnLayout {
@@ -104,6 +163,7 @@ Item {
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 4
+                visible: !page.gridMode
 
                 TrashTableHeader {
                     Layout.fillWidth: true
@@ -122,13 +182,13 @@ Item {
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    visible: !page.gridMode
                     clip: true
                     spacing: 0
                     model: page.entries
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: KScrollBar {}
                     focus: true
-                    Component.onCompleted: forceActiveFocus()
                     onVisibleChanged: {
                         if (visible)
                             forceActiveFocus()
@@ -136,6 +196,7 @@ Item {
                     Keys.onPressed: function (event) {
                         page.handleKey(event)
                     }
+                    onContentHeightChanged: page.restoreScroll()
 
                     delegate: TrashRow {
                         id: row
@@ -168,6 +229,67 @@ Item {
                             trashList.forceActiveFocus()
                             var windowPoint = row.mapToItem(null, point.x, point.y)
                             page.openContext(windowPoint)
+                        }
+                    }
+                }
+            }
+
+            ContentGridView {
+                id: trashGrid
+
+                anchors.fill: parent
+                visible: page.gridMode
+                model: page.entries
+                density: density
+                metrics: metrics
+                reserveDetail: true
+                viewObjectName: "trashGrid"
+
+                onKeyPressed: function (event) {
+                    page.handleKey(event)
+                }
+                onContentHeightChanged: page.restoreScroll()
+
+                delegate: Component {
+                    FileGridItem {
+                        id: trashGridItem
+
+                        width: trashGrid.itemWidth
+                        height: trashGrid.itemHeight
+                        entry: modelData
+                        backend: page.backend
+                        rowIndex: index
+                        activationEnabled: false
+                        selected: !!entry && selection.isSelected(entry.id)
+                        contentPadding: density.gridCardPadding
+                        cardSpacing: density.gridCardSpacing
+                        nameLineHeight: density.gridNameLineHeight
+                        nameBlockHeight: density.gridNameBlockHeight
+                        thumbnailRadius: density.gridThumbnailRadius(width)
+                        textPixelSize: density.namePixelSize
+                        detailPixelSize: density.metaPixelSize
+                        detailLineHeight: density.gridDetailLineHeight
+                        iconPixelSize: density.gridIconPixelSize
+                        videoBadgeSize: density.gridVideoBadgeSize
+                        videoBadgeMargin: density.gridVideoBadgeMargin
+                        detailText: entry
+                                    ? qsTr("删除于 %1 · %2").arg(entry.deletedText)
+                                      .arg(entry.sizeText) : qsTr("删除时间未知")
+
+                        onSelectRequested: function (modifiers, itemIndex) {
+                            if (itemIndex < 0 || itemIndex >= page.entries.length)
+                                return
+                            trashGrid.currentIndex = itemIndex
+                            selection.click(page.entries[itemIndex].id, itemIndex,
+                                            modifiers, page.entries)
+                        }
+                        onContextMenu: function (point) {
+                            if (!entry)
+                                return
+                            selection.ensureSelected(entry)
+                            trashGrid.forceActiveFocus()
+                            page.openContext(trashGridItem.mapToItem(
+                                                 null, point.x, point.y))
                         }
                     }
                 }

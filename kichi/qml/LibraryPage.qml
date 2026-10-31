@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 最近保存 / 播放历史 / 已加星标的公共表格骨架。
+// 最近保存 / 播放历史 / 已加星标的公共列表 / 网格骨架。
 // 数据来源、空态文案与两列含义由三个薄页面分别提供。
 Item {
     id: page
@@ -24,6 +24,12 @@ Item {
     readonly property string errorText: page.activeCollection ? page.backend.libraryError : ""
     property int lastRevision: -1
     property string currentEntryId: ""
+    readonly property bool gridMode: page.backend !== null
+                                     && page.backend.contentView === "grid"
+    readonly property var activeView: page.gridMode ? libraryGrid : libraryList
+    property var scrollByView: ({ "list": 0, "grid": 0 })
+    property bool pendingScrollRestore: false
+    property real pendingScrollY: 0
 
     FileListDensity {
         id: density
@@ -54,6 +60,54 @@ Item {
         page.backend.refreshLibrary(page.kind)
     }
 
+    function rememberScroll() {
+        if (!page.activeView)
+            return
+        const next = ({})
+        const keys = Object.keys(page.scrollByView)
+        for (let i = 0; i < keys.length; ++i)
+            next[keys[i]] = page.scrollByView[keys[i]]
+        next[page.gridMode ? "grid" : "list"] = page.activeView.contentY
+        page.scrollByView = next
+    }
+
+    function setContentView(view) {
+        if (!page.backend || typeof page.backend.setContentView !== "function")
+            return
+        const next = view === "grid" ? "grid" : "list"
+        if (page.backend.contentView === next)
+            return
+        page.rememberScroll()
+        page.backend.setContentView(next)
+    }
+
+    function restoreScroll() {
+        if (!page.pendingScrollRestore || !page.activeView)
+            return
+        if (page.activeView.contentHeight <= 0)
+            return
+        const maxY = Math.max(0, page.activeView.contentHeight
+                                 - page.activeView.height)
+        page.activeView.contentY = Math.max(0, Math.min(page.pendingScrollY, maxY))
+        page.pendingScrollRestore = false
+    }
+
+    function focusActiveView() {
+        if (page.active && page.activeView)
+            page.activeView.forceActiveFocus()
+    }
+
+    function gridDetailText(entry) {
+        if (!entry)
+            return qsTr("—")
+        const parts = []
+        if (entry.primaryText)
+            parts.push(String(entry.primaryText))
+        if (entry.secondaryText)
+            parts.push(String(entry.secondaryText))
+        return parts.length > 0 ? parts.join(" · ") : qsTr("—")
+    }
+
     function playEntry(id, anchorPoint) {
         if (!page.backend)
             return
@@ -64,16 +118,19 @@ Item {
     function activateCurrent() {
         if (!page.backend || entries.length === 0)
             return
-        const index = Math.max(0, Math.min(libraryList.currentIndex, entries.length - 1))
+        const index = Math.max(0, Math.min(
+            page.activeView.currentIndex,
+            entries.length - 1))
         const entry = entries[index]
         if (!entry)
             return
         if (entry.kind === "folder") {
             page.backend.openLibraryEntry(entry.id)
         } else if (entry.playable === true) {
-            page.playEntry(entry.id, libraryList.mapToItem(null,
-                                                         libraryList.width / 2,
-                                                         Math.max(24, libraryList.height / 2)))
+            page.playEntry(entry.id, page.activeView.mapToItem(
+                               null,
+                               page.activeView.width / 2,
+                               Math.max(24, page.activeView.height / 2)))
         }
     }
 
@@ -85,10 +142,11 @@ Item {
         }
         const next = Math.max(0, Math.min(index, entries.length - 1))
         libraryList.currentIndex = next
+        libraryGrid.currentIndex = next
         const entry = entries[next]
         page.currentEntryId = entry && entry.id ? String(entry.id) : ""
         if (focus !== false)
-            libraryList.forceActiveFocus()
+            page.focusActiveView()
     }
 
     function indexOfCurrentEntry() {
@@ -119,23 +177,43 @@ Item {
             page.activateCurrent()
             event.accepted = true
         } else if (event.key === Qt.Key_Up) {
-            page.selectIndex(libraryList.currentIndex - 1)
+            page.selectIndex(page.activeView.currentIndex - 1)
             event.accepted = true
         } else if (event.key === Qt.Key_Down) {
-            page.selectIndex(libraryList.currentIndex + 1)
+            page.selectIndex(page.activeView.currentIndex + 1)
             event.accepted = true
         }
     }
 
     onActiveChanged: {
         if (!active) {
+            page.rememberScroll()
             playMenu.close()
             page.contextMenu.close()
             page.blankContextMenu.close()
             return
         }
         page.refresh()
-        Qt.callLater(function () { libraryList.forceActiveFocus() })
+        if (!page.pendingScrollRestore) {
+            page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+            page.pendingScrollRestore = true
+        }
+        Qt.callLater(function () {
+            page.restoreScroll()
+            page.focusActiveView()
+        })
+    }
+
+    onGridModeChanged: {
+        page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+        page.pendingScrollRestore = true
+        const index = page.indexOfCurrentEntry()
+        if (index >= 0) {
+            libraryList.currentIndex = index
+            libraryGrid.currentIndex = index
+        }
+        Qt.callLater(page.restoreScroll)
+        Qt.callLater(page.focusActiveView)
     }
 
     ColumnLayout {
@@ -162,6 +240,7 @@ Item {
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 4
+                visible: !page.gridMode
 
                 LibraryTableHeader {
                     Layout.fillWidth: true
@@ -182,6 +261,7 @@ Item {
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    visible: !page.gridMode
                     clip: true
                     spacing: 0
                     model: page.entries
@@ -193,6 +273,7 @@ Item {
                     Keys.onPressed: function (event) {
                         page.handleKey(event)
                     }
+                    onContentHeightChanged: page.restoreScroll()
 
                     TapHandler {
                         acceptedButtons: Qt.RightButton
@@ -242,6 +323,81 @@ Item {
                         onContextMenu: function (point) {
                             page.openEntryMenu(entry,
                                                row.mapToItem(null, point.x, point.y))
+                        }
+                    }
+                }
+            }
+
+            ContentGridView {
+                id: libraryGrid
+
+                anchors.fill: parent
+                visible: page.gridMode
+                model: page.entries
+                density: density
+                metrics: metrics
+                reserveDetail: true
+                viewObjectName: "libraryGrid"
+
+                onKeyPressed: function (event) {
+                    page.handleKey(event)
+                }
+                onContentHeightChanged: page.restoreScroll()
+                onBlankContextMenuRequested: function (point) {
+                    if (!page.backend)
+                        return
+                    page.openBlankMenu(libraryGrid.mapToItem(
+                                           null, point.x, point.y))
+                }
+
+                delegate: Component {
+                    FileGridItem {
+                        id: libraryGridItem
+
+                        width: libraryGrid.itemWidth
+                        height: libraryGrid.itemHeight
+                        entry: modelData
+                        backend: page.backend
+                        rowIndex: index
+                        downloadNonPlayable: false
+                        selected: !!entry
+                                  && String(page.currentEntryId) === String(entry.id)
+                        contentPadding: density.gridCardPadding
+                        cardSpacing: density.gridCardSpacing
+                        nameLineHeight: density.gridNameLineHeight
+                        nameBlockHeight: density.gridNameBlockHeight
+                        thumbnailRadius: density.gridThumbnailRadius(width)
+                        textPixelSize: density.namePixelSize
+                        detailPixelSize: density.metaPixelSize
+                        detailLineHeight: density.gridDetailLineHeight
+                        iconPixelSize: density.gridIconPixelSize
+                        videoBadgeSize: density.gridVideoBadgeSize
+                        videoBadgeMargin: density.gridVideoBadgeMargin
+                        playLoading: entry ? page.isPlayLoading(entry.id) : false
+                        playing: entry ? page.isPlaying(entry.id) : false
+                        detailText: page.gridDetailText(entry)
+
+                        onSelectRequested: function (modifiers, itemIndex) {
+                            if (itemIndex < 0 || itemIndex >= page.entries.length)
+                                return
+                            libraryGrid.currentIndex = itemIndex
+                            page.selectIndex(itemIndex)
+                        }
+                        onFolderOpenRequested: function (id) {
+                            if (page.backend)
+                                page.backend.openLibraryEntry(id)
+                        }
+                        onPlayRequested: function (id, point) {
+                            page.playEntry(id, libraryGridItem.mapToItem(
+                                                 null, point.x, point.y))
+                        }
+                        onContextMenu: function (point) {
+                            if (!entry)
+                                return
+                            page.selectIndex(libraryGridItem.rowIndex, false)
+                            libraryGrid.forceActiveFocus()
+                            page.openEntryMenu(entry, libraryGridItem.mapToItem(
+                                                     null, point.x, point.y))
                         }
                     }
                 }
@@ -329,18 +485,19 @@ Item {
             page.lastRevision = page.backend.libraryRevision
             if (page.entries.length === 0) {
                 libraryList.currentIndex = -1
+                libraryGrid.currentIndex = -1
                 page.currentEntryId = ""
             } else {
                 let nextIndex = page.indexOfCurrentEntry()
                 if (nextIndex < 0) {
                     nextIndex = Math.max(0, Math.min(
-                                             libraryList.currentIndex,
+                                             page.activeView.currentIndex,
                                              page.entries.length - 1))
                 }
                 page.selectIndex(nextIndex, false)
             }
             if (page.visible)
-                Qt.callLater(function () { libraryList.forceActiveFocus() })
+                Qt.callLater(page.focusActiveView)
         }
     }
 }
