@@ -50,9 +50,10 @@ RowLayout {
     KButton {
         objectName: "filesRefreshButton"
         Layout.alignment: Qt.AlignVCenter
-        text: root.manualRefreshing ? qsTr("刷新中…") : qsTr("刷新")
+        text: qsTr("刷新")
         iconName: "refresh"
         iconSize: 14
+        busy: root.manualRefreshing
         variant: "ghost"
         implicitHeight: 34
         leftPadding: 8

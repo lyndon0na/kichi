@@ -679,20 +679,28 @@ TestCase {
         push([task("t1", "running", 10), task("t2", "completed", 100)])
         var refresh = findChild(taskHeader, "tasksRefreshButton")
         verify(refresh !== null)
+        var spinner = findChild(refresh, "buttonBusyIndicator")
+        verify(spinner !== null)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        var idleWidth = refresh.width
 
         backend.tasksLoading = true
         backend.changed()
         wait(20)
-        compare(refresh.text, "刷新中…")
+        compare(refresh.text, "刷新")
         compare(refresh.enabled, false)
+        compare(spinner.running, true)
+        compare(refresh.width, idleWidth)
 
         backend.tasksLoading = false
         backend.changed()
         wait(20)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        compare(refresh.width, idleWidth)
     }
 
     function test_loading_state_replaces_empty_message() {

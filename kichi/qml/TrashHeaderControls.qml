@@ -60,8 +60,10 @@ RowLayout {
     KButton {
         objectName: "trashRefreshButton"
         Layout.alignment: Qt.AlignVCenter
-        text: root.refreshing ? qsTr("刷新中…") : qsTr("刷新")
+        text: qsTr("刷新")
         iconName: "refresh"
+        iconSize: 14
+        busy: root.refreshing
         variant: "ghost"
         enabled: root.backendReady && !root.busy
         onClicked: root.target.backend.refreshTrash()

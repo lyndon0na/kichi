@@ -21,6 +21,8 @@ Button {
     /// 可选线稿图标（NavIcon 的名字），留空则只有文字
     property string iconName: ""
     property int iconSize: 16
+    /// 忙碌时用同尺寸转圈替代图标，文字和按钮宽度保持不变
+    property bool busy: false
     // 调用处已有说明性 ToolTip 时关掉文字自身的截断提示，避免同时弹两层。
     property bool showTextToolTip: true
 
@@ -75,8 +77,20 @@ Button {
     contentItem: RowLayout {
         spacing: 8
 
+        BusyIndicator {
+            objectName: "buttonBusyIndicator"
+            visible: control.busy
+            running: control.busy
+            padding: 0
+            implicitWidth: control.iconSize
+            implicitHeight: control.iconSize
+            Layout.preferredWidth: control.iconSize
+            Layout.preferredHeight: control.iconSize
+            Layout.alignment: Qt.AlignVCenter
+        }
+
         NavIcon {
-            visible: control.iconName.length > 0
+            visible: !control.busy && control.iconName.length > 0
             implicitWidth: control.iconSize
             implicitHeight: control.iconSize
             Layout.alignment: Qt.AlignVCenter

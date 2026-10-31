@@ -328,9 +328,13 @@ TestCase {
         var summary = findChild(header, "trashSelectionSummary")
         var refresh = findChild(header, "trashRefreshButton")
         verify(summary !== null && refresh !== null)
+        var spinner = findChild(refresh, "buttonBusyIndicator")
+        verify(spinner !== null)
         compare(summary.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        var idleWidth = refresh.width
 
         // 后台校准不改 trashLoading，按钮不闪。
         backend.trashRevision += 1
@@ -339,13 +343,16 @@ TestCase {
         compare(summary.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
 
         backend.trashLoading = true
         backend.changed()
         wait(20)
         compare(summary.text, "")
-        compare(refresh.text, "刷新中…")
+        compare(refresh.text, "刷新")
         compare(refresh.enabled, false)
+        compare(spinner.running, true)
+        compare(refresh.width, idleWidth)
 
         backend.trashLoading = false
         backend.changed()
@@ -353,5 +360,7 @@ TestCase {
         compare(summary.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        compare(refresh.width, idleWidth)
     }
 }

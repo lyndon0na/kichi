@@ -417,8 +417,12 @@ TestCase {
         publish([row("one", false), row("two", false)], true)
         var refresh = findChild(header, "libraryRefreshButton")
         verify(refresh !== null)
+        var spinner = findChild(refresh, "buttonBusyIndicator")
+        verify(spinner !== null)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        var idleWidth = refresh.width
 
         // TTL 自动校准不进入可见 loading，按钮完全不动。
         backend.libraryRevision += 1
@@ -426,18 +430,23 @@ TestCase {
         wait(20)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
 
         backend.libraryLoading = true
         backend.changed()
         wait(20)
-        compare(refresh.text, "刷新中…")
+        compare(refresh.text, "刷新")
         compare(refresh.enabled, false)
+        compare(spinner.running, true)
+        compare(refresh.width, idleWidth)
 
         backend.libraryLoading = false
         backend.changed()
         wait(20)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        compare(refresh.width, idleWidth)
     }
 
     function test_header_refresh_is_independent_from_file_actions() {

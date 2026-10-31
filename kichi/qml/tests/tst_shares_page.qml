@@ -142,16 +142,22 @@ TestCase {
         var status = findChild(header, "shareHeaderStatus")
         var refresh = findChild(header, "refreshShares")
         verify(status !== null && refresh !== null)
+        var spinner = findChild(refresh, "buttonBusyIndicator")
+        verify(spinner !== null)
         compare(status.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        var idleWidth = refresh.width
 
         backend.sharesLoading = true
         backend.changed()
         wait(20)
         compare(status.text, "")
-        compare(refresh.text, "刷新中…")
+        compare(refresh.text, "刷新")
         compare(refresh.enabled, false)
+        compare(spinner.running, true)
+        compare(refresh.width, idleWidth)
 
         backend.sharesLoading = false
         backend.changed()
@@ -159,6 +165,8 @@ TestCase {
         compare(status.text, "")
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        compare(refresh.width, idleWidth)
     }
 
     function test_table_has_file_icon_and_selection_actions_without_checkboxes() {

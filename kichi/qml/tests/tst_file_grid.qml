@@ -886,8 +886,12 @@ TestCase {
 
         const refresh = findChild(headerActions, "filesRefreshButton")
         verify(refresh !== null)
+        const spinner = findChild(refresh, "buttonBusyIndicator")
+        verify(spinner !== null)
         compare(refresh.text, qsTr("刷新"))
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        const idleWidth = refresh.width
 
         // TTL 后台校准不会置 loading / refreshing；按钮和文字必须保持原样。
         fakeBackend.filesRevision += 1
@@ -895,17 +899,22 @@ TestCase {
         wait(20)
         compare(refresh.text, qsTr("刷新"))
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
 
         fakeBackend.filesRefreshing = true
         fakeBackend.changed()
         wait(20)
-        compare(refresh.text, qsTr("刷新中…"))
+        compare(refresh.text, qsTr("刷新"))
         compare(refresh.enabled, false)
+        compare(spinner.running, true)
+        compare(refresh.width, idleWidth)
 
         fakeBackend.filesRefreshing = false
         fakeBackend.changed()
         wait(20)
         compare(refresh.text, qsTr("刷新"))
         compare(refresh.enabled, true)
+        compare(spinner.running, false)
+        compare(refresh.width, idleWidth)
     }
 }

@@ -30,8 +30,10 @@ RowLayout {
     KButton {
         objectName: "libraryRefreshButton"
         Layout.alignment: Qt.AlignVCenter
-        text: root.loading ? qsTr("刷新中…") : qsTr("刷新")
+        text: qsTr("刷新")
         iconName: "refresh"
+        iconSize: 14
+        busy: root.loading
         variant: "ghost"
         enabled: root.target !== null && root.target.backend !== null && !root.loading
         onClicked: {
