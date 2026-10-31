@@ -35,6 +35,15 @@ QtObject {
         anchorId = ""
     }
 
+    /// 只选中一个条目（离线任务定位、搜索结果定位这类一次性定位用）。
+    function selectOnly(id) {
+        const next = ({})
+        if (id)
+            next[id] = true
+        selectedIds = next
+        anchorId = id || ""
+    }
+
     function selectAll(entries) {
         const next = ({})
         for (let i = 0; i < (entries ? entries.length : 0); i++) {

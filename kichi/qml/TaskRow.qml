@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 离线任务表格的一行。状态、进度和删除入口固定列对齐，
-// 大小 / 时间或失败原因收在任务名下方，避免卡片高度参差不齐。
+// 离线任务表格的一行。双击已完成产物：文件夹进文件页，视频 / 音频走播放；
+// 删除不再占一列，统一放到右键菜单。
 ItemDelegate {
     id: row
 
@@ -18,30 +18,52 @@ ItemDelegate {
     required property string createdText
     required property string detail
     required property bool settled
+    required property string fileId
+    required property bool hasThumbnail
+    required property bool video
+    required property bool playable
 
-    property int rowHeight: 56
-    property int iconColumnWidth: 22
+    property var backend: null
+    property int rowHeight: 48
+    property int thumbnailColumnWidth: 36
+    property int thumbnailSlotHeight: 24
+    property int sizeColumnWidth: 84
+    property int createdColumnWidth: 120
     property int statusColumnWidth: 100
     property int progressColumnWidth: 150
-    property int actionColumnWidth: 96
-    property int columnSpacing: 12
+    property int columnSpacing: 8
     property int contentPadding: 12
+    property bool showSize: true
+    property bool showCreated: true
+    property bool playLoading: false
+    property bool playing: false
+    property bool folderLoading: false
 
-    signal deleteRequested(string key, string name)
+    signal contextMenu(point position)
+    signal openFolderRequested(string id)
+    signal playRequested(string id, point position)
 
-    objectName: "taskRow_" + row.key
-    implicitHeight: row.rowHeight
-    leftPadding: 0
-    rightPadding: 0
-    topPadding: 0
-    bottomPadding: 0
-
-    KTheme { id: theme }
-
+    readonly property var listView: ListView.view
     readonly property bool isActive: !row.settled
     readonly property bool showProgress: row.phase === "pending"
                                               || row.phase === "running"
                                               || row.phase === "paused"
+    readonly property bool canOpenFolder: row.phase === "completed"
+                                          && row.kind === "folder"
+                                          && row.fileId.length > 0
+    readonly property bool canPlay: row.phase === "completed" && row.playable
+                                    && row.fileId.length > 0
+    readonly property bool canActivate: (row.canOpenFolder || row.canPlay)
+                                        && !row.folderLoading
+    readonly property bool rowHighlighted: row.isActive || row.folderLoading
+    readonly property var thumbnailEntry: ({
+        id: row.fileId,
+        name: row.name,
+        kind: row.kind,
+        hasThumbnail: row.hasThumbnail,
+        video: row.video,
+        playable: row.playable
+    })
 
     readonly property string tone: {
         if (row.phase === "error")
@@ -53,33 +75,91 @@ ItemDelegate {
         return "neutral"
     }
 
-    readonly property string metaText: {
-        if (row.phase === "error" && row.detail.length > 0)
-            return row.detail
-        var parts = []
-        if (row.sizeText.length > 0)
-            parts.push(row.sizeText)
-        if (row.createdText.length > 0)
-            parts.push(row.createdText)
-        return parts.join(" · ")
-    }
+    objectName: "taskRow_" + row.key
+    implicitHeight: row.rowHeight
+    leftPadding: 0
+    rightPadding: 0
+    topPadding: 0
+    bottomPadding: 0
+
+    KTheme { id: theme }
 
     HoverHandler {
         id: rowHover
     }
 
+    function pointerOver(item, x, y) {
+        const topLeft = item.mapToItem(row, 0, 0)
+        return x >= topLeft.x && x <= topLeft.x + item.width
+                && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
+    function activate(point) {
+        if (row.folderLoading)
+            return
+        if (row.canOpenFolder) {
+            row.openFolderRequested(row.fileId)
+            return
+        }
+        if (row.canPlay)
+            row.playRequested(row.fileId, point)
+    }
+
+    MouseArea {
+        id: mouseArea
+
+        anchors.fill: parent
+        z: 1
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        hoverEnabled: true
+        cursorShape: row.folderLoading ? Qt.BusyCursor
+                      : row.canActivate ? Qt.PointingHandCursor : Qt.ArrowCursor
+
+        onClicked: function (mouse) {
+            if (row.folderLoading)
+                return
+            if (row.listView)
+                row.listView.forceActiveFocus()
+            if (mouse.button === Qt.RightButton)
+                row.contextMenu(Qt.point(mouse.x, mouse.y))
+        }
+
+        onDoubleClicked: function (mouse) {
+            if (mouse.button === Qt.LeftButton)
+                row.activate(Qt.point(mouse.x, mouse.y))
+        }
+    }
+
+    VideoLoadingOverlay {
+        objectName: "taskVideoLoading"
+
+        x: row.contentPadding
+        y: Math.round((row.rowHeight - row.thumbnailSlotHeight) / 2)
+        width: row.thumbnailColumnWidth
+        height: row.thumbnailSlotHeight
+        compact: true
+        cornerRadius: 3
+        visible: row.playLoading
+        z: 2
+        onCancelRequested: {
+            if (row.backend)
+                row.backend.cancelPlayLoading()
+        }
+    }
+
     background: Rectangle {
         radius: theme.radiusSmall
-        color: row.isActive
+        color: row.rowHighlighted
                ? theme.accentGhost
                : rowHover.hovered
                  ? theme.surfaceHover
                  : theme.surfaceClear
 
         Rectangle {
-            visible: row.isActive
+            objectName: "taskActiveAccent"
+            visible: row.rowHighlighted
             width: 3
-            height: parent.height - 20
+            height: Math.max(0, parent.height - 20)
             radius: 1.5
             anchors.left: parent.left
             anchors.leftMargin: 1
@@ -103,69 +183,96 @@ ItemDelegate {
         spacing: row.columnSpacing
 
         Item {
-            Layout.preferredWidth: row.iconColumnWidth
-            Layout.minimumWidth: row.iconColumnWidth
+            objectName: "taskThumbnailSlot"
+            Layout.preferredWidth: row.thumbnailColumnWidth
+            Layout.minimumWidth: row.thumbnailColumnWidth
             Layout.fillHeight: true
 
-            FileIcon {
-                objectName: "taskTypeIcon"
-                width: 18
-                height: 18
+            FileThumbnail {
+                objectName: "taskThumbnail"
+                width: row.thumbnailColumnWidth
+                height: row.thumbnailSlotHeight
                 anchors.centerIn: parent
-                kind: row.kind
-                fileName: row.name
-                color: theme.textSecondary
+                backend: row.backend
+                entry: row.thumbnailEntry
+                iconPixelSize: 18
+                videoBadgeSize: 16
+                videoBadgeMargin: 2
+                loading: row.playLoading || row.folderLoading
+                playing: row.playing
+                opacity: row.folderLoading ? 0.55 : 1
             }
         }
 
-        Item {
+        ElidedLabel {
+            id: nameLabel
+
+            objectName: "taskNameText"
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             Layout.fillHeight: true
-
-            Column {
-                width: parent.width
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                ElidedLabel {
-                    objectName: "taskNameText"
-                    width: parent.width
-                    text: row.name
-                    color: theme.textPrimary
-                    font.pixelSize: theme.fontBody
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideMiddle
-                    toolTipText: row.phase === "error" && row.detail.length > 0
-                                 ? row.name + "\n" + row.detail : row.name
-                    showToolTipWhenUntruncated: row.phase === "error"
-                                                && row.detail.length > 0
-                }
-
-                ElidedLabel {
-                    objectName: "taskMetaText"
-                    width: parent.width
-                    visible: text.length > 0
-                    text: row.metaText
-                    color: row.phase === "error" ? theme.danger : theme.textMuted
-                    font.pixelSize: theme.fontCaption
-                    elide: Text.ElideRight
-                }
-            }
+            text: row.name
+            color: theme.textPrimary
+            font.pixelSize: theme.fontBody
+            font.weight: Font.DemiBold
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideMiddle
+            toolTipText: row.phase === "error" && row.detail.length > 0
+                         ? row.name + "\n" + row.detail : row.name
+            showToolTipWhenUntruncated: row.phase === "error"
+                                        && row.detail.length > 0
+            externallyHovered: mouseArea.containsMouse
+                               && row.pointerOver(nameLabel, mouseArea.mouseX,
+                                                  mouseArea.mouseY)
         }
 
         Item {
+            id: statusSlot
+
+            objectName: "taskStatusSlot"
             Layout.preferredWidth: row.statusColumnWidth
             Layout.minimumWidth: row.statusColumnWidth
             Layout.fillHeight: true
 
             KStatusBadge {
+                objectName: "taskStatusBadge"
                 anchors.centerIn: parent
+                visible: !row.folderLoading
+                opacity: row.folderLoading ? 0 : 1
                 text: row.phaseText
                 tone: row.tone
             }
+
+            RowLayout {
+                objectName: "taskFolderLoadingState"
+                anchors.centerIn: parent
+                visible: row.folderLoading
+                opacity: row.folderLoading ? 1 : 0
+                spacing: theme.gapXs
+
+                BusyIndicator {
+                    objectName: "taskFolderLoadingSpinner"
+                    Layout.preferredWidth: 18
+                    Layout.preferredHeight: 18
+                    running: row.folderLoading
+                }
+
+                Label {
+                    text: qsTr("打开中…")
+                    color: theme.textSecondary
+                    font.pixelSize: theme.fontMeta
+                }
+            }
+
+            ToolTip.visible: row.phase === "error" && row.detail.length > 0
+                             && mouseArea.containsMouse
+                             && row.pointerOver(statusSlot, mouseArea.mouseX,
+                                                mouseArea.mouseY)
+            ToolTip.text: row.detail
         }
 
         Item {
+            objectName: "taskProgressSlot"
             Layout.preferredWidth: row.progressColumnWidth
             Layout.minimumWidth: row.progressColumnWidth
             Layout.fillHeight: true
@@ -203,21 +310,30 @@ ItemDelegate {
             }
         }
 
-        Item {
-            Layout.preferredWidth: row.actionColumnWidth
-            Layout.minimumWidth: row.actionColumnWidth
+        Label {
+            objectName: "taskSizeText"
+            visible: row.showSize
+            Layout.preferredWidth: row.showSize ? row.sizeColumnWidth : 0
+            Layout.minimumWidth: row.showSize ? row.sizeColumnWidth : 0
             Layout.fillHeight: true
+            text: row.sizeText
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
+            horizontalAlignment: Text.AlignRight
+            verticalAlignment: Text.AlignVCenter
+        }
 
-            KButton {
-                anchors.centerIn: parent
-                implicitHeight: 28
-                leftPadding: 8
-                rightPadding: 8
-                text: qsTr("删除")
-                variant: "ghost"
-                Accessible.name: qsTr("删除离线任务「%1」").arg(row.name)
-                onClicked: row.deleteRequested(row.key, row.name)
-            }
+        Label {
+            objectName: "taskCreatedText"
+            visible: row.showCreated
+            Layout.preferredWidth: row.showCreated ? row.createdColumnWidth : 0
+            Layout.minimumWidth: row.showCreated ? row.createdColumnWidth : 0
+            Layout.fillHeight: true
+            text: row.createdText
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
+            horizontalAlignment: Text.AlignRight
+            verticalAlignment: Text.AlignVCenter
         }
     }
 }

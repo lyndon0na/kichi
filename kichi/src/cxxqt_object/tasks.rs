@@ -174,6 +174,29 @@ impl qobject::Kichi {
         );
     }
 
+    /// 播放已完成的离线任务产物。`id` 是产物文件 id，不是任务记录 id。
+    pub fn request_task_play(mut self: Pin<&mut Self>, id: QString) {
+        let id = id.to_string();
+        let task = self
+            .task_list
+            .iter()
+            .find(|task| {
+                task.file_id.as_deref() == Some(id.as_str()) && task.phase == TaskPhase::Completed
+            })
+            .cloned();
+        let Some(task) = task else {
+            self.as_mut()
+                .set_message("该离线任务已完成产物不在当前列表中，请刷新后重试");
+            return;
+        };
+        if !task.media {
+            self.as_mut()
+                .set_message("该离线任务产物不是视频或音频，无法播放");
+            return;
+        }
+        self.as_mut().request_play_named(&id, &task.name);
+    }
+
     /// 登录成功后启动轮询线程。
     ///
     /// 每次调用都起一条新代际的线程，上一条（如果还睡着）醒来看到代际变了就退出。
@@ -411,7 +434,7 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
         .created_at
         .map(|time| {
             time.with_timezone(&chrono::Local)
-                .format("%m-%d %H:%M")
+                .format("%Y-%m-%d %H:%M")
                 .to_string()
         })
         .unwrap_or_default();
@@ -435,6 +458,19 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
     map.insert_clone(&QString::from("createdText"), &text(&created));
     map.insert_clone(&QString::from("detail"), &text(&detail));
     map.insert_clone(
+        &QString::from("fileId"),
+        &text(task.file_id.as_deref().unwrap_or_default()),
+    );
+    map.insert_clone(
+        &QString::from("hasThumbnail"),
+        &QVariant::from(&(task.kind == Some(EntryKind::File) && !task.thumbnail_url.is_empty())),
+    );
+    map.insert_clone(&QString::from("video"), &QVariant::from(&task.video));
+    map.insert_clone(
+        &QString::from("playable"),
+        &QVariant::from(&(task.file_id.is_some() && task.media)),
+    );
+    map.insert_clone(
         &QString::from("settled"),
         &QVariant::from(&task.phase.is_settled()),
     );
@@ -456,6 +492,9 @@ mod tests {
             file_id: None,
             file_size: 0,
             kind: None,
+            thumbnail_url: String::new(),
+            media: false,
+            video: false,
         }
     }
 
@@ -513,7 +552,11 @@ mod tests {
         t.name = "电影.mkv".to_owned();
         t.progress = 42;
         t.file_size = 123_456;
-        t.kind = Some(EntryKind::Folder);
+        t.kind = Some(EntryKind::File);
+        t.file_id = Some("file-1".to_owned());
+        t.thumbnail_url = "https://thumb.example/secret".to_owned();
+        t.media = true;
+        t.video = true;
         let map = task_map(&t);
         let get = |key: &str| {
             map.get(&QString::from(key))
@@ -524,8 +567,25 @@ mod tests {
         assert_eq!(get("phase"), "running");
         assert_eq!(get("progressText"), "42%");
         assert_eq!(get("name"), "电影.mkv");
-        assert_eq!(get("kind"), "folder");
+        assert_eq!(get("kind"), "file");
+        assert_eq!(get("fileId"), "file-1");
         assert_eq!(get("sizeText"), "121 KB");
+        assert_eq!(
+            map.get(&QString::from("hasThumbnail"))
+                .and_then(|value| value.value::<bool>()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get(&QString::from("video"))
+                .and_then(|value| value.value::<bool>()),
+            Some(true)
+        );
+        assert_eq!(
+            map.get(&QString::from("playable"))
+                .and_then(|value| value.value::<bool>()),
+            Some(true)
+        );
+        assert!(map.get(&QString::from("thumbnailUrl")).is_none());
     }
 
     #[test]

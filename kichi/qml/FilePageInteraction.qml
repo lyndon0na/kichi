@@ -28,6 +28,8 @@ QtObject {
     property real pendingScrollY: -1
     property string pendingViewMode: ""
     property int seenFilesRevision: -1
+    /// 离线任务 / 搜索结果定位：等目录模型真正显示后再选中目标。
+    property string pendingRevealId: ""
 
     function entryForId(id) {
         for (let i = 0; i < ctl.entries.length; i++) {
@@ -74,7 +76,16 @@ QtObject {
         scrollByDir = next
     }
 
+    function cancelScrollRestore() {
+        restoreScrollPending = false
+        pendingScrollY = -1
+        pendingViewMode = ""
+    }
+
     function restoreScrollNow() {
+        // 定位目标时以“让目标可见”为准，旧的目录滚动位置不能随后把它盖掉。
+        if (pendingRevealId.length > 0)
+            return
         if (pendingScrollY < 0)
             return
         if (pendingViewMode.length > 0 && pendingViewMode !== viewMode)
@@ -93,6 +104,40 @@ QtObject {
         pendingViewMode = ""
     }
 
+    /// 目录模型加载完成后，按 id 选中并滚动到目标条目。
+    function revealEntryById(id) {
+        const target = String(id || "")
+        if (target.length === 0)
+            return
+        pendingRevealId = target
+        cancelScrollRestore()
+        Qt.callLater(ctl.tryRevealPending)
+    }
+
+    function tryRevealPending() {
+        if (pendingRevealId.length === 0 || !ctl.backend || !ctl.fileList
+                || ctl.backend.filesLoading === true || ctl.navigationLocked)
+            return false
+        const entries = ctl.entries
+        let index = -1
+        for (let i = 0; i < (entries ? entries.length : 0); i++) {
+            if (entries[i] && String(entries[i].id) === pendingRevealId) {
+                index = i
+                break
+            }
+        }
+        if (index < 0 || ctl.fileList.contentHeight <= 0)
+            return false
+
+        if (ctl.selection)
+            ctl.selection.selectOnly(pendingRevealId)
+        ctl.fileList.currentIndex = index
+        ctl.fileList.positionViewAtIndex(
+            index, ctl.viewMode === "grid" ? GridView.Contain : ListView.Contain)
+        pendingRevealId = ""
+        return true
+    }
+
     /// 切换列表 / 网格：先把当前视图的位置记下来，等目标视图真正可见后再恢复。
     function prepareViewSwitch(view) {
         if (!ctl.backend)
@@ -105,8 +150,15 @@ QtObject {
     }
 
     onViewModeChanged: {
-        if (pendingViewMode === viewMode)
+        if (pendingRevealId.length > 0)
+            Qt.callLater(ctl.tryRevealPending)
+        else if (pendingViewMode === viewMode)
             Qt.callLater(ctl.restoreScrollNow)
+    }
+
+    onEntriesChanged: {
+        if (pendingRevealId.length > 0)
+            Qt.callLater(ctl.tryRevealPending)
     }
 
     function noteFilesRevision() {

@@ -13,18 +13,26 @@ Item {
     property string pendingDeleteId: ""
     property string pendingDeleteName: ""
 
+    signal openFolderRequested(string fileId)
+    signal revealLocationRequested(string fileId)
+    signal playRequested(string fileId, point position)
+
     readonly property bool tasksLoading: backend ? backend.tasksLoading : false
     readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
     readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
     readonly property int taskCount: taskRows.count
     readonly property int tableHeaderHeight: 34
-    readonly property int tableRowHeight: 56
-    readonly property int iconColumnWidth: 22
+    readonly property int tableRowHeight: 48
+    readonly property int thumbnailColumnWidth: 36
+    readonly property int thumbnailSlotHeight: 24
+    readonly property int sizeColumnWidth: 84
+    readonly property int createdColumnWidth: 120
     readonly property int statusColumnWidth: 100
     readonly property int progressColumnWidth: 150
-    readonly property int actionColumnWidth: 96
-    readonly property int tableColumnSpacing: 12
+    readonly property int tableColumnSpacing: 8
     readonly property int tableContentPadding: 12
+    readonly property bool showSizeColumn: width >= 560
+    readonly property bool showCreatedColumn: width >= 680
 
     onActiveChanged: {
         if (active)
@@ -78,12 +86,15 @@ Item {
             Layout.fillWidth: true
             Layout.preferredHeight: page.tableHeaderHeight
             rowHeight: page.tableHeaderHeight
-            iconColumnWidth: page.iconColumnWidth
+            thumbnailColumnWidth: page.thumbnailColumnWidth
+            sizeColumnWidth: page.sizeColumnWidth
+            createdColumnWidth: page.createdColumnWidth
             statusColumnWidth: page.statusColumnWidth
             progressColumnWidth: page.progressColumnWidth
-            actionColumnWidth: page.actionColumnWidth
             columnSpacing: page.tableColumnSpacing
             contentPadding: page.tableContentPadding
+            showSize: page.showSizeColumn
+            showCreated: page.showCreatedColumn
         }
 
         ListView {
@@ -92,30 +103,46 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 2
+            spacing: 0
             model: taskRows
 
             // 列表铺到窗口右缘，条画在右侧 10px 车道里
             ScrollBar.vertical: KScrollBar {}
 
             delegate: TaskRow {
+                id: row
+
                 // 行宽减去滚动条车道，右边不会压到条
                 width: list.width - metrics.scrollBarSlot
                 rowHeight: page.tableRowHeight
-                iconColumnWidth: page.iconColumnWidth
+                backend: page.backend
+                thumbnailColumnWidth: page.thumbnailColumnWidth
+                thumbnailSlotHeight: page.thumbnailSlotHeight
+                sizeColumnWidth: page.sizeColumnWidth
+                createdColumnWidth: page.createdColumnWidth
                 statusColumnWidth: page.statusColumnWidth
                 progressColumnWidth: page.progressColumnWidth
-                actionColumnWidth: page.actionColumnWidth
                 columnSpacing: page.tableColumnSpacing
                 contentPadding: page.tableContentPadding
+                showSize: page.showSizeColumn
+                showCreated: page.showCreatedColumn
+                playLoading: page.isTaskPlayLoading(fileId)
+                playing: page.isTaskPlaying(fileId)
+                folderLoading: page.isTaskFolderLoading(fileId)
                 // ⚠ 这里**不要**再写 `key: model.key ?? ""` 这类绑定：TaskRow 的字段
                 // 都是 required property，ListView 会按同名角色自动注入；一旦手写
                 // `model.xxx` 覆盖上去，自动注入就被顶掉，而 ListModel 的 `model`
-                // 对象在这里读不到这些角色 → 整张卡片字段全空（只剩空壳和删除按钮）。
-                onDeleteRequested: function (key, name) {
-                    page.pendingDeleteId = key
-                    page.pendingDeleteName = name
-                    deleteDialog.open()
+                // 对象在这里读不到这些角色 → 整行字段全空。
+                onContextMenu: function (point) {
+                    taskMenu.openFor(row.key, row.name,
+                                     row.mapToItem(null, point.x, point.y),
+                                     row.fileId, row.kind, row.phase, row.playable)
+                }
+                onOpenFolderRequested: function (id) {
+                    page.openFolderRequested(id)
+                }
+                onPlayRequested: function (id, point) {
+                    page.playRequested(id, row.mapToItem(null, point.x, point.y))
                 }
             }
 
@@ -162,6 +189,29 @@ Item {
     function refresh() {
         if (page.backend && !page.tasksLoading)
             page.backend.refreshTasks()
+    }
+
+    function isTaskPlayLoading(id) {
+        return page.backend !== null
+                && page.backend.playLoading === true
+                && String(page.backend.playLoadingId || "") === String(id)
+    }
+
+    function isTaskPlaying(id) {
+        if (!page.backend || typeof page.backend.playingIds === "undefined")
+            return false
+        const ids = page.backend.playingIds || []
+        const target = String(id)
+        for (var i = 0; i < ids.length; i++) {
+            if (String(ids[i]) === target)
+                return true
+        }
+        return false
+    }
+
+    function isTaskFolderLoading(id) {
+        return page.backend !== null
+                && String(page.backend.taskFolderLoadingId || "") === String(id)
     }
 
     /// 把 Rust 推来的任务列表同步进 ListModel：增删 / 移位 / 改字段都就地做，
@@ -233,12 +283,36 @@ Item {
             sizeText: task.sizeText,
             createdText: task.createdText,
             detail: task.detail,
-            settled: task.settled
+            settled: task.settled,
+            fileId: task.fileId || "",
+            hasThumbnail: task.hasThumbnail === true,
+            video: task.video === true,
+            playable: task.playable === true
+        }
+    }
+
+    TaskContextMenu {
+        id: taskMenu
+        backend: page.backend
+        onDeleteRequested: function (id, name) {
+            page.pendingDeleteId = id
+            page.pendingDeleteName = name
+            deleteDialog.open()
+        }
+        onOpenFolderRequested: function (fileId) {
+            page.openFolderRequested(fileId)
+        }
+        onRevealLocationRequested: function (fileId) {
+            page.revealLocationRequested(fileId)
+        }
+        onPlayRequested: function (fileId, point) {
+            page.playRequested(fileId, point)
         }
     }
 
     KDialog {
         id: deleteDialog
+        objectName: "deleteTaskDialog"
         title: qsTr("删除任务")
         modal: true
         anchors.centerIn: parent

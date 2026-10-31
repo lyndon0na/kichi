@@ -2,18 +2,20 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 离线任务表头。列宽由 TasksPage 同时交给本组件与 TaskRow，
-// 两侧共用一组数值，避免表头和内容错位。
+// 离线任务表头。列宽、响应式显隐由 TasksPage 同时交给本组件与 TaskRow。
 Item {
     id: header
 
     property int rowHeight: 34
-    property int iconColumnWidth: 22
+    property int thumbnailColumnWidth: 36
+    property int sizeColumnWidth: 84
+    property int createdColumnWidth: 120
     property int statusColumnWidth: 100
     property int progressColumnWidth: 150
-    property int actionColumnWidth: 96
-    property int columnSpacing: 12
+    property int columnSpacing: 8
     property int contentPadding: 12
+    property bool showSize: true
+    property bool showCreated: true
 
     objectName: "tasksTableHeader"
     implicitHeight: header.rowHeight
@@ -28,32 +30,31 @@ Item {
         spacing: header.columnSpacing
 
         Item {
-            Layout.preferredWidth: header.iconColumnWidth
-            Layout.minimumWidth: header.iconColumnWidth
+            Layout.preferredWidth: header.thumbnailColumnWidth
+            Layout.minimumWidth: header.thumbnailColumnWidth
         }
 
         Label {
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             text: qsTr("任务名称")
             color: theme.textMuted
             font.pixelSize: theme.fontMeta
             font.weight: Font.DemiBold
             verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
         }
 
-        Item {
+        Label {
+            objectName: "tasksStatusHeader"
             Layout.preferredWidth: header.statusColumnWidth
             Layout.minimumWidth: header.statusColumnWidth
-
-            Label {
-                anchors.fill: parent
-                text: qsTr("状态")
-                color: theme.textMuted
-                font.pixelSize: theme.fontMeta
-                font.weight: Font.DemiBold
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
+            text: qsTr("状态")
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
+            font.weight: Font.DemiBold
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
         }
 
         Item {
@@ -72,19 +73,30 @@ Item {
             }
         }
 
-        Item {
-            Layout.preferredWidth: header.actionColumnWidth
-            Layout.minimumWidth: header.actionColumnWidth
+        Label {
+            objectName: "tasksSizeHeader"
+            visible: header.showSize
+            Layout.preferredWidth: header.showSize ? header.sizeColumnWidth : 0
+            Layout.minimumWidth: header.showSize ? header.sizeColumnWidth : 0
+            text: qsTr("大小")
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
+            font.weight: Font.DemiBold
+            horizontalAlignment: Text.AlignRight
+            verticalAlignment: Text.AlignVCenter
+        }
 
-            Label {
-                anchors.fill: parent
-                text: qsTr("操作")
-                color: theme.textMuted
-                font.pixelSize: theme.fontMeta
-                font.weight: Font.DemiBold
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
+        Label {
+            objectName: "tasksCreatedHeader"
+            visible: header.showCreated
+            Layout.preferredWidth: header.showCreated ? header.createdColumnWidth : 0
+            Layout.minimumWidth: header.showCreated ? header.createdColumnWidth : 0
+            text: qsTr("创建时间")
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
+            font.weight: Font.DemiBold
+            horizontalAlignment: Text.AlignRight
+            verticalAlignment: Text.AlignVCenter
         }
     }
 

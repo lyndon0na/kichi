@@ -24,6 +24,7 @@ TestCase {
         property bool shareActionRunning: false
         property var playMenu: []
         property var pending: []
+        property string currentDirId: "folder-current"
         property int singleCount: 0
         property string singleId: ""
         property int batchCount: 0
@@ -128,5 +129,67 @@ TestCase {
         compare(spy.count, 1)
         compare(spy.signalArguments[0][1].length, 3)
         spy.destroy()
+    }
+
+    function test_search_result_can_open_its_folder_from_the_menu() {
+        var entry = {
+            id: "result-file",
+            name: "a.mkv",
+            kind: "file",
+            playable: false,
+            folderId: "folder-2"
+        }
+        menu.openContext(entry, Qt.point(20, 20), [entry.id], true)
+        wait(60)
+
+        var item = findChild(menu, "revealFolderItem")
+        verify(item !== null, "菜单里有「打开所在目录」")
+        verify(item.visible, "搜索结果里的单条文件应显示所在目录入口")
+        compare(item.text, qsTr("打开所在目录"))
+
+        var spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'revealRequested' }",
+            menu)
+        spy.target = menu
+        mouseClick(item)
+        wait(40)
+        compare(spy.count, 1)
+        compare(spy.signalArguments[0][0].folderId, "folder-2")
+        spy.destroy()
+    }
+
+    function test_search_folder_result_reveals_its_parent_from_the_menu() {
+        var entry = {
+            id: "result-folder",
+            name: "第 2 季",
+            kind: "folder",
+            playable: false,
+            folderId: "season-1"
+        }
+        menu.openContext(entry, Qt.point(20, 20), [entry.id], true)
+        wait(60)
+
+        var item = findChild(menu, "revealFolderItem")
+        verify(item !== null)
+        verify(item.visible, "搜索结果里的文件夹也应打开所在目录")
+
+        var spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'revealRequested' }",
+            menu)
+        spy.target = menu
+        mouseClick(item)
+        wait(40)
+        compare(spy.count, 1)
+        compare(spy.signalArguments[0][0].folderId, "season-1",
+                "应把文件夹结果的父目录交给页面")
+        spy.destroy()
+    }
+
+    function test_reveal_is_available_in_a_normal_directory() {
+        openMenu(["a"])
+        var item = findChild(menu, "revealFolderItem")
+        verify(item !== null)
+        verify(item.visible, "普通文件右键也应显示「打开所在目录」")
+        compare(item.text, qsTr("打开所在目录"))
     }
 }

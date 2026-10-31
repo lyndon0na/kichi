@@ -86,7 +86,7 @@ impl qobject::Kichi {
         rust.thumbnail_requests.clear();
     }
 
-    /// 先查当前目录，再查回收站，最后查搜索结果；只返回 Rust 侧远程地址。
+    /// 先查文件相关列表，再查离线任务产物；只返回 Rust 侧远程地址。
     fn thumbnail_url_for(&self, id: &str) -> Option<String> {
         find_thumbnail_url(
             self.entries
@@ -95,6 +95,7 @@ impl qobject::Kichi {
                 .chain(self.search_index.values().map(|hit| &hit.entry)),
             id,
         )
+        .or_else(|| find_task_thumbnail_url(self.task_list.iter(), id))
     }
 }
 
@@ -108,10 +109,20 @@ fn find_thumbnail_url<'a>(
         .filter(|url| !url.is_empty())
 }
 
+fn find_task_thumbnail_url<'a>(
+    mut tasks: impl Iterator<Item = &'a kichi_core::OfflineTask>,
+    id: &str,
+) -> Option<String> {
+    tasks
+        .find(|task| task.file_id.as_deref() == Some(id))
+        .map(|task| task.thumbnail_url.trim().to_owned())
+        .filter(|url| !url.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kichi_core::{EntryKind, FileEntry};
+    use kichi_core::{EntryKind, FileEntry, OfflineTask, TaskPhase};
 
     fn entry(id: &str, thumbnail_url: &str) -> FileEntry {
         FileEntry {
@@ -140,5 +151,31 @@ mod tests {
         );
         assert_eq!(find_thumbnail_url(entries.iter(), "empty"), None);
         assert_eq!(find_thumbnail_url(entries.iter(), "missing"), None);
+    }
+
+    #[test]
+    fn offline_task_resource_thumbnail_is_available_by_file_id() {
+        let task = OfflineTask {
+            id: "task".to_owned(),
+            name: "movie.mkv".to_owned(),
+            phase: TaskPhase::Completed,
+            progress: 100,
+            message: None,
+            created_at: None,
+            file_id: Some("file".to_owned()),
+            file_size: 1,
+            kind: Some(EntryKind::File),
+            thumbnail_url: " https://thumb.example/task ".to_owned(),
+            media: true,
+            video: true,
+        };
+        assert_eq!(
+            find_task_thumbnail_url(std::iter::once(&task), "file").as_deref(),
+            Some("https://thumb.example/task")
+        );
+        assert_eq!(
+            find_task_thumbnail_url(std::iter::once(&task), "other"),
+            None
+        );
     }
 }

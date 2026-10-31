@@ -430,7 +430,7 @@ struct FileListResponse {
 
 /// 官方文件条目（目录列表与全盘搜索共用）。
 ///
-/// `pub(crate)`：只有 `drive` 与 `search` 两个模块需要它，不对外暴露 DTO。
+/// `pub(crate)`：`drive` / `search` / `tasks` 共用，不对外暴露 DTO。
 #[derive(Deserialize)]
 pub(crate) struct FileDto {
     #[serde(default)]
@@ -615,7 +615,6 @@ fn is_image(name: &str, category: &str, mime: &str, extension: &str) -> bool {
 /// `file_category` / `mime_type` / `file_extension` 全是空串（带 `kind`
 /// 过滤才下发），因此不能只信官方分类，必须按扩展名兜底，否则视频文件
 /// 在界面上没有播放按钮。官方分类可用时优先采信。
-#[cfg(test)]
 pub(crate) fn is_media(name: &str, category: &str, mime: &str, extension: &str) -> bool {
     is_video(name, category, mime, extension) || is_audio(name, category, mime, extension)
 }

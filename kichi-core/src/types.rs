@@ -111,6 +111,12 @@ pub struct OfflineTask {
     pub file_size: u64,
     /// 产物类别；列表未带 `reference_resource` 时为 `None`
     pub kind: Option<EntryKind>,
+    /// 产物缩略图地址。只在 Rust 侧用于下载到本地缓存，不映射给 QML。
+    pub thumbnail_url: String,
+    /// 产物是否可由播放器打开（视频 / 音频）
+    pub media: bool,
+    /// 产物是否明确归类为视频（缩略图播放角标用）
+    pub video: bool,
 }
 
 /// 网盘配额与会员状态。

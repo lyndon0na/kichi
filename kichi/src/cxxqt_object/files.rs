@@ -7,7 +7,7 @@ use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
-use kichi_core::{EntryKind, FileEntry};
+use kichi_core::{EntryKind, FileEntry, TaskPhase};
 
 use super::actions::{format_size, run_in_background};
 use super::qobject;
@@ -116,6 +116,190 @@ impl qobject::Kichi {
         self.as_mut().refresh_files();
     }
 
+    /// 从离线任务打开已完成的产物文件夹。
+    ///
+    /// 任务响应只给产物 id，不给完整祖先路径。后台先逐级反查目录链，再读取
+    /// 目标文件夹内容；两者都成功后才把新路径和列表一次性写回并通知界面切页。
+    pub fn open_task_folder(mut self: Pin<&mut Self>, id: QString) -> bool {
+        if self.listing {
+            self.as_mut().set_message("文件列表正在加载，请稍后再打开");
+            return false;
+        }
+        let id = id.to_string();
+        let file_id = self
+            .task_list
+            .iter()
+            .find(|task| {
+                task.file_id.as_deref() == Some(id.as_str())
+                    && task.kind == Some(EntryKind::Folder)
+                    && task.phase == TaskPhase::Completed
+            })
+            .and_then(|task| task.file_id.clone());
+        let Some(file_id) = file_id else {
+            self.as_mut()
+                .set_message("该离线任务已完成文件夹不在当前列表中，请刷新后重试");
+            return false;
+        };
+        self.as_mut().exit_search();
+        let session = self.backend.session.clone();
+        let previous_crumbs = self.crumbs.clone();
+        let epoch = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.listing = true;
+            rust.task_folder_loading_id = QString::from(file_id.as_str());
+            rust.refresh_pending = false;
+            rust.list_epoch = rust.list_epoch.wrapping_add(1);
+            rust.list_epoch
+        };
+        self.as_mut().set_message("正在打开文件夹……");
+        run_in_background(
+            move || {
+                let trail = session.folder_trail(&file_id)?;
+                let folder_id = trail
+                    .last()
+                    .map(|(id, _)| id.clone())
+                    .ok_or_else(|| crate::session::Failure::Other("目录路径为空".to_owned()))?;
+                let entries = session.list_dir(Some(&folder_id))?;
+                Ok((trail, entries))
+            },
+            move |mut qichi, result| {
+                if qichi.as_ref().rust().list_epoch != epoch {
+                    {
+                        let mut rust = qichi.as_mut().rust_mut();
+                        rust.task_folder_loading_id = QString::default();
+                    }
+                    qichi.as_mut().notify();
+                    return;
+                }
+                match result {
+                    Ok((trail, entries)) => {
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.task_folder_loading_id = QString::default();
+                            rust.crumb_backup = None;
+                            rust.crumbs = vec![Crumb::root()];
+                            rust.crumbs
+                                .extend(trail.into_iter().map(|(id, name)| Crumb { id, name }));
+                        }
+                        qichi.as_mut().sync_breadcrumb();
+                        qichi.as_mut().clear_status_message();
+                        // 列表已经在后台读到，show_entries 会同时清掉 loading 并写入 files。
+                        qichi.as_mut().show_entries(entries);
+                        qichi.as_mut().task_folder_ready();
+                    }
+                    Err(err) => {
+                        let mut rust = qichi.as_mut().rust_mut();
+                        rust.listing = false;
+                        rust.task_folder_loading_id = QString::default();
+                        rust.crumbs = previous_crumbs;
+                        qichi.as_mut().on_failure(err);
+                    }
+                }
+            },
+        );
+        true
+    }
+
+    /// 从离线任务跳转到产物所在父目录，并通知文件页选中目标。
+    ///
+    /// 与 [`Self::open_task_folder`] 的区别：
+    /// - 文件夹本人不进入，而是读取它的父目录；
+    /// - 文件和文件夹都适用；
+    /// - 父目录加载完成后发 `taskLocationReady(targetId)`，由 QML 选中目标。
+    pub fn reveal_task_entry(mut self: Pin<&mut Self>, id: QString) -> bool {
+        if self.listing {
+            self.as_mut().set_message("文件列表正在加载，请稍后再定位");
+            return false;
+        }
+        let target_id = id.to_string();
+        let expected_kind = self
+            .task_list
+            .iter()
+            .find(|task| {
+                task.file_id.as_deref() == Some(target_id.as_str())
+                    && task.phase == TaskPhase::Completed
+                    && matches!(task.kind, Some(EntryKind::File | EntryKind::Folder))
+            })
+            .and_then(|task| task.kind);
+        let Some(expected_kind) = expected_kind else {
+            self.as_mut()
+                .set_message("该离线任务已完成产物不在当前列表中，请刷新后重试");
+            return false;
+        };
+
+        self.as_mut().exit_search();
+        let session = self.backend.session.clone();
+        let previous_crumbs = self.crumbs.clone();
+        let epoch = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.listing = true;
+            rust.task_folder_loading_id = QString::from(target_id.as_str());
+            rust.refresh_pending = false;
+            rust.list_epoch = rust.list_epoch.wrapping_add(1);
+            rust.list_epoch
+        };
+        self.as_mut().set_message("正在定位所在位置……");
+
+        let target_for_work = target_id.clone();
+        let target_for_result = target_id.clone();
+        run_in_background(
+            move || {
+                let (_name, parent_id) = session.parent_of(&target_for_work)?;
+                let (trail, list_parent) = if parent_id.trim().is_empty() {
+                    (Vec::new(), None)
+                } else {
+                    (session.folder_trail(&parent_id)?, Some(parent_id))
+                };
+                let entries = session.list_dir(list_parent.as_deref())?;
+                let found = entries
+                    .iter()
+                    .any(|entry| entry.id == target_for_work && entry.kind == expected_kind);
+                if !found {
+                    return Err(crate::session::Failure::Other(
+                        "目标条目不在所在目录中，可能已被移动或删除".to_owned(),
+                    ));
+                }
+                Ok((trail, entries))
+            },
+            move |mut qichi, result| {
+                if qichi.as_ref().rust().list_epoch != epoch {
+                    {
+                        let mut rust = qichi.as_mut().rust_mut();
+                        rust.task_folder_loading_id = QString::default();
+                    }
+                    qichi.as_mut().notify();
+                    return;
+                }
+                match result {
+                    Ok((trail, entries)) => {
+                        {
+                            let mut rust = qichi.as_mut().rust_mut();
+                            rust.task_folder_loading_id = QString::default();
+                            rust.crumb_backup = None;
+                            rust.crumbs = vec![Crumb::root()];
+                            rust.crumbs
+                                .extend(trail.into_iter().map(|(id, name)| Crumb { id, name }));
+                        }
+                        qichi.as_mut().sync_breadcrumb();
+                        qichi.as_mut().clear_status_message();
+                        qichi.as_mut().show_entries(entries);
+                        qichi
+                            .as_mut()
+                            .task_location_ready(QString::from(target_for_result.as_str()));
+                    }
+                    Err(err) => {
+                        let mut rust = qichi.as_mut().rust_mut();
+                        rust.listing = false;
+                        rust.task_folder_loading_id = QString::default();
+                        rust.crumbs = previous_crumbs;
+                        qichi.as_mut().on_failure(err);
+                    }
+                }
+            },
+        );
+        true
+    }
+
     /// 回到上一级。
     pub fn open_parent(mut self: Pin<&mut Self>) {
         if self.listing {
@@ -165,6 +349,7 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.list_epoch = rust.list_epoch.wrapping_add(1);
             rust.listing = false;
+            rust.task_folder_loading_id = QString::default();
             rust.refresh_pending = false;
             rust.entries.clear();
             rust.files = QVariantList::default();

@@ -52,6 +52,11 @@ impl qobject::Kichi {
                 .set_message("该文件已不在当前列表中，请刷新后重试");
             return;
         };
+        self.as_mut().request_play_named(&id, &name);
+    }
+
+    /// 当前列表之外已知 id / 文件名的播放入口（离线任务产物走这里）。
+    pub(crate) fn request_play_named(mut self: Pin<&mut Self>, id: &str, name: &str) {
         // 新的播放取消上一次「还在加载」的那次（已在播放的 mpv 不受影响）：
         // 否则它被 epoch 作废后，旧缩略图会永远停在「正在加载…」
         self.as_mut().cancel_play_loading();
@@ -60,13 +65,13 @@ impl qobject::Kichi {
         let plan = {
             let this = self.as_ref();
             let rust = this.rust();
-            super::play_prepare::plan_for(&id, &rust.entries, &rust.search_index)
+            super::play_prepare::plan_for(id, &rust.entries, &rust.search_index)
         };
         self.as_mut().rust_mut().play_subtitle_plan = plan;
         // 设置里指定了档位：等同用户在菜单里点了那一项，不弹菜单
         if let Some(tier) = fixed_tier_of(self.settings.preferred_quality) {
-            self.as_mut().prepare_play(&id, &name);
-            self.as_mut().fetch_and_play(tier, &name);
+            self.as_mut().prepare_play(id, name);
+            self.as_mut().fetch_and_play(tier, name);
             return;
         }
         let mut menu = QVariantList::default();
@@ -77,8 +82,8 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.play_epoch = rust.play_epoch.wrapping_add(1);
             rust.play_menu = menu;
-            rust.play_title = QString::from(name.as_str());
-            rust.play_id = id;
+            rust.play_title = QString::from(name);
+            rust.play_id = id.to_owned();
             // 上一个请求可能还在途：它已被 epoch 作废，这里把等待标记一并清掉，
             // 否则菜单开着期间 cancel_play 会被误当成「正在取直链」而拒绝关闭
             rust.play_pending = false;

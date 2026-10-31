@@ -9,9 +9,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::drive::DriveClient;
+use crate::drive::{is_media, is_video, DriveClient, FileDto};
 use crate::http::Body;
-use crate::types::{EntryKind, OfflineTask, TaskPhase};
+use crate::types::{OfflineTask, TaskPhase};
 use crate::Error;
 
 mod task_wait;
@@ -74,40 +74,75 @@ struct TaskDto {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
-    reference_resource: Option<ReferenceResourceDto>,
+    reference_resource: Option<FileDto>,
     #[serde(default, deserialize_with = "lenient_time")]
     created_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Deserialize)]
-struct ReferenceResourceDto {
-    #[serde(default)]
-    kind: Option<String>,
-}
-
 impl TaskDto {
     fn into_task(self) -> OfflineTask {
-        let progress = self.progress.clamp(0, 100) as u8;
-        let file_size = self
-            .file_size
+        let TaskDto {
+            id,
+            name,
+            phase,
+            progress,
+            file_id,
+            file_size,
+            message,
+            reference_resource,
+            created_time,
+        } = self;
+        let resource = reference_resource.map(FileDto::into_entry);
+        let name = if name.trim().is_empty() {
+            resource
+                .as_ref()
+                .map(|entry| entry.name.clone())
+                .unwrap_or(name)
+        } else {
+            name
+        };
+        let progress = progress.clamp(0, 100) as u8;
+        let parsed_size = file_size
             .as_deref()
             .and_then(|size| size.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        let kind = self
-            .reference_resource
+        let file_size = if parsed_size > 0 {
+            parsed_size
+        } else {
+            resource.as_ref().map(|entry| entry.size).unwrap_or(0)
+        };
+        let kind = resource.as_ref().map(|entry| entry.kind);
+        let file_id = file_id.filter(|id| !id.is_empty()).or_else(|| {
+            resource
+                .as_ref()
+                .map(|entry| entry.id.clone())
+                .filter(|id| !id.is_empty())
+        });
+        let thumbnail_url = resource
             .as_ref()
-            .and_then(|resource| resource.kind.as_deref())
-            .and_then(EntryKind::from_api_kind);
+            .map(|entry| entry.thumbnail_url.clone())
+            .unwrap_or_default();
+        let video = resource
+            .as_ref()
+            .map(|entry| entry.video)
+            .unwrap_or_else(|| is_video(&name, "", "", ""));
+        let media = resource
+            .as_ref()
+            .map(|entry| entry.media)
+            .unwrap_or_else(|| is_media(&name, "", "", ""));
         OfflineTask {
-            id: self.id,
-            name: self.name,
-            phase: phase_from(&self.phase),
+            id,
+            name,
+            phase: phase_from(&phase),
             progress,
-            message: self.message.filter(|msg| !msg.is_empty()),
-            created_at: self.created_time,
-            file_id: self.file_id.filter(|id| !id.is_empty()),
+            message: message.filter(|msg| !msg.is_empty()),
+            created_at: created_time,
+            file_id,
             file_size,
             kind,
+            thumbnail_url,
+            media,
+            video,
         }
     }
 }
@@ -216,6 +251,7 @@ fn task_list_query(page_token: Option<&str>) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::EntryKind;
 
     #[test]
     fn phase_mapping_covers_documented_and_unknown_values() {
@@ -257,13 +293,17 @@ mod tests {
             "tasks": [
                 {"id":"T1","name":"电影","phase":"PHASE_TYPE_RUNNING","progress":42,
                  "file_size":"123456","file_id":"F1","message":"downloading",
-                 "reference_resource":{"kind":"drive#folder"},
+                 "reference_resource":{"id":"D1","name":"电影","kind":"drive#folder"},
                  "created_time":"2026-10-20T12:34:56.789+08:00"},
                 {"id":"T2","name":"done.zip","phase":"PHASE_TYPE_COMPLETE",
                  "progress":100,"file_size":null,"message":"",
-                 "reference_resource":{"kind":"drive#file"}},
+                 "reference_resource":{"id":"F2","name":"done.zip","kind":"drive#file",
+                 "size":"42","file_category":"VIDEO","mime_type":"video/mp4",
+                 "thumbnail_link":"https://thumb.invalid/done.jpg"}},
                 {"id":"T3","name":"unknown","phase":"PHASE_TYPE_COMPLETE",
-                 "progress":100,"file_size":"0"}
+                 "progress":100,"file_size":"0"},
+                {"id":"T4","name":"track.flac","phase":"PHASE_TYPE_COMPLETE",
+                 "progress":100,"file_id":"F4","file_size":"7"}
             ],
             "next_page_token": "tok"
         }"#;
@@ -277,17 +317,31 @@ mod tests {
         assert_eq!(tasks[0].file_id.as_deref(), Some("F1"));
         assert_eq!(tasks[0].message.as_deref(), Some("downloading"));
         assert_eq!(tasks[0].kind, Some(EntryKind::Folder));
+        assert!(!tasks[0].media);
+        assert!(!tasks[0].video);
         assert_eq!(
             tasks[0].created_at.map(|t| t.timestamp()),
             Some(1_792_470_896)
         );
 
         assert_eq!(tasks[1].phase, TaskPhase::Completed);
-        assert_eq!(tasks[1].file_size, 0);
+        assert_eq!(tasks[1].file_size, 42, "顶层无大小时回退产物大小");
         assert_eq!(tasks[1].message, None, "空说明应为 None");
         assert_eq!(tasks[1].created_at, None);
         assert_eq!(tasks[1].kind, Some(EntryKind::File));
+        assert_eq!(
+            tasks[1].file_id.as_deref(),
+            Some("F2"),
+            "顶层缺 file_id 时回退 reference_resource.id"
+        );
+        assert_eq!(tasks[1].thumbnail_url, "https://thumb.invalid/done.jpg");
+        assert!(tasks[1].media);
+        assert!(tasks[1].video);
         assert_eq!(tasks[2].kind, None, "缺 reference_resource 时应兜底");
+        assert!(!tasks[2].media);
+        assert!(!tasks[2].video);
+        assert!(tasks[3].media, "资源缺失时仍按产物后缀识别音频");
+        assert!(!tasks[3].video);
     }
 
     #[test]

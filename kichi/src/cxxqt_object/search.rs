@@ -199,22 +199,12 @@ impl qobject::Kichi {
         self.as_mut().set_message("该结果已过期，请重新搜索");
     }
 
-    /// 揭示一条结果所在的文件夹。
+    /// 进入一条结果所在的父文件夹。
     ///
-    /// - 文件夹结果：所在文件夹就是它自己 → 直接进入；
-    /// - 文件结果：进入它所在的那个文件夹（结果清单里显示的路径就是它）。
-    ///
-    /// `id` 是结果里的「所在文件夹」id；为空表示在根目录。
-    pub fn search_reveal_folder(mut self: Pin<&mut Self>, id: QString, is_folder: bool) {
+    /// `id` 是结果里的「所在文件夹」id；为空表示在根目录。文件夹结果也传它自己的
+    /// `folder_id`，因此这里不会误把结果文件夹本身当成目标。
+    pub fn search_reveal_folder(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
-        // 结果是文件夹：揭示它 = 进入它自己，直接用结果清单里那一条
-        if is_folder {
-            if let Some(hit) = self.search_index.get(&id).cloned() {
-                self.as_mut().navigate_to_folder(&hit);
-                return;
-            }
-        }
-        // 文件结果：进入它所在的那个文件夹。
         // 名字从同一文件夹下的其它命中反推（路径末尾那一段），推不出就按根目录处理。
         let label = self
             .search_index

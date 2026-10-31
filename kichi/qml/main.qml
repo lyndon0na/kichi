@@ -127,6 +127,17 @@ ApplicationWindow {
             root.currentPage = 2
             transfersPage.focusSource(sourceId)
         }
+
+        // 离线任务文件夹的路径与内容已在后台准备好，这时才切页。
+        function onTaskFolderReady() {
+            root.currentPage = 0
+        }
+
+        // 离线任务产物的父目录已准备好，切到文件页后按产物 id 选中目标。
+        function onTaskLocationReady(targetId) {
+            root.currentPage = 0
+            filesPage.revealEntryById(targetId)
+        }
     }
 
     property int lastTrayShow: 0
@@ -543,6 +554,16 @@ ApplicationWindow {
                         id: tasksPage
                         backend: backend
                         active: root.currentPage === 3
+                        onOpenFolderRequested: function (fileId) {
+                            backend.openTaskFolder(fileId)
+                        }
+                        onRevealLocationRequested: function (fileId) {
+                            backend.revealTaskEntry(fileId)
+                        }
+                        onPlayRequested: function (fileId, position) {
+                            filesPage.preparePlayMenu(position)
+                            backend.requestTaskPlay(fileId)
+                        }
                     }
 
                     TrashPage {
@@ -566,7 +587,7 @@ ApplicationWindow {
     PlayToast {
         id: playToast
         backend: backend
-        inlineLoading: root.currentPage === 0
+        inlineLoading: root.currentPage === 0 || root.currentPage === 3
     }
 
     // 底栏：单行单槽。默认显示当前页面 / 目录上下文；进度、错误和需要留意的

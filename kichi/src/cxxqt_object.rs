@@ -57,6 +57,8 @@ pub mod qobject {
         #[qproperty(QString, current_dir_id, cxx_name = "currentDirId", READ, NOTIFY = changed)]
         /// 目录列表请求在途：文件页自己的加载态
         #[qproperty(bool, listing, cxx_name = "filesLoading", READ, NOTIFY = changed)]
+        /// 正在从离线任务打开 / 定位的产物 id；空串表示没有这项操作
+        #[qproperty(QString, task_folder_loading_id, cxx_name = "taskFolderLoadingId", READ, NOTIFY = changed)]
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
         #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
@@ -179,6 +181,16 @@ pub mod qobject {
         #[cxx_name = "locateTransfer"]
         fn locate_transfer(self: Pin<&mut Self>, source_id: QString);
 
+        /// 离线任务的目标文件夹路径与内容都已就绪，界面现在可以切到文件页
+        #[qsignal]
+        #[cxx_name = "taskFolderReady"]
+        fn task_folder_ready(self: Pin<&mut Self>);
+
+        /// 离线任务产物的父目录与列表已就绪，界面切到文件页并选中目标
+        #[qsignal]
+        #[cxx_name = "taskLocationReady"]
+        fn task_location_ready(self: Pin<&mut Self>, target_id: QString);
+
         #[qinvokable]
         #[cxx_name = "login"]
         fn login(
@@ -265,6 +277,21 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "deleteTask"]
         fn delete_task(self: Pin<&mut Self>, id: QString);
+
+        /// 播放已完成的离线任务产物（id 是产物文件 id）。
+        #[qinvokable]
+        #[cxx_name = "requestTaskPlay"]
+        fn request_task_play(self: Pin<&mut Self>, id: QString);
+
+        /// 从离线任务跳到文件页并打开已完成产物文件夹，同时补齐真实面包屑。
+        #[qinvokable]
+        #[cxx_name = "openTaskFolder"]
+        fn open_task_folder(self: Pin<&mut Self>, id: QString) -> bool;
+
+        /// 从离线任务跳到产物所在父目录，并在文件页选中目标文件 / 文件夹。
+        #[qinvokable]
+        #[cxx_name = "revealTaskEntry"]
+        fn reveal_task_entry(self: Pin<&mut Self>, id: QString) -> bool;
 
         /// 读取分享管理页列表（进入页面 / 手动刷新）
         #[qinvokable]
@@ -530,10 +557,10 @@ pub mod qobject {
         #[cxx_name = "searchOpenFolder"]
         fn search_open_folder(self: Pin<&mut Self>, id: QString);
 
-        /// 搜索：揭示文件所在的文件夹（文件夹条目就是进入它自己）
+        /// 搜索：进入条目所在的父文件夹
         #[qinvokable]
         #[cxx_name = "searchRevealFolder"]
-        fn search_reveal_folder(self: Pin<&mut Self>, id: QString, is_folder: bool);
+        fn search_reveal_folder(self: Pin<&mut Self>, id: QString);
     }
 }
 
@@ -661,6 +688,8 @@ pub struct KichiRust {
     pub(crate) crumb_backup: Option<Vec<Crumb>>,
     /// 有目录列表请求在途（防止重复点击）
     pub(crate) listing: bool,
+    /// 正在从离线任务定位并打开的产物文件夹 id
+    pub(crate) task_folder_loading_id: QString,
     /// 列表在途时又收到刷新请求：本次完成后再补一次，不能静默丢掉
     pub(crate) refresh_pending: bool,
     /// 目录请求代数：退出登录 / 重登后旧结果作废
@@ -868,6 +897,7 @@ impl Default for KichiRust {
             crumbs: vec![Crumb::root()],
             crumb_backup: None,
             listing: false,
+            task_folder_loading_id: QString::default(),
             refresh_pending: false,
             list_epoch: 0,
             tasks: QVariantList::default(),

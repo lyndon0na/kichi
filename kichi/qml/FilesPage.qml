@@ -135,6 +135,16 @@ Item {
         interaction.refreshFiles()
     }
 
+    /// 离线任务页播放时复用同一张清晰度菜单，只把任务行给的窗口坐标交给它。
+    function preparePlayMenu(anchor) {
+        playMenu.anchorPoint = anchor
+    }
+
+    /// 离线任务定位到条目：等父目录模型显示后选中并滚动到目标。
+    function revealEntryById(id) {
+        interaction.revealEntryById(id)
+    }
+
     // 页头的视图列表调这里：先记当前滚动位置，再让目标视图恢复自己的位置。
     function setFileView(view) {
         if (!page.backend || typeof page.backend.setFileView !== "function")
@@ -194,10 +204,29 @@ Item {
         const entries = fromSearch ? page.displayEntries.slice() : []
         const statusText = fromSearch ? page.backend.searchStatus : ""
         const truncated = fromSearch && page.backend.searchTruncated === true
-        page.backend.searchRevealFolder(String(entry.folderId || ""),
-                                        entry.kind === "folder")
+        // 文件夹结果也传它自己的父目录 id，不能再进入结果文件夹本身。
+        page.revealEntryById(entry.id)
+        page.backend.searchRevealFolder(String(entry.folderId || ""))
         if (fromSearch)
             page.holdSearchEntriesUntilLoaded(entries, statusText, truncated)
+    }
+
+    function revealEntryFolder(entry) {
+        if (!page.backend || !entry || page.holdingSearchEntries)
+            return
+        if (!page.showingSearchEntries) {
+            // 普通目录里条目本来就在当前文件夹：重新读取它，作为明确的“打开”反馈。
+            page.revealEntryById(entry.id)
+            interaction.refreshFiles()
+            return
+        }
+        // 本地筛选仍停留在当前目录：退出筛选即可；全盘结果才需要导航到 folderId。
+        if (page.backend.searchScanned === 0) {
+            page.revealEntryById(entry.id)
+            page.backend.exitSearch()
+            return
+        }
+        page.revealSearchFolder(entry)
     }
 
     // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
@@ -214,9 +243,13 @@ Item {
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
         page.focusActiveView()
+        Qt.callLater(interaction.tryRevealPending)
     }
 
-    onGridModeChanged: Qt.callLater(page.focusActiveView)
+    onGridModeChanged: {
+        Qt.callLater(page.focusActiveView)
+        Qt.callLater(interaction.tryRevealPending)
+    }
     onSearchingChanged: {
         selection.clear()
         if (page.searching)
@@ -224,6 +257,7 @@ Item {
     }
     onDisplayEntriesChanged: {
         selection.prune(page.displayEntries)
+        Qt.callLater(interaction.tryRevealPending)
     }
 
     ColumnLayout {
@@ -305,7 +339,10 @@ Item {
                     }
 
                     // 布局完成后再恢复滚动位置（模型更新时 contentHeight 是逐步算出来的）
-                    onContentHeightChanged: interaction.restoreScrollNow()
+                    onContentHeightChanged: {
+                        if (!interaction.tryRevealPending())
+                            interaction.restoreScrollNow()
+                    }
 
                     // 空白处右键：行自己用 MouseArea 处理右键，这里只接住没命中行的位置。
                     // 坐标要换成内容坐标（加上 contentY）才能用 indexAt。
@@ -412,7 +449,10 @@ Item {
                     if (visible)
                         forceActiveFocus()
                 }
-                onContentHeightChanged: interaction.restoreScrollNow()
+                onContentHeightChanged: {
+                    if (!interaction.tryRevealPending())
+                        interaction.restoreScrollNow()
+                }
 
                 // 空白处右键：和列表一样只接住没命中条目的位置。
                 TapHandler {
@@ -515,6 +555,9 @@ Item {
         onPlayRequested: function (anchor) {
             // 右键菜单给的已经是窗口坐标，直接当清晰度菜单的锚点
             playMenu.anchorPoint = anchor
+        }
+        onRevealRequested: function (entry) {
+            page.revealEntryFolder(entry)
         }
         onMoveRequested: function (entry, ids) {
             movePicker.openForMove(entry, ids, interaction.folderIdsFor(ids))

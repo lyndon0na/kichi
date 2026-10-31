@@ -26,13 +26,20 @@ TestCase {
 
         property var tasks: []
         property bool tasksLoading: false
+        property bool playLoading: false
+        property string playLoadingId: ""
+        property var playingIds: []
+        property string taskFolderLoadingId: ""
 
         signal changed()
+        signal thumbnailReady(string id, string path)
 
         property int submitted: 0
         property string submittedText: ""
         property string deletedId: ""
         property int refreshCalls: 0
+        property int thumbnailRequests: 0
+        property int cancelPlayLoadingCalls: 0
 
         function addTask(url) {
             submitted += 1
@@ -43,6 +50,15 @@ TestCase {
         }
         function refreshTasks() {
             refreshCalls += 1
+        }
+        function thumbnailPath(id) {
+            return ""
+        }
+        function requestThumbnail(id) {
+            thumbnailRequests += 1
+        }
+        function cancelPlayLoading() {
+            cancelPlayLoadingCalls += 1
         }
     }
 
@@ -66,10 +82,18 @@ TestCase {
 
     function init() {
         page.active = false
+        list.contentY = 0
         backend.tasksLoading = false
         backend.refreshCalls = 0
         backend.submitted = 0
         backend.submittedText = ""
+        backend.playLoading = false
+        backend.playLoadingId = ""
+        backend.playingIds = []
+        backend.taskFolderLoadingId = ""
+        backend.thumbnailRequests = 0
+        backend.cancelPlayLoadingCalls = 0
+        page.width = 800
         push([])
     }
 
@@ -85,15 +109,28 @@ TestCase {
             progress: progress,
             progressText: progress + "%",
             sizeText: "1 GB",
-            createdText: "10-28 12:00",
+            createdText: "2026-10-28 12:00",
             detail: "",
-            settled: settled
+            settled: settled,
+            fileId: id + "-file",
+            hasThumbnail: false,
+            video: false,
+            playable: false
         }
     }
 
     function push(tasks) {
         backend.tasks = tasks
         backend.changed()
+    }
+
+    function visibleRow(id) {
+        for (var i = 0; i < list.count; i++) {
+            var row = list.itemAtIndex(i)
+            if (row && row.key === id)
+                return row
+        }
+        return null
     }
 
     function test_rows_follow_backend_order() {
@@ -109,34 +146,71 @@ TestCase {
         var header = findChild(page, "tasksTableHeader")
         verify(header)
         compare(header.implicitHeight, 34)
-        compare(list.spacing, 2)
+        compare(list.spacing, 0)
 
         var row = null
         tryVerify(function () {
-            row = findChild(list, "taskRow_t1")
+            row = visibleRow("t1")
             return row !== null
         })
-        compare(row.implicitHeight, 56)
+        compare(row.implicitHeight, 48)
         compare(row.name, "t1.mkv")
         compare(row.phaseText, "running")
-        compare(row.iconColumnWidth, 22)
+        compare(row.thumbnailColumnWidth, 36)
+        compare(row.sizeColumnWidth, 84)
+        compare(row.createdColumnWidth, 120)
         compare(row.statusColumnWidth, 100)
-        compare(row.actionColumnWidth, 96)
+        compare(row.progressColumnWidth, 150)
 
-        var typeIcon = findChild(row, "taskTypeIcon")
+        var thumbnail = findChild(row, "taskThumbnail")
+        verify(thumbnail)
+        var typeIcon = findChild(thumbnail, "thumbnailFallbackIcon")
         verify(typeIcon)
         compare(typeIcon.iconName, "video")
 
         var nameText = findChild(row, "taskNameText")
-        var metaText = findChild(row, "taskMetaText")
+        var sizeText = findChild(row, "taskSizeText")
+        var createdText = findChild(row, "taskCreatedText")
         verify(nameText)
-        verify(metaText)
+        verify(sizeText)
+        verify(createdText)
         compare(nameText.font.pixelSize, 13)
-        compare(metaText.font.pixelSize, 11)
+        compare(sizeText.text, "1 GB")
+        compare(createdText.text, "2026-10-28 12:00")
 
+        var sizeHeader = findChild(header, "tasksSizeHeader")
+        var createdHeader = findChild(header, "tasksCreatedHeader")
+        var statusHeader = findChild(header, "tasksStatusHeader")
+        verify(sizeHeader)
+        verify(createdHeader)
+        verify(statusHeader)
+        compare(sizeHeader.text, "大小")
+        compare(createdHeader.text, "创建时间")
+        verify(findChild(header, "tasksActionHeader") === null,
+               "操作列已移除，删除只放在右键菜单")
         var progressHeader = findChild(header, "tasksProgressHeader")
         verify(progressHeader)
         compare(progressHeader.horizontalAlignment, Text.AlignHCenter)
+
+        var statusX = statusHeader.mapToItem(header, 0, 0).x
+        var progressX = progressHeader.mapToItem(header, 0, 0).x
+        var sizeX = sizeHeader.mapToItem(header, 0, 0).x
+        var createdX = createdHeader.mapToItem(header, 0, 0).x
+        verify(statusX < progressX, "表头状态列应在进度列之前")
+        verify(progressX < sizeX, "表头大小列应在进度列之后")
+        verify(sizeX < createdX, "表头创建时间列应在大小列之后")
+
+        var statusSlot = findChild(row, "taskStatusSlot")
+        var progressSlot = findChild(row, "taskProgressSlot")
+        verify(statusSlot)
+        verify(progressSlot)
+        var rowStatusX = statusSlot.mapToItem(row, 0, 0).x
+        var rowProgressX = progressSlot.mapToItem(row, 0, 0).x
+        var rowSizeX = sizeText.mapToItem(row, 0, 0).x
+        var rowCreatedX = createdText.mapToItem(row, 0, 0).x
+        verify(rowStatusX < rowProgressX, "行状态列应在进度列之前")
+        verify(rowProgressX < rowSizeX, "行大小列应在进度列之后")
+        verify(rowSizeX < rowCreatedX, "行创建时间列应在大小列之后")
     }
 
     function test_api_folder_kind_wins_over_name_fallback() {
@@ -147,12 +221,335 @@ TestCase {
 
         var row = null
         tryVerify(function () {
-            row = findChild(list, "taskRow_folder")
+            row = visibleRow("folder")
             return row !== null
         })
-        var typeIcon = findChild(row, "taskTypeIcon")
+        var thumbnail = findChild(row, "taskThumbnail")
+        verify(thumbnail)
+        var typeIcon = findChild(thumbnail, "thumbnailFallbackIcon")
         verify(typeIcon)
         compare(typeIcon.iconName, "folder")
+    }
+
+    function test_thumbnail_uses_completed_resource_file_id() {
+        var done = task("thumb", "completed", 100)
+        done.fileId = "file-thumb"
+        done.hasThumbnail = true
+        done.video = true
+        done.playable = true
+        push([done])
+
+        tryVerify(function () {
+            return backend.thumbnailRequests === 1
+        })
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("thumb")
+            return row !== null
+        })
+        var thumbnail = findChild(row, "taskThumbnail")
+        verify(thumbnail)
+        compare(thumbnail.entry.id, "file-thumb")
+        tryVerify(function () {
+            return thumbnail.showVideoBadge
+        }, 1000,
+                  "可播放视频即使缩略图未返回也保留播放角标；row.video="
+                  + row.video + " row.playable=" + row.playable
+                  + " entry.video=" + thumbnail.entry.video
+                  + " entry.playable=" + thumbnail.entry.playable
+                  + " loading=" + thumbnail.loading
+                  + " playing=" + thumbnail.playing
+                  + " showVideoBadge=" + thumbnail.showVideoBadge
+                  + " row.visible=" + row.visible)
+    }
+
+    function test_loading_and_playing_follow_the_resource_id() {
+        var done = task("state", "completed", 100)
+        done.fileId = "file-state"
+        done.video = true
+        done.playable = true
+        push([done])
+
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("state")
+            return row !== null
+        })
+        backend.playLoading = true
+        backend.playLoadingId = "file-state"
+        tryVerify(function () {
+            return row.playLoading === true
+        })
+        var overlay = findChild(row, "taskVideoLoading")
+        var thumbnail = findChild(row, "taskThumbnail")
+        verify(overlay)
+        compare(overlay.parent, row)
+        compare(overlay.x, row.contentPadding)
+        compare(thumbnail.loading, true)
+        compare(thumbnail.showVideoBadge, false)
+
+        backend.playLoading = false
+        backend.playingIds = ["file-state"]
+        tryVerify(function () {
+            return thumbnail.playing === true
+        })
+        compare(thumbnail.showVideoBadge, false)
+    }
+
+    function test_folder_opening_shows_loading_and_blocks_repeat_activation() {
+        var folder = task("opening-folder", "completed", 100)
+        folder.kind = "folder"
+        folder.fileId = "opening-folder-id"
+        push([folder])
+
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("opening-folder")
+            return row !== null
+        })
+        var spy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'openFolderRequested' }", page)
+        spy.target = page
+
+        backend.taskFolderLoadingId = "opening-folder-id"
+        tryVerify(function () {
+            return row.folderLoading === true
+        })
+        compare(row.canActivate, false)
+
+        var loadingState = findChild(row, "taskFolderLoadingState")
+        var spinner = findChild(row, "taskFolderLoadingSpinner")
+        var statusBadge = findChild(row, "taskStatusBadge")
+        verify(loadingState)
+        compare(loadingState.opacity, 1)
+        compare(spinner.running, true)
+        compare(statusBadge.opacity, 0)
+
+        row.activate(Qt.point(30, 20))
+        wait(20)
+        compare(spy.count, 0, "加载期间重复双击不能再次发起目录跳转")
+
+        backend.taskFolderLoadingId = ""
+        tryVerify(function () {
+            return row.folderLoading === false
+        })
+        compare(loadingState.opacity, 0)
+        compare(statusBadge.opacity, 1)
+        row.activate(Qt.point(30, 20))
+        wait(20)
+        compare(spy.count, 1)
+
+        spy.destroy()
+    }
+
+    function test_double_click_opens_folder_or_plays_completed_resource() {
+        var folderSpy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'openFolderRequested' }", page)
+        folderSpy.target = page
+        var playSpy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'playRequested' }", page)
+        playSpy.target = page
+
+        var folder = task("open-folder", "completed", 100)
+        folder.kind = "folder"
+        folder.fileId = "folder-id"
+        push([folder])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("open-folder")
+            return row !== null
+        })
+        row.activate(Qt.point(30, 20))
+        wait(20)
+        compare(folderSpy.count, 1)
+        compare(folderSpy.signalArguments[0][0], "folder-id")
+
+        var video = task("open-video", "completed", 100)
+        video.name = "电影.mkv"
+        video.fileId = "video-id"
+        video.video = true
+        video.playable = true
+        push([video])
+        tryVerify(function () {
+            row = visibleRow("open-video")
+            return row !== null
+        })
+        row.activate(Qt.point(30, 20))
+        wait(20)
+        compare(playSpy.count, 1)
+        compare(playSpy.signalArguments[0][0], "video-id")
+
+        folderSpy.destroy()
+        playSpy.destroy()
+    }
+
+    function test_failed_resource_does_not_activate() {
+        var failed = task("failed", "error", 0)
+        failed.kind = "folder"
+        failed.fileId = "failed-folder"
+        failed.name = "failed.mkv"
+        failed.playable = true
+        failed.video = true
+        push([failed])
+
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("failed")
+            return row !== null
+        })
+        compare(row.canOpenFolder, false)
+        compare(row.canPlay, false)
+        compare(row.canActivate, false)
+    }
+
+    function test_delete_is_only_available_from_right_click_menu() {
+        push([task("delete-me", "completed", 100)])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("delete-me")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        var menu = findChild(page, "taskContextMenu")
+        verify(menu)
+        verify(menu.opened)
+        var item = findChild(menu, "taskDeleteItem")
+        verify(item)
+        mouseClick(item)
+        wait(40)
+
+        var dialog = findChild(page, "deleteTaskDialog")
+        verify(dialog)
+        verify(dialog.opened)
+        compare(page.pendingDeleteId, "delete-me")
+        dialog.accept()
+        compare(backend.deletedId, "delete-me")
+    }
+
+    function test_context_menu_matches_double_click_open_actions() {
+        var folderSpy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'openFolderRequested' }", page)
+        folderSpy.target = page
+        var playSpy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'playRequested' }", page)
+        playSpy.target = page
+
+        var folder = task("context-folder", "completed", 100)
+        folder.kind = "folder"
+        folder.fileId = "context-folder-id"
+        push([folder])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("context-folder")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        var openItem = findChild(page, "taskOpenFolderItem")
+        var playItem = findChild(page, "taskPlayItem")
+        verify(openItem.visible)
+        compare(openItem.text, "打开文件夹")
+        compare(playItem.visible, false)
+        mouseClick(openItem)
+        wait(40)
+        compare(folderSpy.count, 1)
+        compare(folderSpy.signalArguments[0][0], "context-folder-id")
+
+        var video = task("context-video", "completed", 100)
+        video.name = "电影.mkv"
+        video.fileId = "context-video-id"
+        video.video = true
+        video.playable = true
+        push([video])
+        tryVerify(function () {
+            row = visibleRow("context-video")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        openItem = findChild(page, "taskOpenFolderItem")
+        playItem = findChild(page, "taskPlayItem")
+        compare(openItem.visible, false)
+        verify(playItem.visible)
+        mouseClick(playItem)
+        wait(40)
+        compare(playSpy.count, 1)
+        compare(playSpy.signalArguments[0][0], "context-video-id")
+
+        folderSpy.destroy()
+        playSpy.destroy()
+    }
+
+    function test_context_menu_reveals_completed_file_and_folder_locations() {
+        var revealSpy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'revealLocationRequested' }", page)
+        revealSpy.target = page
+
+        var folder = task("reveal-folder", "completed", 100)
+        folder.kind = "folder"
+        folder.fileId = "reveal-folder-id"
+        push([folder])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("reveal-folder")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        var revealItem = findChild(page, "taskRevealLocationItem")
+        verify(revealItem)
+        verify(revealItem.visible)
+        compare(revealItem.text, "打开目录所在位置")
+        mouseClick(revealItem)
+        wait(40)
+        compare(revealSpy.count, 1)
+        compare(revealSpy.signalArguments[0][0], "reveal-folder-id")
+
+        var file = task("reveal-file", "completed", 100)
+        file.kind = "file"
+        file.fileId = "reveal-file-id"
+        push([file])
+        tryVerify(function () {
+            row = visibleRow("reveal-file")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        revealItem = findChild(page, "taskRevealLocationItem")
+        verify(revealItem)
+        verify(revealItem.visible)
+        compare(revealItem.text, "打开文件所在位置")
+        mouseClick(revealItem)
+        wait(40)
+        compare(revealSpy.count, 2)
+        compare(revealSpy.signalArguments[1][0], "reveal-file-id")
+
+        revealSpy.destroy()
+    }
+
+    function test_size_and_time_columns_hide_before_the_name_is_crushed() {
+        push([task("responsive", "completed", 100)])
+        var header = findChild(page, "tasksTableHeader")
+        verify(header)
+        compare(header.showSize, true)
+        compare(header.showCreated, true)
+
+        page.width = 650
+        tryVerify(function () {
+            return header.showCreated === false
+        })
+        compare(header.showSize, true)
+
+        page.width = 520
+        tryVerify(function () {
+            return header.showSize === false
+        })
     }
 
     function test_header_controls_show_task_counts() {
