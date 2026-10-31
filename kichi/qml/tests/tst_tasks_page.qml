@@ -413,6 +413,33 @@ TestCase {
         compare(row.canActivate, false)
     }
 
+    function test_play_badge_only_appears_for_completed_tasks() {
+        var phases = ["pending", "running", "paused", "error", "deleted", "unknown",
+                      "completed"]
+        var tasks = []
+        for (var i = 0; i < phases.length; i++) {
+            var item = task("badge-" + phases[i], phases[i], 50)
+            item.kind = "file"
+            item.fileId = "badge-file-" + phases[i]
+            item.video = true
+            item.playable = true
+            tasks.push(item)
+        }
+        push(tasks)
+
+        for (var j = 0; j < phases.length; j++) {
+            var row = null
+            tryVerify(function () {
+                row = visibleRow("badge-" + phases[j])
+                return row !== null
+            })
+            var thumbnail = findChild(row, "taskThumbnail")
+            verify(thumbnail)
+            compare(thumbnail.showVideoBadge, phases[j] === "completed",
+                    phases[j] + " status play badge")
+        }
+    }
+
     function test_status_badges_cover_every_task_state() {
         var cases = [
             ["pending", "排队中", "accent", false],

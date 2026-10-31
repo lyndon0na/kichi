@@ -62,7 +62,7 @@ ItemDelegate {
         kind: row.kind,
         hasThumbnail: row.hasThumbnail,
         video: row.video,
-        playable: row.playable
+        playable: row.canPlay
     })
 
     readonly property string tone: {
