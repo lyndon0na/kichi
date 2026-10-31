@@ -100,6 +100,7 @@ TestCase {
     /// 造一条与 Rust `task_map` 同形状的任务
     function task(id, phase, progress) {
         var settled = phase === "completed" || phase === "error"
+                || phase === "deleted"
         return {
             id: id,
             name: id + ".mkv",
@@ -405,6 +406,63 @@ TestCase {
         compare(row.canOpenFolder, false)
         compare(row.canPlay, false)
         compare(row.canActivate, false)
+    }
+
+    function test_status_badges_cover_every_task_state() {
+        var cases = [
+            ["pending", "排队中", "accent", false],
+            ["running", "下载中", "accent", false],
+            ["paused", "已暂停", "neutral", false],
+            ["completed", "已完成", "success", true],
+            ["error", "失败", "danger", true],
+            ["deleted", "产物已删除", "warning", true],
+            ["unknown", "状态未知", "warning", false]
+        ]
+        var tasks = []
+        for (var i = 0; i < cases.length; i++) {
+            var item = task("status-" + cases[i][0], cases[i][0], 0)
+            item.phaseText = cases[i][1]
+            if (cases[i][0] === "deleted")
+                item.detail = "File deleted"
+            tasks.push(item)
+        }
+        push(tasks)
+
+        for (var j = 0; j < cases.length; j++) {
+            var id = "status-" + cases[j][0]
+            var row = null
+            tryVerify(function () {
+                row = visibleRow(id)
+                return row !== null
+            })
+            compare(row.tone, cases[j][2], id + " tone")
+            compare(row.isActive, !cases[j][3], id + " active state")
+            var badge = findChild(row, "taskStatusBadge")
+            verify(badge)
+            compare(badge.text, cases[j][1], id + " label")
+            compare(badge.tone, cases[j][2], id + " badge tone")
+        }
+    }
+
+    function test_deleted_output_keeps_official_reason_in_tooltip() {
+        var deleted = task("deleted-detail", "deleted", 100)
+        deleted.phaseText = "产物已删除"
+        deleted.detail = "File deleted"
+        deleted.kind = "file"
+        deleted.fileId = "gone-file"
+        deleted.playable = true
+        push([deleted])
+
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("deleted-detail")
+            return row !== null
+        })
+        compare(row.showProgress, false)
+        compare(row.canActivate, false)
+        compare(row.statusHasDetail, true)
+        verify(row.statusDetail.indexOf("File deleted") >= 0)
+        verify(row.statusDetail.indexOf("已从云盘删除") >= 0)
     }
 
     function test_delete_is_only_available_from_right_click_menu() {

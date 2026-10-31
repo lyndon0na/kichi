@@ -68,12 +68,25 @@ ItemDelegate {
     readonly property string tone: {
         if (row.phase === "error")
             return "danger"
+        if (row.phase === "deleted" || row.phase === "unknown")
+            return "warning"
         if (row.phase === "completed")
             return "success"
         if (row.phase === "pending" || row.phase === "running")
             return "accent"
         return "neutral"
     }
+    readonly property string statusDetail: {
+        if (row.phase === "deleted") {
+            return row.detail.length > 0
+                    ? qsTr("任务产物已从云盘删除。\n官方状态：%1").arg(row.detail)
+                    : qsTr("任务产物已从云盘删除。")
+        }
+        if (row.phase === "error" || row.phase === "unknown")
+            return row.detail
+        return ""
+    }
+    readonly property bool statusHasDetail: row.statusDetail.length > 0
 
     objectName: "taskRow_" + row.key
     implicitHeight: row.rowHeight
@@ -216,10 +229,9 @@ ItemDelegate {
             font.weight: Font.DemiBold
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle
-            toolTipText: row.phase === "error" && row.detail.length > 0
-                         ? row.name + "\n" + row.detail : row.name
-            showToolTipWhenUntruncated: row.phase === "error"
-                                        && row.detail.length > 0
+            toolTipText: row.statusHasDetail
+                         ? row.name + "\n" + row.statusDetail : row.name
+            showToolTipWhenUntruncated: row.statusHasDetail
             externallyHovered: mouseArea.containsMouse
                                && row.pointerOver(nameLabel, mouseArea.mouseX,
                                                   mouseArea.mouseY)
@@ -240,11 +252,11 @@ ItemDelegate {
                 tone: row.tone
             }
 
-            ToolTip.visible: row.phase === "error" && row.detail.length > 0
+            ToolTip.visible: row.statusHasDetail
                              && mouseArea.containsMouse
                              && row.pointerOver(statusSlot, mouseArea.mouseX,
                                                 mouseArea.mouseY)
-            ToolTip.text: row.detail
+            ToolTip.text: row.statusDetail
         }
 
         Item {

@@ -28,6 +28,7 @@ pub use events::{PlaybackHistoryEntry, PlaybackProgress};
 pub use media::{FileInfo, NoLinkReason};
 pub use search::FileHit;
 pub use share::{CreateShareOptions, CreatedShare, MyShare};
+pub use tasks::TaskStatus;
 pub use types::{
     EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TrashEntry,
 };

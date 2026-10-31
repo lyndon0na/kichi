@@ -14,7 +14,10 @@ use crate::http::Body;
 use crate::types::{OfflineTask, TaskPhase};
 use crate::Error;
 
+mod status;
 mod task_wait;
+
+pub use status::TaskStatus;
 
 /// 单页最多返回的任务数。
 pub const TASK_LIST_LIMIT: u32 = 500;

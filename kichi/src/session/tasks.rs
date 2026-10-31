@@ -4,7 +4,7 @@
 //! 轮询节奏属于界面侧的调度，放在 `cxxqt_object::tasks`。
 //! 全部函数阻塞，调用方负责丢到后台线程。
 
-use kichi_core::{OfflineTask, TaskPhase};
+use kichi_core::OfflineTask;
 
 use super::{Failure, Session};
 
@@ -49,7 +49,5 @@ impl Session {
 
 /// 是否还有任务在变化（决定轮询频率）。
 pub fn has_active(tasks: &[OfflineTask]) -> bool {
-    tasks
-        .iter()
-        .any(|task| !matches!(task.phase, TaskPhase::Completed | TaskPhase::Error))
+    tasks.iter().any(|task| !task.status().is_settled())
 }

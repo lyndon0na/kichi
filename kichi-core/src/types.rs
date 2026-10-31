@@ -88,7 +88,10 @@ pub enum TaskPhase {
 }
 
 impl TaskPhase {
-    /// 是否已经不再变化（完成或失败），轮询可据此退避。
+    /// 官方任务阶段是否已经不再变化（完成或失败）。
+    ///
+    /// 列表带了 `with=reference_resource` 时，产物删除会覆盖展示阶段；界面判断
+    /// 是否结束应使用 `OfflineTask::status()` 返回的 [`crate::TaskStatus`]。
     pub fn is_settled(self) -> bool {
         matches!(self, TaskPhase::Completed | TaskPhase::Error)
     }

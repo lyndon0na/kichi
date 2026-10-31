@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
-use kichi_core::{EntryKind, OfflineTask, TaskPhase};
+use kichi_core::{EntryKind, OfflineTask, TaskPhase, TaskStatus};
 
 use super::actions::{format_size, run_in_background};
 use super::qobject;
@@ -253,14 +253,15 @@ impl qobject::Kichi {
         mut tasks: Vec<OfflineTask>,
         announce: bool,
     ) {
-        // 进行中的排前面，其余按创建时间新→旧
+        // 先按活动程度排序，已结束状态再按失败 / 已删除 / 完成和创建时间排。
         tasks.sort_by(|a, b| {
-            let rank = |t: &OfflineTask| match t.phase {
-                TaskPhase::Running => 0,
-                TaskPhase::Pending => 1,
-                TaskPhase::Paused | TaskPhase::Unknown => 2,
-                TaskPhase::Error => 3,
-                TaskPhase::Completed => 4,
+            let rank = |t: &OfflineTask| match t.status() {
+                TaskStatus::Running => 0,
+                TaskStatus::Pending => 1,
+                TaskStatus::Paused | TaskStatus::Unknown => 2,
+                TaskStatus::Failed => 3,
+                TaskStatus::ProductDeleted => 4,
+                TaskStatus::Completed => 5,
             };
             rank(a)
                 .cmp(&rank(b))
@@ -273,10 +274,13 @@ impl qobject::Kichi {
             let mut fresh = Vec::new();
             for task in &tasks {
                 let was_running = rust.known_running.contains_key(task.id.as_str());
-                if was_running && task.phase.is_settled() && rust.notified.insert(task.id.clone()) {
+                if was_running
+                    && task.status().is_settled()
+                    && rust.notified.insert(task.id.clone())
+                {
                     fresh.push(task.clone());
                 }
-                if task.phase.is_settled() {
+                if task.status().is_settled() {
                     rust.known_running.remove(task.id.as_str());
                 } else {
                     rust.known_running.insert(task.id.clone(), true);
@@ -383,8 +387,8 @@ fn notify_finished(task: &OfflineTask, enabled: bool) {
     if !enabled {
         return;
     }
-    let (summary, body) = match task.phase {
-        TaskPhase::Completed => (
+    let (summary, body) = match task.status() {
+        TaskStatus::Completed => (
             "离线任务完成",
             format!(
                 "{}\n{}",
@@ -396,7 +400,15 @@ fn notify_finished(task: &OfflineTask, enabled: bool) {
                 }
             ),
         ),
-        TaskPhase::Error => (
+        TaskStatus::ProductDeleted => (
+            "离线任务产物已删除",
+            format!(
+                "{}\n{}",
+                task.name,
+                task.message.as_deref().unwrap_or("云端产物已不存在")
+            ),
+        ),
+        TaskStatus::Failed => (
             "离线任务失败",
             format!(
                 "{}\n{}",
@@ -417,13 +429,15 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
         Some(EntryKind::File) => "file",
         None => "",
     };
-    let (phase, phase_text) = match task.phase {
-        TaskPhase::Pending => ("pending", "排队中"),
-        TaskPhase::Running => ("running", "下载中"),
-        TaskPhase::Paused => ("paused", "已暂停"),
-        TaskPhase::Completed => ("completed", "已完成"),
-        TaskPhase::Error => ("error", "失败"),
-        TaskPhase::Unknown => ("unknown", "状态未知"),
+    let status = task.status();
+    let (phase, phase_text) = match status {
+        TaskStatus::Pending => ("pending", "排队中"),
+        TaskStatus::Running => ("running", "下载中"),
+        TaskStatus::Paused => ("paused", "已暂停"),
+        TaskStatus::Completed => ("completed", "已完成"),
+        TaskStatus::Failed => ("error", "失败"),
+        TaskStatus::ProductDeleted => ("deleted", "产物已删除"),
+        TaskStatus::Unknown => ("unknown", "状态未知"),
     };
     let size = if task.file_size > 0 {
         format_size(task.file_size)
@@ -472,7 +486,7 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
     );
     map.insert_clone(
         &QString::from("settled"),
-        &QVariant::from(&task.phase.is_settled()),
+        &QVariant::from(&status.is_settled()),
     );
     map
 }
@@ -525,8 +539,14 @@ mod tests {
     #[test]
     fn interval_depends_on_active_tasks() {
         assert_eq!(next_interval(&[]), POLL_IDLE);
+        let mut deleted = task("deleted", TaskPhase::Error);
+        deleted.message = Some("File deleted".into());
         assert_eq!(
-            next_interval(&[task("a", TaskPhase::Completed), task("b", TaskPhase::Error)]),
+            next_interval(&[
+                task("a", TaskPhase::Completed),
+                task("b", TaskPhase::Error),
+                deleted,
+            ]),
             POLL_IDLE
         );
         assert_eq!(next_interval(&[task("c", TaskPhase::Running)]), POLL_ACTIVE);
@@ -603,11 +623,41 @@ mod tests {
     fn settled_flag_matches_phase() {
         let running = task_map(&task("a", TaskPhase::Running));
         let done = task_map(&task("b", TaskPhase::Completed));
+        let mut deleted = task("c", TaskPhase::Error);
+        deleted.message = Some("File deleted".into());
+        let deleted = task_map(&deleted);
         let read = |map: &QVariantMap| {
             map.get(&QString::from("settled"))
                 .and_then(|v| v.value::<bool>())
         };
         assert_eq!(read(&running), Some(false));
         assert_eq!(read(&done), Some(true));
+        assert_eq!(read(&deleted), Some(true));
+    }
+
+    #[test]
+    fn deleted_output_is_not_presented_as_a_failure() {
+        let mut deleted = task("deleted", TaskPhase::Error);
+        deleted.message = Some("File deleted".into());
+        let map = task_map(&deleted);
+        let string = |key: &str| {
+            map.get(&QString::from(key))
+                .and_then(|value| value.value::<QString>())
+                .map(|value| value.to_string())
+        };
+        assert_eq!(string("phase").as_deref(), Some("deleted"));
+        assert_eq!(string("phaseText").as_deref(), Some("产物已删除"));
+        assert_eq!(string("detail").as_deref(), Some("File deleted"));
+
+        let mut failed = task("failed", TaskPhase::Error);
+        failed.message = Some("Save failed, retry please".into());
+        let map = task_map(&failed);
+        assert_eq!(
+            map.get(&QString::from("phase"))
+                .and_then(|value| value.value::<QString>())
+                .map(|value| value.to_string())
+                .as_deref(),
+            Some("error")
+        );
     }
 }
