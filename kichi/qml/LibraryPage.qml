@@ -13,6 +13,7 @@ Item {
     property string primaryHeader: ""
     property string secondaryHeader: ""
     property string emptyText: ""
+    property bool dateSectionsEnabled: false
     property alias contextMenu: libraryMenu.menu
     property alias blankContextMenu: libraryMenu.blankMenu
 
@@ -26,7 +27,11 @@ Item {
     property string currentEntryId: ""
     readonly property bool gridMode: page.backend !== null
                                      && page.backend.contentView === "grid"
-    readonly property var activeView: page.gridMode ? libraryGrid : libraryList
+    readonly property bool dateGrouped: page.dateSectionsEnabled
+                                        && page.kind === "playback-history"
+    readonly property var activeView: page.gridMode
+                                      ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid)
+                                      : libraryList
     property var scrollByView: ({ "list": 0, "grid": 0 })
     property bool pendingScrollRestore: false
     property real pendingScrollY: 0
@@ -84,6 +89,8 @@ Item {
     function restoreScroll() {
         if (!page.pendingScrollRestore || !page.activeView)
             return
+        if (typeof page.activeView.forceLayout === "function")
+            page.activeView.forceLayout()
         if (page.activeView.contentHeight <= 0)
             return
         const maxY = Math.max(0, page.activeView.contentHeight
@@ -106,6 +113,14 @@ Item {
         if (entry.secondaryText)
             parts.push(String(entry.secondaryText))
         return parts.length > 0 ? parts.join(" · ") : qsTr("—")
+    }
+
+    function dateSectionTitle(key) {
+        if (key === "today")
+            return qsTr("今天")
+        if (key === "yesterday")
+            return qsTr("昨天")
+        return qsTr("更早")
     }
 
     function playEntry(id, anchorPoint) {
@@ -138,11 +153,14 @@ Item {
         if (entries.length === 0) {
             libraryList.currentIndex = -1
             page.currentEntryId = ""
+            libraryGrid.currentIndex = -1
+            libraryGroupedGrid.currentIndex = -1
             return
         }
         const next = Math.max(0, Math.min(index, entries.length - 1))
         libraryList.currentIndex = next
         libraryGrid.currentIndex = next
+        libraryGroupedGrid.currentIndex = next
         const entry = entries[next]
         page.currentEntryId = entry && entry.id ? String(entry.id) : ""
         if (focus !== false)
@@ -172,15 +190,34 @@ Item {
         libraryMenu.openBlankAt(point)
     }
 
+    function moveSelection(index) {
+        page.selectIndex(index)
+        if (page.activeView && page.activeView.currentIndex >= 0)
+            page.activeView.positionViewAtIndex(
+                page.activeView.currentIndex, ListView.Contain)
+    }
+
     function handleKey(event) {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             page.activateCurrent()
             event.accepted = true
         } else if (event.key === Qt.Key_Up) {
-            page.selectIndex(page.activeView.currentIndex - 1)
+            page.moveSelection(page.activeView.currentIndex - 1)
             event.accepted = true
         } else if (event.key === Qt.Key_Down) {
-            page.selectIndex(page.activeView.currentIndex + 1)
+            page.moveSelection(page.activeView.currentIndex + 1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Left) {
+            page.moveSelection(page.activeView.currentIndex - 1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Right) {
+            page.moveSelection(page.activeView.currentIndex + 1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Home) {
+            page.moveSelection(0)
+            event.accepted = true
+        } else if (event.key === Qt.Key_End) {
+            page.moveSelection(page.entries.length - 1)
             event.accepted = true
         }
     }
@@ -211,6 +248,7 @@ Item {
         if (index >= 0) {
             libraryList.currentIndex = index
             libraryGrid.currentIndex = index
+            libraryGroupedGrid.currentIndex = index
         }
         Qt.callLater(page.restoreScroll)
         Qt.callLater(page.focusActiveView)
@@ -270,6 +308,16 @@ Item {
                     ScrollBar.vertical: KScrollBar {}
                     focus: true
                     highlightFollowsCurrentItem: false
+                    section.property: page.dateGrouped ? "dateGroup" : ""
+                    section.criteria: ViewSection.FullString
+                    section.delegate: LibraryDateSection {
+                        objectName: "libraryDateSection_" + section
+                        width: libraryList.width - metrics.scrollBarSlot
+                        height: density.groupHeaderHeight
+                        title: page.dateSectionTitle(section)
+                        contentPadding: density.rowPadding
+                        rightPadding: density.rowPadding
+                    }
                     Keys.onPressed: function (event) {
                         page.handleKey(event)
                     }
@@ -331,13 +379,14 @@ Item {
             ContentGridView {
                 id: libraryGrid
 
+                objectName: "libraryGridContainer"
                 anchors.fill: parent
-                visible: page.gridMode
+                visible: page.gridMode && !page.dateGrouped
                 model: page.entries
                 density: density
                 metrics: metrics
                 reserveDetail: true
-                viewObjectName: "libraryGrid"
+                viewObjectName: page.dateGrouped ? "libraryUngroupedGrid" : "libraryGrid"
 
                 onKeyPressed: function (event) {
                     page.handleKey(event)
@@ -351,56 +400,54 @@ Item {
                 }
 
                 delegate: Component {
-                    FileGridItem {
+                    LibraryGridCard {
                         id: libraryGridItem
 
                         width: libraryGrid.itemWidth
                         height: libraryGrid.itemHeight
-                        entry: modelData
-                        backend: page.backend
-                        rowIndex: index
-                        downloadNonPlayable: false
-                        selected: !!entry
-                                  && String(page.currentEntryId) === String(entry.id)
-                        contentPadding: density.gridCardPadding
-                        cardSpacing: density.gridCardSpacing
-                        nameLineHeight: density.gridNameLineHeight
-                        nameBlockHeight: density.gridNameBlockHeight
-                        thumbnailRadius: density.gridThumbnailRadius(width)
-                        textPixelSize: density.namePixelSize
-                        detailPixelSize: density.metaPixelSize
-                        detailLineHeight: density.gridDetailLineHeight
-                        iconPixelSize: density.gridIconPixelSize
-                        videoBadgeSize: density.gridVideoBadgeSize
-                        videoBadgeMargin: density.gridVideoBadgeMargin
-                        playLoading: entry ? page.isPlayLoading(entry.id) : false
-                        playing: entry ? page.isPlaying(entry.id) : false
-                        detailText: page.gridDetailText(entry)
+                        libraryPage: page
+                        entryData: modelData
+                        entryIndex: index
+                        density: density
 
-                        onSelectRequested: function (modifiers, itemIndex) {
-                            if (itemIndex < 0 || itemIndex >= page.entries.length)
+                        onEntrySelected: function (entryIndex, modifiers) {
+                            if (entryIndex < 0 || entryIndex >= page.entries.length)
                                 return
-                            libraryGrid.currentIndex = itemIndex
-                            page.selectIndex(itemIndex)
+                            libraryGrid.currentIndex = entryIndex
+                            page.selectIndex(entryIndex)
                         }
-                        onFolderOpenRequested: function (id) {
+                        onEntryFolderOpenRequested: function (id) {
                             if (page.backend)
                                 page.backend.openLibraryEntry(id)
                         }
-                        onPlayRequested: function (id, point) {
-                            page.playEntry(id, libraryGridItem.mapToItem(
-                                                 null, point.x, point.y))
+                        onEntryPlayRequested: function (id, position) {
+                            page.playEntry(id, position)
                         }
-                        onContextMenu: function (point) {
+                        onEntryContextMenuRequested: function (entry, position) {
                             if (!entry)
                                 return
                             page.selectIndex(libraryGridItem.rowIndex, false)
                             libraryGrid.forceActiveFocus()
-                            page.openEntryMenu(entry, libraryGridItem.mapToItem(
-                                                     null, point.x, point.y))
+                            page.openEntryMenu(entry, position)
                         }
                     }
                 }
+            }
+
+            LibraryGroupedGridView {
+                id: libraryGroupedGrid
+
+                objectName: "libraryGroupedGrid"
+                anchors.fill: parent
+                visible: page.gridMode && page.dateGrouped
+                libraryPage: page
+                density: density
+                metrics: metrics
+
+                onKeyPressed: function (event) {
+                    page.handleKey(event)
+                }
+                onContentHeightChanged: page.restoreScroll()
             }
 
             BusyIndicator {
@@ -486,6 +533,7 @@ Item {
             if (page.entries.length === 0) {
                 libraryList.currentIndex = -1
                 libraryGrid.currentIndex = -1
+                libraryGroupedGrid.currentIndex = -1
                 page.currentEntryId = ""
             } else {
                 let nextIndex = page.indexOfCurrentEntry()

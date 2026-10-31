@@ -10,18 +10,20 @@ type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 pub(super) fn list_from(entries: &[LibraryEntry], kind: LibraryKind) -> QVariantList {
     let mut rows = QVariantList::default();
+    let today = chrono::Local::now().date_naive();
     for entry in entries {
-        rows.append(QVariant::from(&entry_map(entry, kind)));
+        rows.append(QVariant::from(&entry_map(entry, kind, today)));
     }
     rows
 }
 
-fn entry_map(entry: &LibraryEntry, kind: LibraryKind) -> QVariantMap {
+fn entry_map(entry: &LibraryEntry, kind: LibraryKind, today: chrono::NaiveDate) -> QVariantMap {
     let mut map = files::entry_map(&entry.entry);
-    let event_text = entry
+    let event_time = entry
         .occurred_at
         .or(entry.entry.created_at)
-        .or(entry.entry.modified_at)
+        .or(entry.entry.modified_at);
+    let event_text = event_time
         .map(format_time)
         .unwrap_or_else(|| "—".to_owned());
     let progress_text = entry
@@ -43,12 +45,7 @@ fn entry_map(entry: &LibraryEntry, kind: LibraryKind) -> QVariantMap {
     map.insert_clone(
         &QString::from("eventText"),
         &QVariant::from(&QString::from(
-            entry
-                .occurred_at
-                .or(entry.entry.created_at)
-                .or(entry.entry.modified_at)
-                .map(format_time)
-                .unwrap_or_default(),
+            event_time.map(format_time).unwrap_or_default(),
         )),
     );
     map.insert_clone(
@@ -68,7 +65,36 @@ fn entry_map(entry: &LibraryEntry, kind: LibraryKind) -> QVariantMap {
         &QString::from("secondaryText"),
         &QVariant::from(&QString::from(event_text)),
     );
+    map.insert_clone(
+        &QString::from("dateGroup"),
+        &QVariant::from(&QString::from(if kind == LibraryKind::PlaybackHistory {
+            playback_date_group(entry.occurred_at, today)
+        } else {
+            ""
+        })),
+    );
     map
+}
+
+fn playback_date_group(
+    occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    today: chrono::NaiveDate,
+) -> &'static str {
+    let Some(event_date) = occurred_at.map(|time| time.with_timezone(&chrono::Local).date_naive())
+    else {
+        return "earlier";
+    };
+    date_group_for_date(event_date, today)
+}
+
+fn date_group_for_date(event_date: chrono::NaiveDate, today: chrono::NaiveDate) -> &'static str {
+    if event_date == today {
+        "today"
+    } else if today.pred_opt() == Some(event_date) {
+        "yesterday"
+    } else {
+        "earlier"
+    }
 }
 
 fn size_text(entry: &LibraryEntry) -> String {
@@ -99,7 +125,7 @@ fn format_time(time: chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
+    use chrono::{NaiveDate, TimeZone, Utc};
     use kichi_core::{EntryKind, FileEntry};
 
     fn entry() -> LibraryEntry {
@@ -142,6 +168,7 @@ mod tests {
         assert_eq!(text(&row, "primaryText"), "45%");
         assert!(text(&row, "secondaryText").starts_with("2026-10-31"));
         assert_eq!(text(&row, "eventId"), "event");
+        assert!(["today", "yesterday", "earlier"].contains(&text(&row, "dateGroup").as_str()));
     }
 
     #[test]
@@ -150,5 +177,29 @@ mod tests {
         let row = list.at(0).and_then(QVariant::value::<QVariantMap>).unwrap();
         assert_eq!(text(&row, "primaryText"), "2 KB");
         assert!(row.get(&QString::from("starred")).is_some());
+        assert!(text(&row, "dateGroup").is_empty());
+    }
+
+    #[test]
+    fn playback_date_groups_split_local_natural_days() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+        assert_eq!(
+            date_group_for_date(NaiveDate::from_ymd_opt(2026, 10, 31).unwrap(), today),
+            "today"
+        );
+        assert_eq!(
+            date_group_for_date(NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(), today),
+            "yesterday"
+        );
+        assert_eq!(
+            date_group_for_date(NaiveDate::from_ymd_opt(2026, 10, 29).unwrap(), today),
+            "earlier"
+        );
+    }
+
+    #[test]
+    fn playback_history_without_event_time_is_earlier() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+        assert_eq!(playback_date_group(None, today), "earlier");
     }
 }

@@ -162,6 +162,12 @@ TestCase {
         }
     }
 
+    function groupedRow(id, group) {
+        const item = row(id, true)
+        item.dateGroup = group
+        return item
+    }
+
     function publish(rows, loaded) {
         backend.libraryRows = rows
         backend.libraryLoaded = loaded !== false
@@ -465,5 +471,134 @@ TestCase {
         mouseClick(refreshItem)
         tryCompare(backend, "refreshCalls", 1)
         page.blankContextMenu.close()
+    }
+
+    function test_playback_history_list_has_fixed_date_sections() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish([
+            groupedRow("today", "today"),
+            groupedRow("yesterday", "yesterday"),
+            groupedRow("older", "earlier"),
+            groupedRow("missing", "earlier")
+        ], true)
+
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        compare(list.section.property, "dateGroup")
+        compare(list.count, 4)
+
+        var todayHeader = findChild(list, "libraryDateSection_today")
+        var yesterdayHeader = findChild(list, "libraryDateSection_yesterday")
+        var earlierHeader = findChild(list, "libraryDateSection_earlier")
+        verify(todayHeader !== null)
+        verify(yesterdayHeader !== null)
+        verify(earlierHeader !== null)
+        compare(todayHeader.title, "今天")
+        compare(yesterdayHeader.title, "昨天")
+        compare(earlierHeader.title, "更早")
+
+        page.selectIndex(2)
+        compare(list.currentIndex, 2)
+        compare(page.currentEntryId, "older")
+    }
+
+    function test_playback_history_grid_keeps_sections_and_card_actions() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish([
+            groupedRow("today", "today"),
+            groupedRow("yesterday", "yesterday"),
+            groupedRow("older", "earlier")
+        ], true)
+
+        page.setContentView("grid")
+        tryCompare(backend, "contentView", "grid")
+        var grouped = findChild(page, "libraryGroupedGrid")
+        verify(grouped !== null)
+        tryCompare(grouped, "visible", true)
+        tryCompare(grouped, "count", 3)
+
+        var todayHeader = findChild(grouped, "libraryDateSection_today")
+        var yesterdayHeader = findChild(grouped, "libraryDateSection_yesterday")
+        var earlierHeader = findChild(grouped, "libraryDateSection_earlier")
+        verify(todayHeader !== null)
+        verify(yesterdayHeader !== null)
+        verify(earlierHeader !== null)
+        compare(todayHeader.title, "今天")
+        compare(yesterdayHeader.title, "昨天")
+        compare(earlierHeader.title, "更早")
+
+        tryVerify(function () { return grouped.itemAtIndex(0) !== null })
+        var card = grouped.itemAtIndex(0)
+        compare(card.entry.id, "today")
+        page.selectIndex(1)
+        mouseClick(todayHeader, 20, 10)
+        compare(page.currentEntryId, "yesterday", "分区头不能改变当前条目")
+
+        mouseClick(card, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        compare(page.blankContextMenu.visible, false)
+        page.contextMenu.close()
+
+        mouseDoubleClickSequence(card, 30, 20)
+        tryCompare(backend, "playedId", "today")
+    }
+
+    function test_playback_history_hides_empty_date_sections() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish([
+            groupedRow("today", "today"),
+            groupedRow("older", "earlier")
+        ], true)
+
+        page.setContentView("grid")
+        var grouped = findChild(page, "libraryGroupedGrid")
+        verify(grouped !== null)
+        tryCompare(grouped, "visible", true)
+        tryVerify(function () { return grouped.rows.length === 4 })
+        verify(findChild(grouped, "libraryDateSection_today") !== null)
+        verify(findChild(grouped, "libraryDateSection_yesterday") === null)
+        verify(findChild(grouped, "libraryDateSection_earlier") !== null)
+    }
+
+    function test_playback_history_grouped_grid_keeps_its_scroll_position() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        const rows = []
+        for (let i = 0; i < 12; ++i)
+            rows.push(groupedRow("today-" + i, "today"))
+        for (let i = 0; i < 12; ++i)
+            rows.push(groupedRow("yesterday-" + i, "yesterday"))
+        for (let i = 0; i < 12; ++i)
+            rows.push(groupedRow("earlier-" + i, "earlier"))
+        publish(rows, true)
+
+        var list = findChild(page, "libraryList")
+        page.setContentView("grid")
+        var grouped = findChild(page, "libraryGroupedGrid")
+        var groupedList = findChild(page, "libraryGroupedList")
+        verify(grouped !== null)
+        verify(groupedList !== null)
+        tryCompare(grouped, "visible", true)
+        tryVerify(function () { return grouped.contentHeight > grouped.height })
+        tryVerify(function () { return !page.pendingScrollRestore })
+        groupedList.contentY = 240
+        tryCompare(groupedList, "contentY", 240)
+
+        page.setContentView("list")
+        tryCompare(backend, "contentView", "list")
+        tryVerify(function () { return !page.pendingScrollRestore })
+        list.contentY = 96
+        tryCompare(list, "contentY", 96)
+
+        page.setContentView("grid")
+        tryCompare(backend, "contentView", "grid")
+        tryCompare(grouped, "contentY", 240)
     }
 }

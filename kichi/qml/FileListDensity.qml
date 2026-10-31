@@ -38,6 +38,7 @@ Item {
 
     readonly property int rowHeight: Math.round(baseFontSize * 3.7 * densityScale)
     readonly property int headerRowHeight: Math.round(baseFontSize * 2.6 * densityScale)
+    readonly property int groupHeaderHeight: Math.round(baseFontSize * 2.9 * densityScale)
 
     // 目录 / 回收站 / 搜索结果的首列都是固定缩略图槽，
     // 没有可用缩略图时在同一个槽里回退为文件图标。
