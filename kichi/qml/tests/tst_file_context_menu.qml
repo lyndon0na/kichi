@@ -107,6 +107,17 @@ TestCase {
         compare(backend.batchCount, 0, "单条不调批量入口")
     }
 
+    function test_play_label_does_not_name_the_player() {
+        menu.openContext({ id: "video", name: "a.mkv", kind: "file", playable: true },
+                         Qt.point(20, 20), ["video"], false)
+        wait(60)
+
+        var item = findChild(menu, "playItem")
+        verify(item !== null, "菜单里有播放项")
+        verify(item.visible, "可播放文件应显示播放项")
+        compare(item.text, qsTr("播放"))
+    }
+
     function test_pending_single_entry_invites_you_to_transfers() {
         backend.pending = ["a"]
         var item = openMenu(["a"])

@@ -459,6 +459,7 @@ TestCase {
         compare(folderSpy.signalArguments[0][0], "context-folder-id")
 
         var video = task("context-video", "completed", 100)
+        video.kind = "file"
         video.name = "电影.mkv"
         video.fileId = "context-video-id"
         video.video = true
@@ -473,8 +474,12 @@ TestCase {
 
         openItem = findChild(page, "taskOpenFolderItem")
         playItem = findChild(page, "taskPlayItem")
+        var revealItem = findChild(page, "taskRevealLocationItem")
         compare(openItem.visible, false)
         verify(playItem.visible)
+        verify(revealItem.visible)
+        compare(playItem.text, "播放")
+        verify(playItem.y < revealItem.y, "媒体文件的播放入口应排在打开所在位置之前")
         mouseClick(playItem)
         wait(40)
         compare(playSpy.count, 1)

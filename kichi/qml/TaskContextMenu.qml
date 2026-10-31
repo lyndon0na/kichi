@@ -30,6 +30,15 @@ Item {
             popup(Qt.point(point.x, point.y))
         }
 
+        // 可播放媒体优先放第一项，减少右键后移动鼠标的距离。
+        MenuItem {
+            objectName: "taskPlayItem"
+            text: qsTr("播放")
+            visible: root.targetCanPlay
+            enabled: root.backend !== null && root.targetFileId.length > 0
+            onTriggered: root.playRequested(root.targetFileId, root.targetPoint)
+        }
+
         MenuItem {
             objectName: "taskOpenFolderItem"
             text: qsTr("打开文件夹")
@@ -46,14 +55,6 @@ Item {
             visible: root.targetCanRevealLocation
             enabled: root.backend !== null && root.targetFileId.length > 0
             onTriggered: root.revealLocationRequested(root.targetFileId)
-        }
-
-        MenuItem {
-            objectName: "taskPlayItem"
-            text: qsTr("播放（mpv）")
-            visible: root.targetCanPlay
-            enabled: root.backend !== null && root.targetFileId.length > 0
-            onTriggered: root.playRequested(root.targetFileId, root.targetPoint)
         }
 
         MenuSeparator {

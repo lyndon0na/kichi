@@ -73,7 +73,8 @@ Item {
 
         // 只有视频/音频才有播放入口；多选时只对单条开放
         MenuItem {
-            text: qsTr("播放（mpv）")
+            objectName: "playItem"
+            text: qsTr("播放")
             visible: root.targetPlayable && root.targetCount === 1
             enabled: root.backend !== null && !root.backend.filesLoading
                      && !root.backend.fileActionRunning
