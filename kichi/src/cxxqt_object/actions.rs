@@ -110,6 +110,7 @@ impl qobject::Kichi {
                 self.as_mut().reset_downloads();
                 self.as_mut().reset_search();
                 self.as_mut().reset_shares();
+                self.as_mut().reset_library();
                 self.as_mut().stop_task_polling();
             }
             Err(err) => self.as_mut().set_message(&format!("退出登录失败：{err}")),

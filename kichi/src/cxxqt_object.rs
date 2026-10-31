@@ -77,6 +77,14 @@ pub mod qobject {
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, shares, READ, NOTIFY = changed)]
         #[qproperty(bool, shares_loading, cxx_name = "sharesLoading", READ, NOTIFY = changed)]
+        /// 资料库三页共用的当前集合；`libraryKind` 标明这些行属于哪一页。
+        #[qproperty(QVariantList, library_rows, cxx_name = "libraryRows", READ, NOTIFY = changed)]
+        #[qproperty(QString, library_kind, cxx_name = "libraryKind", READ, NOTIFY = changed)]
+        #[qproperty(bool, library_loading, cxx_name = "libraryLoading", READ, NOTIFY = changed)]
+        #[qproperty(bool, library_loaded, cxx_name = "libraryLoaded", READ, NOTIFY = changed)]
+        #[qproperty(QString, library_error, cxx_name = "libraryError", READ, NOTIFY = changed)]
+        /// 集合真正替换时 +1；QML 据此把当前行复位并恢复焦点。
+        #[qproperty(i32, library_revision, cxx_name = "libraryRevision", READ, NOTIFY = changed)]
         /// 有创建或撤销分享的写请求在途
         #[qproperty(bool, share_action_running, cxx_name = "shareActionRunning", READ, NOTIFY = changed)]
         /// 刚创建成功的分享结果（QML 弹窗切到成功态后读取）
@@ -191,6 +199,16 @@ pub mod qobject {
         #[cxx_name = "taskLocationReady"]
         fn task_location_ready(self: Pin<&mut Self>, target_id: QString);
 
+        /// 资料库里的文件夹与内容已就绪，界面现在可以切到文件页。
+        #[qsignal]
+        #[cxx_name = "libraryFolderReady"]
+        fn library_folder_ready(self: Pin<&mut Self>);
+
+        /// 资料库条目的父目录已就绪，界面切到文件页并选中目标。
+        #[qsignal]
+        #[cxx_name = "libraryLocationReady"]
+        fn library_location_ready(self: Pin<&mut Self>, target_id: QString);
+
         #[qinvokable]
         #[cxx_name = "login"]
         fn login(
@@ -297,6 +315,16 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshShares"]
         fn refresh_shares(self: Pin<&mut Self>);
+
+        /// 读取资料库某一页；`kind` 只接受 recent-saved / playback-history / starred。
+        #[qinvokable]
+        #[cxx_name = "refreshLibrary"]
+        fn refresh_library(self: Pin<&mut Self>, kind: QString);
+
+        /// 从资料库打开文件夹，或跳到文件 / 文件夹所在位置。
+        #[qinvokable]
+        #[cxx_name = "openLibraryEntry"]
+        fn open_library_entry(self: Pin<&mut Self>, id: QString);
 
         /// 创建一个可包含多个文件 / 文件夹的分享。
         #[qinvokable]
@@ -611,6 +639,7 @@ mod file_actions;
 mod file_targets;
 mod files;
 mod folder_picker;
+mod library;
 mod notifications;
 mod play;
 mod play_history;
@@ -714,6 +743,19 @@ pub struct KichiRust {
     pub(crate) share_refresh_at: Option<std::time::Instant>,
     /// 分享列表请求代数：退出登录 / 重登后旧结果作废
     pub(crate) shares_epoch: u64,
+    /// 资料库三页共用的当前模型（QML 直接当 model 用）
+    pub(crate) library_rows: QVariantList,
+    /// 当前模型对应的资料库页面键值
+    pub(crate) library_kind: QString,
+    /// 当前资料库条目（播放查找、缩略图与打开位置共用）
+    pub(crate) library_entries: Vec<kichi_core::LibraryEntry>,
+    pub(crate) library_loading: bool,
+    pub(crate) library_loaded: bool,
+    pub(crate) library_error: QString,
+    /// 集合真正替换时 +1
+    pub(crate) library_revision: i32,
+    /// 资料库请求代数：退出登录 / 切页后旧结果作废
+    pub(crate) library_epoch: u64,
     /// 创建 / 撤销分享的写请求在途（防连点）
     pub(crate) share_action_running: bool,
     /// 分享写请求代数：退出登录后旧结果作废
@@ -910,6 +952,14 @@ impl Default for KichiRust {
             share_refresh_pending: false,
             share_refresh_at: None,
             shares_epoch: 0,
+            library_rows: QVariantList::default(),
+            library_kind: QString::default(),
+            library_entries: Vec::new(),
+            library_loading: false,
+            library_loaded: false,
+            library_error: QString::default(),
+            library_revision: 0,
+            library_epoch: 0,
             share_action_running: false,
             share_action_epoch: 0,
             share_created_url: QString::default(),
@@ -1011,6 +1061,12 @@ impl KichiRust {
             .iter()
             .find(|entry| entry.id == id)
             .or_else(|| self.search_index.get(id).map(|hit| &hit.entry))
+            .or_else(|| {
+                self.library_entries
+                    .iter()
+                    .map(|entry| &entry.entry)
+                    .find(|entry| entry.id == id)
+            })
             .map(|entry| entry.name.clone())
     }
 
@@ -1025,6 +1081,12 @@ impl KichiRust {
             .iter()
             .find(|entry| entry.id == id)
             .or_else(|| self.search_index.get(id).map(|hit| &hit.entry))
+            .or_else(|| {
+                self.library_entries
+                    .iter()
+                    .map(|entry| &entry.entry)
+                    .find(|entry| entry.id == id)
+            })
             .cloned()
     }
 

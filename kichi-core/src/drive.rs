@@ -442,6 +442,8 @@ pub(crate) struct FileDto {
     #[serde(default, deserialize_with = "lenient_u64")]
     size: u64,
     #[serde(default, deserialize_with = "lenient_time")]
+    created_time: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "lenient_time")]
     modified_time: Option<DateTime<Utc>>,
     #[serde(default, deserialize_with = "lenient_time")]
     delete_time: Option<DateTime<Utc>>,
@@ -460,6 +462,17 @@ pub(crate) struct FileDto {
     /// 所在文件夹 id：全盘列举时靠它还原真实路径；根目录的条目为空串
     #[serde(default)]
     parent_id: String,
+    /// 详情接口里不可靠；列表同时兼容显式布尔值和 `tags[].name == "STAR"`。
+    #[serde(default)]
+    starred: bool,
+    #[serde(default, deserialize_with = "lenient_tags")]
+    tags: Vec<FileTagDto>,
+}
+
+#[derive(Deserialize)]
+struct FileTagDto {
+    #[serde(default)]
+    name: String,
 }
 
 /// 审核状态 DTO：列表与详情共用（`media.rs` 的详情也要读它）。
@@ -478,9 +491,10 @@ pub(crate) fn audit_flagged(status: &str) -> bool {
 }
 
 impl FileDto {
-    /// 转换成领域类型（不消耗 `parent_id`，调用方先取走）。
+    /// 转换成领域类型。
     pub(crate) fn into_entry(self) -> FileEntry {
         let is_folder = self.kind == "drive#folder";
+        let starred = self.starred || self.tags.iter().any(|tag| tag.name == "STAR");
         let video = !is_folder
             && is_video(
                 &self.name,
@@ -514,9 +528,12 @@ impl FileDto {
                 EntryKind::File
             },
             size: self.size,
+            created_at: self.created_time,
             modified_at: self.modified_time,
+            parent_id: self.parent_id.trim().to_owned(),
             md5: (!self.md5_checksum.is_empty()).then_some(self.md5_checksum),
             audit_flagged: self.audit.is_some_and(|audit| audit_flagged(&audit.status)),
+            starred,
             media,
             video,
             thumbnail_url: if has_visual_thumbnail {
@@ -635,6 +652,29 @@ where
     Ok(DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|time| time.with_timezone(&Utc)))
+}
+
+/// 官方标签通常是 `[{"name":"STAR"}]`；兼容 `null` 和纯字符串数组，
+/// 未知形状直接忽略，不能因为标签字段让整个文件列表解析失败。
+fn lenient_tags<'de, D>(deserializer: D) -> Result<Vec<FileTagDto>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(serde_json::Value::Array(values)) = value else {
+        return Ok(Vec::new());
+    };
+    Ok(values
+        .into_iter()
+        .filter_map(|value| match value {
+            serde_json::Value::Object(mut object) => object
+                .remove("name")
+                .and_then(|name| name.as_str().map(str::to_owned))
+                .map(|name| FileTagDto { name }),
+            serde_json::Value::String(name) => Some(FileTagDto { name }),
+            _ => None,
+        })
+        .collect())
 }
 
 #[derive(Deserialize)]
@@ -771,13 +811,15 @@ mod tests {
             "kind": "drive#fileList",
             "files": [
                 {"id":"f1","name":"电影","kind":"drive#folder","size":"0",
+                 "created_time":"2026-10-20T12:00:00+08:00","starred":true,
                  "modified_time":"2026-10-20T12:34:56.789+08:00"},
                 {"id":"f2","name":"a.mkv","kind":"drive#file","size":"1099511627776",
                  "modified_time":null,"md5_checksum":"ABC",
+                 "parent_id":"folder-7","tags":[{"name":"STAR"}],
                  "audit":{"status":"STATUS_OK"},
                  "thumbnail_link":"https://sg-thumbnail-drive.mypikpak.com/v0/x/240/720"},
                 {"id":"f3","name":"bad.mkv","kind":"drive#file","size":"12",
-                 "modified_time":"","audit":{"status":"STATUS_BANNED"}}
+                 "modified_time":"","tags":null,"audit":{"status":"STATUS_BANNED"}}
             ],
             "next_page_token": "tok"
         }"#;
@@ -790,9 +832,17 @@ mod tests {
             Some(1_792_470_896),
             "带毫秒与时区的时间应正确换算"
         );
+        assert_eq!(
+            entries[0].created_at.map(|t| t.to_rfc3339()),
+            Some("2026-10-20T04:00:00+00:00".to_owned()),
+            "创建时间也应宽松解析"
+        );
+        assert!(entries[0].starred, "显式 starred 应识别");
 
         assert_eq!(entries[1].kind, EntryKind::File);
         assert_eq!(entries[1].size, 1_099_511_627_776, "字符串 size 应可解析");
+        assert_eq!(entries[1].parent_id, "folder-7");
+        assert!(entries[1].starred, "tags 里的 STAR 也应识别为已加星标");
         assert_eq!(entries[1].md5.as_deref(), Some("ABC"));
         assert!(!entries[1].audit_flagged);
         assert!(entries[1].media);

@@ -124,18 +124,27 @@ ApplicationWindow {
         // 窗口最小化 / 在托盘时照常切页，但不主动把窗口弹出来（现状）。
         function onLocateTransfer(sourceId) {
             backend.clearStatusMessage()
-            root.currentPage = 2
+            root.currentPage = pageIds.transfers
             transfersPage.focusSource(sourceId)
         }
 
         // 离线任务文件夹的路径与内容已在后台准备好，这时才切页。
         function onTaskFolderReady() {
-            root.currentPage = 0
+            root.currentPage = pageIds.files
         }
 
         // 离线任务产物的父目录已准备好，切到文件页后按产物 id 选中目标。
         function onTaskLocationReady(targetId) {
-            root.currentPage = 0
+            root.currentPage = pageIds.files
+            filesPage.revealEntryById(targetId)
+        }
+
+        function onLibraryFolderReady() {
+            root.currentPage = pageIds.files
+        }
+
+        function onLibraryLocationReady(targetId) {
+            root.currentPage = pageIds.files
             filesPage.revealEntryById(targetId)
         }
     }
@@ -224,7 +233,7 @@ ApplicationWindow {
                     ShareHeaderControls {
                         id: shareHeaderControls
 
-                        visible: root.currentPage === 1
+                        visible: root.currentPage === pageIds.shares
                         anchors.left: pageTitleLabel.right
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
@@ -233,7 +242,7 @@ ApplicationWindow {
                     }
 
                     TransferHeaderControls {
-                        visible: root.currentPage === 2
+                        visible: root.currentPage === pageIds.transfers
                         anchors.left: pageTitleLabel.right
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
@@ -242,7 +251,7 @@ ApplicationWindow {
                     }
 
                     TaskHeaderControls {
-                        visible: root.currentPage === 3
+                        visible: root.currentPage === pageIds.tasks
                         anchors.left: pageTitleLabel.right
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
@@ -251,7 +260,7 @@ ApplicationWindow {
                     }
 
                     TrashHeaderControls {
-                        visible: root.currentPage === 4
+                        visible: root.currentPage === pageIds.trash
                         anchors.left: pageTitleLabel.right
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
@@ -260,7 +269,7 @@ ApplicationWindow {
                     }
 
                     RowLayout {
-                        visible: root.currentPage === 5
+                        visible: root.currentPage === pageIds.settings
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: theme.gapXs
@@ -283,7 +292,7 @@ ApplicationWindow {
                     FilesPageSearchBar {
                         id: searchBar
 
-                        visible: root.currentPage === 0
+                        visible: root.currentPage === pageIds.files
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.verticalCenter: parent.verticalCenter
                         // 真正居中，同时按左右标题 / 操作区的剩余空间收窄，避免重叠。
@@ -303,7 +312,7 @@ ApplicationWindow {
                     FilesPageHeaderActions {
                         id: filesHeaderActions
 
-                        visible: root.currentPage === 0
+                        visible: root.currentPage === pageIds.files
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         backend: backend
@@ -321,7 +330,7 @@ ApplicationWindow {
                     // 面包屑到表头的距离 = 页名到面包屑的距离
                     Layout.bottomMargin: 0
                     Layout.preferredHeight: 30
-                    visible: root.currentPage === 0
+                    visible: root.currentPage === pageIds.files
                     spacing: 4
 
                     // 面包屑：上一级 + 各级目录，可点着往回跳。
@@ -541,7 +550,7 @@ ApplicationWindow {
                     SharesPage {
                         id: sharesPage
                         backend: backend
-                        active: root.currentPage === 1
+                        active: root.currentPage === pageIds.shares
                     }
 
                     TransfersPage {
@@ -553,7 +562,7 @@ ApplicationWindow {
                     TasksPage {
                         id: tasksPage
                         backend: backend
-                        active: root.currentPage === 3
+                        active: root.currentPage === pageIds.tasks
                         onOpenFolderRequested: function (fileId) {
                             backend.openTaskFolder(fileId)
                         }
@@ -575,6 +584,18 @@ ApplicationWindow {
                         backend: backend
                         onSignOutRequested: signOutDialog.open()
                     }
+
+                    RecentSavedPage {
+                        backend: backend
+                    }
+
+                    PlaybackHistoryPage {
+                        backend: backend
+                    }
+
+                    StarredPage {
+                        backend: backend
+                    }
                 }
             }
         }
@@ -587,7 +608,9 @@ ApplicationWindow {
     PlayToast {
         id: playToast
         backend: backend
-        inlineLoading: root.currentPage === 0 || root.currentPage === 3
+        inlineLoading: root.currentPage === pageIds.files
+                       || root.currentPage === pageIds.tasks
+                       || pageIds.libraryPages.indexOf(root.currentPage) >= 0
     }
 
     // 底栏：单行单槽。默认显示当前页面 / 目录上下文；进度、错误和需要留意的
@@ -667,7 +690,7 @@ ApplicationWindow {
         onAccepted: backend.signOut()
     }
 
-    property int currentPage: 0
+    property int currentPage: pageIds.files
 
     /// 面包屑的各级目录名。模板里的 model / 长度 / 折叠判断都从这里取，
     // 保证三者永远是同一份数据（分开读后端时，改一处容易忘另一处）
@@ -678,22 +701,32 @@ ApplicationWindow {
         id: metrics
     }
 
+    PageIndex {
+        id: pageIds
+    }
+
     // 全局视觉令牌（圆角 / 间距 / 字号 / 表面色）
     KTheme {
         id: theme
     }
 
     function pageTitle() {
-        if (root.currentPage === 1)
+        if (root.currentPage === pageIds.shares)
             return qsTr("分享")
-        if (root.currentPage === 2)
+        if (root.currentPage === pageIds.transfers)
             return qsTr("传输任务")
-        if (root.currentPage === 3)
+        if (root.currentPage === pageIds.tasks)
             return qsTr("离线任务")
-        if (root.currentPage === 4)
+        if (root.currentPage === pageIds.trash)
             return qsTr("回收站")
-        if (root.currentPage === 5)
+        if (root.currentPage === pageIds.settings)
             return qsTr("设置")
+        if (root.currentPage === pageIds.recentSaved)
+            return qsTr("最近保存")
+        if (root.currentPage === pageIds.playbackHistory)
+            return qsTr("播放历史")
+        if (root.currentPage === pageIds.starred)
+            return qsTr("已加星标")
         return qsTr("我的文件")
     }
 
@@ -702,7 +735,7 @@ ApplicationWindow {
     function pageContextText() {
         if (!backend)
             return ""
-        if (root.currentPage === 0) {
+        if (root.currentPage === pageIds.files) {
             if (backend.searchActive) {
                 if (!backend.searchSettled) {
                     return qsTr("全盘搜索 · 已扫 %1 条，命中 %2 条")
@@ -719,12 +752,12 @@ ApplicationWindow {
                 return qsTr("正在读取「%1」…").arg(folder)
             return qsTr("%1 · 共 %2 项").arg(folder).arg(backend.files.length)
         }
-        if (root.currentPage === 1) {
+        if (root.currentPage === pageIds.shares) {
             if (backend.sharesLoading)
                 return qsTr("分享 · 正在读取…")
             return qsTr("分享 · 共 %1 条").arg(backend.shares.length)
         }
-        if (root.currentPage === 2) {
+        if (root.currentPage === pageIds.transfers) {
             const active = transfersPage.activeCount
             const queued = transfersPage.queuedCount
             const paused = transfersPage.pausedCount
@@ -732,7 +765,7 @@ ApplicationWindow {
                 return qsTr("传输任务 · 暂无进行中的任务")
             return qsTr("传输任务 · %1").arg(transfersPage.statusText)
         }
-        if (root.currentPage === 3) {
+        if (root.currentPage === pageIds.tasks) {
             if (backend.tasksLoading)
                 return qsTr("离线任务 · 正在读取…")
             const count = backend.tasks.length
@@ -744,13 +777,27 @@ ApplicationWindow {
             }
             return qsTr("离线任务 · 共 %1 条").arg(count)
         }
-        if (root.currentPage === 4) {
+        if (root.currentPage === pageIds.trash) {
             if (backend.trashLoading
                     || (!backend.trashLoaded && backend.trashError.length === 0))
                 return qsTr("回收站 · 正在读取…")
             if (!backend.trashLoaded && backend.trashError.length > 0)
                 return qsTr("回收站 · 读取失败")
             return qsTr("回收站 · 共 %1 项").arg(backend.trashFiles.length)
+        }
+        if (pageIds.libraryPages.indexOf(root.currentPage) >= 0) {
+            const title = root.pageTitle()
+            if (backend.libraryLoading)
+                return qsTr("%1 · 正在读取…").arg(title)
+            if (backend.libraryError.length > 0)
+                return qsTr("%1 · 读取失败").arg(title)
+            if (backend.libraryKind === "recent-saved" && root.currentPage === pageIds.recentSaved
+                    || backend.libraryKind === "playback-history"
+                       && root.currentPage === pageIds.playbackHistory
+                    || backend.libraryKind === "starred" && root.currentPage === pageIds.starred) {
+                return qsTr("%1 · 共 %2 项").arg(title).arg(backend.libraryRows.length)
+            }
+            return title
         }
         return qsTr("设置")
     }

@@ -7,6 +7,7 @@ use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 const QML_FILES: &[&str] = &[
     "qml/main.qml",
+    "qml/PageIndex.qml",
     "qml/LoginPage.qml",
     "qml/SideBar.qml",
     "qml/AccountCard.qml",
@@ -17,6 +18,12 @@ const QML_FILES: &[&str] = &[
     "qml/KPlayingBars.qml",
     "qml/VideoLoadingOverlay.qml",
     "qml/FilesPage.qml",
+    "qml/LibraryPage.qml",
+    "qml/LibraryRow.qml",
+    "qml/LibraryTableHeader.qml",
+    "qml/RecentSavedPage.qml",
+    "qml/PlaybackHistoryPage.qml",
+    "qml/StarredPage.qml",
     "qml/FilesPageMenu.qml",
     "qml/FilesPagePlayMenu.qml",
     "qml/FilesPageSearchBar.qml",

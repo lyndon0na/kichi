@@ -10,6 +10,7 @@ mod download_naming;
 mod download_resume;
 mod folder_trail;
 mod identity;
+pub(crate) mod library;
 pub(crate) mod limits;
 pub mod media;
 pub mod partials;

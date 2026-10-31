@@ -11,7 +11,7 @@ import QtQuick.Shapes
 Item {
     id: icon
 
-    /// folder / share / transfer / download / trash / settings / logout
+    /// folder / clock / history / star / share / transfer / download / trash / settings / logout
     /// 以及文件类型：file / video / music / photo / pdf / document /
     /// spreadsheet / presentation / archive / code / subtitle / application / torrent
     property string name: ""
@@ -22,6 +22,9 @@ Item {
 
     readonly property var pathData: ({
         folder: "M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2",
+        clock: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0 M12 7v5l3 3",
+        history: "M12 8l0 4l2 2 M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5",
+        star: "M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z",
         download: "M19 18a3.5 3.5 0 0 0 0 -7h-1a5 5 0 0 0 -9.3 -2a4.6 4.6 0 0 0 -2.7 8.4"
                   + " M12 13v8 M9 18l3 3l3 -3",
         // Tabler「arrows-exchange」：左右双箭头，和云朵下载区分开

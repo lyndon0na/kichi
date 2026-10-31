@@ -527,6 +527,14 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
                 .to_string()
         })
         .unwrap_or_default();
+    let created = entry
+        .created_at
+        .map(|time| {
+            time.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
 
     let mut map = QVariantMap::default();
     map.insert_clone(&QString::from("id"), &text(&entry.id));
@@ -534,6 +542,9 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
     map.insert_clone(&QString::from("kind"), &text(kind));
     map.insert_clone(&QString::from("sizeText"), &text(&size));
     map.insert_clone(&QString::from("modifiedText"), &text(&modified));
+    map.insert_clone(&QString::from("createdText"), &text(&created));
+    map.insert_clone(&QString::from("parentId"), &text(entry.parent_id.as_str()));
+    map.insert_clone(&QString::from("starred"), &QVariant::from(&entry.starred));
     map.insert_clone(
         &QString::from("auditFlag"),
         &QVariant::from(&entry.audit_flagged),
@@ -566,9 +577,12 @@ mod sort_tests {
             name: name.to_owned(),
             kind,
             size,
+            created_at: None,
             modified_at: Utc.with_ymd_and_hms(2026, 1, day, 0, 0, 0).single(),
+            parent_id: String::new(),
             md5: None,
             audit_flagged: false,
+            starred: false,
             media: false,
             video: false,
             thumbnail_url: String::new(),

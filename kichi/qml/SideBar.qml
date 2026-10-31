@@ -16,6 +16,7 @@ Rectangle {
     signal pageRequested(int pageIndex)
 
     KTheme { id: theme }
+    PageIndex { id: pages }
 
     color: theme.surfaceSheet
 
@@ -27,12 +28,15 @@ Rectangle {
         Repeater {
             // 显示顺序与 main.qml 的页面索引解耦；page 始终对应实际页面。
             model: [
-                { "page": 0, "label": qsTr("我的文件"), "icon": "folder" },
-                { "page": 3, "label": qsTr("离线任务"), "icon": "download" },
-                { "page": 1, "label": qsTr("分享"), "icon": "share" },
-                { "page": 4, "label": qsTr("回收站"), "icon": "trash" },
-                { "page": 2, "label": qsTr("传输任务"), "icon": "transfer" },
-                { "page": 5, "label": qsTr("设置"), "icon": "settings" }
+                { "page": pages.files, "label": qsTr("我的文件"), "icon": "folder" },
+                { "page": pages.recentSaved, "label": qsTr("最近保存"), "icon": "clock" },
+                { "page": pages.playbackHistory, "label": qsTr("播放历史"), "icon": "history" },
+                { "page": pages.starred, "label": qsTr("已加星标"), "icon": "star" },
+                { "page": pages.tasks, "label": qsTr("离线任务"), "icon": "download" },
+                { "page": pages.shares, "label": qsTr("分享"), "icon": "share" },
+                { "page": pages.trash, "label": qsTr("回收站"), "icon": "trash" },
+                { "page": pages.transfers, "label": qsTr("传输任务"), "icon": "transfer" },
+                { "page": pages.settings, "label": qsTr("设置"), "icon": "settings" }
             ]
 
             delegate: Button {

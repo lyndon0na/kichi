@@ -50,10 +50,16 @@ pub struct FileEntry {
     pub kind: EntryKind,
     /// 字节数；文件夹为 0
     pub size: u64,
+    /// 官方创建时间，可能缺失
+    pub created_at: Option<DateTime<Utc>>,
     pub modified_at: Option<DateTime<Utc>>,
+    /// 直接父目录 id；根目录条目为空串
+    pub parent_id: String,
     pub md5: Option<String>,
     /// 审核状态异常（官方标记违规等），UI 需提示
     pub audit_flagged: bool,
+    /// 官方系统标签里带 `STAR`；详情接口的同名字段不可靠
+    pub starred: bool,
     /// 官方归类为媒体（视频/音频），界面上可显示播放入口
     pub media: bool,
     /// 官方明确归类为视频（缩略图角标用）

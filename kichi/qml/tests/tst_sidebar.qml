@@ -26,7 +26,7 @@ TestCase {
     }
 
     function test_order_and_page_mapping() {
-        const expectedPages = [0, 3, 1, 4, 2, 5]
+        const expectedPages = [0, 6, 7, 8, 3, 1, 4, 2, 5]
         let previousY = -1
 
         for (let i = 0; i < expectedPages.length; ++i) {

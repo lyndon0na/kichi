@@ -92,7 +92,8 @@ impl qobject::Kichi {
             self.entries
                 .iter()
                 .chain(self.trash_list.iter().map(|entry| &entry.entry))
-                .chain(self.search_index.values().map(|hit| &hit.entry)),
+                .chain(self.search_index.values().map(|hit| &hit.entry))
+                .chain(self.library_entries.iter().map(|entry| &entry.entry)),
             id,
         )
         .or_else(|| find_task_thumbnail_url(self.task_list.iter(), id))
@@ -130,9 +131,12 @@ mod tests {
             name: "sample.mp4".to_owned(),
             kind: EntryKind::File,
             size: 1,
+            created_at: None,
             modified_at: None,
+            parent_id: String::new(),
             md5: None,
             audit_flagged: false,
+            starred: false,
             media: true,
             video: true,
             thumbnail_url: thumbnail_url.to_owned(),
