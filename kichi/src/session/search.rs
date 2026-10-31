@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn scan_end_names_are_stable_for_qml() {
-        // QML 按字符串分支，改名要同步改 SearchResults.qml
+        // QML 按字符串分支显示搜索状态，改名要同步改 SearchStatusBar.qml
         assert_eq!(ScanEnd::Finished.as_str(), "finished");
         assert_eq!(ScanEnd::Stopped.as_str(), "stopped");
         assert_eq!(ScanEnd::BrokenPaging.as_str(), "broken");

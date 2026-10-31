@@ -2,8 +2,8 @@ import QtQuick
 
 // 文件列表的密度：行高 / 字号 / 图标 / 列宽。
 //
-// 表头（FileListHeader）、每一行（FileRow）和搜索结果（SearchResults）
-// 都从这里取同一组数值——只改这一处，三边一起变，不会出现
+// 表头（FileListHeader）、列表行（FileRow）、网格卡片（FileGridItem）和
+// 搜索结果都从这里取同一组数值——只改这一处，各视图一起变，不会出现
 // 「表头 100px、行里 90px」的错位（见 docs/pitfalls.md 第 8 条）。
 //
 // 基准取应用默认字体（本机 KDE 配的是 Noto Sans 10pt）：字体按点值配置时
@@ -39,18 +39,12 @@ Item {
     readonly property int rowHeight: Math.round(baseFontSize * 3.7 * densityScale)
     readonly property int headerRowHeight: Math.round(baseFontSize * 2.6 * densityScale)
 
-    // 搜索结果仍用紧凑图标列；目录 / 回收站的首列是固定缩略图槽，
+    // 目录 / 回收站 / 搜索结果的首列都是固定缩略图槽，
     // 没有可用缩略图时在同一个槽里回退为文件图标。
-    readonly property int iconColumnWidth: Math.round(22 * densityScale)
     readonly property int thumbnailSlotWidth: Math.round(36 * densityScale)
     readonly property int thumbnailSlotHeight: Math.round(24 * densityScale)
     readonly property int sizeColumnWidth: Math.round(96 * densityScale)
     readonly property int modifiedColumnWidth: Math.round(150 * densityScale)
-
-    // 搜索结果的行是两行（名字 + 所在文件夹），行高和列宽单独一档
-    readonly property int resultRowHeight: Math.round(rowHeight * 1.15)
-    readonly property int resultSizeColumnWidth: Math.round(96 * densityScale)
-    readonly property int resultModifiedColumnWidth: Math.round(150 * densityScale)
 
     // 水平内边距与列间距：FileRow 显式用它，表头也用同一个值，
     // 不跟控件风格的默认 padding 走（风格默认值会随风格变）。
@@ -75,6 +69,8 @@ Item {
     readonly property int gridNameLineCount: 2
     readonly property int gridNameLineHeight: Math.round(namePixelSize * 1.35)
     readonly property int gridNameBlockHeight: gridNameLineHeight * gridNameLineCount
+    // 搜索结果在网格名片下多一行所在文件夹；普通网格不占这一行。
+    readonly property int gridDetailLineHeight: Math.round(metaPixelSize * 1.35)
 
     /// 网格缩略图在大卡片上按宽度略微增大圆角，避免固定半径看起来仍是直角。
     function gridThumbnailRadius(itemWidth) {
@@ -84,10 +80,11 @@ Item {
     }
 
     /// 一个网格委托的完整高度（不含行与行之间的 gridRowGap）。
-    function gridItemHeight(itemWidth) {
+    function gridItemHeight(itemWidth, hasDetail) {
         const thumbWidth = Math.max(1, itemWidth - gridCardPadding * 2)
         const thumbHeight = Math.max(1, Math.ceil(thumbWidth * 2 / 3))
         return gridCardPadding * 2 + thumbHeight + gridCardSpacing
                 + gridNameBlockHeight
+                + (hasDetail === true ? gridDetailLineHeight : 0)
     }
 }

@@ -11,9 +11,15 @@ QtObject {
     property var selection: null
     property var fileList: null
     property var menu: null
+    /// 当前视图真正显示的条目：普通目录或搜索结果。
+    property var entries: []
     property bool searching: false
+    /// 搜索结果已发出目录跳转，但目标目录仍在加载：暂时不接受重复导航。
+    property bool navigationLocked: false
     /// 当前活动视图："list" / "grid"；滚动位置按「目录 + 视图」分别记住
     property string viewMode: "list"
+
+    signal folderOpenRequested(string id)
 
     // —— 滚动位置记忆（目录 id → contentY）——
     // 进目录 / 返回 / 刷新 / 移动完成后都不跳回顶部。
@@ -24,10 +30,9 @@ QtObject {
     property int seenFilesRevision: -1
 
     function entryForId(id) {
-        const entries = ctl.backend ? ctl.backend.files : []
-        for (let i = 0; i < entries.length; i++) {
-            if (entries[i] && entries[i].id === id)
-                return entries[i]
+        for (let i = 0; i < ctl.entries.length; i++) {
+            if (ctl.entries[i] && ctl.entries[i].id === id)
+                return ctl.entries[i]
         }
         return null
     }
@@ -40,7 +45,7 @@ QtObject {
         const wanted = ({})
         for (let i = 0; i < ids.length; i++)
             wanted[ids[i]] = true
-        const entries = ctl.backend.files
+        const entries = ctl.entries
         for (let i = 0; i < entries.length; i++) {
             const entry = entries[i]
             if (entry && wanted[entry.id] && entry.kind === "folder")
@@ -52,8 +57,10 @@ QtObject {
     // —— 滚动位置 ——
 
     function scrollKeyFor(view) {
-        const dir = ctl.backend ? ctl.backend.currentDirId : ""
-        return String(dir) + ":" + String(view)
+        const scope = ctl.searching
+                    ? "search"
+                    : (ctl.backend ? ctl.backend.currentDirId : "")
+        return String(scope) + ":" + String(view)
     }
 
     function rememberScroll() {
@@ -73,7 +80,7 @@ QtObject {
         if (pendingViewMode.length > 0 && pendingViewMode !== viewMode)
             return
         // 空目录或尚未布局：清掉待恢复值，别留到下一次无关刷新再跳
-        if (!ctl.backend || ctl.backend.files.length === 0) {
+        if (!ctl.backend || ctl.entries.length === 0) {
             pendingScrollY = -1
             pendingViewMode = ""
             return
@@ -105,6 +112,12 @@ QtObject {
     function noteFilesRevision() {
         if (!ctl.backend)
             return
+        // 搜索批次更新不一定改 filesRevision；结果模型一变就先清掉已消失的选择。
+        if (ctl.searching) {
+            if (ctl.selection)
+                ctl.selection.prune(ctl.entries)
+            return
+        }
         const revision = ctl.backend.filesRevision
         if (revision === seenFilesRevision)
             return
@@ -172,11 +185,15 @@ QtObject {
     // —— 键盘快捷键（挂在列表控件上，避开 Wayland 下窗口级 Keys 不可靠）——
 
     function handleKey(event) {
-        if (!ctl.backend || ctl.searching)
+        if (!ctl.backend)
             return
+        if (ctl.navigationLocked) {
+            event.accepted = true
+            return
+        }
         const ctrl = (event.modifiers & Qt.ControlModifier) !== 0
         if (ctrl && event.key === Qt.Key_A) {
-            ctl.selection.selectAll(ctl.backend.files)
+            ctl.selection.selectAll(ctl.entries)
             event.accepted = true
             return
         }
@@ -205,12 +222,17 @@ QtObject {
             const entry = id ? ctl.entryForId(id) : null
             // 只对文件夹生效：回车不应误触发播放 / 下载
             if (entry && entry.kind === "folder") {
-                ctl.navigateToDir(entry.id)
+                if (ctl.searching)
+                    ctl.folderOpenRequested(entry.id)
+                else
+                    ctl.navigateToDir(entry.id)
                 event.accepted = true
             }
             return
         }
         if (event.key === Qt.Key_Backspace) {
+            if (ctl.searching)
+                return
             const count = ctl.backend.breadcrumb.length
             if (count > 1) {
                 ctl.goParent()

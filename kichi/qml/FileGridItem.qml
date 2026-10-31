@@ -20,6 +20,15 @@ ItemDelegate {
     /// 播放器已经真正开播、尚未退出
     property bool playing: false
     readonly property bool showPlayingState: card.playing && !card.playLoading
+    /// 可选的路径说明（搜索结果用它显示所在文件夹）。
+    property string detailText: ""
+    property bool detailClickable: false
+    readonly property bool detailVisible: detailText.length > 0
+    readonly property bool detailHovered: detailVisible && detailClickable
+                                             && mouseArea.containsMouse
+                                             && card.pointerOver(gridDetail,
+                                                                 mouseArea.mouseX,
+                                                                 mouseArea.mouseY)
 
     // 数值由 FilesPage 从 FileListDensity 下发，和网格列宽一起计算。
     property int contentPadding: 5
@@ -28,6 +37,8 @@ ItemDelegate {
     property int nameBlockHeight: 38
     property int thumbnailRadius: 8
     property int textPixelSize: 14
+    property int detailPixelSize: 12
+    property int detailLineHeight: 17
     property int iconPixelSize: 28
     property int videoBadgeSize: 28
     property int videoBadgeMargin: 7
@@ -36,11 +47,13 @@ ItemDelegate {
     signal playRequested(string id, point position)
     signal selectRequested(int modifiers, int index)
     signal folderOpenRequested(string id)
+    signal detailRequested()
 
     readonly property real thumbnailWidth: Math.max(1, width - contentPadding * 2)
     readonly property int thumbnailHeight: Math.max(1, Math.ceil(thumbnailWidth * 2 / 3))
     readonly property int cardHeight: contentPadding * 2 + thumbnailHeight + cardSpacing
                                       + nameBlockHeight
+                                      + (detailVisible ? detailLineHeight : 0)
 
     leftPadding: contentPadding
     rightPadding: contentPadding
@@ -76,7 +89,8 @@ ItemDelegate {
         z: 1
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
-        cursorShape: card.entry && card.entry.kind === "folder"
+        cursorShape: card.detailHovered
+                     || (card.entry && card.entry.kind === "folder")
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
         onClicked: function (mouse) {
@@ -87,11 +101,15 @@ ItemDelegate {
                     card.contextMenu(Qt.point(mouse.x, mouse.y))
                 return
             }
+            if (card.detailHovered) {
+                card.detailRequested()
+                return
+            }
             card.selectRequested(mouse.modifiers, card.rowIndex)
         }
 
         onDoubleClicked: function (mouse) {
-            if (mouse.button === Qt.LeftButton)
+            if (mouse.button === Qt.LeftButton && !card.detailHovered)
                 card.activate(Qt.point(mouse.x, mouse.y))
         }
     }
@@ -260,6 +278,22 @@ ItemDelegate {
             externallyHovered: mouseArea.containsMouse
                                && card.pointerOver(gridName, mouseArea.mouseX,
                                                    mouseArea.mouseY)
+        }
+
+        ElidedLabel {
+            id: gridDetail
+            objectName: "gridDetail"
+
+            visible: card.detailVisible
+            Layout.fillWidth: true
+            Layout.preferredHeight: card.detailVisible ? card.detailLineHeight : 0
+            text: card.detailText
+            font.pixelSize: card.detailPixelSize
+            color: card.detailClickable ? theme.accent : theme.textMuted
+            maximumLineCount: 1
+            elide: Text.ElideMiddle
+            verticalAlignment: Text.AlignVCenter
+            externallyHovered: card.detailHovered
         }
 
     }

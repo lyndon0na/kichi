@@ -23,6 +23,15 @@ ItemDelegate {
     /// 播放器已经真正开播、尚未退出
     property bool playing: false
     readonly property bool showPlayingState: row.playing && !row.playLoading
+    /// 可选的第二行说明（搜索结果用它显示所在文件夹）。
+    property string detailText: ""
+    property bool detailClickable: false
+    readonly property bool detailVisible: detailText.length > 0
+    readonly property bool detailHovered: detailVisible && detailClickable
+                                             && mouseArea.containsMouse
+                                             && row.pointerOver(detailLabel,
+                                                                mouseArea.mouseX,
+                                                                mouseArea.mouseY)
     // 列宽由页面统一给出，与表头（FileListHeader）同一组数值
     property int thumbnailSlotWidth: 36
     property int thumbnailSlotHeight: 24
@@ -61,6 +70,8 @@ ItemDelegate {
     signal selectRequested(int modifiers, int index)
     // 双击文件夹：交给页面先记滚动位置再进目录
     signal folderOpenRequested(string id)
+    // 点击第二行说明（搜索结果里的「所在文件夹」）
+    signal detailRequested()
 
     icon.name: ""
     icon.source: ""
@@ -85,7 +96,8 @@ ItemDelegate {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         // 悬停底色要用 containsMouse，必须开 hoverEnabled（默认关闭）
         hoverEnabled: true
-        cursorShape: row.entry && row.entry.kind === "folder"
+        cursorShape: row.detailHovered
+                     || (row.entry && row.entry.kind === "folder")
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
         onClicked: function (mouse) {
@@ -96,11 +108,15 @@ ItemDelegate {
                     row.contextMenu(Qt.point(mouse.x, mouse.y))
                 return
             }
+            if (row.detailHovered) {
+                row.detailRequested()
+                return
+            }
             row.selectRequested(mouse.modifiers, row.rowIndex)
         }
 
         onDoubleClicked: function (mouse) {
-            if (mouse.button === Qt.LeftButton)
+            if (mouse.button === Qt.LeftButton && !row.detailHovered)
                 row.activate(Qt.point(mouse.x, mouse.y))
         }
     }
@@ -205,15 +221,17 @@ ItemDelegate {
             }
         }
 
-        Item {
+        ColumnLayout {
             id: nameGroup
             Layout.fillWidth: true
             Layout.fillHeight: true
+            spacing: 0
 
             Row {
                 id: nameLine
 
-                anchors.fill: parent
+                Layout.fillWidth: true
+                Layout.fillHeight: true
                 spacing: 4
                 readonly property int extraCount: (rowPlayingStatus.visible ? 1 : 0)
                                                     + (auditLabel.visible ? 1 : 0)
@@ -285,6 +303,21 @@ ItemDelegate {
                     verticalAlignment: Text.AlignVCenter
                     color: theme.danger
                 }
+            }
+
+            ElidedLabel {
+                id: detailLabel
+                objectName: "fileRowDetail"
+
+                visible: row.detailVisible
+                Layout.fillWidth: true
+                Layout.preferredHeight: row.detailVisible ? row.metaPixelSize + 4 : 0
+                text: row.detailText
+                font.pixelSize: row.metaPixelSize
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideMiddle
+                color: row.detailClickable ? theme.accent : theme.textMuted
+                externallyHovered: row.detailHovered
             }
         }
 

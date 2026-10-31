@@ -12,7 +12,7 @@ Item {
 
     property var backend: null
 
-    // 扫描进行中：按钮置灰；停止入口在结果头里（SearchResults.qml）
+    // 扫描进行中：按钮置灰；停止入口在搜索状态行（SearchStatusBar.qml）
     readonly property bool scanning: backend !== null
                                       && backend.searchActive
                                       && !backend.searchSettled

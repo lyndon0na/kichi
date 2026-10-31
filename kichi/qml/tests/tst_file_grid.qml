@@ -3,7 +3,7 @@ import QtTest
 import ".."
 
 // 文件页网格视图回归：
-// - 网格使用 3:2 缩略图，下面只显示最多两行文件名；
+// - 网格使用 3:2 缩略图，普通目录只显示最多两行文件名；
 // - 类型 / 大小 / 修改时间不占卡片文字区，违规状态留在缩略图角标；
 // - 列表 / 网格切换沿用同一份文件和选择模型；
 // - 两种视图各自记住滚动位置，切换回来不跳顶部。
@@ -21,8 +21,13 @@ TestCase {
         id: fakeBackend
 
         property var files: []
+        property var searchResults: []
         property string fileView: "list"
         property bool searchActive: false
+        property bool searchSettled: true
+        property bool searchTruncated: false
+        property string searchStatus: ""
+        property string searchQuery: ""
         property bool filesLoading: false
         property bool filesStale: false
         property int filesRevision: 1
@@ -47,6 +52,8 @@ TestCase {
         property int cancelPlayCalls: 0
         property int newFolderCalls: 0
         property int refreshCalls: 0
+        property int searchOpenCalls: 0
+        property int searchRevealCalls: 0
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
@@ -84,6 +91,19 @@ TestCase {
         function exitSearch() {}
         function searchLocal(text) {}
         function searchAll() {}
+        function stopSearch() {}
+        function searchOpenFolder(id) {
+            searchOpenCalls += 1
+            searchActive = false
+            searchResults = []
+            searchStatus = ""
+            searchTruncated = false
+            filesLoading = true
+            changed()
+        }
+        function searchRevealFolder(id, isFolder) {
+            searchRevealCalls += 1
+        }
         function requestPlay(id) {}
         function downloadEntry(id) {}
         function isDownloadPending(id) { return false }
@@ -199,8 +219,14 @@ TestCase {
         viewToggle = null
         headerActions = null
         fakeBackend.files = []
+        fakeBackend.searchResults = []
         fakeBackend.fileView = "list"
         fakeBackend.searchActive = false
+        fakeBackend.searchSettled = true
+        fakeBackend.searchTruncated = false
+        fakeBackend.searchStatus = ""
+        fakeBackend.searchQuery = ""
+        fakeBackend.filesLoading = false
         fakeBackend.filesRevision = 1
         fakeBackend.thumbnailRequests = 0
         fakeBackend.playLoading = false
@@ -209,6 +235,8 @@ TestCase {
         fakeBackend.cancelPlayCalls = 0
         fakeBackend.newFolderCalls = 0
         fakeBackend.refreshCalls = 0
+        fakeBackend.searchOpenCalls = 0
+        fakeBackend.searchRevealCalls = 0
     }
 
     function test_grid_item_uses_three_by_two_thumbnail_and_two_line_name() {
@@ -534,7 +562,7 @@ TestCase {
         compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索")
     }
 
-    function test_view_toggle_switches_with_one_click_and_disables_during_search() {
+    function test_view_toggle_switches_with_one_click_and_stays_available_during_search() {
         fakeBackend.fileView = "list"
         viewToggle = viewToggleComponent.createObject(parent, { visible: true })
         verify(viewToggle !== null)
@@ -557,8 +585,142 @@ TestCase {
         fakeBackend.fileView = "grid"
         fakeBackend.searchActive = true
         compare(button.text, qsTr("网格"))
-        compare(button.enabled, false)
+        compare(button.enabled, true)
         spy.destroy()
+    }
+
+    function test_search_results_reuse_the_current_file_view() {
+        const result = entry(2, "file")
+        result.folderText = "资料/剧集"
+        result.folderId = "folder-2"
+        fakeBackend.files = [entry(1, "folder")]
+        fakeBackend.searchResults = [result]
+        fakeBackend.searchActive = true
+        fakeBackend.searchSettled = true
+        fakeBackend.searchStatus = "搜索完成"
+        fakeBackend.searchQuery = "第 2"
+        fakeBackend.fileView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        const grid = findChild(page, "fileGrid")
+        verify(list !== null && grid !== null)
+        compare(list.visible, true)
+        compare(grid.visible, false)
+        compare(list.count, 1)
+        const listRow = list.itemAtIndex(0)
+        verify(listRow !== null)
+        const detail = findChild(listRow, "fileRowDetail")
+        verify(detail !== null)
+        compare(detail.visible, true)
+        verify(detail.text.indexOf("资料/剧集") >= 0)
+        const detailPoint = detail.mapToItem(listRow, detail.width / 2,
+                                             detail.height / 2)
+        mouseClick(listRow, detailPoint.x, detailPoint.y)
+        compare(fakeBackend.searchRevealCalls, 1)
+
+        page.setFileView("grid")
+        wait(80)
+        compare(fakeBackend.fileView, "grid")
+        compare(list.visible, false)
+        compare(grid.visible, true)
+        compare(grid.count, 1)
+        const gridCard = grid.itemAtIndex(0)
+        verify(gridCard !== null)
+        const gridDetail = findChild(gridCard, "gridDetail")
+        verify(gridDetail !== null)
+        compare(gridDetail.visible, true)
+        verify(gridDetail.text.indexOf("资料/剧集") >= 0)
+        const gridDetailPoint = gridDetail.mapToItem(gridCard, gridDetail.width / 2,
+                                                     gridDetail.height / 2)
+        mouseClick(gridCard, gridDetailPoint.x, gridDetailPoint.y)
+        compare(fakeBackend.searchRevealCalls, 2)
+    }
+
+    function test_search_state_change_does_not_steal_keyboard_focus() {
+        fakeBackend.files = [entry(1, "folder")]
+        fakeBackend.searchResults = [entry(2, "file")]
+        fakeBackend.searchActive = false
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(60)
+
+        const probe = Qt.createQmlObject(
+            "import QtQuick.Controls; TextField { objectName: 'focusProbe'; width: 120; height: 32 }",
+            page)
+        verify(probe !== null)
+        probe.forceActiveFocus()
+        tryVerify(function () {
+            return probe.activeFocus
+        })
+
+        fakeBackend.searchActive = true
+        wait(40)
+        compare(probe.activeFocus, true, "进入搜索不能抢走搜索框焦点")
+
+        fakeBackend.searchActive = false
+        wait(40)
+        compare(probe.activeFocus, true, "清空搜索回目录时不能抢走搜索框焦点")
+    }
+
+    function test_search_folder_navigation_holds_results_until_target_loads() {
+        const previous = entry(1, "folder")
+        const target = entry(2, "folder")
+        target.folderText = "全部文件"
+        target.folderId = ""
+        fakeBackend.files = [previous]
+        fakeBackend.searchResults = [target]
+        fakeBackend.searchActive = true
+        fakeBackend.searchSettled = true
+        fakeBackend.searchStatus = "搜索完成"
+        fakeBackend.searchQuery = "目录 2"
+        fakeBackend.fileView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        const overlay = findChild(page, "searchNavigationOverlay")
+        const statusBar = findChild(page, "searchStatusBar")
+        const statusText = findChild(page, "searchStatusText")
+        verify(list !== null && overlay !== null)
+        verify(statusBar !== null && statusText !== null)
+        compare(list.count, 1)
+        compare(list.itemAtIndex(0).entry.id, target.id)
+        compare(overlay.visible, false)
+        compare(statusBar.visible, true)
+        compare(statusText.text, "搜索完成")
+
+        page.openEntryFolder(target.id)
+        wait(20)
+        compare(fakeBackend.searchOpenCalls, 1)
+        compare(page.holdingSearchEntries, true)
+        compare(overlay.visible, true)
+        compare(list.count, 1)
+        compare(list.itemAtIndex(0).entry.id, target.id,
+                "目标目录加载完成前必须保留搜索结果，不能闪回原目录")
+        const heldRow = list.itemAtIndex(0)
+        const heldDetail = findChild(heldRow, "fileRowDetail")
+        verify(heldDetail !== null)
+        compare(heldDetail.visible, true)
+        compare(statusBar.visible, true)
+        compare(statusText.text, "搜索完成",
+                "目标目录加载完成前搜索状态文案必须保留")
+
+        const loaded = entry(3, "file")
+        fakeBackend.files = [loaded]
+        fakeBackend.filesLoading = false
+        fakeBackend.filesRevision += 1
+        fakeBackend.changed()
+        wait(40)
+
+        compare(page.holdingSearchEntries, false)
+        compare(overlay.visible, false)
+        compare(statusBar.visible, false)
+        compare(list.count, 1)
+        compare(list.itemAtIndex(0).entry.id, loaded.id)
     }
 
     function test_header_actions_show_text_and_keep_refresh_last() {

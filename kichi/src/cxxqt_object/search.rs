@@ -186,11 +186,17 @@ impl qobject::Kichi {
     /// 与被筛过的旧列表对不上，用户会以为进了错的文件夹。
     pub fn search_open_folder(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
-        let Some(hit) = self.search_index.get(&id).cloned() else {
-            self.as_mut().set_message("该结果已过期，请重新搜索");
+        if let Some(hit) = self.search_index.get(&id).cloned() {
+            self.as_mut().navigate_to_folder(&hit);
             return;
-        };
-        self.as_mut().navigate_to_folder(&hit);
+        }
+        // 本地筛选的结果来自当前目录，从未进过 search_index；它仍是一条有效目录。
+        if current_folder(&self.entries, &id).is_some() {
+            self.as_mut().exit_search();
+            self.as_mut().open_dir(QString::from(id.as_str()));
+            return;
+        }
+        self.as_mut().set_message("该结果已过期，请重新搜索");
     }
 
     /// 揭示一条结果所在的文件夹。
@@ -401,6 +407,12 @@ fn ordered_hits(index: &std::collections::HashMap<String, SearchHit>) -> Vec<Sea
     hits
 }
 
+fn current_folder<'a>(entries: &'a [FileEntry], id: &str) -> Option<&'a FileEntry> {
+    entries
+        .iter()
+        .find(|entry| entry.kind == EntryKind::Folder && entry.id == id)
+}
+
 /// 当前目录里的一条 → QML 小 map（结构与搜索结果一致，所在文件夹写当前目录名）。
 fn current_dir_map(entry: &FileEntry, folder: &str) -> QVariantMap {
     let text = |value: &str| QVariant::from(&QString::from(value));
@@ -592,5 +604,16 @@ mod tests {
             !read(&unresolved, "folderText").contains("id-unknown"),
             "拼不出路径时不要拿 id 冒充名字"
         );
+    }
+
+    #[test]
+    fn local_filter_folders_still_count_as_current_directories() {
+        let entries = vec![
+            entry("folder", EntryKind::Folder),
+            entry("file", EntryKind::File),
+        ];
+        assert!(current_folder(&entries, "folder").is_some());
+        assert!(current_folder(&entries, "file").is_none());
+        assert!(current_folder(&entries, "missing").is_none());
     }
 }

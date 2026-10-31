@@ -7,7 +7,7 @@ import QtQuick.Layouts
 // 播放（S5）：右键菜单点「播放」→ 立刻弹固定的清晰度菜单（原画 / 1080P / 720P / 480P），
 // 选中某一档后才去请求直链。
 // 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入只筛当前目录，
-// 全盘搜索由回车 / 内嵌按钮触发；结果在 SearchResults.qml 里，和目录列表共用同一块列表区。
+// 全盘搜索由回车 / 内嵌按钮触发；结果直接复用当前列表 / 网格视图。
 Item {
     id: page
 
@@ -17,11 +17,26 @@ Item {
         id: selection
     }
 
-    // 搜索视图开着：列表区换成结果
+    // 搜索视图开着：同一套列表 / 网格切换 model 显示结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
-    // 文件页当前显示方式；搜索视图始终使用独立的结果列表
+    // 目录与搜索结果共用当前显示方式
     readonly property bool gridMode: page.backend !== null
                                      && page.backend.fileView === "grid"
+    // 从搜索结果进目录时，Rust 会先退出搜索、再异步读目标目录。这里保留
+    // 点击瞬间的结果快照，等 filesLoading 结束再换 model，避免闪回原目录。
+    property var heldSearchEntries: []
+    property string heldSearchStatus: ""
+    property bool heldSearchTruncated: false
+    property bool holdingSearchEntries: false
+    readonly property bool showingSearchEntries: page.searching
+                                                  || page.holdingSearchEntries
+    readonly property var displayEntries: {
+        if (!page.backend)
+            return []
+        if (page.holdingSearchEntries)
+            return page.heldSearchEntries
+        return page.searching ? page.backend.searchResults : page.backend.files
+    }
     readonly property var activeFileView: page.gridMode ? fileGrid : fileList
     readonly property string playLoadingId: {
         if (!page.backend || typeof page.backend.playLoadingId !== "string")
@@ -56,8 +71,13 @@ Item {
         selection: selection
         fileList: page.activeFileView
         menu: menu
-        searching: page.searching
+        entries: page.displayEntries
+        searching: page.showingSearchEntries
+        navigationLocked: page.holdingSearchEntries
         viewMode: page.gridMode ? "grid" : "list"
+        onFolderOpenRequested: function (id) {
+            page.openEntryFolder(id)
+        }
     }
 
     // 列表密度（行高 / 字号 / 图标 / 列宽）都在 FileListDensity 里，
@@ -86,7 +106,8 @@ Item {
         ? Math.max(1, Math.floor(gridAvailableWidth / gridColumns)) : 0
     readonly property real gridItemWidth: Math.max(1, gridCellSlotWidth
                                                      - density.gridColumnGap)
-    readonly property real gridItemHeight: density.gridItemHeight(gridItemWidth)
+    readonly property real gridItemHeight: density.gridItemHeight(gridItemWidth,
+                                                                   page.showingSearchEntries)
     readonly property real gridCellHeight: gridItemHeight + density.gridRowGap
 
     // 面包屑在页头（main.qml）里，不是本页的一行：这里只提供跳转入口。
@@ -121,27 +142,69 @@ Item {
         const next = view === "grid" ? "grid" : "list"
         if (page.backend.fileView === next)
             return
+        // 搜索结果是临时模型，不写进目录的列表 / 网格滚动记忆。
+        if (page.showingSearchEntries) {
+            page.backend.setFileView(next)
+            return
+        }
         interaction.rememberScroll()
         interaction.prepareViewSwitch(next)
         page.backend.setFileView(next)
     }
 
     function focusActiveView() {
-        if (page.activeFileView && page.visible && !page.searching)
+        if (page.activeFileView && page.visible && !page.holdingSearchEntries)
             page.activeFileView.forceActiveFocus()
     }
 
-    // 搜索结果里的播放 / 下载也在右键菜单里，锚点用右键位置
-    function openResultContext(entry, point) {
-        // 搜索结果给的是本视图坐标：换算成窗口坐标再交给右键菜单（绝对定位）
-        var windowPoint = searchResults.mapToItem(null, point.x, point.y)
-        menu.openContext(entry, windowPoint, [entry.id], true)
+    function clearHeldSearchEntries() {
+        page.holdingSearchEntries = false
+        page.heldSearchEntries = []
+        page.heldSearchStatus = ""
+        page.heldSearchTruncated = false
+    }
+
+    function holdSearchEntriesUntilLoaded(entries, statusText, truncated) {
+        if (!page.backend || !page.backend.filesLoading)
+            return
+        page.heldSearchEntries = entries
+        page.heldSearchStatus = statusText
+        page.heldSearchTruncated = truncated
+        page.holdingSearchEntries = true
+    }
+
+    function openEntryFolder(id) {
+        if (!page.backend || page.holdingSearchEntries)
+            return
+        if (page.searching) {
+            const entries = page.displayEntries.slice()
+            const statusText = page.backend.searchStatus
+            const truncated = page.backend.searchTruncated === true
+            page.backend.searchOpenFolder(id)
+            page.holdSearchEntriesUntilLoaded(entries, statusText, truncated)
+        } else {
+            interaction.navigateToDir(id)
+        }
+    }
+
+    function revealSearchFolder(entry) {
+        if (!page.backend || !entry || page.holdingSearchEntries)
+            return
+        const fromSearch = page.searching
+        const entries = fromSearch ? page.displayEntries.slice() : []
+        const statusText = fromSearch ? page.backend.searchStatus : ""
+        const truncated = fromSearch && page.backend.searchTruncated === true
+        page.backend.searchRevealFolder(String(entry.folderId || ""),
+                                        entry.kind === "folder")
+        if (fromSearch)
+            page.holdSearchEntriesUntilLoaded(entries, statusText, truncated)
     }
 
     // 切到别的页时把搜索收掉：回来看到的是当前目录，而不是忘在一边的旧结果
     // （搜索框里的字由 FilesPageSearchBar 自己跟着 searchActive 清）
     onVisibleChanged: {
         if (!page.visible) {
+            page.clearHeldSearchEntries()
             if (page.searching && page.backend)
                 page.backend.exitSearch()
             return
@@ -154,12 +217,34 @@ Item {
     }
 
     onGridModeChanged: Qt.callLater(page.focusActiveView)
+    onSearchingChanged: {
+        selection.clear()
+        if (page.searching)
+            page.clearHeldSearchEntries()
+    }
+    onDisplayEntriesChanged: {
+        selection.prune(page.displayEntries)
+    }
 
     ColumnLayout {
         anchors.fill: parent
         // 与传输 / 离线 / 设置页同一个上边距：换页时内容不在纵向上跳一下
         anchors.topMargin: metrics.pageMargin
         spacing: 8
+
+        SearchStatusBar {
+            objectName: "searchStatusBar"
+            visible: page.showingSearchEntries
+            Layout.fillWidth: true
+            backend: page.showingSearchEntries ? page.backend : null
+            statusText: page.holdingSearchEntries
+                        ? page.heldSearchStatus
+                        : (page.backend ? page.backend.searchStatus : "")
+            truncated: page.holdingSearchEntries
+                       ? page.heldSearchTruncated
+                       : (page.backend !== null
+                          && page.backend.searchTruncated === true)
+        }
 
         // —— 列表（当前目录 / 搜索结果共用这块区域）——
         // 不用 Frame：它的边框画在外层，会被盖住的上下两条边吃掉，
@@ -172,10 +257,9 @@ Item {
                 anchors.fill: parent
                 spacing: 4
 
-                // 表头只属于当前目录视图：搜索结果列不同（多类型列、所在文件夹），
-                // 不硬套同一套列宽。排序箭头读的是 backend 的排序状态。
+                // 目录与搜索结果共用同一张列表和表头。
                 FileListHeader {
-                    visible: !page.searching && !page.gridMode
+                    visible: !page.gridMode
                     Layout.fillWidth: true
                     backend: page.backend
                     thumbnailSlotWidth: density.thumbnailSlotWidth
@@ -197,9 +281,8 @@ Item {
                     // 文件页是平铺表格：行和表头共用 34 / 48 高度，
                     // 只靠 1px 底部分隔线区分，不再用行间缝隙。
                     spacing: 0
-                    // 搜索视图显示结果；否则显示当前目录
-                    visible: !page.searching && !page.gridMode
-                    model: page.backend ? page.backend.files : []
+                    visible: !page.gridMode
+                    model: page.displayEntries
                     boundsBehavior: Flickable.StopAtBounds
                     // 列表铺满到页面右缘，条画在右侧 10px 车道里；
                     // 委托宽度减去车道，文字永远停在条左边
@@ -229,7 +312,7 @@ Item {
                     TapHandler {
                         acceptedButtons: Qt.RightButton
                         onTapped: function (point) {
-                            if (!page.backend)
+                            if (!page.backend || page.showingSearchEntries)
                                 return
                             const x = point.position.x
                             const y = point.position.y
@@ -259,18 +342,26 @@ Item {
                         videoBadgeMargin: density.listVideoBadgeMargin
                         playLoading: page.isEntryPlayLoading(entry.id)
                         playing: page.isEntryPlaying(entry.id)
+                        detailText: page.showingSearchEntries
+                                    ? qsTr("所在文件夹：%1").arg(entry.folderText
+                                                               || qsTr("（所在文件夹）"))
+                                    : ""
+                        detailClickable: page.showingSearchEntries && !!entry.folderId
                         // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
                         highlighted: !!entry && selection.isSelected(entry.id)
                         // 单击：把修饰键交给 FileSelection 处理（Ctrl 切换 / Shift 区间）
                         onSelectRequested: function (modifiers, index) {
-                            const entries = page.backend ? page.backend.files : []
+                            const entries = page.displayEntries
                             if (index < 0 || index >= entries.length)
                                 return
                             selection.click(entries[index].id, index, modifiers, entries)
                         }
                         // 双击文件夹：交给页面先记滚动位置再进目录
                         onFolderOpenRequested: function (id) {
-                            interaction.navigateToDir(id)
+                            page.openEntryFolder(id)
+                        }
+                        onDetailRequested: {
+                            page.revealSearchFolder(entry)
                         }
                         // 双击媒体文件：把行内的点换算成窗口坐标交给清晰度菜单。
                         // ⚠ 必须用赋值，不能在上面写 anchorPoint: page.playAnchor 的绑定：
@@ -286,7 +377,8 @@ Item {
                             selection.ensureSelected(entry)
                             fileList.forceActiveFocus()
                             var windowPoint = row.mapToItem(null, point.x, point.y)
-                            menu.openContext(entry, windowPoint, selection.idList(), false)
+                            menu.openContext(entry, windowPoint, selection.idList(),
+                                             page.searching)
                         }
                     }
                 }
@@ -300,8 +392,8 @@ Item {
                 objectName: "fileGrid"
 
                 anchors.fill: parent
-                visible: !page.searching && page.gridMode
-                model: page.backend ? page.backend.files : []
+                visible: page.gridMode
+                model: page.displayEntries
                 cellWidth: page.gridCellSlotWidth
                 cellHeight: page.gridCellHeight
                 leftMargin: page.gridSideMargin
@@ -326,7 +418,7 @@ Item {
                 TapHandler {
                     acceptedButtons: Qt.RightButton
                     onTapped: function (point) {
-                        if (!page.backend)
+                        if (!page.backend || page.showingSearchEntries)
                             return
                         const x = point.position.x
                         const y = point.position.y
@@ -350,22 +442,32 @@ Item {
                     nameBlockHeight: density.gridNameBlockHeight
                     thumbnailRadius: density.gridThumbnailRadius(width)
                     textPixelSize: density.namePixelSize
+                    detailPixelSize: density.metaPixelSize
+                    detailLineHeight: density.gridDetailLineHeight
                     iconPixelSize: density.gridIconPixelSize
                     videoBadgeSize: density.gridVideoBadgeSize
                     videoBadgeMargin: density.gridVideoBadgeMargin
                     playLoading: page.isEntryPlayLoading(entry.id)
                     playing: page.isEntryPlaying(entry.id)
                     selected: !!entry && selection.isSelected(entry.id)
+                    detailText: page.showingSearchEntries
+                                ? qsTr("所在文件夹：%1").arg(entry.folderText
+                                                           || qsTr("（所在文件夹）"))
+                                : ""
+                    detailClickable: page.showingSearchEntries && !!entry.folderId
 
                     onSelectRequested: function (modifiers, itemIndex) {
-                        const entries = page.backend ? page.backend.files : []
+                        const entries = page.displayEntries
                         if (itemIndex < 0 || itemIndex >= entries.length)
                             return
                         fileGrid.currentIndex = itemIndex
                         selection.click(entries[itemIndex].id, itemIndex, modifiers, entries)
                     }
                     onFolderOpenRequested: function (id) {
-                        interaction.navigateToDir(id)
+                        page.openEntryFolder(id)
+                    }
+                    onDetailRequested: {
+                        page.revealSearchFolder(entry)
                     }
                     onPlayRequested: function (id, point) {
                         playMenu.anchorPoint = gridItem.mapToItem(null, point.x, point.y)
@@ -376,7 +478,8 @@ Item {
                         selection.ensureSelected(entry)
                         fileGrid.forceActiveFocus()
                         var windowPoint = gridItem.mapToItem(null, point.x, point.y)
-                        menu.openContext(entry, windowPoint, selection.idList(), false)
+                        menu.openContext(entry, windowPoint, selection.idList(),
+                                         page.searching)
                     }
                 }
             }
@@ -386,38 +489,20 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("这个文件夹是空的")
                 color: palette.placeholderText
-                visible: !page.searching && page.backend !== null && !page.backend.filesLoading
+                visible: !page.showingSearchEntries && page.backend !== null
+                         && !page.backend.filesLoading
                          && page.backend.files.length === 0
             }
 
-            // 搜索结果（全盘搜索时才出现，盖住同一块区域）
-            SearchResults {
-                id: searchResults
-                anchors.fill: parent
-                // 必须真隐藏：它内部的 ListView（Flickable）会吃掉鼠标按压。
-                // 只把 backend 置空、不设 visible 时，它透明地盖在目录列表上，
-                // 状态行以下的区域全被它截走——表现就是「只有第一行能点」
-                visible: page.searching
-                backend: page.searching ? page.backend : null
-                // 行高 / 字号与目录列表同一套（结果行是两行，行高略高）
-                rowHeight: density.resultRowHeight
-                textPixelSize: density.namePixelSize
-                metaPixelSize: density.metaPixelSize
-                iconPixelSize: density.iconPixelSize
-                sizeColumnWidth: density.resultSizeColumnWidth
-                modifiedColumnWidth: density.resultModifiedColumnWidth
-                playLoadingId: page.playLoadingId
-                playingIds: page.playingIds
+            SearchEmptyState {
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 40, 460)
+                backend: page.showingSearchEntries ? page.backend : null
+            }
 
-                onContextMenu: function (entry, point) {
-                    page.openResultContext(entry, point)
-                }
-                onPlayRequested: function (id, point) {
-                    // 同目录列表：同样换算成窗口坐标（见上面 FileRow 处）
-                    playMenu.anchorPoint = searchResults.mapToItem(null, point.x, point.y)
-                    if (page.backend)
-                        page.backend.requestPlay(id)
-                }
+            SearchNavigationOverlay {
+                anchors.fill: parent
+                running: page.holdingSearchEntries
             }
         }
     }
@@ -460,6 +545,10 @@ Item {
 
         function onChanged() {
             interaction.noteFilesRevision()
+            if (page.holdingSearchEntries && page.backend
+                    && !page.backend.filesLoading) {
+                page.clearHeldSearchEntries()
+            }
         }
 
         function onFileActionDone(action, ok) {

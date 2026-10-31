@@ -21,7 +21,6 @@ TestCase {
             property alias trashRow: trashRow
             property alias transferRow: transferRow
             property alias narrowButton: narrowButton
-            property alias searchResults: searchResults
             property alias searchBackend: fakeSearchBackend
 
             QtObject {
@@ -33,6 +32,9 @@ TestCase {
                 property bool searchTruncated: false
                 property string searchQuery: "file"
                 property int cancelPlayCalls: 0
+                property bool playLoading: false
+                property string playLoadingId: ""
+                property var playingIds: []
                 property var searchResults: [{
                     id: "search-result",
                     name: "搜索结果里同样很长的文件名用于确认名称截断提示.mkv",
@@ -64,7 +66,13 @@ TestCase {
                 y: 10
                 width: 760
                 rowHeight: 48
+                backend: fakeSearchBackend
                 entry: harness.entry("files")
+                detailText: "所在文件夹：" + fakeSearchBackend.searchResults[0].folderText
+                detailClickable: true
+                playLoading: fakeSearchBackend.playLoading
+                             && fakeSearchBackend.playLoadingId === entry.id
+                playing: fakeSearchBackend.playingIds.indexOf(entry.id) >= 0
             }
 
             FileGridItem {
@@ -72,7 +80,10 @@ TestCase {
                 x: 780
                 y: 10
                 width: 190
+                backend: fakeSearchBackend
                 entry: harness.entry("grid")
+                detailText: "所在文件夹：" + fakeSearchBackend.searchResults[0].folderText
+                detailClickable: true
             }
 
             TrashRow {
@@ -113,14 +124,6 @@ TestCase {
                 y: 410
                 width: 72
                 text: "一个很长但会截断的按钮文字"
-            }
-
-            SearchResults {
-                id: searchResults
-                y: 470
-                width: 900
-                height: 240
-                backend: fakeSearchBackend
             }
 
             function entry(prefix) {
@@ -221,41 +224,55 @@ TestCase {
         verify(!label.toolTipEnabled)
     }
 
-    function test_search_folder_path_uses_its_mouse_area() {
-        const label = findChild(harness.searchResults, "searchFolderText")
+    function test_shared_list_detail_uses_external_hover() {
+        const label = findChild(harness.fileRow, "fileRowDetail")
         disablePopup(label)
         verify(label.truncated)
         verify(!label.toolTipRequested)
 
-        hoverCenter(harness.searchResults, label)
+        hoverCenter(harness.fileRow, label)
         verify(label.toolTipRequested)
     }
 
-    function test_search_result_loading_is_cancellable() {
-        harness.searchResults.playLoadingId = "search-result"
+    function test_shared_grid_detail_uses_external_hover() {
+        const label = findChild(harness.gridItem, "gridDetail")
+        disablePopup(label)
+        verify(label.truncated)
+        verify(!label.toolTipRequested)
+
+        hoverCenter(harness.gridItem, label)
+        verify(label.toolTipRequested)
+    }
+
+    function test_search_result_loading_uses_shared_row() {
+        harness.searchBackend.playLoading = true
+        harness.searchBackend.playLoadingId = "files"
         wait(30)
 
-        const spinner = findChild(harness.searchResults, "searchPlayLoading")
-        const cancel = findChild(harness.searchResults, "searchPlayCancel")
+        const overlay = findChild(harness.fileRow, "rowVideoLoading")
+        verify(overlay !== null)
+        const spinner = findChild(overlay, "videoLoadingSpinner")
+        const cancel = findChild(overlay, "videoLoadingCancel")
         verify(spinner !== null && cancel !== null)
-        compare(spinner.visible, true)
+        compare(overlay.visible, true)
         compare(cancel.visible, true)
         mouseClick(cancel)
         compare(harness.searchBackend.cancelPlayCalls, 1)
     }
 
-    function test_search_result_shows_playing_status_unless_loading() {
-        harness.searchResults.playingIds = ["other", "search-result"]
+    function test_search_result_playing_uses_shared_row_status() {
+        harness.searchBackend.playingIds = ["other", "files"]
         wait(30)
 
-        const status = findChild(harness.searchResults, "searchPlayingStatus")
-        const bars = findChild(harness.searchResults, "searchPlayingBars")
+        const status = findChild(harness.fileRow, "rowPlayingStatus")
+        const bars = findChild(harness.fileRow, "rowPlayingBars")
         verify(status !== null && bars !== null)
         compare(status.visible, true)
         compare(bars.running, true)
 
-        harness.searchResults.playLoadingId = "search-result"
+        harness.searchBackend.playLoading = true
+        harness.searchBackend.playLoadingId = "files"
         tryCompare(status, "visible", false)
-        compare(findChild(harness.searchResults, "searchPlayLoading").visible, true)
+        compare(findChild(harness.fileRow, "rowVideoLoading").visible, true)
     }
 }
