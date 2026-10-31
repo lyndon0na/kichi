@@ -77,7 +77,7 @@ impl qobject::Kichi {
         };
         let now = Instant::now();
         let session = self.backend.session.clone();
-        let (epoch, restored, had_cache, manual_promoted) = {
+        let (epoch, restored, had_cache, manual_visible) = {
             let mut rust = self.as_mut().rust_mut();
             let current_kind = rust.library_kind.to_string();
             let switching = current_kind != kind.key();
@@ -114,7 +114,7 @@ impl qobject::Kichi {
                     false,
                 )
             } else {
-                let mut manual_promoted = false;
+                let mut manual_visible = false;
                 if switching || restored {
                     // 立即作废上一集合的在途结果；缓存本身已在上面恢复。
                     rust.library_epoch = rust.library_epoch.wrapping_add(1);
@@ -126,12 +126,21 @@ impl qobject::Kichi {
                 {
                     // 已有一轮自动校准在途时，点刷新直接并入它，但立刻给出手动反馈。
                     rust.library_loading = true;
-                    manual_promoted = true;
+                    manual_visible = true;
                 }
-                (None, restored, had_cache, manual_promoted)
+                if !can_request && manual && rust.library_kind.to_string() == kind.key() {
+                    // 乐观写入尚未提交时不能拉服务端旧快照；用户主动点的刷新
+                    // 排队到写操作收尾后执行，刷新按钮只显示这次真实请求的状态。
+                    rust.library_refresh_pending = Some(kind);
+                    if !rust.library_loading {
+                        rust.library_loading = true;
+                        manual_visible = true;
+                    }
+                }
+                (None, restored, had_cache, manual_visible)
             }
         };
-        if restored || epoch.is_some() || manual_promoted {
+        if restored || epoch.is_some() || manual_visible {
             self.as_mut().notify();
         }
         let Some(epoch) = epoch else {
@@ -224,9 +233,22 @@ impl qobject::Kichi {
             rust.library_loaded = false;
             rust.library_error = QString::default();
             rust.library_refresh_at = None;
+            rust.library_refresh_pending = None;
             rust.library_revision = rust.library_revision.wrapping_add(1);
         }
         self.as_mut().notify();
+    }
+
+    /// 文件写操作收尾后补发期间用户点过的资料库手动刷新。
+    pub(crate) fn resume_pending_library_refresh(mut self: Pin<&mut Self>) {
+        let pending = {
+            let mut rust = self.as_mut().rust_mut();
+            let pending = rust.library_refresh_pending.take();
+            pending.filter(|kind| rust.library_kind.to_string() == kind.key())
+        };
+        if let Some(kind) = pending {
+            self.refresh_library_inner(QString::from(kind.key()), false, true);
+        }
     }
 
     /// 资料库星标先改当前集合与对应缓存；请求失败再用快照恢复。

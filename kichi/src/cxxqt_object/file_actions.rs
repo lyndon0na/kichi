@@ -501,6 +501,7 @@ impl qobject::Kichi {
         }
         self.as_mut()
             .file_action_done(QString::from(action), true, QString::from(message));
+        self.as_mut().resume_pending_library_refresh();
         self.as_mut().resume_pending_file_refresh();
     }
 
@@ -511,6 +512,7 @@ impl qobject::Kichi {
         self.as_mut().on_failure(failure);
         self.as_mut()
             .file_action_done(QString::from(action), false, QString::from(text.as_str()));
+        self.as_mut().resume_pending_library_refresh();
         self.as_mut().resume_pending_file_refresh();
     }
 

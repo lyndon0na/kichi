@@ -444,6 +444,23 @@ TestCase {
         compare(refresh.enabled, true)
     }
 
+    function test_header_refresh_is_independent_from_file_actions() {
+        publish([row("one", false), row("two", false)], true)
+        var refresh = findChild(header, "libraryRefreshButton")
+        verify(refresh !== null)
+        compare(refresh.enabled, true)
+
+        // 星标等文件写操作不是刷新；不能让刷新按钮跟着变淡 / 禁用。
+        backend.fileActionRunning = true
+        backend.changed()
+        wait(20)
+        compare(refresh.text, "刷新")
+        compare(refresh.enabled, true)
+
+        backend.fileActionRunning = false
+        backend.changed()
+    }
+
     function test_right_click_opens_common_menu_and_reveals_location() {
         publish([row("movie", true)], true)
         var list = findChild(page, "libraryList")

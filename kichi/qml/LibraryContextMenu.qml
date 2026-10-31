@@ -116,7 +116,6 @@ Item {
             objectName: "libraryRefreshItem"
             text: qsTr("刷新")
             enabled: root.backend !== null && !root.backend.libraryLoading
-                     && !root.backend.fileActionRunning
             onTriggered: root.refreshRequested()
         }
     }
