@@ -386,8 +386,9 @@ TestCase {
         compare(overlay.visible, true)
         compare(scrim.radius, density.gridThumbnailRadius(200))
         compare(scrim.color, themeProbe.mediaScrim)
-        compare(themeProbe.mediaForeground, "#ffffff")
-        compare(spinner.color, "#ffffff")
+        compare(themeProbe.mediaForeground,
+                themeProbe.darkMode ? themeProbe.palette.text : themeProbe.palette.base)
+        compare(spinner.color, themeProbe.mediaForeground)
         compare(spinner.width, 28)
         const thumbnail = findChild(gridItem, "gridThumbnail")
         compare(findChild(thumbnail, "videoBadge").visible, false)
@@ -517,8 +518,9 @@ TestCase {
         const star = findChild(gridItem, "gridStar")
         verify(badge !== null && star !== null)
         compare(badge.visible, true)
+        compare(badge.color, themeProbe.mediaBadge)
         compare(star.filled, true)
-        compare(star.color, themeProbe.accent)
+        compare(star.color, themeProbe.mediaForeground)
         const cardWidth = gridItem.width
         const cardHeight = gridItem.height
         const thumbnail = findChild(gridItem, "gridThumbnail")

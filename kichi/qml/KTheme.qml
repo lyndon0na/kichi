@@ -120,10 +120,11 @@ Item {
                                                       palette.shadow.g,
                                                       palette.shadow.b,
                                                       0.68)
-    /// 深色图片遮罩上的文字始终用白色。
-    /// KDE 浅色主题下 `palette.brightText` 不保证是浅色，直接用它会把
-    /// 「正在加载 / 取消」画成黑字。
-    readonly property color mediaForeground: "#ffffff"
+    /// 深色媒体遮罩上的高对比前景。
+    /// 不直接使用 `palette.brightText`：KDE 浅色主题下它不保证是浅色。
+    /// 从当前明暗方案的文字 / 底色中取亮的一侧，仍随 Plasma 配色实时变化。
+    readonly property color mediaForeground: theme.darkMode ? palette.text
+                                                            : palette.base
 
     // —— 状态色（全应用仅存的字面量颜色，深色主题用浅一档的变体保证对比度） ——
     readonly property color danger: theme.darkMode ? "#f08c84" : "#c0392b"

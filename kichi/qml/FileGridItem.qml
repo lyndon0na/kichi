@@ -272,7 +272,9 @@ ItemDelegate {
                 anchors.left: parent.left
                 anchors.margins: 6
                 z: 2
-                color: theme.mediaBadgeSoft
+                // 星标要和内容面板及缩略图都拉开对比，圆底用标准深色遮罩，
+                // 星本身使用当前方案的高对比前景，避免跟着强调色融进圆底。
+                color: theme.mediaBadge
                 visible: card.entry ? card.entry.starred === true : false
                 Accessible.name: qsTr("已加星标")
 
@@ -282,7 +284,7 @@ ItemDelegate {
                     width: theme.fontCaption + 2
                     height: width
                     name: "star"
-                    color: theme.accent
+                    color: theme.mediaForeground
                     filled: true
                 }
             }
