@@ -100,7 +100,7 @@ pub mod qobject {
         #[qproperty(QString, share_created_expiration, cxx_name = "shareCreatedExpiration", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
-        /// 取链或等 mpv 窗口出现：文件缩略图据此显示加载状态
+        /// 取链或等播放器就绪：文件缩略图据此显示加载状态
         #[qproperty(bool, play_loading, cxx_name = "playLoading", READ, NOTIFY = changed)]
         /// 正在加载的文件 id（缩略图按 id 对位，不能按文件名猜）
         #[qproperty(QString, play_loading_id, cxx_name = "playLoadingId", READ, NOTIFY = changed)]
@@ -113,6 +113,8 @@ pub mod qobject {
         /// 非空 = 提示条短提示（档位回退说明），几秒后由界面自动收起
         #[qproperty(QString, play_notice, cxx_name = "playNotice", READ, NOTIFY = changed)]
         #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
+        /// 播放器预设："mpv" / "vlc" / "custom"
+        #[qproperty(QString, player_backend, cxx_name = "playerBackend", READ, NOTIFY = changed)]
         #[qproperty(QString, player_command, cxx_name = "playerCommand", READ, NOTIFY = changed)]
         #[qproperty(QString, player_args, cxx_name = "playerArgs", READ, NOTIFY = changed)]
         #[qproperty(QString, player_default_command, cxx_name = "playerDefaultCommand", READ, NOTIFY = changed)]
@@ -412,7 +414,7 @@ pub mod qobject {
         #[cxx_name = "dismissPlayNotice"]
         fn dismiss_play_notice(self: Pin<&mut Self>);
 
-        /// 真退出前调用：关闭所有还在播的 mpv（缩托盘不调）
+        /// 真退出前调用：关闭所有还在播的 mpv / VLC（缩托盘不调）
         #[qinvokable]
         #[cxx_name = "shutdownPlayers"]
         fn shutdown_players(self: &Self);
@@ -429,6 +431,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setPlayer"]
         fn set_player(self: Pin<&mut Self>, command: QString, args: QString);
+
+        #[qinvokable]
+        #[cxx_name = "setPlayerBackend"]
+        fn set_player_backend(self: Pin<&mut Self>, value: QString);
 
         #[qinvokable]
         #[cxx_name = "resetPlayer"]
@@ -882,7 +888,7 @@ pub struct KichiRust {
     pub(crate) play_id: String,
     /// 已选中档位、正在取直链（此时菜单关闭**不是**取消播放）
     pub(crate) play_pending: bool,
-    /// 取链或等 mpv 窗口出现：对应文件缩略图显示加载状态
+    /// 取链或等播放器就绪：对应文件缩略图显示加载状态
     pub(crate) play_loading: bool,
     /// 正在加载的文件 id
     pub(crate) play_loading_id: QString,
@@ -914,6 +920,8 @@ pub struct KichiRust {
     pub(crate) settings: crate::settings::Settings,
     /// 清晰度偏好（"ask" / "original" / "transcode"，QML 展示用）
     pub(crate) preferred_quality: QString,
+    /// 播放器预设（"mpv" / "vlc" / "custom"）
+    pub(crate) player_backend: QString,
     /// 自定义播放器命令 / 参数（空串 = 用默认）
     pub(crate) player_command: QString,
     pub(crate) player_args: QString,
@@ -1112,6 +1120,7 @@ impl Default for KichiRust {
             play_subtitle_plan: crate::session::subtitles::SubtitlePlan::None,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),
+            player_backend: QString::from("mpv"),
             player_command: QString::default(),
             player_args: QString::default(),
             player_default_command: QString::from(crate::player::DEFAULT_PLAYER),
@@ -1241,6 +1250,7 @@ impl KichiRust {
     fn sync_settings_initial(&mut self) {
         let settings = self.settings.clone();
         self.preferred_quality = QString::from(settings.preferred_quality.as_str());
+        self.player_backend = QString::from(settings.player_backend.as_str());
         self.player_command = QString::from(settings.player_command.as_str());
         self.player_args = QString::from(settings.player_args.as_str());
         self.notify_enabled = settings.notify_enabled;

@@ -1,20 +1,20 @@
 //! 外部播放器：拼命令、启动、回收进程。
 //!
-//! 默认调用 flatpak 版 mpv（`io.mpv.Mpv`），可用环境变量覆盖：
-//! - `KICHI_PLAYER`：整条命令（按空格切分，如 `mpv` 或 `flatpak run io.mpv.Mpv`）
+//! 设置页可选 mpv / VLC / 自定义，内置默认是 flatpak 版 mpv（`io.mpv.Mpv`），
+//! 可用环境变量覆盖：
+//! - `KICHI_PLAYER`：整条命令（按空格切分，如 `mpv`、`vlc` 或 `flatpak run io.mpv.Mpv`）
 //! - `KICHI_PLAYER_ARGS`：追加参数，同样按空格切分（如 `--fs --vo=gpu`）
 //!
 //! 安全约定：
-//! - URL 与文件名永远走命令行参数数组（不经 shell），URL 前加 `--` 分隔，
-//!   避免文件名被当成选项；
-//! - mpv 的直链**只经 IPC**（`loadfile`）下发，不进 argv、不落盘；其它播放器
-//!   退回 0600 的临时清单（见 [`launch`]）；
+//! - 不经 shell；需要进 argv 的文件名 / 标题作为独立参数传递，并避免被当成选项；
+//! - mpv 的直链只经 IPC（`loadfile`）下发；VLC 与其它播放器使用 0600 临时清单；
 //! - 直链是带签名的临时 URL，日志里只打主机名。
 //!
 //! 模块分工（见 `docs/adr/0008-mpv-idle-ipc.md`）：
 //! - 本文件：配置解析、命令切分、标题 / 脱敏工具；
-//! - [`launch`]：非 mpv 播放器：清单 + spawn + 收尾线程；
+//! - [`launch`]：其它播放器：清单 + spawn + 收尾线程；
 //! - [`ipc`]：mpv 专用：socket、`loadfile`、窗口观测、`quit`；
+//! - [`vlc`]：VLC 专用：oldrc socket、状态 / 进度查询、seek、quit；
 //! - [`session`]：播放会话登记表 + 监控线程 + 退出收尾。
 
 pub mod ipc;
@@ -22,9 +22,11 @@ mod launch;
 mod progress;
 pub mod session;
 pub mod subtitles;
+pub mod vlc;
 
 use kichi_core::PlayOption;
 
+use crate::settings::PlayerBackend;
 pub use session::{shutdown_all, start, PlaybackExtras, StartEvent};
 
 /// 默认播放器命令（flatpak 包名，2026-10-26 实测可用）。
@@ -34,6 +36,18 @@ pub const DEFAULT_PLAYER: &str = "flatpak run io.mpv.Mpv";
 /// `--ytdl=no` 很重要：mpv 默认会把 HTTP 链接先交给 youtube-dl 抓一遍，
 /// 对带签名的 PikPak 直链既多一次外发请求，也可能撞上 403。
 pub const DEFAULT_ARGS: &str = "--force-media-title={title} --ytdl=no";
+/// 系统 VLC 命令；设置页选 VLC 时用它，不强行安装 Flatpak 版本。
+pub const DEFAULT_VLC_PLAYER: &str = "vlc";
+/// VLC 的附加参数默认留空；RC 控制参数由播放器模块在启动时追加。
+pub const DEFAULT_VLC_ARGS: &str = "";
+
+/// 播放器控制能力。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerProtocol {
+    Mpv,
+    Vlc,
+    Generic,
+}
 
 /// 一条播放命令的模板（解析自环境变量或默认值）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,14 +63,37 @@ impl PlayerConfig {
     ///
     /// 环境变量排在设置之前：它本来就是排障与临时覆盖用的，
     /// 优先级更高才不会被界面里存着的命令挡住。
-    pub fn resolve(settings_command: Option<&str>, settings_args: Option<&str>) -> Self {
-        let command = read_env("KICHI_PLAYER").or_else(|| settings_command.map(str::to_owned));
+    pub fn resolve(
+        backend: PlayerBackend,
+        settings_command: Option<&str>,
+        settings_args: Option<&str>,
+    ) -> Self {
+        let env_command = read_env("KICHI_PLAYER");
+        let env_args = read_env("KICHI_PLAYER_ARGS");
+        let env_command_set = env_command.is_some();
+        let command = match env_command {
+            Some(command) => Some(command),
+            None => match backend {
+                PlayerBackend::Mpv => None,
+                PlayerBackend::Vlc => Some(DEFAULT_VLC_PLAYER.to_owned()),
+                PlayerBackend::Custom => settings_command.map(str::to_owned),
+            },
+        };
         let mut config = command
             .as_deref()
             .and_then(parse_command)
             .unwrap_or_default();
-        let args = read_env("KICHI_PLAYER_ARGS").or_else(|| settings_args.map(str::to_owned));
-        config.access_args = split_words(args.as_deref().unwrap_or(DEFAULT_ARGS));
+        let args = env_args.or_else(|| {
+            (!env_command_set && backend == PlayerBackend::Custom)
+                .then(|| settings_args.map(str::to_owned))
+                .flatten()
+        });
+        let default_args = if config.is_vlc() {
+            DEFAULT_VLC_ARGS
+        } else {
+            DEFAULT_ARGS
+        };
+        config.access_args = split_words(args.as_deref().unwrap_or(default_args));
         config
     }
 
@@ -68,11 +105,33 @@ impl PlayerConfig {
     ///
     /// 只有 mpv 系才有 IPC 观测能力：命令或前置参数里出现 `mpv` 才算，
     /// 覆盖 `mpv`、`/usr/bin/mpv`、`flatpak run io.mpv.Mpv`。
-    /// 其它播放器退回旧清单方式（spawn 成功即视为开播，不能取消）。
+    /// VLC 另走 [`vlc`]；其余播放器退回旧清单方式（spawn 成功即视为开播，不能取消）。
     pub fn is_mpv(&self) -> bool {
         std::iter::once(&self.program)
             .chain(self.pre_args.iter())
             .any(|word| word.to_lowercase().contains("mpv"))
+    }
+
+    /// 这是不是 VLC（或包着 VLC 的壳命令）。
+    pub fn is_vlc(&self) -> bool {
+        std::iter::once(&self.program)
+            .chain(self.pre_args.iter())
+            .any(|word| word.to_lowercase().contains("vlc"))
+    }
+
+    pub fn protocol(&self) -> PlayerProtocol {
+        if self.is_mpv() {
+            PlayerProtocol::Mpv
+        } else if self.is_vlc() {
+            PlayerProtocol::Vlc
+        } else {
+            PlayerProtocol::Generic
+        }
+    }
+
+    /// 能主动读取播放位置，因此可接官方历史 / 续播 / 进度写回。
+    pub fn supports_history(&self) -> bool {
+        matches!(self.protocol(), PlayerProtocol::Mpv | PlayerProtocol::Vlc)
     }
 }
 
@@ -84,7 +143,7 @@ impl Default for PlayerConfig {
     }
 }
 
-/// 播放临时目录：旧清单（非 mpv）与 IPC socket 共用。
+/// 播放临时目录：播放清单与控制 socket 共用。
 pub(crate) fn play_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("kichi-play")
 }
@@ -188,14 +247,23 @@ mod tests {
     #[test]
     fn settings_override_defaults_but_not_environment() {
         // 设置提供命令与参数
-        let config = PlayerConfig::resolve(Some("mpv"), Some("--fs"));
+        let config = PlayerConfig::resolve(PlayerBackend::Custom, Some("mpv"), Some("--fs"));
         assert_eq!(config.program, "mpv");
         assert_eq!(config.access_args, vec!["--fs"]);
 
         // 空设置回落到内置默认
-        let config = PlayerConfig::resolve(None, None);
+        let config = PlayerConfig::resolve(PlayerBackend::Mpv, None, None);
         assert_eq!(config.program, "flatpak");
         assert!(config.access_args.contains(&"--ytdl=no".to_owned()));
+    }
+
+    #[test]
+    fn vlc_preset_ignores_hidden_custom_command() {
+        let config = PlayerConfig::resolve(PlayerBackend::Vlc, Some("mpv"), Some("--fs"));
+        assert_eq!(config.program, DEFAULT_VLC_PLAYER);
+        assert!(config.is_vlc());
+        assert_eq!(config.protocol(), PlayerProtocol::Vlc);
+        assert!(config.access_args.is_empty());
     }
 
     #[test]
@@ -219,6 +287,15 @@ mod tests {
         for command in ["vlc", "/usr/bin/totem", "flatpak run org.videolan.VLC"] {
             let config = parse_command(command).expect("命令可解析");
             assert!(!config.is_mpv(), "不该误判成 mpv：{command}");
+        }
+        for command in [
+            "vlc",
+            "cvlc",
+            "/usr/bin/vlc",
+            "flatpak run org.videolan.VLC",
+        ] {
+            let config = parse_command(command).expect("命令可解析");
+            assert!(config.is_vlc(), "应当认出 VLC：{command}");
         }
     }
 

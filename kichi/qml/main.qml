@@ -88,7 +88,7 @@ ApplicationWindow {
             root.hide()
         } else {
             // 真退出：注销托盘，否则 KDE 面板留下点不动的僵尸图标；
-            // 连同正在播放的 mpv 一起关（缩托盘时不关，见 ADR 0007）
+            // 连同正在播放的 mpv / VLC 一起关（缩托盘时不关，见 ADR 0007）
             backend.shutdownTray()
             backend.shutdownPlayers()
         }

@@ -1,4 +1,4 @@
-//! 非 mpv 播放器：写 0600 清单 → spawn → 后台收尾。
+//! 既不是 mpv 也不是 VLC 的播放器：写 0600 清单 → spawn → 后台收尾。
 //!
 //! 这条路径**没有** IPC 观测能力：spawn 成功就当作开播，进程退出后回收；
 //! 用户按「取消」时已经 spawn 的播放器没法关掉（见 `docs/adr/0008-mpv-idle-ipc.md`
@@ -29,7 +29,7 @@ pub fn build_command(config: &PlayerConfig, playlist: &Path, title: &str) -> Com
     command
 }
 
-/// 启动非 mpv 播放器；成功返回后立刻返回，不等待退出。
+/// 启动通用降级播放器；成功返回后立刻返回，不等待退出。
 ///
 /// 直链写进临时清单（0600）而不放命令行，避免 `ps` / journal 暴露签名 URL。
 /// 清单要等播放器真正读入后才能删：先是 3 秒宽限，等不到就等它退出再删。

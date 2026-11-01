@@ -20,6 +20,7 @@ TestCase {
         id: backend
         property string preferredQuality: "ask"
         property bool autoSubtitles: true
+        property string playerBackend: "mpv"
         property string playerDefaultCommand: "mpv"
         property string playerCommand: ""
         property string playerDefaultArgs: "--no-border"
@@ -41,7 +42,9 @@ TestCase {
 
         function setPreferredQuality(value) { preferredQuality = value }
         function setAutoSubtitles(value) { autoSubtitles = value }
+        function setPlayerBackend(value) { playerBackend = value }
         function setPlayer(command, args) {
+            playerBackend = "custom"
             playerCommand = command
             playerArgs = args
         }
@@ -106,6 +109,18 @@ TestCase {
         mouseClick(row)
         wait(40)
         verify(body.visible, "点高级播放器设置后展开")
+    }
+
+    function test_player_picker_applies_vlc() {
+        var box = findChild(page, "settingsPlayerBackend")
+        verify(box !== null, "有播放器选择下拉框")
+        compare(box.textAt(0), "mpv")
+        compare(box.textAt(1), "VLC")
+
+        box.currentIndex = 1
+        box.activated(1)
+        wait(40)
+        compare(backend.playerBackend, "vlc", "选择 VLC 后应写回播放器预设")
     }
 
     function test_download_dir_commits_when_editing_finishes() {

@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 底部居中的播放加载 / 错误提示条（见 docs/adr/0008-mpv-idle-ipc.md）。
+// 底部居中的播放加载 / 错误提示条（见 docs/adr/0008、0020）。
 //
 // 只占自身尺寸，不铺满：`anchors.fill` 的透明层会吃掉文件列表的点击
 // （docs/pitfalls.md 第 6 / 18 条）。`visible` 必须是真 false，不只是透明。

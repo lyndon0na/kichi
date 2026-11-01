@@ -156,13 +156,14 @@ impl qobject::Kichi {
         let session = self.backend.session.clone();
         let playback_id = id.clone();
         let epoch = self.as_ref().rust().play_epoch;
-        // 开关关闭 / 非 mpv：本次不准备字幕（计划取出来丢掉，别留给下一次）
+        // 开关关闭 / 非 mpv（含 VLC）：本次不准备字幕（计划取出来丢掉，别留给下一次）
         let settings = self.settings.clone();
         let config = PlayerConfig::resolve(
+            settings.player_backend,
             settings.player_command_override(),
             settings.player_args_override(),
         );
-        let wants_history = config.is_mpv();
+        let wants_history = config.supports_history();
         let plan = {
             let mut rust = self.as_mut().rust_mut();
             std::mem::take(&mut rust.play_subtitle_plan)
@@ -299,6 +300,7 @@ impl qobject::Kichi {
         }
         let settings = self.settings.clone();
         let config = PlayerConfig::resolve(
+            settings.player_backend,
             settings.player_command_override(),
             settings.player_args_override(),
         );
@@ -400,7 +402,7 @@ impl qobject::Kichi {
             }
             StartEvent::Failed(reason) => {
                 self.as_mut().update_active_play_session(epoch, id, false);
-                // `reason` 已经带了上下文（mpv 未能播放「title」：…），直接显示
+                // `reason` 已经带了播放器上下文（…未能播放「title」：…），直接显示
                 self.as_mut().fail_play_loading(&reason);
             }
             StartEvent::Cancelled => {

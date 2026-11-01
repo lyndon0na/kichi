@@ -10,7 +10,7 @@ use cxx_qt_lib::QString;
 
 use super::qobject;
 use crate::session::limits;
-use crate::settings::{self, ContentViewMode, Quality, Settings, SortField};
+use crate::settings::{self, ContentViewMode, PlayerBackend, Quality, Settings, SortField};
 
 impl qobject::Kichi {
     /// 改清晰度偏好。
@@ -30,14 +30,27 @@ impl qobject::Kichi {
             return;
         }
         self.as_mut().update_settings(|settings| {
+            settings.player_backend = PlayerBackend::Custom;
             settings.player_command = command.trim().to_owned();
             settings.player_args = args.trim().to_owned();
         });
     }
 
-    /// 恢复播放器默认命令与参数。
+    /// 切换到预设播放器，或只打开自定义项（命令仍由 set_player 保存）。
+    pub fn set_player_backend(mut self: Pin<&mut Self>, value: QString) {
+        let backend = PlayerBackend::parse(&value.to_string());
+        if self.player_backend.to_string() == backend.as_str() {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_backend = backend;
+        });
+    }
+
+    /// 恢复默认 mpv，并清掉自定义命令。
     pub fn reset_player(mut self: Pin<&mut Self>) {
         self.as_mut().update_settings(|settings| {
+            settings.player_backend = PlayerBackend::Mpv;
             settings.player_command.clear();
             settings.player_args.clear();
         });
@@ -252,6 +265,7 @@ impl qobject::Kichi {
     fn sync_settings(mut self: Pin<&mut Self>, snapshot: &Settings) {
         let (
             quality,
+            player_backend,
             command,
             args,
             notify,
@@ -265,6 +279,7 @@ impl qobject::Kichi {
             maximized,
         ) = (
             snapshot.preferred_quality.as_str(),
+            snapshot.player_backend.as_str(),
             snapshot.player_command.as_str(),
             snapshot.player_args.as_str(),
             snapshot.notify_enabled,
@@ -280,6 +295,7 @@ impl qobject::Kichi {
         let download_dir = snapshot.download_dir.clone();
         let mut rust = self.as_mut().rust_mut();
         rust.preferred_quality = QString::from(quality);
+        rust.player_backend = QString::from(player_backend);
         rust.player_command = QString::from(command);
         rust.player_args = QString::from(args);
         rust.notify_enabled = notify;

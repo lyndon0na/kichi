@@ -18,6 +18,48 @@ ColumnLayout {
         Layout.fillWidth: true
 
         KSettingsRow {
+            title: qsTr("播放器")
+            description: qsTr("mpv 功能最完整；VLC 支持播放控制、续播和进度同步。")
+
+            KComboBox {
+                id: playerBackendBox
+                objectName: "settingsPlayerBackend"
+                width: 240
+                model: [
+                    { "value": "mpv", "label": qsTr("mpv") },
+                    { "value": "vlc", "label": qsTr("VLC") },
+                    { "value": "custom", "label": qsTr("自定义") }
+                ]
+                textRole: "label"
+                valueRole: "value"
+
+                Component.onCompleted: playback.syncFromBackend()
+                Connections {
+                    target: playback.backend
+                    function onChanged() {
+                        playback.syncFromBackend()
+                    }
+                }
+                function syncFromBackend() {
+                    if (!playback.backend)
+                        return
+                    var index = playerBackendBox.indexOfValue(playback.backend.playerBackend)
+                    if (index >= 0 && index !== playerBackendBox.currentIndex)
+                        playerBackendBox.currentIndex = index
+                }
+                onActivated: function (index) {
+                    if (!playback.backend)
+                        return
+                    var value = playerBackendBox.model[index].value
+                    playback.backend.setPlayerBackend(value)
+                    if (value === "custom")
+                        playback.advancedOpen = true
+                }
+            }
+        }
+
+        KSettingsRow {
+            divider: true
             title: qsTr("默认清晰度")
             description: qsTr("没有对应档位时播放原画。")
 
@@ -77,8 +119,8 @@ ColumnLayout {
             objectName: "settingsAdvancedPlayer"
             divider: true
             interactive: true
-            title: qsTr("高级播放器设置")
-            description: qsTr("自定义命令与参数；留空使用内置默认。")
+            title: qsTr("自定义播放器命令")
+            description: qsTr("仅「自定义」模式使用；编辑后会自动切到自定义。")
             onClicked: playback.advancedOpen = !playback.advancedOpen
 
             NavIcon {
@@ -155,6 +197,7 @@ ColumnLayout {
     function syncFromBackend() {
         if (!playback.backend)
             return
+        playerBackendBox.syncFromBackend()
         qualityBox.syncFromBackend()
         if (!commandField.activeFocus)
             commandField.text = playback.backend.playerCommand

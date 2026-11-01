@@ -16,7 +16,7 @@ use kichi_core::types::Tier;
 use serde::{Deserialize, Serialize};
 
 /// 设置文件格式版本（将来不兼容改动时据此迁移）。
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 
 /// 清晰度偏好（对应界面上的「默认清晰度」）。
 ///
@@ -160,6 +160,49 @@ impl<'de> Deserialize<'de> for ContentViewMode {
     }
 }
 
+/// 播放器预设。
+///
+/// `Custom` 继续使用 `player_command` / `player_args`；预设项忽略这两项，
+/// 避免界面选了 VLC 却被旧的自定义命令悄悄接管。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlayerBackend {
+    #[default]
+    Mpv,
+    Vlc,
+    Custom,
+}
+
+impl PlayerBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mpv => "mpv",
+            Self::Vlc => "vlc",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn parse(text: &str) -> Self {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "vlc" => Self::Vlc,
+            "custom" => Self::Custom,
+            _ => Self::Mpv,
+        }
+    }
+}
+
+impl Serialize for PlayerBackend {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PlayerBackend {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Self::parse(&text))
+    }
+}
+
 /// 全部可持久化设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -167,6 +210,8 @@ pub struct Settings {
     /// 格式版本；读到的版本比当前新时不报错（只按已知字段解析）
     pub version: u32,
     pub preferred_quality: Quality,
+    /// 播放器预设：mpv / VLC / 自定义命令
+    pub player_backend: PlayerBackend,
     /// 播放器整条命令；空串表示用内置默认
     pub player_command: String,
     /// 追加参数；空串表示用内置默认
@@ -203,6 +248,7 @@ impl Default for Settings {
         Self {
             version: SETTINGS_VERSION,
             preferred_quality: Quality::Ask,
+            player_backend: PlayerBackend::Mpv,
             player_command: String::new(),
             player_args: String::new(),
             notify_enabled: true,
@@ -310,7 +356,14 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
 impl Settings {
     /// 把明显越界的值收回来（手改配置文件也不会让窗口变成负尺寸）。
     fn normalized(mut self) -> Self {
-        self.version = self.version.max(1);
+        // v1 只有自定义命令；新字段缺失时把旧自定义命令继续当成自定义，
+        // 不能让一次升级把用户原来的播放器悄悄换回默认 mpv。
+        if self.version < 2
+            && (self.player_command_override().is_some() || self.player_args_override().is_some())
+        {
+            self.player_backend = PlayerBackend::Custom;
+        }
+        self.version = self.version.max(SETTINGS_VERSION);
         if self.window_width < 0 {
             self.window_width = 0;
         }
@@ -401,6 +454,7 @@ mod tests {
         let path = temp_path("roundtrip.json");
         let settings = Settings {
             preferred_quality: Quality::Transcode("1080P"),
+            player_backend: PlayerBackend::Custom,
             player_command: "mpv".into(),
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
@@ -462,6 +516,11 @@ mod tests {
         let (settings, warning) = load(&path);
         assert!(warning.is_none());
         assert_eq!(settings.preferred_quality, Quality::Original);
+        assert_eq!(
+            settings.player_backend,
+            PlayerBackend::Mpv,
+            "旧设置没有播放器预设字段时默认 mpv"
+        );
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
         assert_eq!(
@@ -477,6 +536,33 @@ mod tests {
         );
         assert_eq!(settings.download_rate_mib, 0, "旧设置默认不限速");
         assert!(settings.auto_resume_downloads, "自动续跑默认开启");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_custom_player_becomes_custom_backend() {
+        let path = temp_path("legacy-player.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"playerCommand":"vlc","playerArgs":"--fullscreen"}"#,
+        )
+        .expect("写入旧设置失败");
+        let (settings, warning) = load(&path);
+        assert!(warning.is_none());
+        assert_eq!(settings.player_backend, PlayerBackend::Custom);
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_custom_args_without_a_command_stay_custom() {
+        let path = temp_path("legacy-player-args.json");
+        std::fs::write(&path, br#"{"version":1,"playerArgs":"--fullscreen"}"#)
+            .expect("写入旧设置失败");
+        let (settings, warning) = load(&path);
+        assert!(warning.is_none());
+        assert_eq!(settings.player_backend, PlayerBackend::Custom);
+        assert_eq!(settings.player_args, "--fullscreen");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -544,6 +630,9 @@ mod tests {
         assert_eq!(ContentViewMode::parse(" GRID "), ContentViewMode::Grid);
         assert_eq!(ContentViewMode::parse("list"), ContentViewMode::List);
         assert_eq!(ContentViewMode::parse("nonsense"), ContentViewMode::List);
+        assert_eq!(PlayerBackend::parse("vlc"), PlayerBackend::Vlc);
+        assert_eq!(PlayerBackend::parse(" CUSTOM "), PlayerBackend::Custom);
+        assert_eq!(PlayerBackend::parse("nonsense"), PlayerBackend::Mpv);
     }
 
     #[test]
