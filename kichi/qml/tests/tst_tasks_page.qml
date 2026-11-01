@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtTest
 import ".."
 
@@ -26,6 +27,7 @@ TestCase {
 
         property var tasks: []
         property bool tasksLoading: false
+        property bool tasksClearing: false
         property bool playLoading: false
         property string playLoadingId: ""
         property var playingIds: []
@@ -47,6 +49,7 @@ TestCase {
         property int thumbnailRequests: 0
         property int cancelPlayLoadingCalls: 0
         property int cancelMoveTargetsCalls: 0
+        property int clearFinishedCalls: 0
 
         function addTask(url) {
             submitted += 1
@@ -64,6 +67,9 @@ TestCase {
         }
         function refreshTasks() {
             refreshCalls += 1
+        }
+        function clearFinishedTasks() {
+            clearFinishedCalls += 1
         }
         function thumbnailPath(id) {
             return ""
@@ -99,13 +105,14 @@ TestCase {
         backend: backend
         width: 800
         height: 600
-    }
 
-    TaskHeaderControls {
-        id: taskHeader
-        y: 620
-        width: 700
-        target: page
+        TaskHeaderControls {
+            id: taskHeader
+            y: 0
+            width: 700
+            height: 34
+            target: page
+        }
     }
 
     // 任务列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
@@ -116,6 +123,7 @@ TestCase {
         page.active = false
         list.contentY = 0
         backend.tasksLoading = false
+        backend.tasksClearing = false
         backend.refreshCalls = 0
         backend.submitted = 0
         backend.submittedText = ""
@@ -132,6 +140,7 @@ TestCase {
         backend.thumbnailRequests = 0
         backend.cancelPlayLoadingCalls = 0
         backend.cancelMoveTargetsCalls = 0
+        backend.clearFinishedCalls = 0
         page.width = 800
         push([])
     }
@@ -932,6 +941,83 @@ TestCase {
         compare(refresh.enabled, true)
         compare(spinner.running, false)
         compare(refresh.width, idleWidth)
+    }
+
+    function test_clear_finished_button_targets_only_terminal_rows() {
+        var button = findChild(taskHeader, "clearFinishedTasksButton")
+        verify(button !== null)
+        compare(taskHeader.showClearFinished, false)
+
+        push([
+            task("running", "running", 20),
+            task("pending", "pending", 0),
+            task("paused", "paused", 10),
+            task("unknown", "unknown", 0)
+        ])
+        compare(page.finishedCount, 0)
+        compare(taskHeader.showClearFinished, false,
+                "排队 / 下载中 / 暂停 / 未知状态都不能显示批量清理")
+
+        push([
+            task("done-a", "completed", 100),
+            task("done-b", "completed", 100),
+            task("failed", "error", 0),
+            task("deleted", "deleted", 0),
+            task("running", "running", 20)
+        ])
+        compare(page.finishedCount, 4)
+        compare(taskHeader.finishedCount, 4)
+        compare(taskHeader.backendReady, true)
+        compare(taskHeader.showClearFinished, true)
+        compare(button.text, "清理已结束任务")
+        compare(button.enabled, true)
+        var newButton = findChild(taskHeader, "newTaskButton")
+        var refreshButton = findChild(taskHeader, "tasksRefreshButton")
+        verify(taskHeader.children.indexOf(newButton) < taskHeader.children.indexOf(button),
+               "清理已结束任务应排在新任务之后")
+        verify(taskHeader.children.indexOf(button) < taskHeader.children.indexOf(refreshButton),
+               "刷新应保持在最右侧")
+
+        backend.tasksClearing = true
+        backend.changed()
+        wait(20)
+        compare(button.enabled, false, "清理期间阻止重复触发")
+        compare(findChild(button, "buttonBusyIndicator").running, true)
+
+        backend.tasksClearing = false
+        backend.changed()
+        wait(20)
+        compare(button.enabled, true)
+    }
+
+    function test_clear_finished_uses_one_batch_confirmation() {
+        push([
+            task("done-a", "completed", 100),
+            task("failed", "error", 0),
+            task("deleted", "deleted", 0),
+            task("running", "running", 20)
+        ])
+
+        var button = findChild(taskHeader, "clearFinishedTasksButton")
+        verify(button !== null)
+        verify(taskHeader.showClearFinished)
+        button.clicked()
+        wait(40)
+
+        var dialog = findChild(page, "clearFinishedTasksDialog")
+        verify(dialog !== null && dialog.opened)
+        compare(backend.clearFinishedCalls, 0, "确认前不能删除记录")
+        var text = findChild(dialog, "clearFinishedTasksText")
+        verify(text.text.indexOf("3 条") >= 0, text.text)
+        verify(text.text.indexOf("已完成、失败和产物已删除") >= 0, text.text)
+        verify(text.text.indexOf("云端文件不会删除") >= 0, text.text)
+
+        var footer = findChild(dialog, "clearFinishedTasksFooter")
+        verify(footer !== null)
+        mouseClick(footer.standardButton(Dialog.Ok))
+        wait(40)
+        compare(backend.clearFinishedCalls, 1, "一次确认只发一次批量清理")
+        compare(dialog.opened, false)
     }
 
     function test_loading_state_replaces_empty_message() {

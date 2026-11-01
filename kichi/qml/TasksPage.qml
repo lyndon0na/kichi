@@ -18,9 +18,19 @@ Item {
     signal playRequested(string fileId, point position)
 
     readonly property bool tasksLoading: backend ? backend.tasksLoading : false
+    readonly property bool tasksClearing: backend ? backend.tasksClearing === true : false
     readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
     readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
     readonly property int taskCount: taskRows.count
+    readonly property int finishedCount: {
+        var tasks = page.backend ? page.backend.tasks : []
+        var n = 0
+        for (var i = 0; i < tasks.length; i++) {
+            if (tasks[i].settled === true)
+                n++
+        }
+        return n
+    }
     readonly property int tableHeaderHeight: 34
     readonly property int tableRowHeight: 48
     readonly property int thumbnailColumnWidth: 36
@@ -208,6 +218,11 @@ Item {
             page.backend.refreshTasks()
     }
 
+    function confirmClearFinished() {
+        if (page.backend && page.finishedCount > 0 && !page.tasksClearing)
+            clearFinishedDialog.open()
+    }
+
     function isTaskPlayLoading(id) {
         return page.backend !== null
                 && page.backend.playLoading === true
@@ -324,6 +339,33 @@ Item {
         }
         onPlayRequested: function (fileId, point) {
             page.playRequested(fileId, point)
+        }
+    }
+
+    KDialog {
+        id: clearFinishedDialog
+        objectName: "clearFinishedTasksDialog"
+        title: qsTr("清理已结束任务")
+        modal: true
+        anchors.centerIn: parent
+        width: 420 + leftPadding + rightPadding
+        footer: StandardDialogFooter {
+            objectName: "clearFinishedTasksFooter"
+            dialog: clearFinishedDialog
+        }
+
+        Label {
+            objectName: "clearFinishedTasksText"
+            width: 420
+            wrapMode: Text.Wrap
+            text: qsTr("确定清理 %1 条已结束任务记录吗？\n"
+                       + "包括已完成、失败和产物已删除；只会移除任务记录，已下载的云端文件不会删除。")
+                .arg(page.finishedCount)
+        }
+
+        onAccepted: {
+            if (page.backend)
+                page.backend.clearFinishedTasks()
         }
     }
 

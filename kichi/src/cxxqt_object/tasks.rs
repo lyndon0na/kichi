@@ -220,6 +220,10 @@ impl qobject::Kichi {
 
     /// 删除任务记录（云端文件保留）。界面侧负责二次确认。
     pub fn delete_task(mut self: Pin<&mut Self>, id: QString) {
+        if self.tasks_clearing {
+            self.as_mut().set_message("正在清理已结束任务，请稍候");
+            return;
+        }
         let id = id.to_string();
         if id.trim().is_empty() {
             return;
@@ -239,6 +243,71 @@ impl qobject::Kichi {
                         qichi.as_mut().refresh_tasks_force();
                     }
                     Err(err) => qichi.as_mut().on_tasks_failure(err),
+                }
+            },
+        );
+    }
+
+    /// 清理所有已完成、失败和产物已删除的任务记录；云端文件保留。
+    pub fn clear_finished_tasks(mut self: Pin<&mut Self>) {
+        if self.tasks_clearing {
+            return;
+        }
+        let ids = finished_task_ids(&self.task_list);
+        if ids.is_empty() {
+            self.as_mut().set_message("没有已结束任务可清理");
+            return;
+        }
+
+        let total = ids.len();
+        let session = self.backend.session.clone();
+        let my_epoch = self.tasks_epoch;
+        self.as_mut().rust_mut().tasks_clearing = true;
+        self.as_mut()
+            .set_message(&format!("正在清理 {total} 条已结束任务……"));
+        run_in_background(
+            move || Ok::<_, Failure>(session.delete_offline_tasks(&ids)),
+            move |mut qichi, result| {
+                if qichi.as_ref().rust().tasks_epoch != my_epoch {
+                    return;
+                }
+                qichi.as_mut().rust_mut().tasks_clearing = false;
+
+                let refresh = match result {
+                    Ok(outcome) => {
+                        let result_total = outcome.total;
+                        let deleted = outcome.deleted;
+                        if let Some(failure) = outcome.failure {
+                            let reason = failure.to_string();
+                            if matches!(&failure, Failure::Auth(_)) {
+                                qichi.as_mut().on_tasks_failure(failure);
+                                false
+                            } else {
+                                let message = if deleted > 0 {
+                                    format!(
+                                        "清理已结束任务中断：已清理 {deleted}/{result_total} 条；{reason}"
+                                    )
+                                } else {
+                                    format!("清理已结束任务失败：{reason}")
+                                };
+                                qichi.as_mut().set_message(&message);
+                                true
+                            }
+                        } else {
+                            qichi.as_mut().set_message(&format!(
+                                "已清理 {deleted} 条已结束任务（云端文件保留）"
+                            ));
+                            true
+                        }
+                    }
+                    Err(err) => {
+                        let auth_failure = matches!(&err, Failure::Auth(_));
+                        qichi.as_mut().on_tasks_failure(err);
+                        !auth_failure
+                    }
+                };
+                if refresh {
+                    qichi.as_mut().refresh_tasks_force();
                 }
             },
         );
@@ -301,6 +370,7 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.tasks_epoch = rust.tasks_epoch.wrapping_add(1);
             rust.tasks_loading = false;
+            rust.tasks_clearing = false;
             rust.tasks_request_running = false;
             rust.task_refresh_pending = false;
             rust.tasks_loaded = false;
@@ -400,6 +470,22 @@ impl qobject::Kichi {
 /// 状态分组压到几十天前的「产物已删除」任务下面，和表头「创建时间」不一致。
 fn sort_tasks_newest_first(tasks: &mut [OfflineTask]) {
     tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+}
+
+/// 批量清理只接受已结束状态，进行中、排队、暂停和未知状态一律不动。
+fn finished_task_ids(tasks: &[OfflineTask]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    for task in tasks {
+        if !task.status().is_settled() {
+            continue;
+        }
+        let id = task.id.trim();
+        if !id.is_empty() && seen.insert(id) {
+            ids.push(id.to_owned());
+        }
+    }
+    ids
 }
 
 /// 把新建接口返回的任务按 id 合并进当前快照，避免列表接口稍慢时徽标不出现。
@@ -713,6 +799,30 @@ mod tests {
                 "missing-time"
             ]
         );
+    }
+
+    #[test]
+    fn finished_task_ids_include_all_terminal_states_only() {
+        let mut failed = task("failed", TaskPhase::Error);
+        failed.message = Some("network error".into());
+        let mut deleted = task("deleted", TaskPhase::Error);
+        deleted.message = Some("File deleted".into());
+        let mut blank = task(" ", TaskPhase::Completed);
+        blank.name = "blank id".into();
+
+        let ids = finished_task_ids(&[
+            task("done", TaskPhase::Completed),
+            task("done", TaskPhase::Completed),
+            failed,
+            deleted,
+            task("running", TaskPhase::Running),
+            task("pending", TaskPhase::Pending),
+            task("paused", TaskPhase::Paused),
+            task("unknown", TaskPhase::Unknown),
+            blank,
+        ]);
+
+        assert_eq!(ids, ["done", "failed", "deleted"]);
     }
 
     #[test]

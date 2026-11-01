@@ -78,6 +78,8 @@ pub mod qobject {
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         /// 首次读取或用户手动刷新在途：QML 据此显示可见加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
+        /// 正在逐条清理已结束任务：阻止重复入口并显示按钮忙碌态
+        #[qproperty(bool, tasks_clearing, cxx_name = "tasksClearing", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, shares, READ, NOTIFY = changed)]
         /// 首次读取或用户手动刷新：TTL 自动校准不会置位
         #[qproperty(bool, shares_loading, cxx_name = "sharesLoading", READ, NOTIFY = changed)]
@@ -326,6 +328,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "deleteTask"]
         fn delete_task(self: Pin<&mut Self>, id: QString);
+
+        /// 清理所有已结束的离线任务记录；云端文件保留。
+        #[qinvokable]
+        #[cxx_name = "clearFinishedTasks"]
+        fn clear_finished_tasks(self: Pin<&mut Self>);
 
         /// 播放已完成的离线任务产物（id 是产物文件 id）。
         #[qinvokable]
@@ -822,6 +829,8 @@ pub struct KichiRust {
     pub(crate) task_list: Vec<kichi_core::OfflineTask>,
     /// 有任务请求在途
     pub(crate) tasks_loading: bool,
+    /// 正在逐条删除已结束任务记录
+    pub(crate) tasks_clearing: bool,
     /// 至少成功读过一次任务列表；空列表也算有效缓存。
     pub(crate) tasks_loaded: bool,
     /// 任意任务列表请求在途；后台轮询和切页校准不会改变可见加载态。
@@ -1073,6 +1082,7 @@ impl Default for KichiRust {
             tasks: QVariantList::default(),
             task_list: Vec::new(),
             tasks_loading: false,
+            tasks_clearing: false,
             tasks_loaded: false,
             tasks_request_running: false,
             task_refresh_pending: false,

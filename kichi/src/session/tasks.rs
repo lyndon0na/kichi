@@ -12,6 +12,15 @@ use super::{Failure, Session};
 const MAX_TASK_PAGES: usize = 20;
 const TASK_PAGE_SIZE: usize = kichi_core::tasks::TASK_LIST_LIMIT as usize;
 
+/// 批量删除任务记录的结果。
+///
+/// 遇到首个失败就停止，因此 `deleted` 可能大于 0 且小于 `total`。
+pub struct BatchDeleteOutcome {
+    pub total: usize,
+    pub deleted: usize,
+    pub failure: Option<Failure>,
+}
+
 impl Session {
     /// 提交离线下载（磁力 / ed2k / 普通 URL）。阻塞。
     ///
@@ -52,6 +61,31 @@ impl Session {
     pub fn delete_offline_task(&self, id: &str) -> Result<(), Failure> {
         let client = self.drive()?;
         client.delete_offline_task(id, false).map_err(Failure::from)
+    }
+
+    /// 逐条删除一批任务记录（云端文件保留）。阻塞。
+    ///
+    /// 不假定 `task_ids` 支持逗号分隔；每条都走已验证的单 id 删除接口。
+    /// 遇到首个失败立即停止，已经成功的删除不会回滚。
+    pub fn delete_offline_tasks(&self, ids: &[String]) -> BatchDeleteOutcome {
+        let mut deleted = 0;
+        for id in ids {
+            match self.delete_offline_task(id) {
+                Ok(()) => deleted += 1,
+                Err(failure) => {
+                    return BatchDeleteOutcome {
+                        total: ids.len(),
+                        deleted,
+                        failure: Some(failure),
+                    };
+                }
+            }
+        }
+        BatchDeleteOutcome {
+            total: ids.len(),
+            deleted,
+            failure: None,
+        }
     }
 }
 
