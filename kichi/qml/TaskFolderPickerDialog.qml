@@ -85,8 +85,7 @@ KDialog {
     }
 
     function reload() {
-        foldersModel.clear()
-        seenRevision = -1
+        folderList.beginDirectoryLoad()
         if (picker.backend)
             picker.backend.loadMoveTargets(picker.targetId)
     }
@@ -131,6 +130,7 @@ KDialog {
                 folderId: String(list[i].id || ""),
                 folderName: String(list[i].name || "")
             })
+        folderList.finishDirectoryLoad()
     }
 
     Connections {
@@ -184,17 +184,24 @@ KDialog {
             }
         }
 
-        ListView {
+        FolderPickerListView {
             id: folderList
 
             objectName: "taskFolderPickerList"
             Layout.fillWidth: true
             Layout.preferredHeight: 260
-            clip: true
-            spacing: 2
             model: foldersModel
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: KScrollBar {}
+            enabled: picker.backend !== null
+                     && !picker.backend.moveTargetsLoading
+
+            onRowActivated: function (index) {
+                const item = foldersModel.get(index)
+                if (item)
+                    picker.enterFolder({
+                        id: item.folderId,
+                        name: item.folderName
+                    })
+            }
 
             delegate: ItemDelegate {
                 required property string folderId

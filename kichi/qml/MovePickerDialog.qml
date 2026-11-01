@@ -99,8 +99,7 @@ KDialog {
 
     function reload() {
         actionError = ""
-        foldersModel.clear()
-        seenRevision = -1
+        folderList.beginDirectoryLoad()
         if (backend)
             backend.loadMoveTargets(targetId)
     }
@@ -155,6 +154,7 @@ KDialog {
         const list = backend.moveTargets || []
         for (let i = 0; i < list.length; i++)
             foldersModel.append({ folderId: list[i].id, folderName: list[i].name })
+        folderList.finishDirectoryLoad()
     }
 
     Connections {
@@ -231,17 +231,24 @@ KDialog {
             text: qsTr("这里就是源目录；请进入其它文件夹或点「上一级」。")
         }
 
-        ListView {
+        FolderPickerListView {
             id: folderList
 
             objectName: "movePickerList"
             Layout.fillWidth: true
             Layout.preferredHeight: 260
-            clip: true
-            spacing: 2
             model: foldersModel
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: KScrollBar {}
+            enabled: picker.backend !== null
+                     && !picker.backend.moveTargetsLoading
+
+            onRowActivated: function (index) {
+                const item = foldersModel.get(index)
+                if (item)
+                    picker.enterFolder({
+                        id: item.folderId,
+                        name: item.folderName
+                    })
+            }
 
             delegate: ItemDelegate {
                 required property string folderId

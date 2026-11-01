@@ -42,6 +42,7 @@ const QML_FILES: &[&str] = &[
     "qml/FileSelection.qml",
     "qml/FilePageInteraction.qml",
     "qml/MovePickerDialog.qml",
+    "qml/FolderPickerListView.qml",
     "qml/SearchStatusBar.qml",
     "qml/SearchEmptyState.qml",
     "qml/SearchNavigationOverlay.qml",
