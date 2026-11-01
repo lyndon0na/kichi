@@ -36,7 +36,8 @@ Item {
     readonly property var libraryRows: entryRows.model
     readonly property var activeView: page.gridMode
                                       ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid)
-                                      : libraryList
+                                      : activeList
+    readonly property var activeList: page.dateGrouped ? libraryGroupedList : libraryList
     property var scrollByView: ({ "list": 0, "grid": 0 })
     property bool pendingScrollRestore: false
     property real pendingScrollY: 0
@@ -183,6 +184,7 @@ Item {
     function selectIndex(index, focus) {
         if (entries.length === 0) {
             libraryList.currentIndex = -1
+            libraryGroupedList.currentIndex = -1
             page.currentEntryId = ""
             libraryGrid.currentIndex = -1
             libraryGroupedGrid.currentIndex = -1
@@ -190,6 +192,7 @@ Item {
         }
         const next = Math.max(0, Math.min(index, entries.length - 1))
         libraryList.currentIndex = next
+        libraryGroupedList.currentIndex = next
         libraryGrid.currentIndex = next
         libraryGroupedGrid.currentIndex = next
         const entry = entries[next]
@@ -223,13 +226,14 @@ Item {
 
     /// 视口坐标 (x, y) 下命中的资料库行；日期分区头和行下空白按空白处理。
     function rowAt(x, y) {
-        const index = libraryList.indexAt(x, y + libraryList.contentY)
+        const list = page.activeList
+        const index = list.indexAt(x, y + list.contentY)
         if (index < 0 || index >= entries.length)
             return null
-        const item = libraryList.itemAtIndex(index)
+        const item = list.itemAtIndex(index)
         if (!item)
             return null
-        const local = libraryList.mapToItem(item, x, y)
+        const local = list.mapToItem(item, x, y)
         return local.x >= 0 && local.y >= 0
                 && local.x < item.width && local.y < item.height ? item : null
     }
@@ -292,6 +296,7 @@ Item {
         const index = page.indexOfCurrentEntry()
         if (index >= 0) {
             libraryList.currentIndex = index
+            libraryGroupedList.currentIndex = index
             libraryGrid.currentIndex = index
             libraryGroupedGrid.currentIndex = index
         }
@@ -344,25 +349,15 @@ Item {
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    visible: !page.gridMode
+                    visible: !page.gridMode && !page.dateGrouped
                     clip: true
                     spacing: 0
-                    model: page.libraryRows
+                    model: page.dateGrouped ? null : page.libraryRows
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: KScrollBar {}
                     focus: true
                     highlightFollowsCurrentItem: false
-                    section.property: page.dateGrouped ? "dateGroup" : ""
-                    section.criteria: ViewSection.FullString
-                    section.delegate: LibraryDateSection {
-                        objectName: "libraryDateSection_" + section
-                        width: libraryList.width - metrics.scrollBarSlot
-                        height: density.groupHeaderHeight
-                        title: page.dateSectionTitle(section)
-                        contentPadding: density.rowPadding
-                        rightPadding: density.rowPadding
-                    }
                     Keys.onPressed: function (event) {
                         page.handleKey(event)
                     }
@@ -422,6 +417,20 @@ Item {
                         }
                     }
                 }
+
+                LibraryGroupedListView {
+                    id: libraryGroupedList
+
+                    objectName: "libraryGroupedListView"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: !page.gridMode && page.dateGrouped
+                    libraryPage: page.dateGrouped ? page : null
+                    density: density
+                    metrics: metrics
+                    onKeyPressed: function (event) { page.handleKey(event) }
+                    onContentHeightChanged: page.restoreScroll()
+                }
             }
 
             ContentGridView {
@@ -430,7 +439,7 @@ Item {
                 objectName: "libraryGridContainer"
                 anchors.fill: parent
                 visible: page.gridMode && !page.dateGrouped
-                model: page.libraryRows
+                model: page.dateGrouped ? null : page.libraryRows
                 density: density
                 metrics: metrics
                 reserveDetail: true
@@ -584,6 +593,7 @@ Item {
             page.lastRevision = page.backend.libraryRevision
             if (page.entries.length === 0) {
                 libraryList.currentIndex = -1
+                libraryGroupedList.currentIndex = -1
                 libraryGrid.currentIndex = -1
                 libraryGroupedGrid.currentIndex = -1
                 page.currentEntryId = ""

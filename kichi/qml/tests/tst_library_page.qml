@@ -630,9 +630,8 @@ TestCase {
             groupedRow("missing", "earlier")
         ], true)
 
-        var list = findChild(page, "libraryList")
+        var list = findChild(page, "libraryGroupedListView")
         verify(list !== null)
-        compare(list.section.property, "dateGroup")
         compare(list.count, 4)
 
         var todayHeader = findChild(list, "libraryDateSection_today")
@@ -707,6 +706,86 @@ TestCase {
         tryCompare(backend, "playedId", "today")
     }
 
+    function test_playback_history_list_actions_and_navigation_skip_headers() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish([groupedRow("today", "today"), groupedRow("yesterday", "yesterday"),
+                 groupedRow("older", "earlier")], true)
+        const list = findChild(page, "libraryGroupedListView")
+        const view = findChild(page, "libraryDateList")
+        const first = list.itemAtIndex(0)
+        verify(first !== null)
+        mouseClick(first, 30, 20)
+        compare(list.currentIndex, 0)
+        keyClick(Qt.Key_Down)
+        compare(list.currentIndex, 1)
+        compare(page.currentEntryId, "yesterday")
+        keyClick(Qt.Key_End)
+        compare(list.currentIndex, 2)
+        compare(page.currentEntryId, "older")
+        keyClick(Qt.Key_Home)
+        compare(list.currentIndex, 0)
+        keyClick(Qt.Key_Return)
+        compare(backend.playedId, "today")
+
+        mouseClick(first, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        compare(page.blankContextMenu.visible, false)
+        page.contextMenu.close()
+        mouseDoubleClickSequence(first, 30, 20)
+        compare(backend.playedId, "today")
+        const header = findChild(view, "libraryDateSection_yesterday")
+        mouseClick(header, 20, 10)
+        compare(page.currentEntryId, "today", "日期分区头不能改变选择")
+    }
+
+    function test_playback_history_exact_layout_survives_resize_and_refresh_data() {
+        return [{ tag: "list", grid: false }, { tag: "grid", grid: true }]
+    }
+
+    function test_playback_history_exact_layout_survives_resize_and_refresh(data) {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        const rows = []
+        for (let i = 0; i < 66; ++i)
+            rows.push(groupedRow("history-" + i,
+                                 i < 2 ? "today" : i < 7 ? "yesterday" : "earlier"))
+        publish(rows, true)
+        if (data.grid)
+            page.setContentView("grid")
+        const container = page.activeView
+        const view = findChild(page, data.grid ? "libraryGroupedList" : "libraryDateList")
+        verify(view !== null)
+        const total = view.contentHeight
+        const ratio = view.visibleArea.heightRatio
+        const bottom = total - view.height
+        for (let y = 0; y < bottom + 100; y += 100) {
+            view.contentY = Math.min(y, bottom)
+            wait(1)
+            compare(view.contentHeight, total)
+            compare(view.originY, 0)
+            compare(view.visibleArea.heightRatio, ratio)
+        }
+        verify(container.itemAtIndex(65) !== null)
+        page.width = 1040
+        wait(20)
+        container.positionViewAtIndex(65, ListView.End)
+        const last = container.itemAtIndex(65)
+        verify(last !== null)
+        verify(last.mapToItem(view, 0, last.height).y <= view.height)
+        verify(last.mapToItem(view, 0, 0).y >= 0)
+
+        // 刷新缩短到两组、再清空时，底部的旧委托必须安全回收。
+        publish(rows.slice(0, 3), true)
+        tryCompare(container, "contentY", 0)
+        verify(container.itemAtIndex(0) !== null)
+        publish([], true)
+        tryCompare(container, "contentHeight", 0)
+        compare(view.instantiatedRows, 0)
+    }
+
     function test_playback_history_grid_drops_scrollbar_lane_when_content_fits() {
         backend.libraryKind = "playback-history"
         page.kind = "playback-history"
@@ -760,7 +839,7 @@ TestCase {
             rows.push(groupedRow("earlier-" + i, "earlier"))
         publish(rows, true)
 
-        var list = findChild(page, "libraryList")
+        var list = findChild(page, "libraryGroupedListView")
         page.setContentView("grid")
         var grouped = findChild(page, "libraryGroupedGrid")
         var groupedList = findChild(page, "libraryGroupedList")
@@ -803,17 +882,18 @@ TestCase {
         page.dateSectionsEnabled = true
         publish(playbackRowsPerGroup(), true)
 
-        var list = findChild(page, "libraryList")
+        var list = findChild(page, "libraryGroupedListView")
         verify(list !== null)
         list.positionViewAtIndex(60, ListView.Beginning)
         wait(50)
         var earlierHeader = findChild(list, "libraryDateSection_earlier")
         verify(earlierHeader !== null, "更早分区头必须已实例化")
-        list.contentY = Math.max(0, earlierHeader.y - 120)
+        const headerContentY = earlierHeader.mapToItem(list, 0, 0).y + list.contentY
+        list.contentY = Math.max(0, headerContentY - 120)
         wait(50)
 
         const clickX = 100
-        const clickY = earlierHeader.y - list.contentY + earlierHeader.height / 2
+        const clickY = earlierHeader.mapToItem(list, 0, earlierHeader.height / 2).y
         verify(clickY > 0 && clickY < list.height, "更早分区头应滚到可见区域")
         const expected = list.mapToItem(null, clickX, clickY)
         mouseClick(list, clickX, clickY, Qt.RightButton)

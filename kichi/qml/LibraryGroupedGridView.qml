@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// 播放历史专用网格：ListView 每次只实例化一小排卡片，时间分区带可横跨整行。
+// 播放历史专用网格：每次只实例化视口附近的卡片行，时间分区带可横跨整行。
 // 普通文件页和另外两个资料库页继续使用 ContentGridView。
 Item {
     id: root
@@ -12,7 +12,6 @@ Item {
     property var metrics: null
     property int currentIndex: -1
     property var rows: []
-    property alias rowModel: rowList
     property bool rowsDirty: true
 
     signal keyPressed(var event)
@@ -72,10 +71,6 @@ Item {
     property alias contentY: groupedList.contentY
     property alias contentHeight: groupedList.contentHeight
 
-    ListModel {
-        id: rowList
-    }
-
     function forceActiveFocus() {
         groupedList.forceActiveFocus()
     }
@@ -126,55 +121,8 @@ Item {
             }
         }
         rows = next
-        syncRowList(next)
         rowsDirty = false
         groupedList.forceLayout()
-        Qt.callLater(function () {
-            groupedList.forceLayout()
-        })
-    }
-
-    function syncRowList(next) {
-        const wantedKeys = ({})
-        for (let i = 0; i < next.length; ++i)
-            wantedKeys[String(next[i].key)] = true
-
-        for (let stale = rowList.count - 1; stale >= 0; --stale) {
-            if (wantedKeys[String(rowList.get(stale).key)] === undefined)
-                rowList.remove(stale)
-        }
-
-        const present = ({})
-        for (let p = 0; p < rowList.count; ++p)
-            present[String(rowList.get(p).key)] = true
-        for (let add = 0; add < next.length; ++add) {
-            const key = String(next[add].key)
-            if (present[key] === undefined) {
-                rowList.append({ key: key, rowData: next[add] })
-                present[key] = true
-            }
-        }
-
-        for (let target = next.length - 1; target >= 0 && target < rowList.count; --target) {
-            const key = String(next[target].key)
-            if (String(rowList.get(target).key) === key)
-                continue
-            let from = -1
-            for (let scan = target - 1; scan >= 0; --scan) {
-                if (String(rowList.get(scan).key) === key) {
-                    from = scan
-                    break
-                }
-            }
-            if (from >= 0)
-                rowList.move(from, target, 1)
-        }
-
-        for (let at = 0; at < next.length && at < rowList.count; ++at) {
-            rowList.set(at, { key: String(next[at].key), rowData: next[at] })
-        }
-        while (rowList.count > next.length)
-            rowList.remove(rowList.count - 1)
     }
 
     function rowIndexForEntry(entryIndex) {
@@ -194,7 +142,7 @@ Item {
         const rowIndex = rowIndexForEntry(entryIndex)
         if (rowIndex < 0)
             return null
-        const rowItem = groupedList.itemAtIndex(rowIndex)
+        const rowItem = groupedList.itemAtRow(rowIndex)
         if (!rowItem)
             return null
         const targetName = "libraryGridCard_" + entryIndex
@@ -208,7 +156,7 @@ Item {
 
     /// 视口坐标 (x, y) 下命中的卡片；分区头和行列缝隙返回 null（按空白处理）。
     function cardAt(x, y) {
-        const rowIndex = groupedList.indexAt(x, y + groupedList.contentY)
+        const rowIndex = groupedList.rowIndexAt(y + groupedList.contentY)
         if (rowIndex < 0 || rowIndex >= rows.length)
             return null
         const modelRow = rows[rowIndex]
@@ -229,7 +177,7 @@ Item {
     function positionViewAtIndex(entryIndex, mode) {
         const rowIndex = rowIndexForEntry(entryIndex)
         if (rowIndex >= 0)
-            groupedList.positionViewAtIndex(rowIndex, mode)
+            groupedList.positionViewAtRow(rowIndex, mode)
     }
 
     onEntriesChanged: {
@@ -245,31 +193,22 @@ Item {
             rowsDirty = true
     }
     onVisibleChanged: {
-        if (visible) {
-            if (rowsDirty)
-                rebuildRows()
-            Qt.callLater(function () {
-                groupedList.forceLayout()
-            })
-        }
+        if (visible && rowsDirty)
+            rebuildRows()
     }
     Component.onCompleted: {
         if (visible)
             rebuildRows()
     }
 
-    ListView {
+    LibrarySectionView {
         id: groupedList
 
         objectName: "libraryGroupedList"
         anchors.fill: parent
-        clip: true
-        spacing: 0
-        model: root.rowModel
-        currentIndex: -1
-        boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: KScrollBar {}
-        focus: true
+        rows: root.rows
+        itemRowHeight: root.cellHeight
+        headerHeight: root.headerHeight
 
         Keys.onPressed: function (event) {
             root.keyPressed(event)
@@ -296,10 +235,12 @@ Item {
             id: visualRow
 
             required property var rowData
+            required property real rowOffset
+            required property real rowExtent
 
+            y: rowOffset
             width: groupedList.width - root.scrollBarInset
-            height: rowData.rowType === "header"
-                    ? root.headerHeight : root.cellHeight
+            height: rowExtent
 
             LibraryDateSection {
                 objectName: "libraryDateSection_" + visualRow.rowData.key

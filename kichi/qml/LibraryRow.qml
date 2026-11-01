@@ -79,8 +79,7 @@ ItemDelegate {
         onContainsMouseChanged: row.rowHovered = containsMouse
 
         onClicked: function (mouse) {
-            if (row.listView)
-                row.selectRequested(row.rowIndex)
+            row.selectRequested(row.rowIndex)
             if (mouse.button === Qt.RightButton && row.entry)
                 row.contextMenu(Qt.point(mouse.x, mouse.y))
         }

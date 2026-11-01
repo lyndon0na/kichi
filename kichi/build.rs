@@ -25,6 +25,8 @@ const QML_FILES: &[&str] = &[
     "qml/LibraryDateSection.qml",
     "qml/LibraryGridCard.qml",
     "qml/LibraryGroupedGridView.qml",
+    "qml/LibraryGroupedListView.qml",
+    "qml/LibrarySectionView.qml",
     "qml/LibraryContextMenu.qml",
     "qml/LibraryHeaderControls.qml",
     "qml/RecentSavedPage.qml",
