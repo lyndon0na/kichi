@@ -19,6 +19,18 @@ Rectangle {
     KTheme { id: theme }
     PageIndex { id: pages }
 
+    readonly property int unfinishedTaskCount: {
+        if (!bar.backend)
+            return 0
+        const tasks = bar.backend.tasks || []
+        let count = 0
+        for (let i = 0; i < tasks.length; ++i) {
+            if (tasks[i].settled !== true)
+                ++count
+        }
+        return count
+    }
+
     color: theme.surfaceSheet
 
     ColumnLayout {
@@ -91,26 +103,17 @@ Rectangle {
                         elide: Text.ElideRight
                     }
 
-                    // 传输任务：进行中条数徽标（0 时隐藏）。
-                    Rectangle {
-                        readonly property int count: navButton.modelData.icon === "transfer"
-                                                    && bar.backend ? bar.backend.downloadActive : 0
-
+                    // 离线任务：未结束条数徽标（0 时隐藏）。
+                    KStatusBadge {
+                        objectName: navButton.modelData.page === pages.tasks
+                                    ? "sidebarTaskBadge" : ""
+                        readonly property int count: navButton.modelData.page === pages.tasks
+                                                    ? bar.unfinishedTaskCount : 0
+                        readonly property bool countVisible: count > 0
                         Layout.alignment: Qt.AlignVCenter
-                        visible: count > 0
-                        implicitWidth: badgeLabel.implicitWidth + 12
-                        implicitHeight: 16
-                        radius: theme.radiusSmall
-                        color: theme.accent
-
-                        Label {
-                            id: badgeLabel
-                            anchors.centerIn: parent
-                            text: parent.count > 99 ? "99+" : String(parent.count)
-                            color: theme.onAccent
-                            font.pixelSize: theme.fontCaption
-                            font.weight: Font.DemiBold
-                        }
+                        visible: countVisible
+                        text: count > 99 ? "99+" : String(count)
+                        tone: "accent"
                     }
                 }
             }

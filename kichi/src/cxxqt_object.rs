@@ -826,6 +826,8 @@ pub struct KichiRust {
     pub(crate) tasks_loaded: bool,
     /// 任意任务列表请求在途；后台轮询和切页校准不会改变可见加载态。
     pub(crate) tasks_request_running: bool,
+    /// 任务列表在途时又收到强制刷新：本轮结束后补一次
+    pub(crate) task_refresh_pending: bool,
     /// 最近一次任务列表请求开始 / 成功刷新的时刻：手动 / 切页刷新据此做短冷却
     pub(crate) task_refresh_at: Option<std::time::Instant>,
     /// 任务请求代数：退出登录 / 重登后旧结果作废
@@ -1073,6 +1075,7 @@ impl Default for KichiRust {
             tasks_loading: false,
             tasks_loaded: false,
             tasks_request_running: false,
+            task_refresh_pending: false,
             task_refresh_at: None,
             tasks_epoch: 0,
             shares: QVariantList::default(),

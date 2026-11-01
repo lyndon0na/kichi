@@ -4,11 +4,14 @@
 //! 同时打出一串请求；某个链接失败后继续尝试后面的行，登录失效 / 官方限流则
 //! 停止剩余请求。
 
+use kichi_core::OfflineTask;
+
 use crate::session::{Failure, Session};
 
 pub(super) struct SubmitOutcome {
     pub requested: usize,
     pub submitted: usize,
+    pub created: Vec<OfflineTask>,
     pub errors: Vec<String>,
     pub stopped_early: bool,
     pub auth_failure: Option<Failure>,
@@ -27,6 +30,7 @@ pub(super) fn submit(session: &Session, urls: &[String], parent_id: Option<&str>
     let mut outcome = SubmitOutcome {
         requested: urls.len(),
         submitted: 0,
+        created: Vec::new(),
         errors: Vec::new(),
         stopped_early: false,
         auth_failure: None,
@@ -34,7 +38,10 @@ pub(super) fn submit(session: &Session, urls: &[String], parent_id: Option<&str>
 
     for url in urls {
         match session.add_offline_task(url, parent_id) {
-            Ok(_) => outcome.submitted += 1,
+            Ok(task) => {
+                outcome.submitted += 1;
+                outcome.created.push(task);
+            }
             Err(Failure::Auth(reason)) => {
                 outcome.auth_failure = Some(Failure::Auth(reason));
                 outcome.stopped_early = true;
@@ -114,6 +121,7 @@ mod tests {
         let outcome = SubmitOutcome {
             requested: 3,
             submitted: 3,
+            created: Vec::new(),
             errors: Vec::new(),
             stopped_early: false,
             auth_failure: None,
@@ -126,6 +134,7 @@ mod tests {
         let outcome = SubmitOutcome {
             requested: 3,
             submitted: 2,
+            created: Vec::new(),
             errors: vec!["链接格式不正确".to_owned()],
             stopped_early: false,
             auth_failure: None,
@@ -138,6 +147,7 @@ mod tests {
         let outcome = SubmitOutcome {
             requested: 5,
             submitted: 1,
+            created: Vec::new(),
             errors: vec!["触发官方配额限制".to_owned()],
             stopped_early: true,
             auth_failure: None,

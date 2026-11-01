@@ -79,7 +79,7 @@ impl qobject::Kichi {
             self.as_mut().set_message("");
             self.as_mut().refresh_identity_and_quota();
             self.as_mut().refresh_files_background();
-            self.as_ref().start_task_polling();
+            self.as_mut().start_task_polling();
         }
     }
 
@@ -225,7 +225,7 @@ impl qobject::Kichi {
         self.as_mut().sync_identity_from_session();
         self.as_mut().refresh_identity_and_quota();
         self.as_mut().refresh_files_background();
-        self.as_ref().start_task_polling();
+        self.as_mut().start_task_polling();
     }
 
     /// 错误统一出口：按类别更新属性，不吞错误。

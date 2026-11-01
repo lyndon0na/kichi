@@ -105,6 +105,9 @@ impl qobject::Kichi {
         if self.tasks_request_running {
             let show_manual = {
                 let mut rust = self.as_mut().rust_mut();
+                if force {
+                    rust.task_refresh_pending = true;
+                }
                 let show = manual && has_cache && !rust.tasks_loading;
                 if show {
                     rust.tasks_loading = true;
@@ -149,6 +152,17 @@ impl qobject::Kichi {
                         }
                         qichi.as_mut().on_tasks_failure(err);
                     }
+                }
+                // 提交 / 删除恰逢旧列表请求在途时，旧结果可能不含刚写入的任务。
+                // 本轮收尾后补一次，避免退回 5 分钟空闲轮询。
+                let again = {
+                    let mut rust = qichi.as_mut().rust_mut();
+                    let pending = rust.task_refresh_pending;
+                    rust.task_refresh_pending = false;
+                    pending
+                };
+                if again {
+                    qichi.as_mut().refresh_tasks_force();
                 }
             },
         );
@@ -198,6 +212,7 @@ impl qobject::Kichi {
                 } else {
                     qichi.as_mut().set_message(&text);
                 }
+                qichi.as_mut().show_submitted_tasks(outcome.created);
                 qichi.as_mut().refresh_tasks_force();
             },
         );
@@ -255,10 +270,9 @@ impl qobject::Kichi {
     /// 登录成功后启动轮询线程。
     ///
     /// 每次调用都起一条新代际的线程，上一条（如果还睡着）醒来看到代际变了就退出。
-    pub(crate) fn start_task_polling(&self) {
+    pub(crate) fn start_task_polling(mut self: Pin<&mut Self>) {
         let generation = poll_generation().fetch_add(1, Ordering::SeqCst) + 1;
         poll_running().store(true, Ordering::SeqCst);
-        // 进入页面 / 手动刷新会立即拉取；这里只安排下一次后台轮询。
         schedule_poll_wait(POLL_ACTIVE);
         let spawned = std::thread::Builder::new()
             .name("kichi-poll".into())
@@ -267,7 +281,10 @@ impl qobject::Kichi {
             // 起不来就别让开关停在 true：下一次登录还会再试
             poll_running().store(false, Ordering::SeqCst);
             eprintln!("[kichi] 无法创建任务轮询线程：{err}");
+            return;
         }
+        // 侧栏徽标也要在启动 / 登录后立即读到云端任务，不能先空等 10 秒。
+        self.as_mut().refresh_tasks_background();
     }
 
     /// 退出登录：让轮询线程歇下来，并作废所有在途结果。
@@ -285,6 +302,7 @@ impl qobject::Kichi {
             rust.tasks_epoch = rust.tasks_epoch.wrapping_add(1);
             rust.tasks_loading = false;
             rust.tasks_request_running = false;
+            rust.task_refresh_pending = false;
             rust.tasks_loaded = false;
             rust.task_refresh_at = None;
             rust.tasks = QVariantList::default();
@@ -302,6 +320,15 @@ impl qobject::Kichi {
             return;
         }
         self.as_mut().set_message(&failure.to_string());
+    }
+
+    /// 新建接口已经返回完整任务：先并入当前列表，侧栏徽标不必等下一次 GET。
+    fn show_submitted_tasks(mut self: Pin<&mut Self>, submitted: Vec<OfflineTask>) {
+        if submitted.is_empty() {
+            return;
+        }
+        let tasks = merge_submitted_tasks(self.task_list.clone(), submitted);
+        self.as_mut().show_tasks(tasks, false);
     }
 
     /// 把任务列表写回属性；`announce` 决定是否对「刚结束」的任务发系统通知。
@@ -378,6 +405,21 @@ impl qobject::Kichi {
             notify_finished(&task, notify_enabled);
         }
     }
+}
+
+/// 把新建接口返回的任务按 id 合并进当前快照，避免列表接口稍慢时徽标不出现。
+fn merge_submitted_tasks(
+    mut current: Vec<OfflineTask>,
+    submitted: Vec<OfflineTask>,
+) -> Vec<OfflineTask> {
+    for task in submitted {
+        if let Some(existing) = current.iter_mut().find(|current| current.id == task.id) {
+            *existing = task;
+        } else {
+            current.push(task);
+        }
+    }
+    current
 }
 
 /// 后台轮询循环：按间隔拉列表，结果回投到主线程。
@@ -619,6 +661,30 @@ mod tests {
         assert_eq!(next_interval(&[task("c", TaskPhase::Running)]), POLL_ACTIVE);
         assert_eq!(next_interval(&[task("d", TaskPhase::Pending)]), POLL_ACTIVE);
         assert_eq!(next_interval(&[task("e", TaskPhase::Paused)]), POLL_ACTIVE);
+    }
+
+    #[test]
+    fn submitted_tasks_merge_by_id_without_duplicates() {
+        let mut updated = task("same", TaskPhase::Running);
+        updated.progress = 30;
+        let appended = task("new", TaskPhase::Pending);
+        let merged = merge_submitted_tasks(
+            vec![
+                task("old", TaskPhase::Completed),
+                task("same", TaskPhase::Pending),
+            ],
+            vec![updated, appended],
+        );
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(
+            merged
+                .iter()
+                .find(|task| task.id == "same")
+                .map(|task| task.progress),
+            Some(30)
+        );
+        assert!(merged.iter().any(|task| task.id == "new"));
     }
 
     #[test]

@@ -9,8 +9,23 @@ TestCase {
     width: 320
     height: 700
 
+    QtObject {
+        id: testBackend
+
+        property var tasks: []
+        property string account: "tester"
+        property string displayName: "Tester"
+        property string avatarPath: ""
+        property string quotaUsed: "0 B"
+        property string quotaLimit: "1 GB"
+        property bool quotaLoading: false
+        property double quotaRatio: 0
+        property bool quotaVip: false
+    }
+
     SideBar {
         id: sidebar
+        backend: testBackend
         width: 208
         height: 680
     }
@@ -62,5 +77,35 @@ TestCase {
         settingsSpy.clear()
         settingsButton.clicked()
         compare(settingsSpy.count, 1)
+    }
+
+    function test_offline_task_badge_counts_only_unfinished_tasks() {
+        const badge = findChild(sidebar, "sidebarTaskBadge")
+        verify(badge !== null, "侧栏缺少离线任务数量徽标")
+
+        testBackend.tasks = [
+            { settled: false },
+            { settled: true },
+            { settled: false }
+        ]
+        compare(sidebar.unfinishedTaskCount, 2)
+        compare(badge.count, 2)
+        compare(badge.countVisible, true)
+        compare(badge.text, "2")
+
+        testBackend.tasks = [
+            { settled: true },
+            { settled: true }
+        ]
+        compare(badge.count, 0)
+        compare(badge.countVisible, false)
+
+        const many = []
+        for (let i = 0; i < 105; ++i)
+            many.push({ settled: false })
+        testBackend.tasks = many
+        compare(badge.count, 105)
+        compare(badge.countVisible, true)
+        compare(badge.text, "99+")
     }
 }
