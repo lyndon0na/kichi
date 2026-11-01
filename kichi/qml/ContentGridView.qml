@@ -100,6 +100,26 @@ Item {
         return gridView.indexAt(x, y)
     }
 
+    /// 视口坐标 (x, y) 是否落在某张卡片本体上，命中返回下标，否则 -1。
+    ///
+    /// `GridView.indexAt` 是按 **cell** 命中的：卡片之间 14 / 18px 的缝隙也算在
+    /// 这一格里（docs/pitfalls.md 第 44 条）。直接拿它判「有没有点在卡片上」，
+    /// 缝隙会被当成卡片，右键就永远弹条目菜单。所以再用卡片自己的矩形判一次，
+    /// 缝隙按空白处理。
+    function hitItemIndex(x, y) {
+        const index = gridView.indexAt(x, y + gridView.contentY)
+        if (index < 0)
+            return -1
+        const item = gridView.itemAtIndex(index)
+        if (!item)
+            return -1
+        // 委托的 x / y 不含 leftMargin（实测 leftMargin 12 时首列委托 x 仍是 0），
+        // 不要自己加减 margin：把视口坐标映射进卡片自己的坐标系再判矩形。
+        const local = gridView.mapToItem(item, x, y)
+        return local.x >= 0 && local.y >= 0
+               && local.x < item.width && local.y < item.height ? index : -1
+    }
+
     GridView {
         id: gridView
 
@@ -129,14 +149,19 @@ Item {
                 forceActiveFocus()
         }
 
+        // 卡片自己的 MouseArea 会接走落在卡片上的右键（弹条目菜单），
+        // 这里只接没落在卡片本体上的位置：缝隙、最后一行下方、左右留白。
         TapHandler {
             acceptedButtons: Qt.RightButton
             onTapped: function (point) {
-                const x = point.position.x
-                const y = point.position.y
-                if (gridView.indexAt(x, y + gridView.contentY) >= 0)
+                // TapHandler 的 position 以内容区为原点（扣掉 leftMargin、随 contentY 走），
+                // 直接当视口坐标用会让命中判断和弹窗位置一起偏移；统一换算回网格坐标。
+                // QML 侧没有 mapFromScene，只能从 scenePosition 经 null 项映射。
+                const viewport = gridView.mapFromItem(
+                    null, point.scenePosition.x, point.scenePosition.y)
+                if (root.hitItemIndex(viewport.x, viewport.y) >= 0)
                     return
-                root.blankContextMenuRequested(Qt.point(x, y))
+                root.blankContextMenuRequested(Qt.point(viewport.x, viewport.y))
             }
         }
     }

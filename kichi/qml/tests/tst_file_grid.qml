@@ -1125,4 +1125,113 @@ TestCase {
         compare(spinner.running, false)
         compare(refresh.width, idleWidth)
     }
+
+    // 卡片之间的缝隙也要能弹出空白菜单（排序入口在这里）。
+    // GridView.indexAt 按 cell 命中，缝隙会被算进隔壁那张卡，
+    // 所以容器另有 hitItemIndex 按卡片本体矩形判一次（docs/pitfalls.md 第 44 条）。
+    function test_right_click_in_grid_seam_opens_blank_menu() {
+        fakeBackend.files = manyEntries(30)
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, {
+            width: 716, height: 560, visible: true
+        })
+        verify(page !== null)
+        wait(60)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        const container = grid.parent
+        verify(container !== null)
+        verify(page.gridColumns > 1, "要多列才测得出横向缝隙")
+
+        const first = grid.itemAtIndex(0)
+        const right = grid.itemAtIndex(1)
+        const below = grid.itemAtIndex(page.gridColumns)
+        verify(first !== null && right !== null && below !== null)
+        const firstTop = first.mapToItem(container, 0, 0)
+        const firstBottomRight = first.mapToItem(container, first.width, first.height)
+        const rightLeft = right.mapToItem(container, 0, first.y)
+        const belowTop = below.mapToItem(container, first.x, 0)
+
+        // 缝隙取两张卡之间的中点，不靠固定间距数值
+        const seamX = Qt.point((firstBottomRight.x + rightLeft.x) / 2,
+                               firstTop.y + first.height / 2)
+        const seamY = Qt.point(firstTop.x + first.width / 2,
+                               (firstBottomRight.y + belowTop.y) / 2)
+
+        compare(container.hitItemIndex(firstTop.x + 4, firstTop.y + 4), 0,
+                "卡片本体算命中")
+        compare(container.hitItemIndex(seamX.x, seamX.y), -1, "横向缝隙算空白")
+        compare(container.hitItemIndex(seamY.x, seamY.y), -1, "纵向缝隙算空白")
+        verify(grid.indexAt(seamX.x, seamX.y + grid.contentY) >= 0,
+               "缝隙确实落在隔壁那张卡的 cell 里")
+
+        let emittedCount = 0
+        let emittedAt = Qt.point(-1, -1)
+        const onBlankMenu = function (position) {
+            emittedCount += 1
+            emittedAt = position
+        }
+        container.blankContextMenuRequested.connect(onBlankMenu)
+
+        mouseClick(container, seamX.x, seamX.y, Qt.RightButton)
+        wait(40)
+        compare(emittedCount, 1, "在横向缝隙右键要弹出空白菜单"
+                + "（seam=" + seamX.x + "/" + seamX.y + ", card=" + firstTop.x + "/" + firstTop.y
+                + ", cardSize=" + first.width + "/" + first.height
+                + ", columns=" + page.gridColumns + "）")
+        // 发出的坐标必须是网格自己的视口坐标：TapHandler 的 position 以内容区为原点
+        // （带 leftMargin 偏移），页面再 mapToItem(null, …) 弹窗就会偏离光标。
+        compare(Math.round(emittedAt.x), Math.round(seamX.x), "菜单跟随横向缝隙光标")
+        compare(Math.round(emittedAt.y), Math.round(seamX.y), "菜单跟随横向缝隙光标")
+
+        mouseClick(container, seamY.x, seamY.y, Qt.RightButton)
+        wait(40)
+        compare(emittedCount, 2, "在纵向缝隙右键要弹出空白菜单")
+        compare(Math.round(emittedAt.x), Math.round(seamY.x), "菜单跟随纵向缝隙光标")
+        compare(Math.round(emittedAt.y), Math.round(seamY.y), "菜单跟随纵向缝隙光标")
+
+        // 落在卡片本体上的右键仍归条目菜单，不能抢走
+        mouseClick(container, firstTop.x + first.width / 2,
+                   firstTop.y + first.height / 2, Qt.RightButton)
+        wait(40)
+        compare(emittedCount, 2, "卡片本体右键不弹空白菜单")
+
+        // 滚动后同样要对齐光标：TapHandler 的 position 还跟着 contentY 走
+        grid.contentY = 200
+        wait(40)
+        const blankY = grid.height - 6
+        mouseClick(container, 4, blankY, Qt.RightButton)
+        wait(40)
+        compare(emittedCount, 3, "滚动后左侧留白仍能弹出空白菜单")
+        compare(Math.round(emittedAt.y), Math.round(blankY), "滚动后菜单位置不偏移")
+
+        container.blankContextMenuRequested.disconnect(onBlankMenu)
+    }
+
+    // 兜底对照：最后一行下方的空白本来就能弹出菜单，
+    // 用同一条链路证明右键确实能送到网格的 TapHandler。
+    function test_right_click_below_grid_rows_opens_blank_menu() {
+        fakeBackend.files = manyEntries(2)
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, {
+            width: 716, height: 560, visible: true
+        })
+        verify(page !== null)
+        wait(60)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        const container = grid.parent
+        verify(container !== null)
+
+        const spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'blankContextMenuRequested' }",
+            container)
+        spy.target = container
+        mouseClick(container, 60, grid.height - 8, Qt.RightButton)
+        wait(40)
+        compare(spy.count, 1, "最后一行下方右键要弹出空白菜单")
+        spy.destroy()
+    }
 }
