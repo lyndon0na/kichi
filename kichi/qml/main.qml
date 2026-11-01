@@ -185,11 +185,8 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 backend: backend
                 currentIndex: root.currentPage
-                onPageRequested: function (index) {
-                    if (root.currentPage !== index)
-                        backend.clearStatusMessage()
-                    root.currentPage = index
-                }
+                onPageRequested: function (index) { root.navigateTo(index) }
+                onSettingsRequested: root.navigateTo(pageIds.settings)
             }
 
             // 侧栏与内容之间的细线：两边的底色只差一点点，没有线就看不出边界
@@ -637,8 +634,9 @@ ApplicationWindow {
                        || pageIds.libraryPages.indexOf(root.currentPage) >= 0
     }
 
-    // 底栏：单行单槽。默认显示当前页面 / 目录上下文；进度、错误和需要留意的
-    // 结果临时覆盖它，操作结束后自动回到上下文。登录页只在本就有错误时出现。
+    // 底栏：左侧单槽消息 + 右侧固定传输入口。消息默认显示当前页面 / 目录上下文，
+    // 进度、错误和需要留意的结果临时覆盖它，结束后自动回到上下文。
+    // 登录页只在本就有错误时出现，此时右侧传输入口隐藏。
     footer: Item {
         id: statusBar
 
@@ -692,6 +690,23 @@ ApplicationWindow {
                 font.pixelSize: theme.fontMeta
                 showToolTipWhenUntruncated: true
             }
+
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 16
+                Layout.alignment: Qt.AlignVCenter
+                visible: root.signedIn
+                color: theme.divider
+            }
+
+            TransferStatusButton {
+                objectName: "transferStatusButton"
+
+                visible: root.signedIn
+                activeCount: backend.downloadActive
+                pageActive: root.currentPage === pageIds.transfers
+                onRequested: root.navigateTo(pageIds.transfers)
+            }
         }
     }
 
@@ -715,6 +730,12 @@ ApplicationWindow {
     }
 
     property int currentPage: pageIds.files
+
+    Shortcut {
+        sequence: "Ctrl+,"
+        enabled: root.signedIn
+        onActivated: root.navigateTo(pageIds.settings)
+    }
 
     /// 面包屑的各级目录名。模板里的 model / 长度 / 折叠判断都从这里取，
     // 保证三者永远是同一份数据（分开读后端时，改一处容易忘另一处）
@@ -752,6 +773,12 @@ ApplicationWindow {
         if (root.currentPage === pageIds.starred)
             return qsTr("已加星标")
         return qsTr("我的文件")
+    }
+
+    function navigateTo(pageIndex) {
+        if (root.currentPage !== pageIndex)
+            backend.clearStatusMessage()
+        root.currentPage = pageIndex
     }
 
     /// 底栏无提醒时显示的上下文。读取的是各页已经维护的加载态与计数，

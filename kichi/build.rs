@@ -11,6 +11,7 @@ const QML_FILES: &[&str] = &[
     "qml/LoginPage.qml",
     "qml/SideBar.qml",
     "qml/AccountCard.qml",
+    "qml/TransferStatusButton.qml",
     "qml/NavIcon.qml",
     "qml/FileIcon.qml",
     "qml/FileThumbnail.qml",

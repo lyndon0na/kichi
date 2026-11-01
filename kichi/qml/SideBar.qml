@@ -14,6 +14,7 @@ Rectangle {
     property int currentIndex: 0
 
     signal pageRequested(int pageIndex)
+    signal settingsRequested()
 
     KTheme { id: theme }
     PageIndex { id: pages }
@@ -34,9 +35,7 @@ Rectangle {
                 { "page": pages.starred, "label": qsTr("已加星标"), "icon": "star" },
                 { "page": pages.tasks, "label": qsTr("离线任务"), "icon": "download" },
                 { "page": pages.shares, "label": qsTr("分享"), "icon": "share" },
-                { "page": pages.trash, "label": qsTr("回收站"), "icon": "trash" },
-                { "page": pages.transfers, "label": qsTr("传输任务"), "icon": "transfer" },
-                { "page": pages.settings, "label": qsTr("设置"), "icon": "settings" }
+                { "page": pages.trash, "label": qsTr("回收站"), "icon": "trash" }
             ]
 
             delegate: Button {
@@ -129,6 +128,8 @@ Rectangle {
             quotaLoading: bar.backend ? bar.backend.quotaLoading : false
             quotaRatio: bar.backend ? bar.backend.quotaRatio : -1
             vip: bar.backend ? bar.backend.quotaVip : false
+            settingsActive: bar.currentIndex === pages.settings
+            onSettingsRequested: bar.settingsRequested()
         }
     }
 }

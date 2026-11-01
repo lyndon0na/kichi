@@ -21,12 +21,18 @@ TestCase {
         signalName: "pageRequested"
     }
 
+    SignalSpy {
+        id: settingsSpy
+        target: sidebar
+        signalName: "settingsRequested"
+    }
+
     function navItem(page) {
         return findChild(sidebar, "sidebarNav_" + page)
     }
 
     function test_order_and_page_mapping() {
-        const expectedPages = [0, 6, 7, 8, 3, 1, 4, 2, 5]
+        const expectedPages = [0, 6, 7, 8, 3, 1, 4]
         let previousY = -1
 
         for (let i = 0; i < expectedPages.length; ++i) {
@@ -44,5 +50,17 @@ TestCase {
             compare(pageSpy.signalArguments[0][0], page)
             wait(0)
         }
+
+        compare(navItem(2), null, "传输任务不再占主导航")
+        compare(navItem(5), null, "设置不再占主导航")
+    }
+
+    function test_account_settings_entry_requests_settings_page() {
+        const settingsButton = findChild(sidebar, "accountSettingsButton")
+        verify(settingsButton !== null, "账号区缺少设置入口")
+
+        settingsSpy.clear()
+        settingsButton.clicked()
+        compare(settingsSpy.count, 1)
     }
 }

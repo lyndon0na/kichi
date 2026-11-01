@@ -24,6 +24,7 @@ ToolButton {
     background: Rectangle {
         radius: theme.radiusSmall
         color: !control.enabled ? theme.surfaceClear
+             : control.checked ? theme.accentGhost
              : control.down ? theme.surfacePressed
              : control.hovered ? theme.surfaceHover
              : theme.surfaceClear
@@ -38,8 +39,8 @@ ToolButton {
             width: control.iconSize
             height: control.iconSize
             name: control.iconName
-            color: control.iconColor
-            opacity: control.enabled ? control.iconOpacity
+            color: control.checked ? theme.accent : control.iconColor
+            opacity: control.enabled ? (control.checked ? 1 : control.iconOpacity)
                                      : control.iconOpacity * 0.4
         }
     }

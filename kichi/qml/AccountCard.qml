@@ -30,6 +30,9 @@ Item {
     /// < 0 表示不限量 / 未知，此时不画容量条
     property double quotaRatio: -1
     property bool vip: false
+    property bool settingsActive: false
+
+    signal settingsRequested()
 
     readonly property KTheme theme: KTheme { parent: card }
 
@@ -170,6 +173,23 @@ Item {
                     font.pixelSize: theme.fontCaption
                     font.weight: Font.DemiBold
                 }
+            }
+
+            KIconButton {
+                objectName: "accountSettingsButton"
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: 24
+                implicitHeight: 24
+                iconName: "settings"
+                iconSize: 14
+                iconOpacity: 0.7
+                checkable: true
+                checked: card.settingsActive
+
+                Accessible.name: qsTr("设置")
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("设置（Ctrl+,）")
+                onClicked: card.settingsRequested()
             }
         }
 

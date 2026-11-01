@@ -14,6 +14,12 @@ TestCase {
         width: 240
     }
 
+    SignalSpy {
+        id: settingsSpy
+        target: card
+        signalName: "settingsRequested"
+    }
+
     function findNamed(item, name) {
         if (!item)
             return null
@@ -100,5 +106,20 @@ TestCase {
         compare(slot.height, 16)
         compare(bar.height, 3)
         compare(card.implicitHeight, pendingHeight)
+    }
+
+    function test_settings_button_is_in_account_footer() {
+        card.settingsActive = true
+        wait(0)
+
+        var settingsButton = findNamed(card, "accountSettingsButton")
+        verify(settingsButton !== null, "账号区缺少设置按钮")
+        compare(settingsButton.checked, true)
+        compare(settingsButton.implicitWidth, 24)
+        compare(settingsButton.implicitHeight, 24)
+
+        settingsSpy.clear()
+        settingsButton.clicked()
+        compare(settingsSpy.count, 1)
     }
 }
