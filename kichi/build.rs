@@ -31,6 +31,7 @@ const QML_FILES: &[&str] = &[
     "qml/PlaybackHistoryPage.qml",
     "qml/StarredPage.qml",
     "qml/FilesPageMenu.qml",
+    "qml/FileSortMenu.qml",
     "qml/FilesPagePlayMenu.qml",
     "qml/FilesPageSearchBar.qml",
     "qml/FileActionDialogs.qml",

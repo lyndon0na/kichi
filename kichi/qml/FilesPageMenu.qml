@@ -180,9 +180,10 @@ Item {
         }
     }
 
-    // —— 空白处右键菜单（列表没有条目时也能新建 / 刷新）——
+    // —— 空白处右键菜单（列表没有条目时也能新建 / 排序 / 刷新）——
     Menu {
         id: blankMenu
+        objectName: "fileBlankMenu"
         parent: Overlay.overlay
         width: 180
 
@@ -191,6 +192,12 @@ Item {
             enabled: root.backend !== null && !root.backend.filesLoading
                      && !root.backend.fileActionRunning
             onTriggered: dialogs.openNewFolder()
+        }
+
+        // 网格视图没有表头可点，排序入口放在这里（列表视图同样能用）
+        FileSortMenu {
+            objectName: "blankSortMenu"
+            backend: root.backend
         }
 
         MenuItem {
