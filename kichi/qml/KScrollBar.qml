@@ -3,8 +3,11 @@ import QtQuick.Controls
 
 // 全应用唯一的滚动条样式（见 docs/pitfalls.md 第 13 条）。
 //
-// 用法只有一种：`ScrollBar.vertical: KScrollBar {}`，页面里不再传任何参数。
-// 宽度 10px = 内容要让出的车道；滑块 6px 居中在车道里。
+// 普通页面只写 `ScrollBar.vertical: KScrollBar {}`，不传参数。
+// ScrollView 内替换任一方向的默认滚动条时，必须像 NewTaskDialog 一样显式挂 parent
+// 和 anchors，并把车道补进 viewport；否则桌面风格的原定位绑定会一起被替换掉。
+// 竖向车道 10px = 滑块 6px + 两侧各 2px。
+// 离线任务输入框的横向条不要整条轨道线，只自绘 6px 椭圆滑块。
 // 列表 / 表格始终保留车道；网格只在确实需要滚动时保留。
 // 这里只管画：内容装得下时 policy 自动隐藏，装不下就一直淡淡在位。
 ScrollBar {

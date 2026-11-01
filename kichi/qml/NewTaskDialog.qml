@@ -107,25 +107,64 @@ KDialog {
             ScrollView {
                 id: scroll
 
+                objectName: "newTaskInputScroll"
                 anchors.fill: parent
                 anchors.margins: 1
                 clip: true
+                rightPadding: inputVerticalBar.implicitWidth
+                bottomPadding: inputHorizontalBar.implicitHeight
                 background: Rectangle { color: "transparent" }
-                ScrollBar.vertical: KScrollBar {}
-                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ScrollBar.vertical: KScrollBar {
+                    id: inputVerticalBar
+                    objectName: "newTaskInputVerticalBar"
+                    parent: scroll
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    visible: size < 1
+                }
+                ScrollBar.horizontal: KScrollBar {
+                    id: inputHorizontalBar
+                    objectName: "newTaskInputHorizontalBar"
+                    parent: scroll
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    // KDE 原生背景会画整条轨道线；这里只画椭圆滑块。
+                    background: null
+                    implicitHeight: 6
+                    padding: 0
+                    visible: size < 1
+
+                    contentItem: Rectangle {
+                        implicitWidth: 6
+                        implicitHeight: 6
+                        radius: 3
+                        color: Qt.rgba(palette.windowText.r, palette.windowText.g,
+                                       palette.windowText.b,
+                                       inputHorizontalBar.pressed ? 0.20
+                                       : inputHorizontalBar.hovered ? 0.15 : 0.10)
+                        border.width: 1
+                        border.color: Qt.rgba(palette.windowText.r, palette.windowText.g,
+                                              palette.windowText.b,
+                                              inputHorizontalBar.pressed ? 0.38
+                                              : inputHorizontalBar.hovered ? 0.32 : 0.26)
+                    }
+                }
 
                 TextArea {
                     id: input
 
                     objectName: "newTaskInput"
-                    width: scroll.availableWidth
+                    width: Math.max(scroll.availableWidth,
+                                    contentWidth + leftPadding + rightPadding)
                     padding: 11
                     color: theme.textPrimary
                     placeholderText: qsTr("magnet:?xt=...\nhttps://...")
                     placeholderTextColor: theme.textMuted
                     font.pixelSize: theme.fontBody
                     selectByMouse: true
-                    wrapMode: TextArea.Wrap
+                    wrapMode: TextEdit.NoWrap
                     background: Rectangle { color: "transparent" }
                 }
             }

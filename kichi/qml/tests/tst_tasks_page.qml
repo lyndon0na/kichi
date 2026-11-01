@@ -726,6 +726,33 @@ TestCase {
 
         var input = findChild(dialog, "newTaskInput")
         verify(input)
+        compare(input.wrapMode, TextEdit.NoWrap,
+                "离线任务输入框不能把单条链接软换行")
+        input.text = "https://example.com/" + "a".repeat(800)
+        tryVerify(function () {
+            return input.width > dialog.contentItem.width
+        }, 1000, "超长链接应横向展开，而不是被压回弹窗宽度")
+        var scroll = findChild(dialog, "newTaskInputScroll")
+        var horizontalBar = findChild(dialog, "newTaskInputHorizontalBar")
+        var verticalBar = findChild(dialog, "newTaskInputVerticalBar")
+        verify(scroll && horizontalBar && verticalBar)
+        compare(horizontalBar.visible, true)
+        compare(verticalBar.visible, false)
+        compare(horizontalBar.y + horizontalBar.height, scroll.height,
+                "横向滚动条应贴在输入框底部，而不是落在左上角")
+        compare(horizontalBar.width, scroll.width)
+        compare(horizontalBar.height, 6, "横向滚动条只保留 6px 滑块车道")
+        compare(horizontalBar.background, null, "不要 KDE 原生整条轨道线")
+        compare(scroll.availableHeight, scroll.height - horizontalBar.height,
+                "输入区应只给横向滚动条让出 6px 车道")
+
+        input.text = "https://example.com/a\n".repeat(30)
+        tryVerify(function () {
+            return verticalBar.visible
+        }, 1000, "多行链接应显示右侧竖向滚动条")
+        compare(verticalBar.x + verticalBar.width, scroll.width)
+        compare(verticalBar.height, scroll.height)
+
         var text = "magnet:?xt=urn:btih:first\n\nhttps://example.com/second.zip"
         input.text = text
         dialog.submit()
