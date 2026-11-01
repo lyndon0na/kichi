@@ -782,4 +782,80 @@ TestCase {
         tryCompare(backend, "contentView", "grid")
         tryCompare(grouped, "contentY", 240)
     }
+
+    function playbackRowsPerGroup() {
+        const rows = []
+        for (let i = 0; i < 30; ++i)
+            rows.push(groupedRow("today-" + i, "today"))
+        for (let i = 0; i < 30; ++i)
+            rows.push(groupedRow("yesterday-" + i, "yesterday"))
+        for (let i = 0; i < 30; ++i)
+            rows.push(groupedRow("earlier-" + i, "earlier"))
+        return rows
+    }
+
+    /// 右键空白处时菜单必须贴着光标。回归的是 TapHandler.point.position
+    /// 用内容坐标直接 mapToItem 的老问题（docs/pitfalls.md 第 44 条）：
+    /// 滚动越深偏移越大，最后被弹窗定位器夹到窗口底部（状态条附近）。
+    function test_playback_history_list_blank_menu_follows_cursor_after_scroll() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish(playbackRowsPerGroup(), true)
+
+        var list = findChild(page, "libraryList")
+        verify(list !== null)
+        list.positionViewAtIndex(60, ListView.Beginning)
+        wait(50)
+        var earlierHeader = findChild(list, "libraryDateSection_earlier")
+        verify(earlierHeader !== null, "更早分区头必须已实例化")
+        list.contentY = Math.max(0, earlierHeader.y - 120)
+        wait(50)
+
+        const clickX = 100
+        const clickY = earlierHeader.y - list.contentY + earlierHeader.height / 2
+        verify(clickY > 0 && clickY < list.height, "更早分区头应滚到可见区域")
+        const expected = list.mapToItem(null, clickX, clickY)
+        mouseClick(list, clickX, clickY, Qt.RightButton)
+        tryCompare(page.blankContextMenu, "visible", true)
+        compare(Math.round(page.blankContextMenu.x), Math.round(expected.x),
+                "列表空白菜单横向跟随光标")
+        compare(Math.round(page.blankContextMenu.y), Math.round(expected.y),
+                "列表空白菜单纵向跟随光标")
+        page.blankContextMenu.close()
+    }
+
+    function test_playback_history_grouped_grid_blank_menu_follows_cursor_after_scroll() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish(playbackRowsPerGroup(), true)
+
+        page.setContentView("grid")
+        var grouped = findChild(page, "libraryGroupedGrid")
+        var groupedList = findChild(page, "libraryGroupedList")
+        verify(grouped !== null && groupedList !== null)
+        tryCompare(grouped, "visible", true)
+        tryVerify(function () { return grouped.contentHeight > grouped.height })
+
+        // 滚到「更早」分组，再点卡片下方 18px 的行间缝隙。
+        grouped.positionViewAtIndex(60, ListView.Beginning)
+        wait(50)
+        tryVerify(function () { return grouped.itemAtIndex(60) !== null })
+        const card = grouped.itemAtIndex(60)
+        verify(card !== null, "更早分组必须有可见卡片")
+        const clickX = card.mapToItem(groupedList, card.width / 2, 0).x
+        const clickY = card.mapToItem(groupedList, 0, 0).y + card.height
+                       + grouped.rowGap / 2
+        verify(clickY > 0 && clickY < groupedList.height,
+               "更早分组的行间缝隙应在可见区域")
+        const expected = groupedList.mapToItem(null, clickX, clickY)
+        mouseClick(groupedList, clickX, clickY, Qt.RightButton)
+        tryCompare(page.blankContextMenu, "visible", true)
+        compare(Math.round(page.blankContextMenu.x), Math.round(expected.x),
+                "分区网格空白菜单横向跟随光标")
+        compare(Math.round(page.blankContextMenu.y), Math.round(expected.y),
+                "分区网格空白菜单纵向跟随光标")
+        page.blankContextMenu.close()
+    }
 }

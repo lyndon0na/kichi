@@ -206,6 +206,26 @@ Item {
         return null
     }
 
+    /// 视口坐标 (x, y) 下命中的卡片；分区头和行列缝隙返回 null（按空白处理）。
+    function cardAt(x, y) {
+        const rowIndex = groupedList.indexAt(x, y + groupedList.contentY)
+        if (rowIndex < 0 || rowIndex >= rows.length)
+            return null
+        const modelRow = rows[rowIndex]
+        if (!modelRow || modelRow.rowType !== "items")
+            return null
+        for (let i = 0; i < modelRow.cards.length; ++i) {
+            const card = itemAtIndex(modelRow.cards[i].entryIndex)
+            if (!card)
+                continue
+            const local = groupedList.mapToItem(card, x, y)
+            if (local.x >= 0 && local.y >= 0
+                    && local.x < card.width && local.y < card.height)
+                return card
+        }
+        return null
+    }
+
     function positionViewAtIndex(entryIndex, mode) {
         const rowIndex = rowIndexForEntry(entryIndex)
         if (rowIndex >= 0)
@@ -260,12 +280,15 @@ Item {
             onTapped: function (point) {
                 if (!root.libraryPage)
                     return
-                const x = point.position.x
-                const y = point.position.y
-                if (groupedList.indexAt(x, y + groupedList.contentY) >= 0)
+                // TapHandler 挂在 Flickable 上时 position 以内容区为原点，纵向随
+                // contentY 走（docs/pitfalls.md 第 44 条）。先换算成视口坐标，
+                // 否则滚动越深弹窗越偏，最后被夹到窗口底部。
+                const viewport = groupedList.mapFromItem(
+                    null, point.scenePosition.x, point.scenePosition.y)
+                if (root.cardAt(viewport.x, viewport.y) !== null)
                     return
                 root.libraryPage.openBlankMenu(
-                    groupedList.mapToItem(null, x, y))
+                    groupedList.mapToItem(null, viewport.x, viewport.y))
             }
         }
 

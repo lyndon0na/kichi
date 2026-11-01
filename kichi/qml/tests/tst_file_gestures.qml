@@ -41,8 +41,12 @@ TestCase {
             TapHandler {
                 acceptedButtons: Qt.RightButton
                 onTapped: function (point) {
-                    if (list.indexAt(point.position.x,
-                                      point.position.y + list.contentY) < 0)
+                    // 挂在 Flickable 上的 handler，position 是内容坐标
+                    // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
+                    const viewport = list.mapFromItem(
+                        null, point.scenePosition.x, point.scenePosition.y)
+                    if (list.indexAt(viewport.x,
+                                     viewport.y + list.contentY) < 0)
                         blankTaps += 1
                 }
             }

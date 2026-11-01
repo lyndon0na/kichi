@@ -356,17 +356,21 @@ Item {
                     }
 
                     // 空白处右键：行自己用 MouseArea 处理右键，这里只接住没命中行的位置。
-                    // 坐标要换成内容坐标（加上 contentY）才能用 indexAt。
+                    // TapHandler 的 position 以内容区为原点、纵向随 contentY 走
+                    // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
                     TapHandler {
                         acceptedButtons: Qt.RightButton
                         onTapped: function (point) {
                             if (!page.backend || page.showingSearchEntries)
                                 return
-                            const x = point.position.x
-                            const y = point.position.y
-                            if (fileList.indexAt(x, y + fileList.contentY) >= 0)
+                            const viewport = fileList.mapFromItem(
+                                null, point.scenePosition.x,
+                                point.scenePosition.y)
+                            if (fileList.indexAt(viewport.x,
+                                                 viewport.y + fileList.contentY) >= 0)
                                 return
-                            menu.openBlankAt(fileList.mapToItem(null, x, y))
+                            menu.openBlankAt(fileList.mapToItem(
+                                                 null, viewport.x, viewport.y))
                         }
                     }
 

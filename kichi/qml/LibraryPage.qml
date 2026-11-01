@@ -221,6 +221,19 @@ Item {
         libraryMenu.openBlankAt(point)
     }
 
+    /// 视口坐标 (x, y) 下命中的资料库行；日期分区头和行下空白按空白处理。
+    function rowAt(x, y) {
+        const index = libraryList.indexAt(x, y + libraryList.contentY)
+        if (index < 0 || index >= entries.length)
+            return null
+        const item = libraryList.itemAtIndex(index)
+        if (!item)
+            return null
+        const local = libraryList.mapToItem(item, x, y)
+        return local.x >= 0 && local.y >= 0
+                && local.x < item.width && local.y < item.height ? item : null
+    }
+
     function moveSelection(index) {
         page.selectIndex(index)
         if (page.activeView && page.activeView.currentIndex >= 0)
@@ -360,11 +373,15 @@ Item {
                         onTapped: function (point) {
                             if (!page.backend)
                                 return
-                            const x = point.position.x
-                            const y = point.position.y
-                            if (libraryList.indexAt(x, y + libraryList.contentY) >= 0)
+                            // position 以内容区为原点，纵向随 contentY 走
+                            // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
+                            const viewport = libraryList.mapFromItem(
+                                null, point.scenePosition.x,
+                                point.scenePosition.y)
+                            if (page.rowAt(viewport.x, viewport.y))
                                 return
-                            page.openBlankMenu(libraryList.mapToItem(null, x, y))
+                            page.openBlankMenu(libraryList.mapToItem(
+                                                   null, viewport.x, viewport.y))
                         }
                     }
 
