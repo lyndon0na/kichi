@@ -337,20 +337,7 @@ impl qobject::Kichi {
         mut tasks: Vec<OfflineTask>,
         announce: bool,
     ) {
-        // 先按活动程度排序，已结束状态再按失败 / 已删除 / 完成和创建时间排。
-        tasks.sort_by(|a, b| {
-            let rank = |t: &OfflineTask| match t.status() {
-                TaskStatus::Running => 0,
-                TaskStatus::Pending => 1,
-                TaskStatus::Paused | TaskStatus::Unknown => 2,
-                TaskStatus::Failed => 3,
-                TaskStatus::ProductDeleted => 4,
-                TaskStatus::Completed => 5,
-            };
-            rank(a)
-                .cmp(&rank(b))
-                .then_with(|| b.created_at.cmp(&a.created_at))
-        });
+        sort_tasks_newest_first(&mut tasks);
 
         let finished_now = if announce {
             // 先在 rust_mut 里完成「谁刚结束」的判定，再统一写属性
@@ -405,6 +392,14 @@ impl qobject::Kichi {
             notify_finished(&task, notify_enabled);
         }
     }
+}
+
+/// 所有状态统一按创建时间新 → 旧排列；缺失时间的任务放最后。
+///
+/// 状态只决定行内徽标和进行中样式，不能参与主排序。否则刚完成的任务会被
+/// 状态分组压到几十天前的「产物已删除」任务下面，和表头「创建时间」不一致。
+fn sort_tasks_newest_first(tasks: &mut [OfflineTask]) {
+    tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 }
 
 /// 把新建接口返回的任务按 id 合并进当前快照，避免列表接口稍慢时徽标不出现。
@@ -603,6 +598,7 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{TimeZone, Utc};
 
     fn task(id: &str, phase: TaskPhase) -> OfflineTask {
         OfflineTask {
@@ -685,6 +681,38 @@ mod tests {
             Some(30)
         );
         assert!(merged.iter().any(|task| task.id == "new"));
+    }
+
+    #[test]
+    fn tasks_sort_by_creation_time_across_statuses() {
+        let mut new_completed = task("new-completed", TaskPhase::Completed);
+        new_completed.created_at = Utc.with_ymd_and_hms(2026, 11, 1, 22, 23, 0).single();
+
+        let mut old_deleted = task("old-deleted", TaskPhase::Error);
+        old_deleted.message = Some("File deleted".into());
+        old_deleted.created_at = Utc.with_ymd_and_hms(2026, 10, 31, 10, 6, 0).single();
+
+        let mut older_running = task("older-running", TaskPhase::Running);
+        older_running.created_at = Utc.with_ymd_and_hms(2026, 10, 30, 18, 0, 0).single();
+
+        let mut tasks = vec![
+            old_deleted,
+            task("missing-time", TaskPhase::Completed),
+            older_running,
+            new_completed,
+        ];
+        sort_tasks_newest_first(&mut tasks);
+
+        let ids: Vec<_> = tasks.iter().map(|task| task.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "new-completed",
+                "old-deleted",
+                "older-running",
+                "missing-time"
+            ]
+        );
     }
 
     #[test]
