@@ -102,6 +102,7 @@ Item {
 
                 Image {
                     id: avatarImage
+                    objectName: "avatarImage"
                     anchors.fill: parent
                     source: card.avatarPath
                     visible: status === Image.Ready
@@ -112,8 +113,11 @@ Item {
                     cache: false
                     smooth: true
                     mipmap: true
-                    layer.enabled: visible
+                    // HACK(Qt 6.11.2): DPR 遍历期间重载图片会改变 visible，
+                    // 同步销毁 layer.effect 会让 Qt 继续访问已释放的遮罩。
+                    layer.enabled: true
                     layer.effect: MultiEffect {
+                        objectName: "avatarMaskEffect"
                         maskEnabled: true
                         maskSource: avatarMask
                     }

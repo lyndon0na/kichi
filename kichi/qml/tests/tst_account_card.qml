@@ -65,6 +65,19 @@ TestCase {
         verify(card.vip)
     }
 
+    function test_avatar_reload_keeps_mask_effect_alive() {
+        const image = findChild(card, "avatarImage")
+        verify(image !== null)
+        card.avatarPath = Qt.resolvedUrl("../../assets/icons/hicolor/scalable/apps/kichi.svg")
+        tryCompare(image, "status", Image.Ready)
+        const effect = findChild(card, "avatarMaskEffect")
+        verify(effect !== null)
+        card.avatarPath = ""
+        tryCompare(image, "status", Image.Null)
+        compare(findChild(card, "avatarMaskEffect"), effect,
+                "图片重载不能同步销毁 Qt 正在遍历的遮罩层")
+    }
+
     function test_identity_pending_only_when_name_and_account_are_both_missing() {
         card.displayName = ""
         card.account = ""
