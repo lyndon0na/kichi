@@ -30,20 +30,34 @@ TestCase {
         property string playLoadingId: ""
         property var playingIds: []
         property string taskFolderLoadingId: ""
+        property var moveTargets: []
+        property int moveTargetsRevision: 0
+        property bool moveTargetsLoading: false
+        property string moveTargetsError: ""
 
         signal changed()
         signal thumbnailReady(string id, string path)
 
         property int submitted: 0
         property string submittedText: ""
+        property string submittedFolderId: ""
+        property bool submittedToFolder: false
         property string deletedId: ""
         property int refreshCalls: 0
         property int thumbnailRequests: 0
         property int cancelPlayLoadingCalls: 0
+        property int cancelMoveTargetsCalls: 0
 
         function addTask(url) {
             submitted += 1
             submittedText = url
+            submittedToFolder = false
+        }
+        function addTaskToFolder(url, folderId) {
+            submitted += 1
+            submittedText = url
+            submittedFolderId = String(folderId)
+            submittedToFolder = true
         }
         function deleteTask(id) {
             deletedId = id
@@ -59,6 +73,24 @@ TestCase {
         }
         function cancelPlayLoading() {
             cancelPlayLoadingCalls += 1
+        }
+        function currentPath() {
+            return [{ id: "", name: "全部文件" }]
+        }
+        function loadMoveTargets(parentId) {
+            if (parentId === "")
+                moveTargets = [{ id: "A", name: "动画" }]
+            else if (parentId === "A")
+                moveTargets = [{ id: "B", name: "2026" }]
+            else
+                moveTargets = []
+            moveTargetsRevision += 1
+            moveTargetsLoading = false
+            moveTargetsError = ""
+            changed()
+        }
+        function cancelMoveTargets() {
+            cancelMoveTargetsCalls += 1
         }
     }
 
@@ -87,12 +119,19 @@ TestCase {
         backend.refreshCalls = 0
         backend.submitted = 0
         backend.submittedText = ""
+        backend.submittedFolderId = ""
+        backend.submittedToFolder = false
         backend.playLoading = false
         backend.playLoadingId = ""
         backend.playingIds = []
         backend.taskFolderLoadingId = ""
+        backend.moveTargets = []
+        backend.moveTargetsRevision = 0
+        backend.moveTargetsLoading = false
+        backend.moveTargetsError = ""
         backend.thumbnailRequests = 0
         backend.cancelPlayLoadingCalls = 0
+        backend.cancelMoveTargetsCalls = 0
         page.width = 800
         push([])
     }
@@ -683,7 +722,7 @@ TestCase {
         var footerStatus = findChild(dialog, "dialogFooterStatus")
         verify(footerStatus.visible)
         compare(footerStatus.text,
-                "支持磁力、ed2k 和 HTTP 下载地址；空行会自动忽略。")
+                "支持磁力 / ed2k / HTTP；空行忽略。")
 
         var input = findChild(dialog, "newTaskInput")
         verify(input)
@@ -693,7 +732,140 @@ TestCase {
 
         compare(backend.submitted, 1)
         compare(backend.submittedText, text)
+        compare(backend.submittedFolderId, "")
+        compare(backend.submittedToFolder, false)
         compare(dialog.opened, false)
+    }
+
+    function test_new_task_dialog_can_target_current_folder() {
+        page.openNewTaskDialog("folder-current", "全部文件 / 动画")
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+        compare(dialog.targetFolderId, "folder-current")
+        compare(dialog.targetFolderPath, "全部文件 / 动画")
+
+        var destinationRow = findChild(dialog, "newTaskDestinationRow")
+        var destinationPath = findChild(dialog, "newTaskDestinationPath")
+        verify(destinationRow && destinationRow.visible)
+        verify(destinationPath)
+        compare(destinationPath.text, "保存到：全部文件 / 动画")
+
+        var input = findChild(dialog, "newTaskInput")
+        verify(input)
+        input.text = "magnet:?xt=urn:btih:target"
+        dialog.submit()
+
+        compare(backend.submitted, 1)
+        compare(backend.submittedText, "magnet:?xt=urn:btih:target")
+        compare(backend.submittedFolderId, "folder-current")
+        compare(backend.submittedToFolder, true)
+        compare(dialog.opened, false)
+    }
+
+    function test_new_task_dialog_can_target_file_page_root() {
+        page.openNewTaskDialog("", "全部文件")
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+        verify(dialog.saveToFolder)
+
+        var input = findChild(dialog, "newTaskInput")
+        verify(input)
+        input.text = "https://example.com/root.zip"
+        dialog.submit()
+
+        compare(backend.submitted, 1)
+        compare(backend.submittedFolderId, "")
+        compare(backend.submittedToFolder, true)
+    }
+
+    function test_new_task_dialog_can_choose_another_save_folder() {
+        page.openNewTaskDialog()
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+        compare(findChild(dialog, "newTaskDestinationPath").text,
+                "保存到：My Pack")
+
+        var change = findChild(dialog, "newTaskChangeDestination")
+        verify(change)
+        mouseClick(change)
+        wait(40)
+
+        var picker = findChild(dialog, "taskFolderPickerDialog")
+        verify(picker)
+        tryVerify(function () {
+            return picker.opened
+        })
+        compare(picker.targetPathText, "全部文件")
+
+        picker.enterFolder({ id: "A", name: "动画" })
+        wait(30)
+        compare(picker.targetPathText, "全部文件 / 动画")
+
+        picker.enterFolder({ id: "B", name: "2026" })
+        wait(30)
+        compare(picker.targetPathText, "全部文件 / 动画 / 2026")
+
+        var pickerOk = findChild(picker, "dialogFooterOk")
+        verify(pickerOk)
+        verify(pickerOk.enabled)
+        mouseClick(pickerOk)
+        wait(40)
+
+        verify(!picker.opened)
+        compare(dialog.targetFolderId, "B")
+        compare(dialog.targetFolderPath, "全部文件 / 动画 / 2026")
+        compare(dialog.pickerStartPath.length, 3)
+        compare(dialog.pickerStartPath[2].id, "B")
+        compare(findChild(dialog, "newTaskDestinationPath").text,
+                "保存到：全部文件 / 动画 / 2026")
+
+        var input = findChild(dialog, "newTaskInput")
+        input.text = "https://example.com/another.zip"
+        dialog.submit()
+
+        compare(backend.submitted, 1)
+        compare(backend.submittedFolderId, "B")
+        compare(backend.submittedToFolder, true)
+    }
+
+    function test_folder_picker_starts_at_the_file_page_directory() {
+        page.openNewTaskDialog("A", "全部文件 / 动画", [
+            { id: "", name: "全部文件" },
+            { id: "A", name: "动画" }
+        ])
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+
+        mouseClick(findChild(dialog, "newTaskChangeDestination"))
+        wait(40)
+
+        var picker = findChild(dialog, "taskFolderPickerDialog")
+        verify(picker)
+        tryVerify(function () {
+            return picker.opened
+        })
+        compare(picker.targetId, "A")
+        compare(picker.targetPathText, "全部文件 / 动画")
+
+        picker.close()
+        wait(20)
+        dialog.close()
     }
 
     function test_activation_refreshes_tasks() {

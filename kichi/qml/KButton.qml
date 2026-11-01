@@ -21,12 +21,25 @@ Button {
     /// 可选线稿图标（NavIcon 的名字），留空则只有文字
     property string iconName: ""
     property int iconSize: 16
+    /// 可选的尾部图标；菜单触发按钮用它画下拉箭头
+    property string trailingIconName: ""
+    property int trailingIconSize: 12
     /// 忙碌时用同尺寸转圈替代图标，文字和按钮宽度保持不变
     property bool busy: false
     // 调用处已有说明性 ToolTip 时关掉文字自身的截断提示，避免同时弹两层。
     property bool showTextToolTip: true
 
     KTheme { id: theme }
+
+    readonly property color foregroundColor: {
+        if (variant === "primary")
+            return theme.onAccent
+        if (variant === "danger")
+            return theme.onDanger
+        if (variant === "dangerOutline")
+            return theme.danger
+        return variant === "ghost" ? theme.textSecondary : theme.textPrimary
+    }
 
     implicitHeight: 34
     leftPadding: 14
@@ -95,15 +108,7 @@ Button {
             implicitHeight: control.iconSize
             Layout.alignment: Qt.AlignVCenter
             name: control.iconName
-            color: {
-                if (control.variant === "primary")
-                    return theme.onAccent
-                if (control.variant === "danger")
-                    return theme.onDanger
-                if (control.variant === "dangerOutline")
-                    return theme.danger
-                return control.variant === "ghost" ? theme.textSecondary : theme.textPrimary
-            }
+            color: control.foregroundColor
             opacity: control.variant === "ghost" ? 0.8 : 1
         }
 
@@ -116,15 +121,18 @@ Button {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
-            color: {
-                if (control.variant === "primary")
-                    return theme.onAccent
-                if (control.variant === "danger")
-                    return theme.onDanger
-                if (control.variant === "dangerOutline")
-                    return theme.danger
-                return control.variant === "ghost" ? theme.textSecondary : theme.textPrimary
-            }
+            color: control.foregroundColor
+        }
+
+        NavIcon {
+            objectName: "buttonTrailingIcon"
+            visible: !control.busy && control.trailingIconName.length > 0
+            implicitWidth: control.trailingIconSize
+            implicitHeight: control.trailingIconSize
+            Layout.alignment: Qt.AlignVCenter
+            name: control.trailingIconName
+            color: control.foregroundColor
+            opacity: control.variant === "ghost" ? 0.8 : 1
         }
     }
 }

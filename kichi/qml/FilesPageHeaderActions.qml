@@ -2,39 +2,79 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 文件页标题行右侧的目录操作。刷新固定在最后，保持最右位置。
+// 文件页标题行右侧的目录操作。添加菜单收纳目录内的创建动作，
+// 侧栏「离线任务」页仍负责任务查看与管理。刷新固定在最后。
 RowLayout {
     id: root
 
     property var backend: null
     property var target: null
+    property var newTaskTarget: null
 
     readonly property bool searching: backend !== null && backend.searchActive
     readonly property bool loading: backend !== null && backend.filesLoading
     readonly property bool manualRefreshing: backend !== null
                                             && backend.filesRefreshing === true
+    readonly property bool canCreateFolder: backend !== null && target !== null
+                                             && !searching && !loading
+    readonly property bool canCreateTask: backend !== null && newTaskTarget !== null
 
     readonly property KTheme theme: KTheme { parent: root }
 
     spacing: theme.gapSm
 
     KButton {
-        objectName: "filesNewFolderButton"
+        id: addButton
+
+        objectName: "filesAddButton"
         Layout.alignment: Qt.AlignVCenter
-        text: qsTr("新建文件夹")
+        text: qsTr("添加")
         iconName: "plus"
         iconSize: 14
-        variant: "secondary"
+        trailingIconName: "chevron-down"
+        trailingIconSize: 11
+        variant: "primary"
         implicitHeight: 34
         leftPadding: 8
         rightPadding: 8
-        enabled: root.backend !== null && !root.searching && !root.loading
+        enabled: root.canCreateFolder || root.canCreateTask
         showTextToolTip: false
         ToolTip.visible: hovered
-        ToolTip.text: qsTr("在当前文件夹中新建文件夹")
-        onClicked: {
-            if (root.target)
-                root.target.beginNewFolder()
+        ToolTip.text: qsTr("添加文件夹或离线任务")
+        Accessible.name: qsTr("添加")
+        onClicked: root.openAddMenu()
+
+        Menu {
+            id: addMenu
+
+            objectName: "filesAddMenu"
+            parent: Overlay.overlay
+            width: 220
+
+            MenuItem {
+                objectName: "filesAddNewFolderItem"
+                text: qsTr("新建文件夹…")
+                enabled: root.canCreateFolder
+                onTriggered: {
+                    if (root.target)
+                        root.target.beginNewFolder()
+                }
+            }
+
+            MenuItem {
+                objectName: "filesAddNewTaskItem"
+                text: qsTr("新建离线任务…")
+                enabled: root.canCreateTask
+                onTriggered: {
+                    if (root.newTaskTarget)
+                        root.newTaskTarget.openNewTaskDialog(
+                            root.backend.currentDirId, root.currentFolderPath(),
+                            root.backend.currentPath())
+                }
+
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("任务产物会保存到当前文件夹")
+            }
         }
     }
 
@@ -67,5 +107,23 @@ RowLayout {
             if (root.target)
                 root.target.refreshFiles()
         }
+    }
+
+    function openAddMenu() {
+        if (!addButton.enabled)
+            return
+        const bottomRight = addButton.mapToItem(null, addButton.width,
+                                                addButton.height)
+        addMenu.popup(Qt.point(bottomRight.x - addMenu.width,
+                               bottomRight.y + theme.gapXs))
+    }
+
+    function currentFolderPath() {
+        const crumbs = root.backend && root.backend.breadcrumb
+                     ? root.backend.breadcrumb : []
+        const parts = []
+        for (let i = 0; i < crumbs.length; i++)
+            parts.push(String(crumbs[i]))
+        return parts.length > 0 ? parts.join(" / ") : qsTr("全部文件")
     }
 }

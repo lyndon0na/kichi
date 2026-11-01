@@ -329,6 +329,7 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                         backend: backend
                         target: filesPage
+                        newTaskTarget: tasksPage
                     }
                 }
 

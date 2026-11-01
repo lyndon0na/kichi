@@ -14,9 +14,17 @@ const TASK_PAGE_SIZE: usize = kichi_core::tasks::TASK_LIST_LIMIT as usize;
 
 impl Session {
     /// 提交离线下载（磁力 / ed2k / 普通 URL）。阻塞。
-    pub fn add_offline_task(&self, url: &str) -> Result<OfflineTask, Failure> {
+    ///
+    /// `parent_id = None` 使用官方默认下载目录；`Some("")` 表示根目录。
+    pub fn add_offline_task(
+        &self,
+        url: &str,
+        parent_id: Option<&str>,
+    ) -> Result<OfflineTask, Failure> {
         let client = self.drive()?;
-        client.create_offline_task(url).map_err(Failure::from)
+        client
+            .create_offline_task(url, parent_id)
+            .map_err(Failure::from)
     }
 
     /// 拉取全部离线任务（自动翻页；阻塞）。

@@ -187,9 +187,20 @@ Item {
         }
     }
 
-    function openNewTaskDialog() {
-        if (page.backend)
-            newTaskDialog.open()
+    /// 不传目录时使用官方默认下载目录；传空串表示文件页根目录。
+    function openNewTaskDialog(targetFolderId, targetFolderPath, startPath) {
+        if (!page.backend)
+            return
+        if (typeof targetFolderId === "string") {
+            newTaskDialog.targetFolderId = targetFolderId
+            newTaskDialog.targetFolderPath = String(targetFolderPath || "")
+            newTaskDialog.pickerStartPath = startPath ? startPath.slice() : []
+        } else {
+            newTaskDialog.targetFolderId = null
+            newTaskDialog.targetFolderPath = ""
+            newTaskDialog.pickerStartPath = []
+        }
+        newTaskDialog.open()
     }
 
     function refresh() {

@@ -91,7 +91,7 @@ fn live_offline_task_roundtrip() {
     const TEST_URL: &str = "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4";
     println!("提交测试任务：{TEST_URL}");
     let created = session
-        .add_offline_task(TEST_URL)
+        .add_offline_task(TEST_URL, None)
         .expect("提交离线任务失败");
     println!(
         "任务已创建：id={} 名称={:?} 阶段={:?}",

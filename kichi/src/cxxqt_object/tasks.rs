@@ -156,6 +156,16 @@ impl qobject::Kichi {
 
     /// 提交离线下载（磁力 / ed2k / URL），支持一行一个链接。
     pub fn add_task(mut self: Pin<&mut Self>, text: QString) {
+        self.as_mut().add_task_to_destination(text, None);
+    }
+
+    /// 提交离线下载并保存到指定云端目录；空目录 id 表示根目录。
+    pub fn add_task_to_folder(mut self: Pin<&mut Self>, text: QString, folder_id: QString) {
+        self.as_mut()
+            .add_task_to_destination(text, Some(folder_id.to_string()));
+    }
+
+    fn add_task_to_destination(mut self: Pin<&mut Self>, text: QString, parent_id: Option<String>) {
         let urls = parse_urls(&text.to_string());
         if urls.is_empty() {
             return;
@@ -166,7 +176,7 @@ impl qobject::Kichi {
         self.as_mut()
             .set_message(&format!("正在提交 {count} 条离线任务……"));
         run_in_background(
-            move || Ok::<_, Failure>(submit(&session, &urls)),
+            move || Ok::<_, Failure>(submit(&session, &urls, parent_id.as_deref())),
             move |mut qichi, result| {
                 if qichi.as_ref().rust().tasks_epoch != my_epoch {
                     return;

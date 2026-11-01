@@ -316,6 +316,11 @@ pub mod qobject {
         #[cxx_name = "addTask"]
         fn add_task(self: Pin<&mut Self>, url: QString);
 
+        /// 提交离线任务并保存到指定云端目录；空目录 id 表示根目录
+        #[qinvokable]
+        #[cxx_name = "addTaskToFolder"]
+        fn add_task_to_folder(self: Pin<&mut Self>, url: QString, folder_id: QString);
+
         #[qinvokable]
         #[cxx_name = "deleteTask"]
         fn delete_task(self: Pin<&mut Self>, id: QString);

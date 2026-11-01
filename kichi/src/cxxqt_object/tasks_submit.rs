@@ -23,7 +23,7 @@ pub(super) fn parse_urls(text: &str) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn submit(session: &Session, urls: &[String]) -> SubmitOutcome {
+pub(super) fn submit(session: &Session, urls: &[String], parent_id: Option<&str>) -> SubmitOutcome {
     let mut outcome = SubmitOutcome {
         requested: urls.len(),
         submitted: 0,
@@ -33,7 +33,7 @@ pub(super) fn submit(session: &Session, urls: &[String]) -> SubmitOutcome {
     };
 
     for url in urls {
-        match session.add_offline_task(url) {
+        match session.add_offline_task(url, parent_id) {
             Ok(_) => outcome.submitted += 1,
             Err(Failure::Auth(reason)) => {
                 outcome.auth_failure = Some(Failure::Auth(reason));

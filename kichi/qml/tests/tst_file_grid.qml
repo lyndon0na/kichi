@@ -36,6 +36,7 @@ TestCase {
         property bool filesRefreshing: false
         property bool filesStale: false
         property int filesRevision: 1
+        property string currentDirId: ""
         property var breadcrumb: ["全部文件"]
         property var playMenu: []
         property string sortField: "name"
@@ -55,6 +56,10 @@ TestCase {
         property var playingIds: []
         property int cancelPlayCalls: 0
         property int newFolderCalls: 0
+        property int newTaskDialogCalls: 0
+        property string newTaskDialogFolderId: ""
+        property string newTaskDialogFolderPath: ""
+        property var newTaskDialogStartPath: []
         property int refreshCalls: 0
         property int searchOpenCalls: 0
         property int searchRevealCalls: 0
@@ -91,6 +96,12 @@ TestCase {
         }
         function beginNewFolder() {
             newFolderCalls += 1
+        }
+        function openNewTaskDialog(folderId, folderPath, startPath) {
+            newTaskDialogCalls += 1
+            newTaskDialogFolderId = String(folderId || "")
+            newTaskDialogFolderPath = String(folderPath || "")
+            newTaskDialogStartPath = startPath ? startPath.slice() : []
         }
         function exitSearch() {}
         function searchLocal(text) {}
@@ -173,6 +184,7 @@ TestCase {
             height: 34
             backend: fakeBackend
             target: fakeBackend
+            newTaskTarget: fakeBackend
         }
     }
 
@@ -235,12 +247,18 @@ TestCase {
         fakeBackend.filesLoading = false
         fakeBackend.filesRefreshing = false
         fakeBackend.filesRevision = 1
+        fakeBackend.currentDirId = ""
+        fakeBackend.breadcrumb = ["全部文件"]
         fakeBackend.thumbnailRequests = 0
         fakeBackend.playLoading = false
         fakeBackend.playLoadingId = ""
         fakeBackend.playingIds = []
         fakeBackend.cancelPlayCalls = 0
         fakeBackend.newFolderCalls = 0
+        fakeBackend.newTaskDialogCalls = 0
+        fakeBackend.newTaskDialogFolderId = ""
+        fakeBackend.newTaskDialogFolderPath = ""
+        fakeBackend.newTaskDialogStartPath = []
         fakeBackend.refreshCalls = 0
         fakeBackend.searchOpenCalls = 0
         fakeBackend.searchRevealCalls = 0
@@ -943,29 +961,55 @@ TestCase {
         compare(list.itemAtIndex(0).entry.id, loaded.id)
     }
 
-    function test_header_actions_show_text_and_keep_refresh_last() {
+    function test_header_actions_show_add_menu_and_keep_refresh_last() {
         fakeBackend.contentView = "list"
+        fakeBackend.currentDirId = "folder-current"
+        fakeBackend.breadcrumb = ["全部文件", "动画"]
         headerActions = headerActionsComponent.createObject(parent, { visible: true })
         verify(headerActions !== null)
         wait(30)
 
-        const newFolder = findChild(headerActions, "filesNewFolderButton")
+        const add = findChild(headerActions, "filesAddButton")
         const toggle = findChild(headerActions, "viewToggleButton")
         const refresh = findChild(headerActions, "filesRefreshButton")
-        verify(newFolder !== null && toggle !== null && refresh !== null)
+        verify(add !== null && toggle !== null && refresh !== null)
         compare(headerActions.spacing, 8)
-        compare(newFolder.implicitHeight, 34)
+        compare(add.implicitHeight, 34)
         compare(toggle.implicitHeight, 34)
         compare(refresh.implicitHeight, 34)
-        compare(newFolder.text, qsTr("新建文件夹"))
+        compare(add.text, qsTr("添加"))
+        compare(add.variant, "primary")
+        compare(add.trailingIconName, "chevron-down")
         compare(toggle.text, qsTr("列表"))
         compare(refresh.text, qsTr("刷新"))
-        verify(newFolder.x < toggle.x)
+        verify(add.x < toggle.x)
         verify(toggle.x < refresh.x, "刷新按钮应在最右侧")
+
+        mouseClick(add)
+        wait(30)
+
+        const menu = findChild(headerActions, "filesAddMenu")
+        const newFolder = findChild(menu, "filesAddNewFolderItem")
+        const newTask = findChild(menu, "filesAddNewTaskItem")
+        verify(menu !== null && menu.opened)
+        verify(newFolder !== null && newFolder.enabled)
+        verify(newTask !== null && newTask.enabled)
+        compare(newFolder.text, qsTr("新建文件夹…"))
+        compare(newTask.text, qsTr("新建离线任务…"))
 
         mouseClick(newFolder)
         wait(20)
         compare(fakeBackend.newFolderCalls, 1)
+
+        mouseClick(add)
+        wait(20)
+        mouseClick(findChild(headerActions, "filesAddNewTaskItem"))
+        wait(20)
+        compare(fakeBackend.newTaskDialogCalls, 1)
+        compare(fakeBackend.newTaskDialogFolderId, "folder-current")
+        compare(fakeBackend.newTaskDialogFolderPath, "全部文件 / 动画")
+        compare(fakeBackend.newTaskDialogStartPath.length, 1)
+        compare(fakeBackend.newTaskDialogStartPath[0].id, "")
 
         mouseClick(toggle)
         wait(20)
@@ -974,6 +1018,23 @@ TestCase {
         mouseClick(refresh)
         wait(20)
         compare(fakeBackend.refreshCalls, 1)
+    }
+
+    function test_add_menu_disables_only_folder_action_while_searching() {
+        fakeBackend.searchActive = true
+        headerActions = headerActionsComponent.createObject(parent, { visible: true })
+        verify(headerActions !== null)
+        wait(30)
+
+        const add = findChild(headerActions, "filesAddButton")
+        verify(add !== null && add.enabled)
+        mouseClick(add)
+        wait(30)
+
+        const newFolder = findChild(headerActions, "filesAddNewFolderItem")
+        const newTask = findChild(headerActions, "filesAddNewTaskItem")
+        verify(newFolder !== null && !newFolder.enabled)
+        verify(newTask !== null && newTask.enabled)
     }
 
     function test_refresh_button_feedback_is_manual_only() {

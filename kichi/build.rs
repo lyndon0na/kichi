@@ -70,6 +70,7 @@ const QML_FILES: &[&str] = &[
     "qml/KSettingsRow.qml",
     "qml/KDialog.qml",
     "qml/NewTaskDialog.qml",
+    "qml/TaskFolderPickerDialog.qml",
     "qml/TasksPage.qml",
     "qml/TaskHeaderControls.qml",
     "qml/TaskTableHeader.qml",

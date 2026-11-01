@@ -36,8 +36,11 @@ struct NewTaskRequest<'a> {
     kind: &'static str,
     upload_type: &'static str,
     url: UrlBody<'a>,
-    /// 未指定 parent_id 时官方用 `DOWNLOAD` 指代默认下载目录
-    folder_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_id: Option<&'a str>,
+    /// 只有未指定目录时才用 `DOWNLOAD` 指代官方默认下载目录。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder_type: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,21 +183,47 @@ where
         .map(|time| time.with_timezone(&chrono::Utc)))
 }
 
+/// `None` 使用官方默认下载目录；`Some("")` 表示根目录；`Some(id)` 表示指定目录。
+fn new_task_request<'a>(url: &'a str, parent_id: Option<&'a str>) -> NewTaskRequest<'a> {
+    match parent_id.map(str::trim) {
+        None => NewTaskRequest {
+            kind: "drive#file",
+            upload_type: "UPLOAD_TYPE_URL",
+            url: UrlBody { url },
+            parent_id: None,
+            folder_type: Some("DOWNLOAD"),
+        },
+        Some("") => NewTaskRequest {
+            kind: "drive#file",
+            upload_type: "UPLOAD_TYPE_URL",
+            url: UrlBody { url },
+            parent_id: None,
+            folder_type: None,
+        },
+        Some(parent_id) => NewTaskRequest {
+            kind: "drive#file",
+            upload_type: "UPLOAD_TYPE_URL",
+            url: UrlBody { url },
+            parent_id: Some(parent_id),
+            folder_type: None,
+        },
+    }
+}
+
 impl DriveClient {
     /// 新建离线下载任务（磁力 / ed2k / 普通 URL 均可）。
     ///
-    /// 目标目录固定为官方默认下载目录；返回官方新建的任务。
-    pub fn create_offline_task(&self, url: &str) -> Result<OfflineTask, Error> {
+    /// `parent_id = None` 使用官方默认下载目录；`Some("")` 表示根目录。
+    pub fn create_offline_task(
+        &self,
+        url: &str,
+        parent_id: Option<&str>,
+    ) -> Result<OfflineTask, Error> {
         let url = url.trim();
         if url.is_empty() {
             return Err(Error::InvalidInput("下载链接为空".into()));
         }
-        let body = NewTaskRequest {
-            kind: "drive#file",
-            upload_type: "UPLOAD_TYPE_URL",
-            url: UrlBody { url },
-            folder_type: "DOWNLOAD",
-        };
+        let body = new_task_request(url, parent_id);
         let payload = serde_json::to_value(&body)
             .map_err(|e| Error::ApiChanged(format!("任务请求体无法序列化：{e}")))?;
         let response: NewTaskResponse = self.request(
@@ -348,15 +377,8 @@ mod tests {
     }
 
     #[test]
-    fn new_task_request_shape_matches_rclone() {
-        let body = NewTaskRequest {
-            kind: "drive#file",
-            upload_type: "UPLOAD_TYPE_URL",
-            url: UrlBody {
-                url: "magnet:?xt=urn:btih:abc",
-            },
-            folder_type: "DOWNLOAD",
-        };
+    fn new_task_request_uses_default_download_directory() {
+        let body = new_task_request("magnet:?xt=urn:btih:abc", None);
         let value = serde_json::to_value(&body).expect("请求体应可序列化");
         assert_eq!(value["kind"], "drive#file");
         assert_eq!(value["upload_type"], "UPLOAD_TYPE_URL");
@@ -366,13 +388,35 @@ mod tests {
     }
 
     #[test]
+    fn new_task_request_targets_explicit_folder() {
+        let body = new_task_request("https://example.com/file.zip", Some(" folder-1 "));
+        let value = serde_json::to_value(&body).expect("请求体应可序列化");
+        assert_eq!(value["parent_id"], "folder-1");
+        assert!(
+            value.get("folder_type").is_none(),
+            "指定目录时必须省略 folder_type"
+        );
+    }
+
+    #[test]
+    fn new_task_request_targets_root_without_download_folder_type() {
+        let body = new_task_request("https://example.com/file.zip", Some(""));
+        let value = serde_json::to_value(&body).expect("请求体应可序列化");
+        assert!(value.get("parent_id").is_none(), "根目录不传 parent_id");
+        assert!(
+            value.get("folder_type").is_none(),
+            "根目录不能退回官方默认下载目录"
+        );
+    }
+
+    #[test]
     fn empty_url_is_rejected_before_network() {
         // 构造一个不做 I/O 的驱动：只验证参数校验分支
         let config = crate::Config::default();
         let client = DriveClient::new(&config, "0123456789abcdef0123456789abcdef", "", "")
             .expect("客户端应可构造");
         assert!(matches!(
-            client.create_offline_task("   "),
+            client.create_offline_task("   ", None),
             Err(Error::InvalidInput(_))
         ));
         assert!(matches!(

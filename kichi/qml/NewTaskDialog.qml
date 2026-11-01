@@ -7,6 +7,12 @@ KDialog {
     id: dialog
 
     property var backend: null
+    /// null 表示官方 My Pack 下载目录；空串表示根目录，其它值表示指定目录 id。
+    property var targetFolderId: null
+    property string targetFolderPath: ""
+    /// 打开选择器时的起始完整路径（根 → 当前）。
+    property var pickerStartPath: []
+    readonly property bool saveToFolder: targetFolderId !== null
 
     objectName: "newTaskDialog"
     title: qsTr("新任务")
@@ -24,7 +30,7 @@ KDialog {
 
     footer: DialogFooter {
         outerMargin: dialog.padding
-        statusText: qsTr("支持磁力、ed2k 和 HTTP 下载地址；空行会自动忽略。")
+        statusText: qsTr("支持磁力 / ed2k / HTTP；空行忽略。")
         statusColor: theme.textMuted
         okText: qsTr("添加")
         okObjectName: "newTaskDialogOk"
@@ -36,6 +42,44 @@ KDialog {
     ColumnLayout {
         width: 520
         spacing: theme.gapMd
+
+        RowLayout {
+            objectName: "newTaskDestinationRow"
+            Layout.fillWidth: true
+            spacing: theme.gapSm
+
+            NavIcon {
+                implicitWidth: 16
+                implicitHeight: 16
+                Layout.alignment: Qt.AlignVCenter
+                name: "folder"
+                color: theme.textSecondary
+            }
+
+            ElidedLabel {
+                objectName: "newTaskDestinationPath"
+                Layout.fillWidth: true
+                text: dialog.saveToFolder
+                      ? qsTr("保存到：%1").arg(
+                            dialog.targetFolderPath.length > 0
+                            ? dialog.targetFolderPath
+                            : qsTr("当前文件夹"))
+                      : qsTr("保存到：My Pack")
+                color: theme.textSecondary
+                font.pixelSize: theme.fontMeta
+                elide: Text.ElideMiddle
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            KButton {
+                objectName: "newTaskChangeDestination"
+                text: qsTr("更改位置…")
+                variant: "ghost"
+                implicitHeight: 28
+                showTextToolTip: false
+                onClicked: folderPicker.openPicker(dialog.pickerStartPath)
+            }
+        }
 
         Label {
             Layout.fillWidth: true
@@ -89,11 +133,24 @@ KDialog {
 
     }
 
+    TaskFolderPickerDialog {
+        id: folderPicker
+        backend: dialog.backend
+        onFolderChosen: function (folderId, pathText) {
+            dialog.targetFolderId = folderId
+            dialog.targetFolderPath = pathText
+            dialog.pickerStartPath = folderPicker.selectedPath.slice()
+        }
+    }
+
     function submit() {
         var text = input.text.trim()
         if (text.length === 0 || !dialog.backend)
             return
-        dialog.backend.addTask(text)
+        if (dialog.saveToFolder)
+            dialog.backend.addTaskToFolder(text, String(dialog.targetFolderId))
+        else
+            dialog.backend.addTask(text)
         dialog.close()
     }
 }
