@@ -790,6 +790,53 @@ TestCase {
                 + grid.itemAtIndex(2).x + "/" + grid.itemAtIndex(2).y + "）")
     }
 
+    function test_grid_reflows_after_scrollbar_lane_disappears() {
+        fakeBackend.files = manyEntries(30)
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, {
+            width: 787,
+            height: 500,
+            visible: true
+        })
+        verify(page !== null)
+        wait(80)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        compare(grid.scrollBarVisible, true)
+
+        fakeBackend.files = manyEntries(5)
+        tryCompare(grid, "scrollBarVisible", false)
+        wait(40)
+
+        const firstItem = grid.itemAtIndex(0)
+        verify(firstItem !== null)
+        let actualColumns = 0
+        for (let i = 0; i < page.gridColumns; i++) {
+            const item = grid.itemAtIndex(i)
+            if (!item || Math.abs(item.y - firstItem.y) > 0.5)
+                break
+            actualColumns += 1
+        }
+        compare(actualColumns, page.gridColumns,
+                "滚动条消失后 GridView 必须按新的 cellWidth 补齐整行")
+
+        fakeBackend.files = manyEntries(30)
+        tryCompare(grid, "scrollBarVisible", true)
+        wait(40)
+        const restoredFirst = grid.itemAtIndex(0)
+        verify(restoredFirst !== null)
+        actualColumns = 0
+        for (let i = 0; i < page.gridColumns; i++) {
+            const item = grid.itemAtIndex(i)
+            if (!item || Math.abs(item.y - restoredFirst.y) > 0.5)
+                break
+            actualColumns += 1
+        }
+        compare(actualColumns, page.gridColumns,
+                "滚动条重新出现后 GridView 也必须按最终 cellWidth 排满整行")
+    }
+
     function test_search_placeholder_explains_scope_and_enter_action() {
         searchBar = searchBarComponent.createObject(parent, { visible: true })
         verify(searchBar !== null)

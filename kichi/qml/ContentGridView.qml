@@ -67,6 +67,17 @@ Item {
         ? root.density.gridItemHeight(root.itemWidth, root.reserveDetail) : 1
     readonly property real cellHeight: root.itemHeight + root.rowGap
 
+    // GridView 在右 margin 与 cellWidth 同一轮变化时可能沿用旧的列数。
+    // 轻推一次 cellWidth 再恢复绑定，强制它重新计算每一行的列数。
+    property real reflowNudge: 0
+    onScrollBarVisibleChanged: {
+        root.reflowNudge = 0.01
+        Qt.callLater(function () {
+            if (root)
+                root.reflowNudge = 0
+        })
+    }
+
     property alias view: gridView
     property alias contentY: gridView.contentY
     property alias contentHeight: gridView.contentHeight
@@ -98,7 +109,7 @@ Item {
         visible: root.visible
         model: root.model
         delegate: root.delegate
-        cellWidth: root.cellSlotWidth
+        cellWidth: root.cellSlotWidth + root.reflowNudge
         cellHeight: root.cellHeight
         leftMargin: root.sideMargin
         rightMargin: root.rightMargin
