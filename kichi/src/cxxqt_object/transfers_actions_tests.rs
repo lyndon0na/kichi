@@ -19,6 +19,8 @@ fn job(id: &str, name: &str, kind: EntryKind, sub_dir: &[&str]) -> TransferJob {
         audit_flagged: false,
         sub_dir: sub_dir.iter().map(|part| (*part).to_owned()).collect(),
         dir: PathBuf::from("/home/me/Downloads"),
+        direction: TransferDirection::Download,
+        upload: None,
     }
 }
 
@@ -27,6 +29,19 @@ fn record(id: &str, kind: EntryKind, sub_dir: &[&str], state: TransferState) -> 
     let mut record = row_from(7, 0, "folder-id", &seed, 1_790_000_000, 1);
     record.state = state;
     record
+}
+
+fn upload_record(state: TransferState) -> Transfer {
+    let mut seed = job("upload:/home/me/电影.mkv", "电影.mkv", EntryKind::File, &[]);
+    seed.direction = TransferDirection::Upload;
+    seed.upload = Some(crate::cxxqt_object::transfers::UploadJob {
+        local_path: PathBuf::from("/home/me/电影.mkv"),
+        parent_id: "cloud-folder".to_owned(),
+        parent_name: "动画".to_owned(),
+    });
+    let mut row = row_from(7, 0, &seed.id, &seed, 1_790_000_000, 1);
+    row.state = state;
+    row
 }
 
 /// 文件夹批次：父行 + 若干子行（index 0..）。
@@ -197,6 +212,30 @@ fn cancel_target_accepts_active_single_files_only() {
 
     let done = record("file-1", EntryKind::File, &[], TransferState::Done);
     assert!(cancel_target_in(&[done], "7:0").is_none());
+}
+
+#[test]
+fn upload_actions_keep_direction_cancel_and_retry_but_have_no_local_path() {
+    let running = upload_record(TransferState::Running);
+    let target = cancel_target_in(std::slice::from_ref(&running), "7:0").expect("上传可取消");
+    assert_eq!(target.direction, TransferDirection::Upload);
+    assert!(target.whole_batch);
+
+    let mut failed = upload_record(TransferState::Failed);
+    failed.path = Some(PathBuf::from("/tmp/should-not-be-used"));
+    let retry = retry_target_in(std::slice::from_ref(&failed), "7:0").expect("失败上传可重试");
+    assert!(retry.is_upload());
+    assert_eq!(
+        retry
+            .upload
+            .as_ref()
+            .map(|upload| upload.parent_id.as_str()),
+        Some("cloud-folder")
+    );
+    assert!(
+        path_for_in(std::slice::from_ref(&failed), "7:0").is_none(),
+        "上传记录没有可打开的本地落点"
+    );
 }
 
 #[test]

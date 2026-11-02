@@ -8,6 +8,7 @@ use cxx_qt_lib::QString;
 use kichi_core::EntryKind;
 
 use super::*;
+use crate::cxxqt_object::transfers::TransferDirection;
 use crate::cxxqt_object::transfers::{row_from, TransferJob, TransferState};
 use crate::cxxqt_object::transfers_view::QVariantMap;
 use crate::cxxqt_object::QVariantList;
@@ -21,6 +22,8 @@ fn job(id: &str, name: &str, kind: EntryKind, sub_dir: &[&str]) -> TransferJob {
         audit_flagged: false,
         sub_dir: sub_dir.iter().map(|part| (*part).to_owned()).collect(),
         dir: PathBuf::from("/tmp"),
+        direction: TransferDirection::Download,
+        upload: None,
     }
 }
 

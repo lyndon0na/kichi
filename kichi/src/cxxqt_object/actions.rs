@@ -107,6 +107,7 @@ impl qobject::Kichi {
                 self.as_mut().reset_thumbnails();
                 self.as_mut().reset_trash();
                 self.as_mut().reset_play();
+                self.as_mut().reset_uploads();
                 self.as_mut().reset_downloads();
                 self.as_mut().reset_search();
                 self.as_mut().reset_shares();
@@ -151,10 +152,12 @@ impl qobject::Kichi {
     /// 退出前注销托盘（QML 在 Qt.quit() 之前调用）。
     ///
     /// 真退出与托盘点「退出」两条路径都会调用它（QML 的 `onClosing` 与
-    /// `quitRequested`），所以下载历史的强制写盘也挂在这里：
+    /// `quitRequested`），所以传输历史的强制写盘也挂在这里：
     /// 进程直接结束前把记录表落成最后一次（ADR 0014）。
     pub fn shutdown_tray(&self) {
         super::transfers::mark_auto_resume();
+        super::upload_queue::reset();
+        super::transfers::interrupt_active_for(super::transfers::TransferDirection::Upload);
         super::downloads::flush_history();
         super::tray::stop();
     }
@@ -222,6 +225,9 @@ impl qobject::Kichi {
             rust.quota_vip = false;
         }
         self.as_mut().notify();
+        // 登录成功可能来自另一个账号（尤其是令牌失效后重新登录）。作废旧上传队列，
+        // 同时推进 epoch，让仍开着的 Portal 选择器回调不能用旧目录 id 入队。
+        self.as_mut().reset_uploads();
         self.as_mut().sync_identity_from_session();
         self.as_mut().refresh_identity_and_quota();
         self.as_mut().refresh_files_background();

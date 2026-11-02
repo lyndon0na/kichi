@@ -24,11 +24,12 @@ use kichi_core::EntryKind;
 use serde::{Deserialize, Serialize};
 
 use super::transfers::{
-    is_folder_ledger, restore_row, with_records, Transfer, TransferJob, TransferState,
+    is_folder_ledger, restore_row, with_records, Transfer, TransferDirection, TransferJob,
+    TransferState, UploadJob,
 };
 
 /// 落盘格式版本。读取不看版本号：高版本也只按已知字段解析，未知字段忽略。
-pub(crate) const HISTORY_VERSION: u32 = 1;
+pub(crate) const HISTORY_VERSION: u32 = 2;
 /// 两次写盘至少间隔这么久（进度回调很密，不能每次写盘）。
 pub(crate) const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// 失败 / 取消 / 已中断旧批次保留的天数。
@@ -101,6 +102,15 @@ pub(crate) struct JobRecord {
     pub(crate) sub_dir: Vec<String>,
     #[serde(default)]
     pub(crate) dir: String,
+    /// `download` / `upload`；旧记录缺字段时按下载处理
+    #[serde(default)]
+    pub(crate) direction: String,
+    #[serde(default)]
+    pub(crate) local_path: String,
+    #[serde(default)]
+    pub(crate) parent_id: String,
+    #[serde(default)]
+    pub(crate) parent_name: String,
 }
 
 /// 落盘格式：`{ version, entries }`。
@@ -191,6 +201,25 @@ pub(crate) fn entry_of(record: &Transfer, dirs: Vec<Vec<String>>) -> EntryRecord
             audit_flagged: record.job.audit_flagged,
             sub_dir: record.job.sub_dir.clone(),
             dir: record.job.dir.display().to_string(),
+            direction: record.job.direction.name().to_owned(),
+            local_path: record
+                .job
+                .upload
+                .as_ref()
+                .map(|upload| upload.local_path.display().to_string())
+                .unwrap_or_default(),
+            parent_id: record
+                .job
+                .upload
+                .as_ref()
+                .map(|upload| upload.parent_id.clone())
+                .unwrap_or_default(),
+            parent_name: record
+                .job
+                .upload
+                .as_ref()
+                .map(|upload| upload.parent_name.clone())
+                .unwrap_or_default(),
         },
         state: record.state.name().to_owned(),
         bytes: record.bytes,
@@ -312,6 +341,7 @@ pub(crate) fn restore(entries: Vec<EntryRecord>, session: u64) -> Vec<Transfer> 
 }
 
 fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
+    let direction = TransferDirection::from_name(&entry.job.direction);
     let job = TransferJob {
         id: entry.job.id.clone(),
         name: entry.job.name.clone(),
@@ -320,6 +350,12 @@ fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
         audit_flagged: entry.job.audit_flagged,
         sub_dir: entry.job.sub_dir.clone(),
         dir: PathBuf::from(&entry.job.dir),
+        direction,
+        upload: (direction == TransferDirection::Upload).then(|| UploadJob {
+            local_path: PathBuf::from(&entry.job.local_path),
+            parent_id: entry.job.parent_id.clone(),
+            parent_name: entry.job.parent_name.clone(),
+        }),
     };
     let stored = state_of(&entry.state);
     let state = recovered_state(stored);
@@ -478,14 +514,14 @@ pub(crate) fn load(path: &Path) -> Vec<EntryRecord> {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(err) => {
-            eprintln!("[kichi] 读取下载历史失败（本次按空历史启动）：{err}");
+            eprintln!("[kichi] 读取传输历史失败（本次按空历史启动）：{err}");
             return Vec::new();
         }
     };
     match serde_json::from_slice::<HistoryFile>(&bytes) {
         Ok(file) => file.entries,
         Err(err) => {
-            eprintln!("[kichi] 下载历史文件损坏（本次按空历史启动）：{err}");
+            eprintln!("[kichi] 传输历史文件损坏（本次按空历史启动）：{err}");
             Vec::new()
         }
     }
@@ -502,12 +538,12 @@ pub(crate) fn save(path: &Path, entries: &[EntryRecord]) -> Result<(), String> {
         version: HISTORY_VERSION,
         entries: entries.to_vec(),
     })
-    .map_err(|err| format!("序列化下载历史失败：{err}"))?;
+    .map_err(|err| format!("序列化传输历史失败：{err}"))?;
     let temp = path.with_extension("json.tmp");
-    write_private(&temp, &body).map_err(|err| format!("写入下载历史失败：{err}"))?;
+    write_private(&temp, &body).map_err(|err| format!("写入传输历史失败：{err}"))?;
     std::fs::rename(&temp, path).map_err(|err| {
         let _ = std::fs::remove_file(&temp);
-        format!("保存下载历史失败：{err}")
+        format!("保存传输历史失败：{err}")
     })
 }
 
@@ -595,7 +631,7 @@ pub(crate) fn maybe_flush(target: &StoreTarget) {
         return;
     }
     if let Err(err) = write_now(target) {
-        eprintln!("[kichi] 下载历史未能落盘（本次仅失去跨重启记录）：{err}");
+        eprintln!("[kichi] 传输历史未能落盘（本次仅失去跨重启记录）：{err}");
     }
 }
 
@@ -645,7 +681,7 @@ pub(crate) fn maybe_flush_progress(target: &StoreTarget) {
     }
     with_last_progress_stamp(|slot| *slot = Some(stamp));
     if let Err(err) = write_now(target) {
-        eprintln!("[kichi] 下载历史未能落盘（本次仅失去跨重启记录）：{err}");
+        eprintln!("[kichi] 传输历史未能落盘（本次仅失去跨重启记录）：{err}");
     }
 }
 
@@ -653,7 +689,7 @@ pub(crate) fn maybe_flush_progress(target: &StoreTarget) {
 pub(crate) fn flush_now(target: &StoreTarget) {
     with_last_write(|last| *last = Some(Instant::now()));
     if let Err(err) = write_now(target) {
-        eprintln!("[kichi] 下载历史未能落盘（本次仅失去跨重启记录）：{err}");
+        eprintln!("[kichi] 传输历史未能落盘（本次仅失去跨重启记录）：{err}");
     }
 }
 
@@ -718,7 +754,7 @@ fn shrink_oversized(target: &StoreTarget) {
     // 整批没了，目录树也别留着（锁外调用：prune 自己先取 records 再取 trees）
     super::transfers::prune_trees();
     if let Err(err) = write_now(target) {
-        eprintln!("[kichi] 整理过大的下载历史失败：{err}");
+        eprintln!("[kichi] 整理过大的传输历史失败：{err}");
     }
 }
 

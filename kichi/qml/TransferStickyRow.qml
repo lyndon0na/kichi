@@ -47,6 +47,7 @@ Item {
         key: sticky.value("key", "")
         name: sticky.value("name", "")
         sourceId: sticky.value("sourceId", "")
+        direction: sticky.value("direction", "download")
         phase: sticky.value("phase", "")
         stateText: sticky.value("stateText", "")
         running: sticky.value("running", false)

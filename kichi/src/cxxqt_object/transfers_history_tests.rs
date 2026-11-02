@@ -27,6 +27,8 @@ fn job(name: &str, kind: EntryKind) -> TransferJob {
         audit_flagged: false,
         sub_dir: Vec::new(),
         dir: PathBuf::from("/home/me/Downloads"),
+        direction: TransferDirection::Download,
+        upload: None,
     }
 }
 
@@ -41,6 +43,29 @@ fn file_row(batch: u64, name: &str) -> crate::cxxqt_object::transfers::Transfer 
     );
     row.state = TransferState::Done;
     row.path = Some(PathBuf::from(format!("/home/me/Downloads/{name}")));
+    row
+}
+
+fn upload_row(batch: u64, name: &str) -> crate::cxxqt_object::transfers::Transfer {
+    let upload_job = TransferJob {
+        id: format!("upload:/home/me/{name}"),
+        name: name.to_owned(),
+        kind: EntryKind::File,
+        size: 2048,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from(format!("/home/me/{name}")),
+            parent_id: "parent-42".to_owned(),
+            parent_name: "动画".to_owned(),
+        }),
+    };
+    let mut row = row_from(batch, 0, &upload_job.id, &upload_job, 1_790_000_000, 7);
+    row.state = TransferState::Failed;
+    row.bytes = 1024;
+    row.detail = "上传连接中断".to_owned();
     row
 }
 
@@ -183,6 +208,67 @@ fn higher_version_is_parsed_with_known_fields_only() {
     assert_eq!(loaded[0].state, "done");
     let restored = restore(loaded, 2);
     assert_eq!(restored[0].state, TransferState::Done);
+    assert_eq!(
+        restored[0].job.direction,
+        TransferDirection::Download,
+        "旧记录没有 direction 字段时仍按下载处理"
+    );
+    assert!(restored[0].job.upload.is_none());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn v1_download_record_without_upload_fields_stays_a_download() {
+    let path = temp_path("v1-download");
+    std::fs::write(
+        &path,
+        r#"{
+            "version": 1,
+            "entries": [{
+                "batch": 1, "index": 0, "child": false,
+                "source_id": "file-1",
+                "job": {
+                    "id": "file-1", "name": "旧下载.mkv", "kind": "file",
+                    "size": 1024, "dir": "/home/me/Downloads"
+                },
+                "state": "done",
+                "path": "/home/me/Downloads/旧下载.mkv"
+            }]
+        }"#,
+    )
+    .expect("写 v1 历史");
+
+    let restored = restore(load(&path), 2);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].job.direction, TransferDirection::Download);
+    assert!(restored[0].job.upload.is_none());
+    assert_eq!(restored[0].state, TransferState::Done);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn upload_record_round_trips_with_its_retry_target() {
+    let path = temp_path("upload-round-trip");
+    let row = upload_row(6, "电影.mkv");
+    save(&path, &entries(&[row], &[])).expect("写上传历史");
+
+    let loaded = load(&path);
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].job.direction, "upload");
+    assert_eq!(loaded[0].job.local_path, "/home/me/电影.mkv");
+    assert_eq!(loaded[0].job.parent_id, "parent-42");
+    assert_eq!(loaded[0].job.parent_name, "动画");
+
+    let restored = restore(loaded, 8);
+    assert_eq!(restored.len(), 1);
+    let job = &restored[0].job;
+    assert_eq!(job.direction, TransferDirection::Upload);
+    let upload = job.upload.as_ref().expect("上传重试目标读回");
+    assert_eq!(upload.local_path, PathBuf::from("/home/me/电影.mkv"));
+    assert_eq!(upload.parent_id, "parent-42");
+    assert_eq!(upload.parent_name, "动画");
+    assert_eq!(restored[0].state, TransferState::Failed);
+    assert_eq!(restored[0].detail, "上传连接中断");
     let _ = std::fs::remove_file(&path);
 }
 

@@ -30,6 +30,7 @@ use super::transfers_actions;
 use super::transfers_detail;
 use super::transfers_history::{self, StoreTarget};
 use super::transfers_rate::heartbeat_due;
+use super::upload_queue;
 use crate::session::Failure;
 
 /// 上一次推 `transferLive` 的时刻（心跳节流；只有主线程读写）。
@@ -58,7 +59,7 @@ fn with_target<T>(f: impl FnOnce(&mut Option<StoreTarget>) -> T) -> T {
     f(&mut guard)
 }
 
-/// 启动时加载一次下载历史（首次 `sync_transfers()` 之前由构造器调用）。
+/// 启动时加载一次传输历史（首次 `sync_transfers()` 之前由构造器调用）。
 ///
 /// 走不进 `impl Kichi`：构造器里 `self` 还没成形，而读盘之后紧接着就要把
 /// 记录表刷到属性上。
@@ -200,7 +201,7 @@ impl qobject::Kichi {
         // 立刻反映到记录表：正在下的那条与排队中的都变「已取消」，
         // 不用等下载线程读到取消标志（网络卡住时可能要等当前读返回）。
         // `downloadRunning` 由调度器的收尾推进，不在这里清。
-        transfers::cancel_active("");
+        transfers::cancel_active_for(transfers::TransferDirection::Download, "");
         // 暂停批次已经不在调度器里；未完成子行也要取消并删掉断点。
         for batch in paused {
             transfers::cancel_paused_batch(batch);
@@ -221,6 +222,17 @@ impl qobject::Kichi {
             self.as_mut().set_message("这条记录已经不在进行中");
             return;
         };
+        if target.direction == transfers::TransferDirection::Upload {
+            let Some(_) = upload_queue::cancel(target.batch) else {
+                self.as_mut().set_message("这条上传记录已经结束");
+                return;
+            };
+            transfers::cancel_batch(target.batch, "");
+            self.as_mut()
+                .set_message(&format!("正在取消上传：{}", target.name));
+            self.as_mut().advance_uploads();
+            return;
+        }
         if target.state == transfers::TransferState::Paused {
             if !target.whole_batch {
                 self.as_mut()
@@ -265,6 +277,11 @@ impl qobject::Kichi {
             self.as_mut().set_message("这条记录已经不能暂停");
             return;
         };
+        if target.direction == transfers::TransferDirection::Upload {
+            self.as_mut()
+                .set_message("上传任务不支持暂停，可在传输页取消");
+            return;
+        }
         if !target.whole_batch {
             self.as_mut()
                 .set_message("请暂停整个文件夹，不能在子文件上单独暂停");
@@ -384,6 +401,18 @@ impl qobject::Kichi {
         let Some(job) = transfers_actions::retry_target(key) else {
             return RetryOutcome::Unavailable;
         };
+        if job.is_upload() {
+            return match upload_queue::reserve_retry(&job) {
+                Ok(_) => {
+                    transfers_actions::remove(key);
+                    RetryOutcome::QueuedUpload
+                }
+                Err(upload_queue::ReserveError::AlreadyPending) => {
+                    RetryOutcome::AlreadyPending(job.id)
+                }
+                Err(err) => RetryOutcome::Invalid(err.reason()),
+            };
+        }
         let source_id = job.id.clone();
         // 读目录前整体失败 / 整个中断的文件夹：整批重来（会重新读一遍目录）。
         // 先把旧行抽出来（`take_whole_folder` 删掉整批），登记失败时再挂回去，历史不丢。
@@ -422,12 +451,20 @@ impl qobject::Kichi {
                 // advance 会 sync；线程起不来时它会用失败原因覆盖上面的提示
                 self.as_mut().advance_downloads();
             }
+            RetryOutcome::QueuedUpload => {
+                self.as_mut().clear_status_message();
+                self.as_mut().advance_uploads();
+            }
             RetryOutcome::AlreadyPending(source_id) => {
                 self.as_mut().sync_transfers();
                 // 同一个文件 id 已在排队 / 下载中：旧行不删，带用户去看已有那一行
-                self.as_mut().set_message("这个条目已在下载队列中");
+                self.as_mut().set_message("这个任务已在传输队列中");
                 self.as_mut()
                     .locate_transfer(QString::from(source_id.as_str()));
+            }
+            RetryOutcome::Invalid(reason) => {
+                self.as_mut().sync_transfers();
+                self.as_mut().set_message(&reason);
             }
             RetryOutcome::Unavailable => {
                 self.as_mut().set_message("这条记录已经不能重试了");
@@ -442,27 +479,40 @@ impl qobject::Kichi {
             self.as_mut().set_message("没有可重试的失败项");
             return;
         }
-        let (mut queued, mut pending) = (0u32, 0u32);
+        let (mut queued, mut pending, mut invalid) = (0u32, 0u32, 0u32);
+        let mut first_invalid = String::new();
         for key in keys {
             match self.as_mut().retry_one(&key) {
-                RetryOutcome::Queued => queued += 1,
+                RetryOutcome::Queued | RetryOutcome::QueuedUpload => queued += 1,
                 RetryOutcome::AlreadyPending(_) => pending += 1,
+                RetryOutcome::Invalid(reason) => {
+                    invalid += 1;
+                    if first_invalid.is_empty() {
+                        first_invalid = reason;
+                    }
+                }
                 RetryOutcome::Unavailable => {}
             }
         }
         if queued > 0 {
-            if pending > 0 {
-                self.as_mut().set_message(&format!(
-                    "已重试 {queued} 项失败任务；{pending} 项已在下载队列中"
-                ));
+            if pending > 0 || invalid > 0 {
+                let mut text = format!("已重试 {queued} 项失败任务；{pending} 项已在传输队列中");
+                if invalid > 0 {
+                    text.push_str(&format!("；{invalid} 项无法重试：{first_invalid}"));
+                }
+                self.as_mut().set_message(&format!("{text}"));
             } else {
                 self.as_mut().clear_status_message();
             }
             self.as_mut().advance_downloads();
+            self.as_mut().advance_uploads();
         } else {
             self.as_mut().sync_transfers();
             if pending > 0 {
-                self.as_mut().set_message("失败项已在下载队列中");
+                self.as_mut().set_message("失败项已在传输队列中");
+            } else if invalid > 0 {
+                self.as_mut()
+                    .set_message(&format!("{invalid} 项无法重试：{first_invalid}"));
             } else {
                 self.as_mut().set_message("没有可重试的失败项");
             }
@@ -599,7 +649,7 @@ impl qobject::Kichi {
     /// 把记录表刷到 QML 属性（主线程调用）。
     ///
     /// 结构变化（排队 / 准备 / 开始 / 完成 / 失败 / 取消 / 清空）走这里，整个模型重建；
-    /// 顺手按 2 秒节流写一次下载历史（`docs/adr/0014-download-history-on-disk.md`）。
+    /// 顺手按 2 秒节流写一次传输历史（`docs/adr/0014-download-history-on-disk.md`）。
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
         let (list, active) = transfers_history::snapshot();
         let has_finished = transfers_history::has_finished();
@@ -607,6 +657,7 @@ impl qobject::Kichi {
         let live = transfers::live_snapshot();
         let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
+        let (upload_running, upload_queued) = upload_queue::counts();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.transfers = list;
@@ -619,6 +670,8 @@ impl qobject::Kichi {
             rust.transfer_has_retryable = has_retryable;
             rust.download_running = running;
             rust.download_queued = queued;
+            rust.upload_queued = upload_queued;
+            rust.upload_active = if upload_running { 1 } else { 0 };
         }
         mark_live_pushed();
         maybe_write_history();
@@ -702,7 +755,7 @@ impl qobject::Kichi {
         ));
     }
 
-    /// 登出时作废在途下载；**下载历史保留**（ADR 0014）。
+    /// 登出时作废在途下载；**传输历史保留**（ADR 0014）。
     ///
     /// 在途线程只置 `abandon`（停止 + 保留 part + 绝不 rename），调度槽留到
     /// 线程自己收尾；重新登录后同一文件可以入队，但旧线程退出前只显示「排队中」。
@@ -713,7 +766,7 @@ impl qobject::Kichi {
         queue::reset();
         // 在途的批次已经作废：记录落成「已中断」（保留重试入口），再强制写盘。
         // 旧线程退出后 `post_finished` 的 epoch 检查保证它们不再改记录。
-        transfers::interrupt_active();
+        transfers::interrupt_active_for(transfers::TransferDirection::Download);
         flush_history();
         // 文件夹展开状态不跨会话；记录与「打开位置」都保留
         transfers_detail::clear_selection();
@@ -723,7 +776,9 @@ impl qobject::Kichi {
 
 enum RetryOutcome {
     Queued,
+    QueuedUpload,
     AlreadyPending(String),
+    Invalid(String),
     Unavailable,
 }
 

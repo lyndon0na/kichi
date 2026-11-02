@@ -11,7 +11,8 @@ use kichi_core::EntryKind;
 
 use super::*;
 use crate::cxxqt_object::transfers::{
-    begin_record, note_record, progress_record, row_from, TransferJob,
+    begin_record, note_record, progress_record, row_from, TransferDirection, TransferJob,
+    UploadJob, UploadProgressState,
 };
 use crate::cxxqt_object::transfers_view::{live_map_at, QVariantMap};
 
@@ -24,6 +25,8 @@ fn job(name: &str, size: u64, kind: EntryKind) -> TransferJob {
         audit_flagged: false,
         sub_dir: Vec::new(),
         dir: PathBuf::from("/tmp"),
+        direction: TransferDirection::Download,
+        upload: None,
     }
 }
 
@@ -416,6 +419,46 @@ fn batch_without_running_child_reports_nothing() {
     let mut records = folder_records(&[("a.mkv", 10)]);
     records[1].state = TransferState::Done;
     assert_eq!(batch_rate_info(&records, 1, base).rate, "");
+}
+
+#[test]
+fn upload_rate_is_hidden_outside_the_actual_transfer_stage() {
+    let base = Instant::now();
+    let mut record = file_record("电影.mkv", 10 * 1024 * 1024);
+    record.job.direction = TransferDirection::Upload;
+    record.job.upload = Some(UploadJob {
+        local_path: PathBuf::from("/home/me/电影.mkv"),
+        parent_id: "cloud-folder".to_owned(),
+        parent_name: "动画".to_owned(),
+    });
+    start(&mut record, base);
+    record.upload_progress = Some(UploadProgressState {
+        stage: kichi_core::UploadStage::Hashing,
+        bytes: 0,
+        total: 10 * 1024 * 1024,
+    });
+    for step in 0..=5u64 {
+        feed(
+            &mut record,
+            base + Duration::from_secs(step),
+            step * 1024 * 1024,
+        );
+    }
+    assert_eq!(
+        file_rate_info(&record, base + Duration::from_secs(5)),
+        RateInfo::default(),
+        "计算校验阶段不把本地读取速度冒充上传速度"
+    );
+
+    record.upload_progress = Some(UploadProgressState {
+        stage: kichi_core::UploadStage::Uploading,
+        bytes: 5 * 1024 * 1024,
+        total: 10 * 1024 * 1024,
+    });
+    assert_eq!(
+        file_rate_info(&record, base + Duration::from_secs(5)).rate,
+        "1.0 MB/s · 剩 5 秒"
+    );
 }
 
 #[test]

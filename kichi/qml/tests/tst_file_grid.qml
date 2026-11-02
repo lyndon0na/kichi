@@ -56,6 +56,9 @@ TestCase {
         property var playingIds: []
         property int cancelPlayCalls: 0
         property int newFolderCalls: 0
+        property int uploadCalls: 0
+        property string uploadFolderId: ""
+        property string uploadFolderName: ""
         property int newTaskDialogCalls: 0
         property string newTaskDialogFolderId: ""
         property string newTaskDialogFolderPath: ""
@@ -96,6 +99,11 @@ TestCase {
         }
         function beginNewFolder() {
             newFolderCalls += 1
+        }
+        function chooseUploadFiles(folderId, folderName) {
+            uploadCalls += 1
+            uploadFolderId = String(folderId || "")
+            uploadFolderName = String(folderName || "")
         }
         function openNewTaskDialog(folderId, folderPath, startPath) {
             newTaskDialogCalls += 1
@@ -1038,14 +1046,25 @@ TestCase {
         wait(30)
 
         const menu = findChild(headerActions, "filesAddMenu")
+        const upload = findChild(menu, "filesAddUploadItem")
         const newFolder = findChild(menu, "filesAddNewFolderItem")
         const newTask = findChild(menu, "filesAddNewTaskItem")
         verify(menu !== null && menu.opened)
+        verify(upload !== null && upload.enabled)
         verify(newFolder !== null && newFolder.enabled)
         verify(newTask !== null && newTask.enabled)
+        compare(upload.text, qsTr("上传文件…"))
         compare(newFolder.text, qsTr("新建文件夹…"))
         compare(newTask.text, qsTr("新建离线任务…"))
 
+        mouseClick(upload)
+        wait(20)
+        compare(fakeBackend.uploadCalls, 1)
+        compare(fakeBackend.uploadFolderId, "folder-current")
+        compare(fakeBackend.uploadFolderName, "全部文件 / 动画")
+
+        mouseClick(add)
+        wait(20)
         mouseClick(newFolder)
         wait(20)
         compare(fakeBackend.newFolderCalls, 1)
@@ -1069,7 +1088,7 @@ TestCase {
         compare(fakeBackend.refreshCalls, 1)
     }
 
-    function test_add_menu_disables_only_folder_action_while_searching() {
+    function test_add_menu_disables_folder_and_upload_while_searching() {
         fakeBackend.searchActive = true
         headerActions = headerActionsComponent.createObject(parent, { visible: true })
         verify(headerActions !== null)
@@ -1080,8 +1099,10 @@ TestCase {
         mouseClick(add)
         wait(30)
 
+        const upload = findChild(headerActions, "filesAddUploadItem")
         const newFolder = findChild(headerActions, "filesAddNewFolderItem")
         const newTask = findChild(headerActions, "filesAddNewTaskItem")
+        verify(upload !== null && !upload.enabled)
         verify(newFolder !== null && !newFolder.enabled)
         verify(newTask !== null && newTask.enabled)
     }

@@ -535,6 +535,8 @@ pub(crate) fn start_download(
             audit_flagged: job.audit_flagged,
             sub_dir: job.sub_dir.clone(),
             dir: dir.clone(),
+            direction: super::transfers::TransferDirection::Download,
+            upload: None,
         })
         .collect();
     transfers::set_skipped(batch, collected.skipped);

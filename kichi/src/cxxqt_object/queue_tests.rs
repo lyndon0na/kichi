@@ -4,6 +4,7 @@
 //! `run_jobs` 都需要真实会话，属于 `live_tests` 的范围。
 
 use super::*;
+use crate::cxxqt_object::transfers::TransferDirection;
 use chrono::Utc;
 
 fn entry(id: &str, kind: EntryKind, name: &str) -> FileEntry {
@@ -45,6 +46,8 @@ fn retry_job(id: &str, kind: EntryKind, sub_dir: &[&str]) -> TransferJob {
         audit_flagged: false,
         sub_dir: sub_dir.iter().map(|part| (*part).to_owned()).collect(),
         dir: PathBuf::from("/tmp/kichi-retry"),
+        direction: TransferDirection::Download,
+        upload: None,
     }
 }
 

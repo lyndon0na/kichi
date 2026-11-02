@@ -39,8 +39,13 @@ Item {
                                           && list.contentY > stickyTop
                                           && list.contentY < stickyBottom
 
-    readonly property int activeCount: backend ? backend.downloadActive : 0
-    readonly property int queuedCount: backend ? backend.downloadQueued : 0
+    readonly property int activeCount: backend
+                                      ? backend.downloadActive + backend.uploadActive
+                                      : 0
+    readonly property int queuedCount: backend
+                                        ? backend.downloadQueued
+                                          + (backend.uploadQueued || 0)
+                                        : 0
     readonly property int pausedCount: {
         var source = backend ? backend.transfers || [] : []
         var count = 0
@@ -208,6 +213,7 @@ Item {
             key: item.key,
             name: item.name,
             sourceId: item.sourceId || "",
+            direction: item.direction || "download",
             phase: item.state,
             stateText: item.stateText || "",
             running: item.running === true,
@@ -234,6 +240,7 @@ Item {
             key: item.key,
             name: item.name,
             sourceId: item.sourceId || "",
+            direction: item.direction || "download",
             phase: item.state,
             stateText: item.stateText || "",
             running: item.running === true,
@@ -401,7 +408,8 @@ Item {
         + "进行中、排队与已中断的记录会保留。确定清空？")
     readonly property string cancelAllConfirmMessage: qsTr(
         "将取消所有进行中、排队和已暂停的传输。\n"
-        + "未完成文件的断点会被删除，无法继续；已下载完成的文件会保留。"
+        + "未完成下载的断点会被删除；上传会停止，之后只能从头重试。"
+        + "已下载完成的文件会保留。"
         + "确定取消全部？")
     property string pendingRemoveKey: ""
     property string pendingRemoveName: ""
@@ -410,12 +418,12 @@ Item {
     readonly property string removeRecordMessage: {
         if (page.pendingRemoveIsFolder && page.pendingRemoveChildCount > 0) {
             return qsTr("将从传输历史中移除文件夹「%1」及整批 %2 条子记录。\n"
-                        + "本地已下载文件和断点都会保留。确定移除？")
+                        + "本地源文件、已下载文件和断点都会保留。确定移除？")
                 .arg(page.pendingRemoveName)
                 .arg(page.pendingRemoveChildCount)
         }
         return qsTr("将从传输历史中移除「%1」。\n"
-                    + "本地已下载文件和断点都会保留。确定移除？")
+                    + "本地源文件、已下载文件和断点都会保留。确定移除？")
             .arg(page.pendingRemoveName)
     }
 
@@ -501,7 +509,7 @@ Item {
                     objectName: "emptyHint"
                     anchors.centerIn: parent
                     visible: list.count === 0
-                    text: qsTr("暂无传输任务\n在文件页右键选择下载即可开始")
+                    text: qsTr("暂无传输任务\n可在文件页添加菜单上传，或右键下载")
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.textMuted
                     font.pixelSize: theme.fontBody
@@ -616,7 +624,7 @@ Item {
             okVariant: "danger"
             onOkClicked: {
                 if (page.backend)
-                    page.backend.cancelDownloads()
+                    page.backend.cancelAllTransfers()
                 cancelAllDialog.close()
             }
             onCancelClicked: cancelAllDialog.close()

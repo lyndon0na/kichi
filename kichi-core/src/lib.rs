@@ -19,6 +19,7 @@ pub mod share;
 pub mod subtitles;
 pub mod tasks;
 pub mod types;
+pub mod upload;
 
 pub use auth::{LoginOutcome, REFRESH_MARGIN};
 pub use config::Config;
@@ -34,3 +35,4 @@ pub use tasks::TaskStatus;
 pub use types::{
     EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TrashEntry,
 };
+pub use upload::{UploadProgress, UploadResult, UploadStage};

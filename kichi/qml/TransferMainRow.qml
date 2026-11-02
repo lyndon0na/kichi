@@ -12,6 +12,7 @@ ItemDelegate {
     required property string key
     required property string name
     required property string sourceId
+    required property string direction
     required property string phase
     required property string stateText
     required property bool running
@@ -56,14 +57,16 @@ ItemDelegate {
     readonly property bool interrupted: row.phase === "interrupted"
     readonly property bool pausing: row.phase === "pausing"
     readonly property bool paused: row.phase === "paused"
+    readonly property bool isUpload: row.direction === "upload"
     readonly property bool active: pagePhaseActive(row.phase)
     readonly property bool showProgress: row.active || row.phase === "done"
                                          || row.pausing || row.paused
                                          || row.currentProgress > 0
                                          || row.currentProgress < 0
     readonly property bool canPause: row.active && !row.pausing
-                                     && !row.child && !row.notice
-    readonly property bool canResume: row.paused && !row.child && !row.notice
+                                     && !row.child && !row.notice && !row.isUpload
+    readonly property bool canResume: row.paused && !row.child
+                                      && !row.notice && !row.isUpload
     readonly property bool canCancel: !row.notice
                                       && ((row.pausing || row.paused)
                                           ? !row.child : row.active)
@@ -471,9 +474,11 @@ ItemDelegate {
                     bottomPadding: 2
                     font.pixelSize: theme.fontMeta
                     showTextToolTip: false
-                    ToolTip.visible: row.interrupted && hovered
+                    ToolTip.visible: (row.interrupted || row.failed) && hovered
                     ToolTip.delay: 400
-                    ToolTip.text: qsTr("上次未完成，若下载目录未变会从断点续传")
+                    ToolTip.text: row.isUpload
+                                  ? qsTr("上传没有断点，重试会从头上传")
+                                  : qsTr("上次未完成，若下载目录未变会从断点续传")
                     onClicked: row.retryRequested(row.key)
                 }
 

@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use kichi_core::EntryKind;
 
 use super::queue::{self, Job, ResumeBatch};
+use super::transfers::TransferDirection;
 use super::transfers::{
     current_session, folder_download_path, has_done_child, is_folder_ledger, record_key,
     refresh_parent_state, row_from, with_records, with_trees, Transfer, TransferJob, TransferState,
@@ -24,6 +25,7 @@ use super::transfers::{
 pub(crate) struct CancelTarget {
     pub(crate) batch: u64,
     pub(crate) index: usize,
+    pub(crate) direction: TransferDirection,
     /// 顶层文件 / 文件夹总账行取消整批；子文件只取消自己。
     pub(crate) whole_batch: bool,
     pub(crate) name: String,
@@ -45,6 +47,7 @@ fn cancel_target_in(records: &[Transfer], key: &str) -> Option<CancelTarget> {
     Some(CancelTarget {
         batch: record.batch,
         index: record.index,
+        direction: record.job.direction,
         whole_batch: !record.child,
         name: record.display_name(),
         state: record.state,
@@ -370,6 +373,9 @@ pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
 
 fn path_for_in(records: &[Transfer], key: &str) -> Option<PathBuf> {
     let record = records.iter().find(|record| record_key(record) == key)?;
+    if record.job.is_upload() {
+        return None;
+    }
     if record.job.kind == EntryKind::Folder {
         if let Some(path) = &record.path {
             return Some(path.clone());

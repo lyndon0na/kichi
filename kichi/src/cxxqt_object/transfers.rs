@@ -20,7 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use cxx_qt_lib::QVariant;
-use kichi_core::{EntryKind, FileEntry};
+use kichi_core::{EntryKind, FileEntry, UploadStage};
 
 use super::transfers_rate::{NoteState, SpeedMeter};
 use super::transfers_view::live_map_at;
@@ -86,10 +86,18 @@ impl TransferState {
     }
 
     pub(crate) fn text(self) -> &'static str {
+        self.text_for(TransferDirection::Download)
+    }
+
+    /// 进行中的文案按方向区分，其余状态共用。
+    pub(crate) fn text_for(self, direction: TransferDirection) -> &'static str {
         match self {
             Self::Queued => "排队中",
             Self::Preparing => "准备中",
-            Self::Running => "下载中",
+            Self::Running => match direction {
+                TransferDirection::Download => "下载中",
+                TransferDirection::Upload => "上传中",
+            },
             Self::Pausing => "正在暂停",
             Self::Paused => "已暂停",
             Self::Done => "已完成",
@@ -114,6 +122,46 @@ impl TransferState {
     }
 }
 
+/// 记录属于本地下载还是云端上传。旧记录没有这个字段，读回时按下载处理。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TransferDirection {
+    #[default]
+    Download,
+    Upload,
+}
+
+impl TransferDirection {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::Upload => "upload",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Self {
+        match name {
+            "upload" => Self::Upload,
+            _ => Self::Download,
+        }
+    }
+}
+
+/// 上传记录额外需要的重试目标；下载记录为 `None`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UploadJob {
+    pub(crate) local_path: PathBuf,
+    pub(crate) parent_id: String,
+    pub(crate) parent_name: String,
+}
+
+/// 上传进行中阶段。只存在内存里，重启后的活动记录已经是「已中断」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UploadProgressState {
+    pub(crate) stage: UploadStage,
+    pub(crate) bytes: u64,
+    pub(crate) total: u64,
+}
+
 /// 传输记录的重试种子：一行要下载什么、写到哪里。
 #[derive(Debug, Clone)]
 pub(crate) struct TransferJob {
@@ -130,6 +178,8 @@ pub(crate) struct TransferJob {
     pub(crate) sub_dir: Vec<String>,
     /// 入队时的下载目录快照
     pub(crate) dir: PathBuf,
+    pub(crate) direction: TransferDirection,
+    pub(crate) upload: Option<UploadJob>,
 }
 
 impl TransferJob {
@@ -143,6 +193,8 @@ impl TransferJob {
             audit_flagged: entry.audit_flagged,
             sub_dir: Vec::new(),
             dir,
+            direction: TransferDirection::Download,
+            upload: None,
         }
     }
 
@@ -153,6 +205,10 @@ impl TransferJob {
         } else {
             format!("{}/{}", self.sub_dir.join("/"), self.name)
         }
+    }
+
+    pub(crate) fn is_upload(&self) -> bool {
+        self.direction == TransferDirection::Upload
     }
 }
 
@@ -189,6 +245,8 @@ pub(crate) struct Transfer {
     pub(crate) session: u64,
     /// 正常退出时仍在排队 / 准备 / 下载，下一轮恢复登录态后自动续跑
     pub(crate) auto_resume: bool,
+    /// 上传阶段（只影响实时进度显示，不落盘）
+    pub(crate) upload_progress: Option<UploadProgressState>,
 }
 
 impl Transfer {
@@ -383,6 +441,7 @@ pub(super) fn restore_row(
         created_unix,
         session,
         auto_resume,
+        upload_progress: None,
     }
 }
 
@@ -461,6 +520,7 @@ fn mark_auto_resume_in(records: &mut [Transfer]) {
         .iter()
         .filter(|record| {
             !record.child
+                && !record.job.is_upload()
                 && matches!(
                     record.state,
                     TransferState::Queued | TransferState::Preparing | TransferState::Running
@@ -488,6 +548,28 @@ pub(crate) fn progress(batch: u64, index: usize, bytes: u64, total: Option<u64>)
     with_records(|records| progress_in(records, batch, index, bytes, total));
 }
 
+/// 上传阶段与进度。进度条按当前阶段自己的总量计算；上传阶段的总量就是文件大小。
+pub(crate) fn upload_progress(batch: u64, index: usize, progress: UploadProgressState) {
+    with_records(|records| {
+        if let Some(record) = find_file(records, batch, index) {
+            if record.state != TransferState::Running || !record.job.is_upload() {
+                return;
+            }
+            let old_stage = record.upload_progress.map(|old| old.stage);
+            if progress.stage == UploadStage::Uploading && old_stage != Some(UploadStage::Uploading)
+            {
+                record.speed.begin(Instant::now());
+            }
+            record.upload_progress = Some(progress);
+            record.bytes = progress.bytes;
+            record.total = (record.job.size > 0).then_some(record.job.size);
+            if progress.stage == UploadStage::Uploading {
+                record.speed.observe(Instant::now(), progress.bytes);
+            }
+        }
+    });
+}
+
 /// 下载中的状态提示（续传 / 重试原因）；只写进行中行的 detail。
 ///
 /// 走 `post_live()` 下发（见 `queue_worker`）：它是下载中的高频说明，
@@ -501,17 +583,33 @@ pub(crate) fn finish_ok(batch: u64, index: usize, path: &Path) {
     with_records(|records| finish_ok_in(records, batch, index, path));
 }
 
+/// 上传成功：记录服务端最终名字，不写本地路径（因此不提供「打开位置」）。
+pub(crate) fn finish_upload_ok(batch: u64, index: usize, result: &kichi_core::UploadResult) {
+    with_records(|records| {
+        if let Some(record) = find_file(records, batch, index) {
+            record.state = TransferState::Done;
+            record.bytes = record.job.size;
+            record.total = Some(record.job.size);
+            record.detail.clear();
+            record.path = None;
+            record.job.name = result.name.clone();
+            record.upload_progress = Some(UploadProgressState {
+                stage: UploadStage::Finalizing,
+                bytes: record.job.size,
+                total: record.job.size,
+            });
+        }
+    });
+}
+
 /// 下载失败：记下原因。
 pub(crate) fn finish_err(batch: u64, index: usize, reason: &str) {
     with_records(|records| finish_err_in(records, batch, index, reason));
 }
 
-/// 把进行中的记录标为已取消（登出 / 用户点取消时用）。
-///
-/// 用户点取消时 `reason` 为空（状态文字已说明）；线程起不来时用它附带原因。
-/// 取消的作用范围由调度器决定（`queue::cancel_all`），这里只负责改状态。
-pub(crate) fn cancel_active(reason: &str) {
-    with_records(|records| cancel_active_in(records, None, reason));
+/// 只取消一个方向的活动记录（下载页的「取消全部」不能顺手取消上传）。
+pub(crate) fn cancel_active_for(direction: TransferDirection, reason: &str) {
+    with_records(|records| cancel_active_for_in(records, direction, reason));
 }
 
 /// 只把某一批里进行中的记录标为已取消（后台线程收尾用）。
@@ -607,28 +705,24 @@ fn cancel_file_in(records: &mut [Transfer], batch: u64, index: usize) {
     }
 }
 
-/// 登出时把还在排队的记录标成「已中断」：这一轮下载已经作废，不会再有结果。
-///
-/// **不动正在跑的那一批的状态语义**：`queue::reset()` 只置 `abandon`，旧线程退出
-/// 时 `post_finished` 发现 epoch 变了就不再改记录（`ADR 0014`），所以这里可以把
-/// 进行中的行直接落成「已中断」，界面不会一直挂着假的「下载中」。
-pub(crate) fn interrupt_active() {
-    with_records(|records| interrupt_active_in(records));
-}
-
-fn interrupt_active_in(records: &mut [Transfer]) {
-    for record in records.iter_mut() {
-        if matches!(
-            record.state,
-            TransferState::Queued
-                | TransferState::Preparing
-                | TransferState::Running
-                | TransferState::Pausing
-        ) {
-            record.state = TransferState::Interrupted;
-            record.detail.clear();
+pub(crate) fn interrupt_active_for(direction: TransferDirection) {
+    with_records(|records| {
+        for record in records
+            .iter_mut()
+            .filter(|record| record.job.direction == direction)
+        {
+            if matches!(
+                record.state,
+                TransferState::Queued
+                    | TransferState::Preparing
+                    | TransferState::Running
+                    | TransferState::Pausing
+            ) {
+                record.state = TransferState::Interrupted;
+                record.detail.clear();
+            }
         }
-    }
+    });
 }
 
 /// 「清空已完成记录」：清掉整张记录表里所有「所有行都已结束」的批次。
@@ -742,6 +836,7 @@ pub(super) fn row_from(
         created_unix,
         session,
         auto_resume: false,
+        upload_progress: None,
     }
 }
 
@@ -1144,6 +1239,18 @@ fn cancel_active_in(records: &mut [Transfer], batch: Option<u64>, reason: &str) 
         if batch.is_some_and(|batch| record.batch != batch) {
             continue;
         }
+        if record.state.is_cancellable() {
+            record.state = TransferState::Cancelled;
+            record.detail = reason.to_owned();
+        }
+    }
+}
+
+fn cancel_active_for_in(records: &mut [Transfer], direction: TransferDirection, reason: &str) {
+    for record in records
+        .iter_mut()
+        .filter(|record| record.job.direction == direction)
+    {
         if record.state.is_cancellable() {
             record.state = TransferState::Cancelled;
             record.detail = reason.to_owned();

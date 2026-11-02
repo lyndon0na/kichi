@@ -25,6 +25,7 @@ pub mod subtitles;
 mod tasks;
 mod throttle;
 pub mod thumbnail_cache;
+pub mod upload;
 
 mod client_cache;
 mod refresh;

@@ -24,11 +24,42 @@ pub(crate) const MAX_ROWS: usize = 500;
 pub(crate) type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 pub(crate) fn percent_of(record: &Transfer) -> Option<i32> {
+    if record.job.is_upload() && record.state == TransferState::Running {
+        if let Some(progress) = record.upload_progress {
+            return (progress.total > 0).then(|| {
+                ((progress.bytes as f64 / progress.total as f64) * 100.0).clamp(0.0, 100.0) as i32
+            });
+        }
+    }
     match record.total {
         Some(total) if total > 0 => {
             Some(((record.bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as i32)
         }
         _ => None,
+    }
+}
+
+fn upload_stage_text(record: &Transfer) -> &'static str {
+    match record.upload_progress.map(|progress| progress.stage) {
+        Some(kichi_core::UploadStage::Preparing) | None => "准备上传",
+        Some(kichi_core::UploadStage::Hashing) => "计算校验",
+        Some(kichi_core::UploadStage::Uploading) => "上传中",
+        Some(kichi_core::UploadStage::Finalizing) => "服务器处理",
+    }
+}
+
+fn upload_running_detail(record: &Transfer) -> String {
+    let target = record
+        .job
+        .upload
+        .as_ref()
+        .map(|upload| upload.parent_name.as_str())
+        .unwrap_or("云端目录");
+    match record.upload_progress.map(|progress| progress.stage) {
+        Some(kichi_core::UploadStage::Preparing) | None => "正在准备上传…".to_owned(),
+        Some(kichi_core::UploadStage::Hashing) => "正在计算文件校验值…".to_owned(),
+        Some(kichi_core::UploadStage::Uploading) => format!("正在上传到 {target}"),
+        Some(kichi_core::UploadStage::Finalizing) => "上传完成，等待服务器处理…".to_owned(),
     }
 }
 
@@ -262,14 +293,27 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     } else {
         String::new()
     };
-    let size_text = match record.state {
-        TransferState::Running => match record.total {
+    let size_text = match (record.state, record.upload_progress) {
+        (TransferState::Running, Some(progress)) if record.job.is_upload() => {
+            if progress.total > 0 {
+                format!(
+                    "{} / {}",
+                    format_size(progress.bytes),
+                    format_size(progress.total)
+                )
+            } else {
+                format_size(progress.bytes)
+            }
+        }
+        (TransferState::Running, _) => match record.total {
             Some(total) => format!("{} / {}", format_size(record.bytes), format_size(total)),
             None => format_size(record.bytes),
         },
-        TransferState::Done => format_size(record.total.unwrap_or(record.bytes).max(record.bytes)),
+        (TransferState::Done, _) => {
+            format_size(record.total.unwrap_or(record.bytes).max(record.bytes))
+        }
         // 准备中还没读目录，整批多大都不知道
-        TransferState::Preparing => "—".to_owned(),
+        (TransferState::Preparing, _) => "—".to_owned(),
         _ => record
             .total
             .map(format_size)
@@ -278,13 +322,23 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     };
     // 完成行的说明由落盘路径派生；准备中 / 已中断的说明行直接由状态决定
     let detail = match record.state {
+        TransferState::Running if record.job.is_upload() => upload_running_detail(record),
         TransferState::Preparing => "正在读取目录结构…".to_owned(),
+        TransferState::Done if record.job.is_upload() => record
+            .job
+            .upload
+            .as_ref()
+            .map(|upload| format!("已上传到 {}", upload.parent_name))
+            .unwrap_or_else(|| "已上传".to_owned()),
         TransferState::Done => record
             .path
             .as_ref()
             .map(|path| format!("保存到 {}", path.display()))
             .unwrap_or_default(),
         // 已中断：说明由 QML 的「重试」行补断点文案，这里给状态说明
+        TransferState::Interrupted if record.job.is_upload() => {
+            "上次退出时上传未完成，重试会从头开始".to_owned()
+        }
         TransferState::Interrupted if record.detail.is_empty() => "上次退出时未完成".to_owned(),
         _ => record.detail.clone(),
     };
@@ -298,8 +352,17 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     insert(&mut map, "key", text(&record_key(record)));
     insert(&mut map, "name", text(&name));
     insert(&mut map, "sourceId", text(&record.source_id));
+    insert(&mut map, "direction", text(record.job.direction.name()));
     insert(&mut map, "state", text(record.state.name()));
-    insert(&mut map, "stateText", text(record.state.text()));
+    insert(
+        &mut map,
+        "stateText",
+        text(if running && record.job.is_upload() {
+            upload_stage_text(record)
+        } else {
+            record.state.text_for(record.job.direction)
+        }),
+    );
     insert(&mut map, "running", QVariant::from(&running));
     insert(&mut map, "progress", QVariant::from(&progress));
     insert(&mut map, "progressText", text(&progress_text));
@@ -353,6 +416,7 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
     insert(&mut map, "key", text(&record_key(record)));
     insert(&mut map, "name", text(&record.job.name));
     insert(&mut map, "sourceId", text(&record.source_id));
+    insert(&mut map, "direction", text(record.job.direction.name()));
     insert(&mut map, "state", text(record.state.name()));
     insert(&mut map, "stateText", text(&state_text));
     insert(&mut map, "running", QVariant::from(&running));
@@ -419,9 +483,17 @@ pub(crate) fn live_map_at(record: &Transfer, now: Instant) -> QVariantMap {
     let progress_text = percent
         .map(|value| format!("{value}%"))
         .unwrap_or_else(|| format_size(record.bytes));
-    let size_text = match record.total {
-        Some(total) => format!("{} / {}", format_size(record.bytes), format_size(total)),
-        None => format_size(record.bytes),
+    let size_text = match (record.job.is_upload(), record.upload_progress) {
+        (true, Some(progress)) if progress.total > 0 => format!(
+            "{} / {}",
+            format_size(progress.bytes),
+            format_size(progress.total)
+        ),
+        (true, Some(progress)) => format_size(progress.bytes),
+        _ => match record.total {
+            Some(total) => format!("{} / {}", format_size(record.bytes), format_size(total)),
+            None => format_size(record.bytes),
+        },
     };
     let rate = file_rate_info(record, now);
 
@@ -469,6 +541,7 @@ fn notice(key: &str, message: &str) -> QVariantMap {
     insert(&mut map, "key", text(key));
     insert(&mut map, "name", text(message));
     insert(&mut map, "sourceId", text(""));
+    insert(&mut map, "direction", text(""));
     insert(&mut map, "state", text("notice"));
     insert(&mut map, "stateText", text(""));
     insert(&mut map, "running", QVariant::from(&false));

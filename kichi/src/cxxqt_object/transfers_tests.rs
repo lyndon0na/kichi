@@ -26,6 +26,8 @@ fn job(name: &str) -> TransferJob {
         audit_flagged: false,
         sub_dir: Vec::new(),
         dir: PathBuf::from("/tmp"),
+        direction: TransferDirection::Download,
+        upload: None,
     }
 }
 
@@ -33,6 +35,24 @@ fn folder_job(name: &str) -> TransferJob {
     TransferJob {
         kind: EntryKind::Folder,
         ..job(name)
+    }
+}
+
+fn upload_job(name: &str, size: u64) -> TransferJob {
+    TransferJob {
+        id: format!("upload:{name}"),
+        name: name.to_owned(),
+        kind: EntryKind::File,
+        size,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me").join(name),
+            parent_id: "cloud-folder".to_owned(),
+            parent_name: "动画".to_owned(),
+        }),
     }
 }
 
@@ -231,6 +251,45 @@ fn cancel_marks_every_active_row() {
     assert_eq!(records[0].state, TransferState::Done, "已完成的不动");
     assert_eq!(records[1].state, TransferState::Cancelled);
     assert_eq!(records[2].state, TransferState::Cancelled);
+}
+
+#[test]
+fn cancelling_one_direction_leaves_the_other_direction_untouched() {
+    let mut records = Vec::new();
+    records.push(row_from(
+        1,
+        0,
+        "download",
+        &job("下载.mkv"),
+        1_790_000_000,
+        1,
+    ));
+    records.push(row_from(
+        2,
+        0,
+        "upload:/home/me/上传.mkv",
+        &upload_job("上传.mkv", 2048),
+        1_790_000_000,
+        1,
+    ));
+    set(&mut records, 1, 0, TransferState::Queued);
+    set(&mut records, 2, 0, TransferState::Running);
+
+    cancel_active_for_in(&mut records, TransferDirection::Upload, "只取消上传");
+    assert_eq!(
+        records[0].state,
+        TransferState::Queued,
+        "下载不能被上传取消"
+    );
+    assert_eq!(records[1].state, TransferState::Cancelled, "上传应被取消");
+
+    set(&mut records, 1, 0, TransferState::Running);
+    cancel_active_for_in(&mut records, TransferDirection::Download, "只取消下载");
+    assert_eq!(records[0].state, TransferState::Cancelled, "下载应被取消");
+    assert_eq!(
+        records[1].detail, "只取消上传",
+        "后续取消下载不能覆盖上传记录"
+    );
 }
 
 #[test]
@@ -839,6 +898,55 @@ fn record_map_exposes_source_id_for_locating() {
 }
 
 #[test]
+fn upload_record_maps_stage_target_and_final_name() {
+    let mut record = row_from(
+        8,
+        0,
+        "upload:/home/me/电影.mkv",
+        &upload_job("电影.mkv", 100),
+        1_790_000_000,
+        1,
+    );
+    assert!(begin_record(&mut record, Instant::now()));
+
+    for (stage, state_text, detail) in [
+        (UploadStage::Preparing, "准备上传", "正在准备上传…"),
+        (UploadStage::Hashing, "计算校验", "正在计算文件校验值…"),
+        (UploadStage::Uploading, "上传中", "正在上传到 动画"),
+        (
+            UploadStage::Finalizing,
+            "服务器处理",
+            "上传完成，等待服务器处理…",
+        ),
+    ] {
+        record.upload_progress = Some(UploadProgressState {
+            stage,
+            bytes: 50,
+            total: 100,
+        });
+        record.bytes = 50;
+        let map = record_map(&record, &[]);
+        assert_eq!(text_of(&map, "direction"), "upload");
+        assert_eq!(text_of(&map, "stateText"), state_text);
+        assert_eq!(text_of(&map, "detail"), detail);
+        assert_eq!(text_of(&map, "sizeText"), "50 B / 100 B");
+        assert_eq!(text_of(&map, "path"), "");
+    }
+
+    record.state = TransferState::Done;
+    record.job.name = "电影 (1).mkv".to_owned();
+    record.upload_progress = Some(UploadProgressState {
+        stage: UploadStage::Finalizing,
+        bytes: 100,
+        total: 100,
+    });
+    let map = record_map(&record, &[]);
+    assert_eq!(text_of(&map, "name"), "电影 (1).mkv");
+    assert_eq!(text_of(&map, "detail"), "已上传到 动画");
+    assert_eq!(text_of(&map, "path"), "", "上传成功没有本地位置可打开");
+}
+
+#[test]
 fn done_row_detail_comes_from_path() {
     let mut record = row_from(7, 0, "file-1", &job("a.mkv"), 1_790_000_000, 1);
     record.path = Some(PathBuf::from("/home/me/Downloads/a.mkv"));
@@ -1027,7 +1135,7 @@ fn failed_empty_batch_has_no_path() {
     assert_eq!(int_of(&map, "progress"), 0);
 }
 
-// —— 已中断 / 清空全部（2026-10-28 下载历史落盘）——
+// —— 已中断 / 清空全部（2026-10-28 传输历史落盘）——
 
 #[test]
 fn interrupted_state_text_and_name() {

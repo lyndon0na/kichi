@@ -104,6 +104,7 @@ TestCase {
                 key: "transfer"
                 name: "传输任务里同样很长的文件名用于确认整行鼠标区域不会挡住提示.mkv"
                 sourceId: "source"
+                direction: "download"
                 phase: "running"
                 stateText: "下载中"
                 running: true

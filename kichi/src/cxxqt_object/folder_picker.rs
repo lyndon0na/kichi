@@ -36,9 +36,37 @@ pub(crate) fn choose(start: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// 打开系统文件选择器，允许多选普通文件。
+///
+/// 返回空表表示用户取消。Portal 不保证调用方没有传入目录选择模式，因此
+/// 真正的“只接受普通文件”由上传入队前的元数据检查负责。
+pub(crate) fn choose_files(start: &Path) -> Result<Vec<PathBuf>, String> {
+    let request = SelectedFiles::open_file()
+        .title("选择要上传的文件")
+        .accept_label("上传这些文件")
+        .multiple(true)
+        .directory(false)
+        .modal(true)
+        .current_folder(start)
+        .map_err(|err| format!("无法设置文件选择器的起始位置：{err}"))?;
+
+    let result = ashpd::zbus::block_on(async { request.send().await?.response() });
+    match result {
+        Ok(files) => files.uris().iter().map(path_from_uri).collect(),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Ok(Vec::new()),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Other)) => {
+            Err("系统文件选择器没有返回结果".to_owned())
+        }
+        Err(ashpd::Error::PortalNotFound(_)) => Err(
+            "系统未提供文件选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+        ),
+        Err(err) => Err(format!("无法打开系统文件选择器：{err}")),
+    }
+}
+
 fn path_from_uri(uri: &Url) -> Result<PathBuf, String> {
     if uri.scheme() != "file" {
-        return Err(format!("系统选择器返回了非本地目录：{uri}"));
+        return Err(format!("系统选择器返回了非本地路径：{uri}"));
     }
     uri.to_file_path()
         .map_err(|_| format!("无法把系统选择器返回的地址转换为本地路径：{uri}"))

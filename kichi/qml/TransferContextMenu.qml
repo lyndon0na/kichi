@@ -11,6 +11,7 @@ Item {
     property var backend: null
     property string targetKey: ""
     property string targetName: ""
+    property string targetDirection: "download"
     property bool targetIsFolder: false
     property bool targetIsChild: false
     property int targetChildCount: 0
@@ -58,11 +59,14 @@ Item {
 
         root.targetKey = String(rowData.key || "")
         root.targetName = String(rowData.name || "")
+        root.targetDirection = String(rowData.direction || "download")
         root.targetIsFolder = rowData.folder === true
         root.targetIsChild = rowData.rowKind === "child"
         root.targetChildCount = Number(rowData.childCount || 0)
         root.targetCanPause = active && !pausing && !root.targetIsChild
+                              && root.targetDirection !== "upload"
         root.targetCanResume = paused && !root.targetIsChild
+                               && root.targetDirection !== "upload"
         root.targetCanCancel = (pausing || paused) ? !root.targetIsChild : active
         root.targetCanRetry = (failed || interrupted)
                               && (!root.targetIsFolder || root.targetChildCount === 0)

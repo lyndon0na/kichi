@@ -31,7 +31,7 @@ pub fn partials_path() -> PathBuf {
     config_dir().join("partials.json")
 }
 
-/// 传输任务记录（下载历史）位置。可用 `KICHI_TRANSFERS_FILE` 覆盖。
+/// 传输任务记录位置。可用 `KICHI_TRANSFERS_FILE` 覆盖。
 pub fn transfers_path() -> PathBuf {
     if let Some(path) = std::env::var_os("KICHI_TRANSFERS_FILE") {
         return PathBuf::from(path);

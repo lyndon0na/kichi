@@ -186,6 +186,12 @@ pub(crate) fn file_rate_info(record: &Transfer, now: Instant) -> RateInfo {
     if record.state != TransferState::Running {
         return RateInfo::default();
     }
+    if record.job.is_upload()
+        && record.upload_progress.map(|progress| progress.stage)
+            != Some(kichi_core::UploadStage::Uploading)
+    {
+        return RateInfo::default();
+    }
     RateInfo {
         rate: running_rate_text(&record.speed, remaining_bytes(record), now),
         note: note_text(record, now),

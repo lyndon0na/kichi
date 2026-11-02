@@ -1,0 +1,1513 @@
+//! 上传：CID / GCID、上传票据、S3 SigV4、单段 / 分片上传与服务端任务确认。
+//!
+//! 上传票据里的临时 access key、secret 和 security token 只活在本模块调用栈内，
+//! 不进入日志、错误文案或任何持久化结构。
+
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use chrono::Utc;
+use hmac::{Hmac, KeyInit, Mac};
+use quick_xml::events::Event;
+use quick_xml::Reader;
+use reqwest::blocking::{Body, Client};
+use reqwest::header::{CONTENT_TYPE, ETAG, HOST};
+use reqwest::{Method, StatusCode, Url};
+use serde::Deserialize;
+use serde_json::json;
+use sha1::{Digest as Sha1Digest, Sha1};
+use sha2::{Digest as Sha256Digest, Sha256};
+
+use crate::drive::DriveClient;
+use crate::http::Body as ApiBody;
+use crate::{Config, Error};
+
+const SMALL_FILE_LIMIT: u64 = 5 * 1024 * 1024;
+const MAX_MULTIPART_PARTS: u64 = 10_000;
+const CID_SAMPLE_BYTES: u64 = 20 * 1024;
+const CID_FULL_FILE_LIMIT: u64 = 0xF000;
+const TASK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const TASK_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_ERROR_BODY: u64 = 64 * 1024;
+
+/// 上传阶段。准备阶段也可能包含完整的 GCID 回退计算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadStage {
+    Preparing,
+    Hashing,
+    Uploading,
+    Finalizing,
+}
+
+/// 一次上传进度。`total` 是当前阶段的总字节数（未知时为 0）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadProgress {
+    pub stage: UploadStage,
+    pub bytes: u64,
+    pub total: u64,
+}
+
+/// 上传成功后的服务端信息。文件名可能被官方自动追加编号。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadResult {
+    pub file_id: String,
+    pub name: String,
+    pub bytes_sent: u64,
+}
+
+impl DriveClient {
+    /// 把本地普通文件上传到 `parent_id`（空串 = 根目录）。
+    ///
+    /// `cancelled` 会在本地哈希、网络读写和任务轮询之间检查。用户取消或请求
+    /// 失败时，会尽力删除临时文件记录、服务端任务和未完成分片。
+    pub fn upload_file<C, P>(
+        &self,
+        path: &Path,
+        parent_id: &str,
+        cancelled: C,
+        mut progress: P,
+    ) -> Result<UploadResult, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+        P: FnMut(UploadProgress),
+    {
+        let metadata = std::fs::metadata(path)
+            .map_err(|err| Error::Other(format!("无法读取本地文件：{err}")))?;
+        if !metadata.is_file() {
+            return Err(Error::InvalidInput("只能上传普通文件".to_owned()));
+        }
+        let size = metadata.len();
+        let raw_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::InvalidInput("文件名不是有效的 UTF-8".to_owned()))?;
+        if raw_name.trim().is_empty() {
+            return Err(Error::InvalidInput("文件名不能为空".to_owned()));
+        }
+        let name = raw_name.to_owned();
+        validate_name(&name)?;
+
+        progress(UploadProgress {
+            stage: UploadStage::Preparing,
+            bytes: 0,
+            total: size,
+        });
+        let gcid = self.gcid_for_file(path, size, &cancelled, &mut progress)?;
+        ensure_not_cancelled(&cancelled)?;
+        ensure_file_size(path, size)?;
+
+        let ticket_body = json!({
+            "kind": "drive#file",
+            "name": name,
+            "parent_id": parent_id.trim(),
+            "folder_type": "NORMAL",
+            "size": size,
+            "hash": gcid.to_ascii_uppercase(),
+            "upload_type": "UPLOAD_TYPE_RESUMABLE",
+            "resumable": {"provider": "PROVIDER_ALIYUN"}
+        });
+        progress(UploadProgress {
+            stage: UploadStage::Preparing,
+            bytes: 0,
+            total: size,
+        });
+        let ticket: UploadTicket = self.request(
+            Method::POST,
+            &Config::files_url(self.config()),
+            &[],
+            ApiBody::Json(&ticket_body),
+        )?;
+        let mut cleanup = UploadCleanup {
+            file_id: ticket.file.id.trim().to_owned(),
+            task_id: ticket
+                .task
+                .as_ref()
+                .map(|task| task.id.clone())
+                .unwrap_or_default(),
+        };
+        if cleanup.file_id.is_empty() {
+            self.cleanup_upload_residue(&cleanup);
+            return Err(Error::ApiChanged("上传票据缺少文件 id".to_owned()));
+        }
+
+        if ticket.file.phase == "PHASE_TYPE_COMPLETE" {
+            return Ok(UploadResult {
+                file_id: ticket.file.id,
+                name: non_empty_name(ticket.file.name).unwrap_or(name),
+                bytes_sent: 0,
+            });
+        }
+
+        let credentials = match ticket.resumable.params {
+            Some(credentials) => {
+                if let Err(err) = credentials.validate() {
+                    self.cleanup_upload_residue(&cleanup);
+                    return Err(err);
+                }
+                credentials
+            }
+            None => {
+                self.cleanup_upload_residue(&cleanup);
+                return Err(Error::ApiChanged("上传票据缺少 S3 临时凭据".to_owned()));
+            }
+        };
+        let bytes_sent =
+            match self.transfer_to_s3(path, size, &credentials, &cancelled, &mut progress) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    self.cleanup_upload_residue(&cleanup);
+                    return Err(err);
+                }
+            };
+        if let Err(err) = ensure_file_size(path, size) {
+            self.cleanup_upload_residue(&cleanup);
+            return Err(err);
+        }
+
+        progress(UploadProgress {
+            stage: UploadStage::Finalizing,
+            bytes: size,
+            total: size,
+        });
+        let task_id = ticket
+            .task
+            .as_ref()
+            .map(|task| task.id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        let mut final_file_id = cleanup.file_id.clone();
+        let mut final_name = non_empty_name(ticket.file.name).unwrap_or_else(|| name.clone());
+        if let Some(task_id) = task_id {
+            cleanup.task_id = task_id.clone();
+            match self.wait_upload_task(&task_id, &cancelled) {
+                Ok(task) => {
+                    if !task.file_id.trim().is_empty() {
+                        final_file_id = task.file_id;
+                    }
+                    if let Some(name) = non_empty_name(task.file_name) {
+                        final_name = name;
+                    }
+                }
+                Err(err) => {
+                    self.cleanup_upload_residue(&cleanup);
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(UploadResult {
+            file_id: final_file_id,
+            name: final_name,
+            bytes_sent,
+        })
+    }
+
+    fn gcid_for_file<C, P>(
+        &self,
+        path: &Path,
+        size: u64,
+        cancelled: &C,
+        progress: &mut P,
+    ) -> Result<String, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+        P: FnMut(UploadProgress),
+    {
+        let sampled_total = if size <= CID_FULL_FILE_LIMIT {
+            size
+        } else {
+            CID_SAMPLE_BYTES * 3
+        };
+        progress(UploadProgress {
+            stage: UploadStage::Hashing,
+            bytes: 0,
+            total: sampled_total,
+        });
+        let cid = cid_for_file(path, size, cancelled, progress)?;
+        ensure_not_cancelled(cancelled)?;
+        if size == 0 {
+            return Ok(cid);
+        }
+
+        let query = vec![
+            ("cid".to_owned(), cid.clone()),
+            ("file_size".to_owned(), size.to_string()),
+        ];
+        match self.get_with_query::<CidResponse>(&self.config().resource_cid_url(), &query) {
+            Ok(response) => {
+                let gcid = response.gcid.trim();
+                if !gcid.is_empty() {
+                    return Ok(gcid.to_owned());
+                }
+            }
+            Err(err) if is_hard_auth_error(&err) => return Err(err),
+            Err(_) => {}
+        }
+        full_gcid_for_file(path, size, cancelled, progress)
+    }
+
+    fn transfer_to_s3<C, P>(
+        &self,
+        path: &Path,
+        size: u64,
+        credentials: &UploadCredentials,
+        cancelled: &C,
+        progress: &mut P,
+    ) -> Result<u64, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+        P: FnMut(UploadProgress),
+    {
+        ensure_file_size(path, size)?;
+        let target = S3Target::new(self.config(), credentials)?;
+        if size <= SMALL_FILE_LIMIT {
+            let mut file =
+                File::open(path).map_err(|err| Error::Other(format!("无法打开本地文件：{err}")))?;
+            progress(UploadProgress {
+                stage: UploadStage::Hashing,
+                bytes: 0,
+                total: size,
+            });
+            let digest = sha256_hex(&mut file, cancelled, progress, size)?;
+            let payload_hash = hex_lower(&digest);
+            file.seek(SeekFrom::Start(0))
+                .map_err(|err| Error::Other(format!("无法重新定位本地文件：{err}")))?;
+            progress(UploadProgress {
+                stage: UploadStage::Uploading,
+                bytes: 0,
+                total: size,
+            });
+            ensure_not_cancelled(cancelled)?;
+            let body = CancelReader::new(file, cancelled.clone());
+            target.put_object(
+                size,
+                &payload_hash,
+                body,
+                "application/octet-stream",
+                cancelled,
+            )?;
+            progress(UploadProgress {
+                stage: UploadStage::Uploading,
+                bytes: size,
+                total: size,
+            });
+            return Ok(size);
+        }
+
+        let part_size = multipart_part_size(size);
+        let upload_id = target.create_multipart(cancelled)?;
+        let result = (|| {
+            let mut parts = Vec::new();
+            let part_count = size.div_ceil(part_size);
+            let mut sent = 0u64;
+            for part_number in 1..=part_count {
+                ensure_not_cancelled(cancelled)?;
+                ensure_file_size(path, size)?;
+                let offset = (part_number - 1) * part_size;
+                let length = part_size.min(size - offset);
+                let bytes = read_exact_range(path, offset, length, cancelled)?;
+                let digest = Sha256::digest(&bytes);
+                let etag = target.upload_part(
+                    &upload_id,
+                    part_number,
+                    length,
+                    &hex_lower(&digest),
+                    bytes,
+                    cancelled,
+                )?;
+                parts.push(CompletedPart {
+                    number: part_number,
+                    etag,
+                });
+                sent += length;
+                progress(UploadProgress {
+                    stage: UploadStage::Uploading,
+                    bytes: sent,
+                    total: size,
+                });
+            }
+            ensure_file_size(path, size)?;
+            target.complete_multipart(&upload_id, &parts, cancelled)?;
+            Ok(sent)
+        })();
+        if result.is_err() {
+            let _ = target.abort_multipart(&upload_id);
+        }
+        result
+    }
+
+    fn wait_upload_task<C>(&self, task_id: &str, cancelled: &C) -> Result<TaskDto, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        let started = Instant::now();
+        loop {
+            ensure_not_cancelled(cancelled)?;
+            let task: TaskDto = self.get(&Config::task_url(self.config(), task_id))?;
+            match task.phase.as_str() {
+                "PHASE_TYPE_COMPLETE" => return Ok(task),
+                "PHASE_TYPE_ERROR" => {
+                    let reason =
+                        non_empty(task.message).unwrap_or_else(|| "服务端未能完成上传".to_owned());
+                    return Err(Error::Other(reason));
+                }
+                _ => {}
+            }
+            if started.elapsed() >= TASK_TIMEOUT {
+                return Err(Error::Other(
+                    "上传已提交，但服务端任务长时间没有完成".to_owned(),
+                ));
+            }
+            sleep_cancellable(TASK_POLL_INTERVAL, cancelled)?;
+        }
+    }
+
+    fn cleanup_upload_residue(&self, cleanup: &UploadCleanup) {
+        if !cleanup.file_id.trim().is_empty() {
+            let body = json!({"ids": [cleanup.file_id]});
+            let _ = self.request::<serde_json::Value>(
+                Method::POST,
+                &Config::file_action_url(self.config(), "batchDelete"),
+                &[],
+                ApiBody::Json(&body),
+            );
+        }
+        if !cleanup.task_id.trim().is_empty() {
+            let query = vec![
+                ("delete_files".to_owned(), "false".to_owned()),
+                ("task_ids".to_owned(), cleanup.task_id.clone()),
+            ];
+            let _ = self.request_no_response(Method::DELETE, &self.config().tasks_url(), &query);
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CidResponse {
+    #[serde(default)]
+    gcid: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct UploadTicket {
+    #[serde(default)]
+    file: TicketFile,
+    #[serde(default)]
+    resumable: TicketResumable,
+    #[serde(default)]
+    task: Option<TaskDto>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TicketFile {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    phase: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TicketResumable {
+    #[serde(default)]
+    params: Option<UploadCredentials>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct UploadCredentials {
+    #[serde(default)]
+    access_key_id: String,
+    #[serde(default)]
+    access_key_secret: String,
+    #[serde(default)]
+    security_token: String,
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    endpoint: String,
+    #[serde(default)]
+    expiration: String,
+}
+
+impl std::fmt::Debug for UploadCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UploadCredentials")
+            .field("bucket", &self.bucket)
+            .field("key", &self.key)
+            .field("endpoint", &self.endpoint)
+            .field("expiration", &self.expiration)
+            .field("access_key_id", &"<redacted>")
+            .field("access_key_secret", &"<redacted>")
+            .field("security_token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl UploadCredentials {
+    fn validate(&self) -> Result<(), Error> {
+        let required = [
+            ("access_key_id", self.access_key_id.trim()),
+            ("access_key_secret", self.access_key_secret.trim()),
+            ("bucket", self.bucket.trim()),
+            ("key", self.key.trim()),
+        ];
+        if required.iter().any(|(_, value)| value.is_empty()) {
+            return Err(Error::ApiChanged(
+                "上传票据里的 S3 临时凭据不完整".to_owned(),
+            ));
+        }
+        if !valid_bucket(self.bucket.trim()) {
+            return Err(Error::ApiChanged("上传票据里的 bucket 无效".to_owned()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TaskDto {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    file_id: String,
+    #[serde(default)]
+    file_name: String,
+}
+
+#[derive(Debug)]
+struct UploadCleanup {
+    file_id: String,
+    task_id: String,
+}
+
+#[derive(Debug)]
+struct CompletedPart {
+    number: u64,
+    etag: String,
+}
+
+struct S3Target {
+    client: Client,
+    credentials: UploadCredentials,
+    host: String,
+    path: String,
+}
+
+impl S3Target {
+    fn new(config: &Config, credentials: &UploadCredentials) -> Result<Self, Error> {
+        let base = Url::parse(&config.upload_base)
+            .map_err(|_| Error::InvalidInput("上传基地址无效".to_owned()))?;
+        let base_host = base
+            .host_str()
+            .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+            .ok_or_else(|| Error::InvalidInput("上传基地址缺少主机名".to_owned()))?;
+        if base.scheme() != "https"
+            || !(base_host == "mypikpak.com" || base_host.ends_with(".mypikpak.com"))
+        {
+            return Err(Error::InvalidInput(
+                "上传基地址只允许 HTTPS mypikpak.com 或子域".to_owned(),
+            ));
+        }
+        let bucket = credentials.bucket.trim().to_ascii_lowercase();
+        let host = format!("{bucket}.{base_host}");
+        let client = Client::builder()
+            .user_agent(&config.user_agent)
+            .connect_timeout(Duration::from_secs(15))
+            // 单次 S3 请求最坏 5 分钟；不是整文件的固定总分片时限。
+            .timeout(Duration::from_secs(300))
+            // 上传请求只允许直连收窄后的 mypikpak.com 主机，不能跟去别处。
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| Error::Network("无法创建上传 HTTP 客户端".to_owned()))?;
+        Ok(Self {
+            client,
+            credentials: credentials.clone(),
+            host,
+            path: encode_path(credentials.key.trim()),
+        })
+    }
+
+    fn put_object<C>(
+        &self,
+        size: u64,
+        payload_hash: &str,
+        body: CancelReader<File, C>,
+        content_type: &str,
+        cancelled: &C,
+    ) -> Result<(), Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        ensure_not_cancelled(cancelled)?;
+        let response = self.send(
+            Method::PUT,
+            &[],
+            payload_hash,
+            S3RequestBody {
+                content_length: (size > 0).then_some(size),
+                content_type: Some(content_type),
+                body: Some(Body::sized(body, size)),
+            },
+            cancelled,
+        )?;
+        ensure_s3_success(response.status, &response.body)
+    }
+
+    fn create_multipart<C>(&self, cancelled: &C) -> Result<String, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        ensure_not_cancelled(cancelled)?;
+        let empty_hash = hex_lower(&Sha256::digest([]));
+        let response = self.send(
+            Method::POST,
+            &[("uploads", String::new())],
+            &empty_hash,
+            S3RequestBody::default(),
+            cancelled,
+        )?;
+        if !response.status.is_success() {
+            return Err(s3_error(response.status, &response.body));
+        }
+        if let Some((code, message)) = parse_s3_error_body(&response.body) {
+            return Err(Error::Other(format_s3_error(&code, &message)));
+        }
+        xml_text(response.body.as_bytes(), b"UploadId")
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| Error::ApiChanged("分片上传响应缺少 UploadId".to_owned()))
+    }
+
+    fn upload_part<C>(
+        &self,
+        upload_id: &str,
+        part_number: u64,
+        size: u64,
+        payload_hash: &str,
+        bytes: Vec<u8>,
+        cancelled: &C,
+    ) -> Result<String, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        ensure_not_cancelled(cancelled)?;
+        let body = CancelReader::new(Cursor::new(bytes), cancelled.clone());
+        let response = self.send(
+            Method::PUT,
+            &[
+                ("partNumber", part_number.to_string()),
+                ("uploadId", upload_id.to_owned()),
+            ],
+            payload_hash,
+            S3RequestBody {
+                content_length: Some(size),
+                content_type: Some("application/octet-stream"),
+                body: Some(Body::sized(body, size)),
+            },
+            cancelled,
+        )?;
+        ensure_s3_success(response.status, &response.body)?;
+        response
+            .etag
+            .filter(|etag| !etag.trim().is_empty())
+            .map(|etag| etag.trim().to_owned())
+            .ok_or_else(|| Error::ApiChanged("上传分片响应缺少 ETag".to_owned()))
+    }
+
+    fn complete_multipart<C>(
+        &self,
+        upload_id: &str,
+        parts: &[CompletedPart],
+        cancelled: &C,
+    ) -> Result<(), Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        ensure_not_cancelled(cancelled)?;
+        let mut sorted: Vec<&CompletedPart> = parts.iter().collect();
+        sorted.sort_by_key(|part| part.number);
+        let mut xml = String::from("<CompleteMultipartUpload>");
+        for part in sorted {
+            xml.push_str("<Part><PartNumber>");
+            xml.push_str(&part.number.to_string());
+            xml.push_str("</PartNumber><ETag>");
+            xml.push_str(&xml_escape(&part.etag));
+            xml.push_str("</ETag></Part>");
+        }
+        xml.push_str("</CompleteMultipartUpload>");
+        let bytes = xml.into_bytes();
+        let payload_hash = hex_lower(&Sha256::digest(&bytes));
+        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let body = CancelReader::new(Cursor::new(bytes), cancelled.clone());
+        let response = self.send(
+            Method::POST,
+            &[("uploadId", upload_id.to_owned())],
+            &payload_hash,
+            S3RequestBody {
+                content_length: Some(size),
+                content_type: Some("application/xml"),
+                body: Some(Body::sized(body, size)),
+            },
+            cancelled,
+        )?;
+        ensure_s3_success(response.status, &response.body)?;
+        if let Some((code, message)) = parse_s3_error_body(&response.body) {
+            return Err(Error::Other(format_s3_error(&code, &message)));
+        }
+        Ok(())
+    }
+
+    fn abort_multipart(&self, upload_id: &str) -> Result<(), Error> {
+        let empty_hash = hex_lower(&Sha256::digest([]));
+        let response = self.send(
+            Method::DELETE,
+            &[("uploadId", upload_id.to_owned())],
+            &empty_hash,
+            S3RequestBody::default(),
+            &|| false,
+        )?;
+        ensure_s3_success(response.status, &response.body)
+    }
+
+    fn send<C>(
+        &self,
+        method: Method,
+        query: &[(&str, String)],
+        payload_hash: &str,
+        body: S3RequestBody<'_>,
+        cancelled: &C,
+    ) -> Result<S3Response, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        ensure_not_cancelled(cancelled)?;
+        let mut url = Url::parse(&format!("https://{}{}", self.host, self.path))
+            .map_err(|_| Error::InvalidInput("上传对象地址无效".to_owned()))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in query {
+                pairs.append_pair(key, value);
+            }
+        }
+
+        let now = Utc::now();
+        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+        let short_date = now.format("%Y%m%d").to_string();
+        let signed = sign_request(
+            method.as_str(),
+            url.path(),
+            query,
+            &self.host,
+            body.content_length,
+            body.content_type,
+            &self.credentials.security_token,
+            payload_hash,
+            &amz_date,
+            &short_date,
+            "pikpak",
+            "s3",
+            &self.credentials.access_key_id,
+            &self.credentials.access_key_secret,
+        )?;
+
+        let mut request = self
+            .client
+            .request(method, url)
+            .header(HOST, &self.host)
+            .header("x-amz-content-sha256", payload_hash)
+            .header("x-amz-date", &amz_date)
+            .header("Authorization", signed);
+        if let Some(length) = body.content_length {
+            request = request.header(reqwest::header::CONTENT_LENGTH, length.to_string());
+        }
+        if let Some(content_type) = body.content_type {
+            request = request.header(CONTENT_TYPE, content_type);
+        }
+        if !self.credentials.security_token.trim().is_empty() {
+            request = request.header(
+                "x-amz-security-token",
+                self.credentials.security_token.trim(),
+            );
+        }
+        if let Some(body) = body.body {
+            request = request.body(body);
+        }
+        let response = request.send().map_err(s3_network_error)?;
+        let status = response.status();
+        let etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = read_limited(response, MAX_ERROR_BODY)?;
+        Ok(S3Response { status, etag, body })
+    }
+}
+
+#[derive(Default)]
+struct S3RequestBody<'a> {
+    content_length: Option<u64>,
+    content_type: Option<&'a str>,
+    body: Option<Body>,
+}
+
+struct S3Response {
+    status: StatusCode,
+    etag: Option<String>,
+    body: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sign_request(
+    method: &str,
+    canonical_uri: &str,
+    query: &[(&str, String)],
+    host: &str,
+    content_length: Option<u64>,
+    content_type: Option<&str>,
+    security_token: &str,
+    payload_hash: &str,
+    amz_date: &str,
+    short_date: &str,
+    region: &str,
+    service: &str,
+    access_key: &str,
+    secret_key: &str,
+) -> Result<String, Error> {
+    let mut headers = BTreeMap::<String, String>::new();
+    headers.insert("host".to_owned(), normalize_header(host));
+    if let Some(length) = content_length {
+        headers.insert("content-length".to_owned(), length.to_string());
+    }
+    if let Some(content_type) = content_type {
+        headers.insert("content-type".to_owned(), normalize_header(content_type));
+    }
+    headers.insert("x-amz-content-sha256".to_owned(), payload_hash.to_owned());
+    headers.insert("x-amz-date".to_owned(), amz_date.to_owned());
+    if !security_token.trim().is_empty() {
+        headers.insert(
+            "x-amz-security-token".to_owned(),
+            normalize_header(security_token),
+        );
+    }
+    let signed_headers = headers.keys().cloned().collect::<Vec<_>>().join(";");
+    let canonical_headers = headers
+        .iter()
+        .map(|(key, value)| format!("{key}:{value}\n"))
+        .collect::<String>();
+    let canonical_query = canonical_query(query);
+    let canonical_request = format!(
+        "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    );
+    let scope = format!("{short_date}/{region}/{service}/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        hex_lower(&Sha256::digest(canonical_request.as_bytes()))
+    );
+    let date_key = hmac_sha256(
+        format!("AWS4{secret_key}").as_bytes(),
+        short_date.as_bytes(),
+    )?;
+    let region_key = hmac_sha256(&date_key, region.as_bytes())?;
+    let service_key = hmac_sha256(&region_key, service.as_bytes())?;
+    let signing_key = hmac_sha256(&service_key, b"aws4_request")?;
+    let signature = hex_lower(&hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
+    Ok(format!(
+        "AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    ))
+}
+
+fn canonical_query(query: &[(&str, String)]) -> String {
+    let mut pairs: Vec<(String, String)> = query
+        .iter()
+        .map(|(key, value)| {
+            (
+                percent_encode(key.as_bytes()),
+                percent_encode(value.as_bytes()),
+            )
+        })
+        .collect();
+    pairs.sort();
+    pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn normalize_header(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        .map_err(|_| Error::Other("无法计算上传签名".to_owned()))?;
+    mac.update(data);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn cid_for_file<C, P>(
+    path: &Path,
+    size: u64,
+    cancelled: &C,
+    progress: &mut P,
+) -> Result<String, Error>
+where
+    C: Fn() -> bool,
+    P: FnMut(UploadProgress),
+{
+    let mut file =
+        File::open(path).map_err(|err| Error::Other(format!("无法打开本地文件：{err}")))?;
+    let mut hasher = Sha1::new();
+    let mut hashed = 0u64;
+    if size <= CID_FULL_FILE_LIMIT {
+        hash_range(
+            &mut file,
+            0,
+            size,
+            &mut hasher,
+            cancelled,
+            progress,
+            &mut hashed,
+            size,
+        )?;
+    } else {
+        let total = CID_SAMPLE_BYTES * 3;
+        for start in [0, size / 3, size - CID_SAMPLE_BYTES] {
+            hash_range(
+                &mut file,
+                start,
+                CID_SAMPLE_BYTES,
+                &mut hasher,
+                cancelled,
+                progress,
+                &mut hashed,
+                total,
+            )?;
+        }
+    }
+    Ok(hex_upper(&hasher.finalize()))
+}
+
+fn full_gcid_for_file<C, P>(
+    path: &Path,
+    size: u64,
+    cancelled: &C,
+    progress: &mut P,
+) -> Result<String, Error>
+where
+    C: Fn() -> bool,
+    P: FnMut(UploadProgress),
+{
+    ensure_not_cancelled(cancelled)?;
+    progress(UploadProgress {
+        stage: UploadStage::Hashing,
+        bytes: 0,
+        total: size,
+    });
+    let mut file =
+        File::open(path).map_err(|err| Error::Other(format!("无法打开本地文件：{err}")))?;
+    let block_size = gcid_block_size(size);
+    let mut total = Sha1::new();
+    let mut read_total = 0u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    while read_total < size {
+        ensure_not_cancelled(cancelled)?;
+        let target = block_size.min(size - read_total);
+        let mut block = Sha1::new();
+        let mut block_read = 0u64;
+        while block_read < target {
+            ensure_not_cancelled(cancelled)?;
+            let want =
+                usize::try_from((target - block_read).min(buf.len() as u64)).unwrap_or(buf.len());
+            let got = file
+                .read(&mut buf[..want])
+                .map_err(|err| Error::Other(format!("读取本地文件失败：{err}")))?;
+            if got == 0 {
+                return Err(Error::Other("文件在上传准备期间被截短".to_owned()));
+            }
+            block.update(&buf[..got]);
+            block_read += got as u64;
+            read_total += got as u64;
+            progress(UploadProgress {
+                stage: UploadStage::Hashing,
+                bytes: read_total,
+                total: size,
+            });
+        }
+        total.update(block.finalize());
+    }
+    if read_total != size {
+        return Err(Error::Other("文件大小在上传准备期间发生变化".to_owned()));
+    }
+    Ok(hex_lower(&total.finalize()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hash_range<C, P>(
+    file: &mut File,
+    start: u64,
+    length: u64,
+    hasher: &mut Sha1,
+    cancelled: &C,
+    progress: &mut P,
+    hashed: &mut u64,
+    total: u64,
+) -> Result<(), Error>
+where
+    C: Fn() -> bool,
+    P: FnMut(UploadProgress),
+{
+    file.seek(SeekFrom::Start(start))
+        .map_err(|err| Error::Other(format!("无法定位本地文件：{err}")))?;
+    let mut left = length;
+    let mut buf = vec![0u8; 64 * 1024];
+    while left > 0 {
+        ensure_not_cancelled(cancelled)?;
+        let want = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
+        let got = file
+            .read(&mut buf[..want])
+            .map_err(|err| Error::Other(format!("读取本地文件失败：{err}")))?;
+        if got == 0 {
+            return Err(Error::Other("文件在上传准备期间被截短".to_owned()));
+        }
+        hasher.update(&buf[..got]);
+        left -= got as u64;
+        *hashed += got as u64;
+        progress(UploadProgress {
+            stage: UploadStage::Hashing,
+            bytes: *hashed,
+            total,
+        });
+    }
+    Ok(())
+}
+
+fn read_exact_range<C>(
+    path: &Path,
+    offset: u64,
+    length: u64,
+    cancelled: &C,
+) -> Result<Vec<u8>, Error>
+where
+    C: Fn() -> bool,
+{
+    ensure_not_cancelled(cancelled)?;
+    let mut file =
+        File::open(path).map_err(|err| Error::Other(format!("无法打开本地文件：{err}")))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|err| Error::Other(format!("无法定位本地文件：{err}")))?;
+    let capacity =
+        usize::try_from(length).map_err(|_| Error::Other("单个上传分片过大".to_owned()))?;
+    let mut bytes = vec![0u8; capacity];
+    let mut read = 0usize;
+    while read < bytes.len() {
+        ensure_not_cancelled(cancelled)?;
+        let got = file
+            .read(&mut bytes[read..])
+            .map_err(|err| Error::Other(format!("读取本地文件失败：{err}")))?;
+        if got == 0 {
+            return Err(Error::Other("文件在上传期间被截短".to_owned()));
+        }
+        read += got;
+    }
+    Ok(bytes)
+}
+
+fn sha256_hex<C, P>(
+    file: &mut File,
+    cancelled: &C,
+    progress: &mut P,
+    total: u64,
+) -> Result<Vec<u8>, Error>
+where
+    C: Fn() -> bool,
+    P: FnMut(UploadProgress),
+{
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut read = 0u64;
+    loop {
+        ensure_not_cancelled(cancelled)?;
+        let got = file
+            .read(&mut buf)
+            .map_err(|err| Error::Other(format!("读取本地文件失败：{err}")))?;
+        if got == 0 {
+            break;
+        }
+        hasher.update(&buf[..got]);
+        read += got as u64;
+        progress(UploadProgress {
+            stage: UploadStage::Hashing,
+            bytes: read,
+            total,
+        });
+    }
+    if read != total {
+        return Err(Error::Other("文件大小在上传准备期间发生变化".to_owned()));
+    }
+    Ok(hasher.finalize().to_vec())
+}
+
+fn multipart_part_size(size: u64) -> u64 {
+    let mut part = SMALL_FILE_LIMIT.max(1);
+    while size.div_ceil(part) > MAX_MULTIPART_PARTS {
+        part = part.saturating_mul(2);
+    }
+    part
+}
+
+fn gcid_block_size(size: u64) -> u64 {
+    let mut block: u64 = 0x40000;
+    while size > block.saturating_mul(0x200) && block < 0x200000 {
+        block <<= 1;
+    }
+    block
+}
+
+fn validate_name(name: &str) -> Result<(), Error> {
+    if name.is_empty() {
+        return Err(Error::InvalidInput("文件名不能为空".to_owned()));
+    }
+    if name.contains('/') {
+        return Err(Error::InvalidInput("文件名里不能包含 /".to_owned()));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(Error::InvalidInput("文件名里不能包含控制字符".to_owned()));
+    }
+    if name.len() > 255 {
+        return Err(Error::InvalidInput(
+            "文件名太长（最多 255 字节）".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_file_size(path: &Path, expected: u64) -> Result<(), Error> {
+    let actual = std::fs::metadata(path)
+        .map_err(|err| Error::Other(format!("无法读取本地文件：{err}")))?
+        .len();
+    if actual != expected {
+        return Err(Error::Other(
+            "文件大小在上传期间发生变化，请重新上传".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_bucket(bucket: &str) -> bool {
+    !bucket.is_empty()
+        && bucket.len() <= 63
+        && bucket
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !bucket.starts_with('-')
+        && !bucket.ends_with('-')
+}
+
+fn is_hard_auth_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Auth { .. } | Error::Captcha { .. } | Error::RateLimited { .. }
+    )
+}
+
+fn ensure_not_cancelled<C>(cancelled: &C) -> Result<(), Error>
+where
+    C: Fn() -> bool,
+{
+    if cancelled() {
+        Err(Error::Other("上传已取消".to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+fn sleep_cancellable<C>(duration: Duration, cancelled: &C) -> Result<(), Error>
+where
+    C: Fn() -> bool,
+{
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        ensure_not_cancelled(cancelled)?;
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn ensure_s3_success(status: StatusCode, body: &str) -> Result<(), Error> {
+    if status.is_success() {
+        return Ok(());
+    }
+    Err(s3_error(status, body))
+}
+
+fn s3_error(status: StatusCode, body: &str) -> Error {
+    if let Some((code, message)) = parse_s3_error_body(body) {
+        return Error::Other(format_s3_error(&code, &message));
+    }
+    Error::Other(format!("上传服务返回 HTTP {status}"))
+}
+
+fn format_s3_error(code: &str, message: &str) -> String {
+    if message.is_empty() {
+        format!("上传服务返回错误：{code}")
+    } else {
+        format!("上传服务返回错误：{code} · {message}")
+    }
+}
+
+fn parse_s3_error_body(body: &str) -> Option<(String, String)> {
+    let code = xml_text(body.as_bytes(), b"Code")?;
+    let message = xml_text(body.as_bytes(), b"Message").unwrap_or_default();
+    Some((code, message))
+}
+
+fn xml_text(xml: &[u8], tag: &[u8]) -> Option<String> {
+    let mut reader = Reader::from_reader(xml);
+    let mut in_wanted = false;
+    let mut out = String::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) => {
+                in_wanted = event.name().as_ref() == tag;
+                if in_wanted {
+                    out.clear();
+                }
+            }
+            Ok(Event::Text(event)) if in_wanted => {
+                out.push_str(&String::from_utf8_lossy(event.as_ref()));
+            }
+            Ok(Event::GeneralRef(event)) if in_wanted => {
+                let reference = event.as_ref();
+                match reference {
+                    b"amp" => out.push('&'),
+                    b"lt" => out.push('<'),
+                    b"gt" => out.push('>'),
+                    b"quot" => out.push('"'),
+                    b"apos" => out.push('\''),
+                    _ => {
+                        let name = String::from_utf8_lossy(reference);
+                        out.push('&');
+                        out.push_str(&name);
+                        out.push(';');
+                    }
+                }
+            }
+            Ok(Event::End(event)) if event.name().as_ref() == tag && in_wanted => {
+                return Some(out);
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 上传请求体读取器：S3 还在读取本地数据时也能看到取消信号。
+///
+/// `reqwest::blocking::Body::sized` 要求读取器 `'static`，所以取消判据本身
+/// 必须是可克隆、线程安全且拥有所有权的闭包。
+struct CancelReader<R, C> {
+    inner: R,
+    cancelled: C,
+}
+
+impl<R, C> CancelReader<R, C>
+where
+    C: Fn() -> bool,
+{
+    fn new(inner: R, cancelled: C) -> Self {
+        Self { inner, cancelled }
+    }
+}
+
+impl<R, C> Read for CancelReader<R, C>
+where
+    R: Read,
+    C: Fn() -> bool,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if (self.cancelled)() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "upload cancelled",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn read_limited(mut response: reqwest::blocking::Response, limit: u64) -> Result<String, Error> {
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Error::Network("读取上传服务响应失败".to_owned()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn s3_network_error(error: reqwest::Error) -> Error {
+    if error.is_timeout() {
+        Error::Network("上传请求超时".to_owned())
+    } else if error.is_connect() {
+        Error::Network("无法连接上传服务器".to_owned())
+    } else {
+        Error::Network("上传连接中断".to_owned())
+    }
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn non_empty_name(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn encode_path(key: &str) -> String {
+    let encoded = percent_encode_keep_slash(key.as_bytes());
+    if encoded.starts_with('/') {
+        encoded
+    } else {
+        format!("/{encoded}")
+    }
+}
+
+fn percent_encode_keep_slash(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for byte in bytes {
+        if *byte == b'/' || is_unreserved(*byte) {
+            out.push(char::from(*byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn percent_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for byte in bytes {
+        if is_unreserved(*byte) {
+            out.push(char::from(*byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    hex_lower(bytes).to_ascii_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_byte_cid_is_the_sha1_of_empty_input() {
+        let path = temp_path("zero");
+        std::fs::write(&path, []).expect("create empty file");
+        let mut progress = |_| {};
+        let cid = cid_for_file(&path, 0, &|| false, &mut progress).expect("cid");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(cid, "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709");
+    }
+
+    #[test]
+    fn small_file_cid_hashes_the_whole_file() {
+        let path = temp_path("small");
+        std::fs::write(&path, b"hello").expect("create file");
+        let mut progress = |_| {};
+        let cid = cid_for_file(&path, 5, &|| false, &mut progress).expect("cid");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(cid, "AAF4C61DDCC5E8A2DABEDE0F3B482CD9AEA9434D");
+    }
+
+    #[test]
+    fn gcid_block_size_matches_rclone_boundaries() {
+        assert_eq!(gcid_block_size(0x40000 * 0x200), 0x40000);
+        assert_eq!(gcid_block_size(0x40000 * 0x200 + 1), 0x80000);
+        assert_eq!(gcid_block_size(u64::MAX), 0x200000);
+    }
+
+    #[test]
+    fn multipart_part_size_respects_the_ten_thousand_part_cap() {
+        let part = multipart_part_size(5 * 1024 * 1024 * 10_001);
+        assert!((5_u64 * 1024 * 1024 * 10_001).div_ceil(part) <= MAX_MULTIPART_PARTS);
+        assert!(part >= SMALL_FILE_LIMIT);
+    }
+
+    #[test]
+    fn path_encoding_keeps_separators_but_encodes_spaces_and_unicode() {
+        assert_eq!(encode_path("a b/中文.mkv"), "/a%20b/%E4%B8%AD%E6%96%87.mkv");
+    }
+
+    #[test]
+    fn canonical_query_is_sorted_and_encoded() {
+        let query = vec![
+            ("uploadId", "a b+c".to_owned()),
+            ("partNumber", "2".to_owned()),
+        ];
+        assert_eq!(canonical_query(&query), "partNumber=2&uploadId=a%20b%2Bc");
+    }
+
+    #[test]
+    fn header_values_collapse_whitespace() {
+        assert_eq!(normalize_header(" a \t b\n c "), "a b c");
+    }
+
+    #[test]
+    fn sigv4_matches_an_independent_aws_v4_calculation() {
+        let amz_date = format!("{}{}", "202601", "01T000000Z");
+        let query = vec![
+            ("uploadId", "abc+/=".to_owned()),
+            ("partNumber", "1".to_owned()),
+        ];
+        let authorization = sign_request(
+            "PUT",
+            "/uploads/a%20b",
+            &query,
+            "bucket.mypikpak.com",
+            Some(5),
+            Some("application/octet-stream"),
+            "token",
+            "abc123",
+            &amz_date,
+            "20260101",
+            "pikpak",
+            "s3",
+            "access",
+            "secret",
+        )
+        .expect("signature");
+        let credential = [
+            "Cred",
+            "ential=",
+            "access",
+            "/20260101/pikpak/s3/aws4_request",
+        ]
+        .concat();
+        let expected = [
+            "AWS4-HMAC-SHA256 ",
+            credential.as_str(),
+            ", SignedHeaders=content-length;content-type;host;x-amz-content-sha256;",
+            "x-amz-date;x-amz-security-token, ",
+            "Signature=85736f30a4e1086c370356f75c60edda5f87cb60aabc37a868ce3544cd677608",
+        ]
+        .concat();
+        assert_eq!(authorization, expected);
+    }
+
+    #[test]
+    fn cancel_reader_stops_before_reading_more_bytes() {
+        let mut reader = CancelReader::new(Cursor::new(b"payload".to_vec()), || true);
+        let mut buffer = [0u8; 4];
+        let error = reader.read(&mut buffer).expect_err("must be cancelled");
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn small_payload_hash_rejects_a_file_that_changed_size() {
+        let path = temp_path("changed-size");
+        std::fs::write(&path, b"hello").expect("create file");
+        let mut file = File::open(&path).expect("open file");
+        let mut progress = |_| {};
+        assert!(sha256_hex(&mut file, &|| false, &mut progress, 4).is_err());
+        file.seek(SeekFrom::Start(0)).expect("rewind file");
+        assert!(sha256_hex(&mut file, &|| false, &mut progress, 6).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn upload_rechecks_the_original_file_size() {
+        let path = temp_path("size-check");
+        std::fs::write(&path, b"hello").expect("create file");
+        assert!(ensure_file_size(&path, 5).is_ok());
+        assert!(ensure_file_size(&path, 4).is_err());
+        assert!(ensure_file_size(&path, 6).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn empty_sha256_constant_is_stable() {
+        assert_eq!(
+            hex_lower(&Sha256::digest([])),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn s3_error_xml_is_sanitized_to_code_and_message() {
+        let xml = "<Error><Code>AccessDenied</Code><Message>bad &amp; denied</Message></Error>";
+        assert_eq!(
+            parse_s3_error_body(xml),
+            Some(("AccessDenied".to_owned(), "bad & denied".to_owned()))
+        );
+    }
+
+    #[test]
+    fn upload_names_are_validated_before_network_work() {
+        assert!(validate_name("电影.mkv").is_ok());
+        assert!(validate_name(" 两侧空格保留.mkv ").is_ok());
+        assert!(validate_name("").is_err());
+        assert!(validate_name("a/b").is_err());
+        assert!(validate_name("a\nb").is_err());
+        assert_eq!(
+            non_empty_name(" 两侧空格保留.mkv ".to_owned()).as_deref(),
+            Some(" 两侧空格保留.mkv ")
+        );
+    }
+
+    #[test]
+    fn bucket_validation_rejects_host_injection() {
+        assert!(valid_bucket("abc-123"));
+        assert!(!valid_bucket("abc.example"));
+        assert!(!valid_bucket("../abc"));
+        assert!(!valid_bucket("-abc"));
+    }
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "kichi-upload-{tag}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        path
+    }
+}

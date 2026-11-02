@@ -140,6 +140,10 @@ pub mod qobject {
         #[qproperty(bool, download_running, cxx_name = "downloadRunning", READ, NOTIFY = changed)]
         /// 排队中的批次数（不含正在跑的那一批）
         #[qproperty(i32, download_queued, cxx_name = "downloadQueued", READ, NOTIFY = changed)]
+        /// 排队中的上传文件数（上传串行，不含正在上传的那一个）
+        #[qproperty(i32, upload_queued, cxx_name = "uploadQueued", READ, NOTIFY = changed)]
+        /// 正在上传的文件数（串行队列，只会是 0 或 1）
+        #[qproperty(i32, upload_active, cxx_name = "uploadActive", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, transfers, READ, NOTIFY = changed)]
         /// 传输记录的结构版本号：只有排队 / 开始 / 完成 / 失败 / 取消 / 清空才 +1。
         /// QML 用它判断该不该重新读取 `transfers`，避免进度节拍把整个
@@ -496,6 +500,11 @@ pub mod qobject {
         #[cxx_name = "cancelDownloads"]
         fn cancel_downloads(self: Pin<&mut Self>);
 
+        /// 取消传输页里所有下载与上传；上传没有断点，重试只能从头开始
+        #[qinvokable]
+        #[cxx_name = "cancelAllTransfers"]
+        fn cancel_all_transfers(self: Pin<&mut Self>);
+
         /// 清空完成 / 失败 / 已取消的整批记录；进行中、排队与已中断保留
         #[qinvokable]
         #[cxx_name = "clearFinishedTransfers"]
@@ -576,6 +585,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "chooseDownloadDir"]
         fn choose_download_dir(self: Pin<&mut Self>);
+
+        /// 通过 XDG Desktop Portal 多选本地文件，上传到调用时所在的云端目录
+        #[qinvokable]
+        #[cxx_name = "chooseUploadFiles"]
+        fn choose_upload_files(self: Pin<&mut Self>, parent_id: QString, parent_name: QString);
 
         /// 给条目改名（当前列表先更新，失败自动回滚）
         #[qinvokable]
@@ -743,6 +757,9 @@ mod transfers_view;
 mod trash;
 mod tray;
 mod tray_icon;
+mod upload_queue;
+mod upload_worker;
+mod uploads;
 
 use backend::Backend;
 use files::Crumb;
@@ -982,6 +999,10 @@ pub struct KichiRust {
     pub(crate) download_running: bool,
     /// 排队中的批次数（不含正在跑的那一批）
     pub(crate) download_queued: i32,
+    /// 排队中的上传文件数（不含正在上传的那一个）
+    pub(crate) upload_queued: i32,
+    /// 正在上传的文件数（串行队列，只会是 0 或 1）
+    pub(crate) upload_active: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
     pub(crate) download_parallel: i32,
@@ -1166,6 +1187,8 @@ impl Default for KichiRust {
             transfer_has_retryable: false,
             download_running: false,
             download_queued: 0,
+            upload_queued: 0,
+            upload_active: 0,
             download_dir: QString::default(),
             download_parallel: i32::try_from(crate::session::limits::DEFAULT_PARALLEL).unwrap_or(3),
             download_connections: i32::try_from(crate::session::limits::DEFAULT_CONNECTIONS)
@@ -1195,7 +1218,7 @@ impl Default for KichiRust {
             backend: Backend::new(crate::session::store_path()),
         };
         object.load_settings();
-        // 启动时读回下载历史（首次 sync_transfers 之前；批次号从历史最大值之后接着走）
+        // 启动时读回传输历史（首次 sync_transfers 之前；批次号从历史最大值之后接着走）
         downloads::load_history(&mut object);
         object.apply_restored();
         object

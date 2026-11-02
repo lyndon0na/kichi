@@ -18,6 +18,8 @@ TestCase {
         property int transferRevision: 0
         property int downloadActive: 0
         property int downloadQueued: 0
+        property int uploadActive: 0
+        property int uploadQueued: 0
         property var transferLive: []
         property var transferDetail: []
         property bool transferDetailActive: false
@@ -51,6 +53,8 @@ TestCase {
             transferRevision = 0
             downloadActive = 0
             downloadQueued = 0
+            uploadActive = 0
+            uploadQueued = 0
             transferLive = []
             transferDetail = []
             transferDetailActive = false
@@ -172,7 +176,7 @@ TestCase {
             clearCount += 1
         }
 
-        function cancelDownloads() {
+        function cancelAllTransfers() {
             cancelAllCount += 1
         }
 
@@ -724,6 +728,47 @@ TestCase {
         verify(findChild(menu, "transferRemoveItem").visible)
     }
 
+    function test_upload_rows_hide_download_only_actions() {
+        backend.publish([
+            makeRow("84:0", "上传中.mkv", "running", {
+                direction: "upload",
+                stateText: "上传中",
+                progress: 40,
+                progressText: "40%",
+                sizeText: "4 MB / 10 MB"
+            }),
+            makeRow("85:0", "上传失败.mkv", "failed", {
+                direction: "upload",
+                stateText: "失败",
+                detail: "上传连接中断"
+            })
+        ], 1, 0)
+        waitRows(2)
+
+        var running = row("84:0")
+        verify(running !== null)
+        compare(findChild(running, "pauseLink").visible, false)
+        compare(findChild(running, "resumeLink").visible, false)
+        compare(findChild(running, "revealLink").visible, false)
+        verify(findChild(running, "cancelLink").visible,
+               "上传不能暂停，但必须能取消")
+
+        var failed = row("85:0")
+        verify(findChild(failed, "retryLink").visible, "失败上传可从头重试")
+        compare(findChild(failed, "revealLink").visible, false,
+                "上传没有本地落点可打开")
+
+        mouseClick(running, 120, running.height / 2, Qt.RightButton)
+        var menu = findChild(page, "transferContextMenu")
+        tryVerify(function() { return menu.opened })
+        compare(findChild(menu, "transferPauseItem").visible, false)
+        compare(findChild(menu, "transferResumeItem").visible, false)
+        verify(findChild(menu, "transferCancelItem").visible)
+        compare(findChild(menu, "transferRetryItem").visible, false)
+        compare(findChild(menu, "transferRevealItem").visible, false)
+        menu.close()
+    }
+
     function test_partially_failed_folder_retries_child_but_removes_only_parent_record() {
         backend.setDetails("82:folder", [
             makeRow("82:0", "失败子文件.mkv", "failed", {
@@ -1002,6 +1047,8 @@ TestCase {
         compare(backend.cancelAllCount, 0, "确认前不能取消传输")
         compare(findChild(dialog, "cancelAllConfirmText").text.indexOf("断点") >= 0,
                 true, "确认框要说明断点会被删除")
+        compare(findChild(dialog, "cancelAllConfirmText").text.indexOf("上传") >= 0,
+                true, "确认框要说明上传也会停止且不能续传")
 
         var confirm = findChild(dialog, "cancelAllConfirmButton")
         verify(confirm !== null)
@@ -1009,6 +1056,23 @@ TestCase {
         mouseClick(confirm)
         wait(40)
         compare(backend.cancelAllCount, 1)
+    }
+
+    function test_upload_only_activates_cancel_all_and_status() {
+        backend.publish([
+            makeRow("2:0", "上传中.mkv", "running", {
+                direction: "upload",
+                stateText: "上传中"
+            })
+        ], 0, 0)
+        backend.uploadActive = 1
+        backend.changed()
+        waitRows(1)
+
+        compare(page.activeCount, 1)
+        compare(page.statusText, "1 项传输中")
+        verify(findChild(header, "cancelAllTransfersButton").enabled,
+               "只有上传进行中也必须能取消全部")
     }
 
     function test_header_retries_all_failed_items() {

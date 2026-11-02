@@ -704,7 +704,7 @@ ApplicationWindow {
                 objectName: "transferStatusButton"
 
                 visible: root.signedIn
-                activeCount: backend.downloadActive
+                activeCount: backend.downloadActive + backend.uploadActive
                 pageActive: root.currentPage === pageIds.transfers
                 onRequested: root.navigateTo(pageIds.transfers)
             }

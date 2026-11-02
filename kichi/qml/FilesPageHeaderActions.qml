@@ -17,6 +17,8 @@ RowLayout {
                                             && backend.filesRefreshing === true
     readonly property bool canCreateFolder: backend !== null && target !== null
                                              && !searching && !loading
+    readonly property bool canUpload: backend !== null && target !== null
+                                      && !searching && !loading
     readonly property bool canCreateTask: backend !== null && newTaskTarget !== null
 
     readonly property KTheme theme: KTheme { parent: root }
@@ -37,10 +39,10 @@ RowLayout {
         implicitHeight: 34
         leftPadding: 8
         rightPadding: 8
-        enabled: root.canCreateFolder || root.canCreateTask
+        enabled: root.canUpload || root.canCreateFolder || root.canCreateTask
         showTextToolTip: false
         ToolTip.visible: hovered
-        ToolTip.text: qsTr("添加文件夹或离线任务")
+        ToolTip.text: qsTr("上传文件、新建文件夹或离线任务")
         Accessible.name: qsTr("添加")
         onClicked: root.openAddMenu()
 
@@ -50,6 +52,21 @@ RowLayout {
             objectName: "filesAddMenu"
             parent: Overlay.overlay
             width: 220
+
+            MenuItem {
+                objectName: "filesAddUploadItem"
+                text: qsTr("上传文件…")
+                enabled: root.canUpload
+                onTriggered: {
+                    if (root.backend) {
+                        root.backend.chooseUploadFiles(
+                            root.backend.currentDirId, root.currentFolderPath())
+                    }
+                }
+
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("上传到当前文件夹，可一次选择多个文件")
+            }
 
             MenuItem {
                 objectName: "filesAddNewFolderItem"
