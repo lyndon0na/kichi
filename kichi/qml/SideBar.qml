@@ -54,25 +54,27 @@ Rectangle {
                 id: navButton
                 required property var modelData
 
+                // Button 的 checkable 会在点击时自行改写 checked，并永久切断与当前页的
+                // 绑定；选中态只认 currentIndex，避免连点当前入口后高亮消失。
+                readonly property bool navSelected: bar.currentIndex === modelData.page
+
                 objectName: "sidebarNav_" + modelData.page
                 Layout.fillWidth: true
                 Layout.preferredHeight: 40
                 padding: 0
                 leftPadding: 12
                 rightPadding: 12
-                checkable: true
-                checked: bar.currentIndex === modelData.page
                 onClicked: bar.pageRequested(modelData.page)
 
                 background: Rectangle {
                     radius: theme.radiusCard
-                    color: navButton.checked ? theme.accentSoft
+                    color: navButton.navSelected ? theme.accentSoft
                          : navButton.hovered ? theme.accentGhost : theme.accentClear
 
 
                     // 选中竖条：和文件列表的选中语言一致
                     Rectangle {
-                        visible: navButton.checked
+                        visible: navButton.navSelected
                         width: 3
                         height: parent.height - 16
                         radius: 1.5
@@ -90,7 +92,7 @@ Rectangle {
                         implicitWidth: 18
                         implicitHeight: 18
                         name: navButton.modelData.icon
-                        color: navButton.checked ? theme.accent : theme.textMuted
+                        color: navButton.navSelected ? theme.accent : theme.textMuted
                         Layout.alignment: Qt.AlignVCenter
                     }
 
@@ -98,8 +100,8 @@ Rectangle {
                         Layout.fillWidth: true
                         text: navButton.modelData.label
                         font.pixelSize: theme.fontBody
-                        font.weight: navButton.checked ? Font.DemiBold : Font.Normal
-                        color: navButton.checked ? theme.textPrimary : theme.textSecondary
+                        font.weight: navButton.navSelected ? Font.DemiBold : Font.Normal
+                        color: navButton.navSelected ? theme.textPrimary : theme.textSecondary
                         elide: Text.ElideRight
                     }
 

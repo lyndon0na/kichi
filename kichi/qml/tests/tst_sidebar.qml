@@ -9,6 +9,16 @@ TestCase {
     width: 320
     height: 700
 
+    Component {
+        id: sidebarComponent
+
+        SideBar {
+            backend: testBackend
+            width: 208
+            height: 680
+        }
+    }
+
     QtObject {
         id: testBackend
 
@@ -23,23 +33,43 @@ TestCase {
         property bool quotaVip: false
     }
 
-    SideBar {
-        id: sidebar
-        backend: testBackend
-        width: 208
-        height: 680
-    }
+    property var sidebar: null
 
     SignalSpy {
         id: pageSpy
-        target: sidebar
         signalName: "pageRequested"
     }
 
     SignalSpy {
         id: settingsSpy
-        target: sidebar
         signalName: "settingsRequested"
+    }
+
+    Connections {
+        target: sidebar
+
+        function onPageRequested(pageIndex) {
+            sidebar.currentIndex = pageIndex
+        }
+    }
+
+    function init() {
+        sidebar = sidebarComponent.createObject(parent, {
+            backend: testBackend,
+            currentIndex: 0,
+            visible: true
+        })
+        verify(sidebar !== null, "SideBar 创建失败")
+        pageSpy.target = sidebar
+        settingsSpy.target = sidebar
+    }
+
+    function cleanup() {
+        pageSpy.target = null
+        settingsSpy.target = null
+        if (sidebar)
+            sidebar.destroy()
+        sidebar = null
     }
 
     function navItem(page) {
@@ -68,6 +98,30 @@ TestCase {
 
         compare(navItem(2), null, "传输任务不再占主导航")
         compare(navItem(5), null, "设置不再占主导航")
+    }
+
+    function test_repeated_click_keeps_current_page_selected() {
+        const page = 6
+        const item = navItem(page)
+        verify(item !== null)
+        compare(item.checkable, false, "导航按钮不能自行切换勾选")
+
+        sidebar.currentIndex = 0
+        pageSpy.clear()
+
+        mouseClick(item, 4, item.height / 2)
+        wait(0)
+        compare(pageSpy.count, 1)
+        compare(sidebar.currentIndex, page)
+        compare(item.navSelected, true, "第一次点击后当前页应保持选中")
+
+        mouseClick(item, 4, item.height / 2)
+        wait(0)
+        compare(pageSpy.count, 2)
+        compare(sidebar.currentIndex, page)
+        compare(item.navSelected, true, "再次点击当前入口不能取消选中")
+
+        sidebar.currentIndex = 0
     }
 
     function test_account_settings_entry_requests_settings_page() {
