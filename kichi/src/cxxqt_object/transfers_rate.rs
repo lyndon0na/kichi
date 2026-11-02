@@ -16,6 +16,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use kichi_core::UploadStage;
+
 use super::actions::format_size;
 use super::transfers::{Transfer, TransferState};
 
@@ -242,7 +244,15 @@ pub(crate) fn batch_rate_info(records: &[Transfer], batch: u64, now: Instant) ->
 
 /// 这个文件还剩多少字节；总大小未知时 `None`（ETA 跟着未知）。
 fn remaining_bytes(record: &Transfer) -> Option<u64> {
-    record.total.map(|total| total.saturating_sub(record.bytes))
+    let done = if record.job.is_upload() {
+        match record.upload_progress {
+            Some(progress) if progress.stage == UploadStage::Uploading => progress.bytes,
+            _ => record.bytes,
+        }
+    } else {
+        record.bytes
+    };
+    record.total.map(|total| total.saturating_sub(done))
 }
 
 fn note_text(record: &Transfer, now: Instant) -> String {

@@ -819,6 +819,7 @@ fn upload_one(
                     UploadProgressState {
                         stage: progress.stage,
                         bytes: progress.bytes,
+                        completed_bytes: progress.completed_bytes,
                         total: progress.total,
                     },
                 );
@@ -952,24 +953,28 @@ mod tests {
         assert!(throttle.should_send(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: 0,
+            completed_bytes: None,
             total: 1000,
         }));
         assert!(throttle.stage_changed(), "首帧要整表同步阶段名");
         assert!(!throttle.should_send(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: 1,
+            completed_bytes: None,
             total: 1000,
         }));
         assert!(!throttle.stage_changed(), "被节流的刷新不能留下阶段变更");
         assert!(throttle.should_send(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: 10,
+            completed_bytes: None,
             total: 1000,
         }));
         assert!(!throttle.stage_changed(), "同阶段只走轻量进度刷新");
         assert!(throttle.should_send(UploadProgress {
             stage: UploadStage::Uploading,
             bytes: 20,
+            completed_bytes: Some(20),
             total: 1000,
         }));
         assert!(throttle.stage_changed(), "校验转上传必须整表同步");

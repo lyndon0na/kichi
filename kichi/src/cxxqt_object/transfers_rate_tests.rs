@@ -436,6 +436,7 @@ fn upload_rate_is_hidden_outside_the_actual_transfer_stage() {
     record.upload_progress = Some(UploadProgressState {
         stage: kichi_core::UploadStage::Hashing,
         bytes: 0,
+        completed_bytes: None,
         total: 10 * 1024 * 1024,
     });
     for step in 0..=5u64 {
@@ -454,11 +455,14 @@ fn upload_rate_is_hidden_outside_the_actual_transfer_stage() {
     record.upload_progress = Some(UploadProgressState {
         stage: kichi_core::UploadStage::Uploading,
         bytes: 5 * 1024 * 1024,
+        completed_bytes: Some(5 * 1024 * 1024),
         total: 10 * 1024 * 1024,
     });
+    record.bytes = 0;
     assert_eq!(
         file_rate_info(&record, base + Duration::from_secs(5)).rate,
-        "1.0 MB/s · 剩 5 秒"
+        "1.0 MB/s · 剩 5 秒",
+        "剩余时间按界面上的在途字节算，不用断点字节"
     );
 }
 

@@ -172,7 +172,10 @@ pub(crate) struct UploadDir {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UploadProgressState {
     pub(crate) stage: UploadStage,
+    /// 界面显示的实际进度（含在途分片）。
     pub(crate) bytes: u64,
+    /// 已完成分片字节；只用来推进断点与传输历史，不能把在途字节写进去。
+    pub(crate) completed_bytes: Option<u64>,
     pub(crate) total: u64,
 }
 
@@ -333,11 +336,23 @@ impl ChildStats {
         Self {
             index: record.index,
             state: record.state,
-            bytes: record.bytes,
+            bytes: display_bytes(record),
             total: record.total,
             name: record.job.name.clone(),
         }
     }
+}
+
+/// 文件夹父行聚合用：上传中的在途字节也要算进去；其它状态仍用可续传字节。
+fn display_bytes(record: &Transfer) -> u64 {
+    if record.state == TransferState::Running && record.job.is_upload() {
+        if let Some(progress) = record.upload_progress {
+            if progress.stage == UploadStage::Uploading {
+                return progress.bytes;
+            }
+        }
+    }
+    record.bytes
 }
 
 fn progress_contribution(state: TransferState, bytes: u64) -> u64 {
@@ -1190,25 +1205,34 @@ pub(crate) fn progress(batch: u64, index: usize, bytes: u64, total: Option<u64>)
 
 /// 上传阶段与进度。进度条按当前阶段自己的总量计算；上传阶段的总量就是文件大小。
 pub(crate) fn upload_progress(batch: u64, index: usize, progress: UploadProgressState) {
-    with_records(|records| {
-        update_child_record(records, batch, index, false, |record| {
-            if record.state != TransferState::Running || !record.job.is_upload() {
-                return false;
-            }
-            let before = (record.bytes, record.total);
-            let old_stage = record.upload_progress.map(|old| old.stage);
-            if progress.stage == UploadStage::Uploading && old_stage != Some(UploadStage::Uploading)
-            {
-                record.speed.begin(Instant::now());
-            }
-            record.upload_progress = Some(progress);
-            record.bytes = progress.bytes;
-            record.total = (record.job.size > 0).then_some(record.job.size);
-            if progress.stage == UploadStage::Uploading {
-                record.speed.observe(Instant::now(), progress.bytes);
-            }
-            before != (record.bytes, record.total)
-        });
+    with_records(|records| upload_progress_in(records, batch, index, progress));
+}
+
+fn upload_progress_in(
+    records: &mut [Transfer],
+    batch: u64,
+    index: usize,
+    progress: UploadProgressState,
+) {
+    update_child_record(records, batch, index, false, |record| {
+        if record.state != TransferState::Running || !record.job.is_upload() {
+            return false;
+        }
+        let before = (record.bytes, record.total, record.upload_progress);
+        let old_stage = record.upload_progress.map(|old| old.stage);
+        if progress.stage == UploadStage::Uploading && old_stage != Some(UploadStage::Uploading) {
+            record.speed.begin(Instant::now());
+        }
+        record.upload_progress = Some(progress);
+        // 断点进度只接受“已完成分片”口径；Uploading / Finalizing 才带这个值。
+        if let Some(completed) = progress.completed_bytes {
+            record.bytes = completed;
+        }
+        record.total = (record.job.size > 0).then_some(record.job.size);
+        if progress.stage == UploadStage::Uploading {
+            record.speed.observe(Instant::now(), progress.bytes);
+        }
+        before != (record.bytes, record.total, record.upload_progress)
     });
 }
 
@@ -1250,6 +1274,7 @@ pub(crate) fn finish_upload_ok(batch: u64, index: usize, result: &kichi_core::Up
             record.upload_progress = Some(UploadProgressState {
                 stage: UploadStage::Finalizing,
                 bytes: record.job.size,
+                completed_bytes: Some(record.job.size),
                 total: record.job.size,
             });
             true

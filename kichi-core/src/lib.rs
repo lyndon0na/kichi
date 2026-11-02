@@ -21,6 +21,7 @@ pub mod subtitles;
 pub mod tasks;
 pub mod types;
 pub mod upload;
+mod upload_progress;
 mod upload_rate;
 mod upload_state;
 

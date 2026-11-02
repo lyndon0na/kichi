@@ -28,6 +28,7 @@ use sha2::{Digest as Sha256Digest, Sha256};
 use crate::drive::DriveClient;
 use crate::http::Body as ApiBody;
 use crate::naming::{duplicate_file_name, MAX_DUPLICATE_ATTEMPTS, MAX_NAME_BYTES};
+use crate::upload_progress::{ProgressReader, UploadByteTracker, LIVE_INTERVAL};
 use crate::upload_rate::UploadRateLimiter;
 use crate::upload_state::{
     UploadCredentials, UploadError, UploadPart, UploadResume, UPLOAD_RESUME_VERSION,
@@ -65,7 +66,10 @@ pub enum UploadStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UploadProgress {
     pub stage: UploadStage,
+    /// 上传阶段的实际进度：已完成分片 + 当前在途分片已读出的字节。
     pub bytes: u64,
+    /// 已确认完成、可续传的字节；`None` = 当前阶段不改变记录里的断点进度。
+    pub completed_bytes: Option<u64>,
     pub total: u64,
 }
 
@@ -229,6 +233,7 @@ impl DriveClient {
         progress(UploadProgress {
             stage: UploadStage::Preparing,
             bytes: 0,
+            completed_bytes: None,
             total: size,
         });
 
@@ -249,6 +254,7 @@ impl DriveClient {
             progress(UploadProgress {
                 stage: UploadStage::Preparing,
                 bytes: 0,
+                completed_bytes: None,
                 total: size,
             });
             let requested_name;
@@ -328,6 +334,7 @@ impl DriveClient {
             progress(UploadProgress {
                 stage: UploadStage::Finalizing,
                 bytes: size,
+                completed_bytes: Some(size),
                 total: size,
             });
             return self.finish_upload_task(&mut state, 0, cancelled, checkpoint);
@@ -360,6 +367,7 @@ impl DriveClient {
         progress(UploadProgress {
             stage: UploadStage::Finalizing,
             bytes: size,
+            completed_bytes: Some(size),
             total: size,
         });
         match self.finish_upload_task(&mut state, sent, cancelled, checkpoint) {
@@ -425,6 +433,7 @@ impl DriveClient {
         progress(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: 0,
+            completed_bytes: None,
             total: sampled_total,
         });
         let cid = cid_for_file(path, size, cancelled, progress)?;
@@ -482,6 +491,7 @@ impl DriveClient {
             progress(UploadProgress {
                 stage: UploadStage::Hashing,
                 bytes: 0,
+                completed_bytes: None,
                 total: size,
             });
             let digest = sha256_hex(&mut file, cancelled, progress, size)?;
@@ -489,29 +499,54 @@ impl DriveClient {
             progress(UploadProgress {
                 stage: UploadStage::Uploading,
                 bytes: 0,
+                completed_bytes: Some(0),
                 total: size,
             });
             drop(file);
-            target
-                .put_object(
-                    path,
-                    size,
-                    &payload_hash,
-                    "application/octet-stream",
-                    cancelled,
-                )
-                .map_err(|failure| UploadError {
-                    error: failure.error,
-                    // 单次 PUT 没有可续传的分片；失败只能整文件重来。
-                    keep_resume: false,
-                    stop_queue: failure.stop_queue,
-                })?;
+            let tracker = UploadByteTracker::new(0);
+            let uploaded = thread::scope(|scope| {
+                let handle = scope.spawn(|| {
+                    target.put_object(
+                        path,
+                        size,
+                        &payload_hash,
+                        "application/octet-stream",
+                        cancelled,
+                        Some(&tracker),
+                    )
+                });
+                // 单次 PUT 由 reqwest 在后台线程阻塞读取；主线程按固定间隔
+                // 汇总在途字节，不能等整次请求结束才更新界面。
+                loop {
+                    if handle.is_finished() {
+                        break;
+                    }
+                    thread::sleep(LIVE_INTERVAL);
+                    if handle.is_finished() {
+                        break;
+                    }
+                    progress(tracker.progress(size));
+                }
+                match handle.join() {
+                    Ok(result) => result,
+                    Err(_) => Err(UploadError::fatal(Error::Other(
+                        "上传线程异常中断".to_owned(),
+                    ))),
+                }
+            });
+            uploaded.map_err(|failure| UploadError {
+                error: failure.error,
+                // 单次 PUT 没有可续传的分片；失败只能整文件重来。
+                keep_resume: false,
+                stop_queue: failure.stop_queue,
+            })?;
             state.bytes_sent = size;
             state.content_uploaded = true;
             checkpoint(state);
             progress(UploadProgress {
                 stage: UploadStage::Uploading,
                 bytes: size,
+                completed_bytes: Some(size),
                 total: size,
             });
             return Ok((size, size));
@@ -573,6 +608,7 @@ impl DriveClient {
         progress(UploadProgress {
             stage: UploadStage::Uploading,
             bytes: state.bytes_sent,
+            completed_bytes: Some(state.bytes_sent),
             total: size,
         });
 
@@ -581,6 +617,7 @@ impl DriveClient {
             .collect();
         let mut sent_this_run = 0u64;
         if !pending_parts.is_empty() {
+            let tracker = UploadByteTracker::new(state.bytes_sent);
             let upload_id = state.upload_id.clone();
             let stop = AtomicBool::new(false);
             let cursor = AtomicUsize::new(0);
@@ -598,6 +635,7 @@ impl DriveClient {
                     let target = &target;
                     let upload_id = &upload_id;
                     let cancelled = cancelled.clone();
+                    let tracker = &tracker;
                     let spawned = std::thread::Builder::new()
                         .name(format!("kichi-upload-part-{worker}"))
                         .spawn_scoped(scope, move || {
@@ -625,6 +663,7 @@ impl DriveClient {
                                         size,
                                         &hex_lower(&digest),
                                         &cancelled,
+                                        Some(tracker),
                                     )
                                 })();
                                 match result {
@@ -677,25 +716,32 @@ impl DriveClient {
                     }
                 }
                 drop(sender);
-                for (part_number, length, etag) in receiver {
-                    completed.insert(
-                        part_number,
-                        UploadPart {
-                            number: part_number,
-                            etag,
-                            size: length,
-                        },
-                    );
-                    sent_this_run = sent_this_run.saturating_add(length);
-                    state.parts = completed.values().cloned().collect();
-                    state.bytes_sent = completed_part_bytes(&completed, part_size, size);
-                    state.touch();
-                    checkpoint(state);
-                    progress(UploadProgress {
-                        stage: UploadStage::Uploading,
-                        bytes: state.bytes_sent,
-                        total: size,
-                    });
+                loop {
+                    match receiver.recv_timeout(LIVE_INTERVAL) {
+                        Ok((part_number, length, etag)) => {
+                            // 先撤掉在途计数，再把整片并入已完成，避免双计。
+                            tracker.unregister(part_number);
+                            completed.insert(
+                                part_number,
+                                UploadPart {
+                                    number: part_number,
+                                    etag,
+                                    size: length,
+                                },
+                            );
+                            sent_this_run = sent_this_run.saturating_add(length);
+                            state.parts = completed.values().cloned().collect();
+                            state.bytes_sent = completed_part_bytes(&completed, part_size, size);
+                            tracker.set_completed(state.bytes_sent);
+                            state.touch();
+                            progress(tracker.progress(size));
+                            checkpoint(state);
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            progress(tracker.progress(size));
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
                 }
             });
 
@@ -932,6 +978,7 @@ impl S3Target {
         payload_hash: &str,
         content_type: &str,
         cancelled: &C,
+        progress: Option<&UploadByteTracker>,
     ) -> Result<(), UploadError>
     where
         C: Fn() -> bool + Clone + Send + Sync + 'static,
@@ -946,6 +993,11 @@ impl S3Target {
                 self.limiter.clone(),
                 cancelled.clone(),
             );
+            let counter = progress.map(|tracker| tracker.register(0));
+            let body = match counter {
+                Some(counter) => Body::sized(ProgressReader::new(body, counter), size),
+                None => Body::sized(body, size),
+            };
             let response = self
                 .send(
                     Method::PUT,
@@ -954,7 +1006,7 @@ impl S3Target {
                     S3RequestBody {
                         content_length: (size > 0).then_some(size),
                         content_type: Some(content_type),
-                        body: Some(Body::sized(body, size)),
+                        body: Some(body),
                     },
                     cancelled,
                 )
@@ -1065,6 +1117,7 @@ impl S3Target {
         file_size: u64,
         payload_hash: &str,
         cancelled: &C,
+        progress: Option<&UploadByteTracker>,
     ) -> Result<String, UploadError>
     where
         C: Fn() -> bool + Clone + Send + Sync + 'static,
@@ -1078,6 +1131,11 @@ impl S3Target {
                 self.limiter.clone(),
                 cancelled.clone(),
             );
+            let counter = progress.map(|tracker| tracker.register(part_number));
+            let body = match counter {
+                Some(counter) => Body::sized(ProgressReader::new(body, counter), length),
+                None => Body::sized(body, length),
+            };
             let response = self
                 .send(
                     Method::PUT,
@@ -1089,7 +1147,7 @@ impl S3Target {
                     S3RequestBody {
                         content_length: Some(length),
                         content_type: Some("application/octet-stream"),
-                        body: Some(Body::sized(body, length)),
+                        body: Some(body),
                     },
                     cancelled,
                 )
@@ -1583,6 +1641,7 @@ where
     progress(UploadProgress {
         stage: UploadStage::Hashing,
         bytes: 0,
+        completed_bytes: None,
         total: size,
     });
     let mut file =
@@ -1612,6 +1671,7 @@ where
             progress(UploadProgress {
                 stage: UploadStage::Hashing,
                 bytes: read_total,
+                completed_bytes: None,
                 total: size,
             });
         }
@@ -1657,6 +1717,7 @@ where
         progress(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: *hashed,
+            completed_bytes: None,
             total,
         });
     }
@@ -1750,6 +1811,7 @@ where
         progress(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: read,
+            completed_bytes: None,
             total,
         });
     }
