@@ -33,6 +33,8 @@ const QUIT_GRACE: Duration = Duration::from_millis(800);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 /// 监控线程的轮询粒度（检查取消标志 / 进程是否已退）。
 const POLL: Duration = Duration::from_millis(200);
+/// 播放器进程退出后，再等 IPC 把 `end-file(eof)` 等尾部事件送完的宽限。
+const EXIT_EVENT_GRACE: Duration = Duration::from_millis(500);
 /// VLC RC 没有事件推送，按这个间隔主动读取位置与时长。
 #[cfg(not(test))]
 const VLC_POLL: Duration = Duration::from_millis(1000);
@@ -690,34 +692,45 @@ fn wait_playing(
         fallback_duration,
         Instant::now(),
     );
+    let mut exited_at = None;
     loop {
         if cancel.is_cancelled() {
             shut_down(conn, child);
             return tracker.final_progress();
         }
-        if child_exited(child) {
+        if child_exited(child) && exited_at.is_none() {
+            exited_at = Some(Instant::now());
+        }
+        if exited_at
+            .is_some_and(|at| Instant::now().saturating_duration_since(at) >= EXIT_EVENT_GRACE)
+        {
             return tracker.final_progress();
         }
-        if let Some(late) = late {
-            if let Some(assets) = subtitles::take_slot(&late.slot) {
-                if !assets.is_empty() {
-                    match subtitles::attach(conn, Some(&assets), next_sub_id, selected) {
-                        None => {
-                            eprintln!("[kichi] 字幕：播放中补挂 {} 条", assets.tracks().len());
+        if exited_at.is_none() {
+            if let Some(late) = late {
+                if let Some(assets) = subtitles::take_slot(&late.slot) {
+                    if !assets.is_empty() {
+                        match subtitles::attach(conn, Some(&assets), next_sub_id, selected) {
+                            None => {
+                                eprintln!("[kichi] 字幕：播放中补挂 {} 条", assets.tracks().len());
+                            }
+                            Some(note) => eprintln!("[kichi] 字幕：播放中补挂失败：{note}"),
                         }
-                        Some(note) => eprintln!("[kichi] 字幕：播放中补挂失败：{note}"),
                     }
+                    // attach 等回执时会读走属性事件；把连接里缓存的最新值补回跟踪器。
+                    tracker.update_values(conn.latest_time_pos, conn.latest_duration);
+                    late_held.push(assets);
                 }
-                // attach 等回执时会读走属性事件；把连接里缓存的最新值补回跟踪器。
-                tracker.update_values(conn.latest_time_pos, conn.latest_duration);
-                late_held.push(assets);
             }
         }
         match conn.read_playback_event() {
             Ok(ipc::PlaybackRead::Message(value)) => tracker.observe(&value),
             Ok(ipc::PlaybackRead::Timeout) => {}
             Ok(ipc::PlaybackRead::Closed) => {
-                // socket 已断时进程通常马上退出；下一轮统一收尾。
+                // 进程已退出时，把 socket 里最后几条事件（尤其 end-file eof）读完。
+                if exited_at.is_some() {
+                    return tracker.final_progress();
+                }
                 std::thread::sleep(POLL);
             }
             Err(err) => {
@@ -1088,11 +1101,14 @@ while time.time() < deadline:
         if cmd and cmd[0] == "observe_property":
             send({"request_id": 0, "error": "success"})
         elif cmd and cmd[0] == "loadfile":
-            if mode in ("ready", "sub-fail", "progress"):
+            if mode in ("ready", "sub-fail", "progress", "complete"):
                 time.sleep(0.2)
                 if mode == "progress":
                     send({"event": "property-change", "name": "duration", "data": 120.0})
                     send({"event": "property-change", "name": "time-pos", "data": 42.0})
+                elif mode == "complete":
+                    send({"event": "property-change", "name": "duration", "data": 120.0})
+                    send({"event": "property-change", "name": "time-pos", "data": 119.2})
                 send({"event": "property-change", "name": "vo-configured", "data": True})
             elif mode == "fail":
                 time.sleep(0.1)
@@ -1127,7 +1143,12 @@ while time.time() < deadline:
             os.remove(sock)
             sys.exit(0)
         elif cmd and cmd[0] == "set_property":
-            send({"request_id": 0, "error": "success"})
+            if mode == "complete":
+                send({"event": "end-file", "reason": "eof"})
+                time.sleep(0.01)
+                sys.exit(0)
+            else:
+                send({"request_id": 0, "error": "success"})
 "#;
 
     /// 假 VLC：只实现 Kichi 用到的 oldrc 数值命令。
@@ -1408,6 +1429,49 @@ while True:
         let text = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(text.contains("seek\t40"), "应当跳到历史位置：{text:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mpv_natural_eof_reports_last_non_full_second() {
+        let _guard = serial();
+        shutdown_all();
+        let config = fake_mpv_config("complete");
+        let cancel = Arc::new(Cancel::default());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        start(
+            &config,
+            "https://cdn.invalid/v?sign=S",
+            "播完",
+            cancel,
+            PlaybackExtras::default(),
+            move |event| {
+                let _ = sender.send(event);
+            },
+        )
+        .expect("启动假 mpv 失败");
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(10)).ok(),
+            Some(StartEvent::Ready {
+                subtitle_note: None
+            })
+        );
+        let final_progress = loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(StartEvent::Progress { .. }) => continue,
+                Ok(StartEvent::Stopped { progress }) => break progress,
+                other => panic!("意外的播放事件：{other:?}"),
+            }
+        };
+        assert_eq!(
+            final_progress,
+            Some(PlaybackProgress {
+                seconds: 119,
+                duration: 120
+            }),
+            "自然播完必须上报片尾前一秒，避免服务端把满进度归零"
+        );
+        wait_for_no_sessions();
+        assert_eq!(active_count(), 0);
     }
 
     fn test_assets() -> (SubtitleAssets, std::path::PathBuf) {

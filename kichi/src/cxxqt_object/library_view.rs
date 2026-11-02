@@ -109,10 +109,14 @@ fn format_progress(progress: PlaybackProgress) -> String {
     if progress.duration == 0 {
         return "—".to_owned();
     }
-    let percent = ((progress.seconds.min(progress.duration) as f64 / progress.duration as f64)
-        * 100.0)
-        .round()
-        .clamp(0.0, 100.0);
+    let seconds = progress.seconds.min(progress.duration);
+    let percent = if seconds > 0 && progress.duration.saturating_sub(seconds) <= 1 {
+        100.0
+    } else {
+        (seconds as f64 / progress.duration as f64 * 100.0)
+            .round()
+            .clamp(0.0, 100.0)
+    };
     format!("{percent:.0}%")
 }
 
@@ -169,6 +173,52 @@ mod tests {
         assert!(text(&row, "secondaryText").starts_with("2026-10-31"));
         assert_eq!(text(&row, "eventId"), "event");
         assert!(["today", "yesterday", "earlier"].contains(&text(&row, "dateGroup").as_str()));
+    }
+
+    #[test]
+    fn progress_is_shown_as_a_percentage() {
+        assert_eq!(
+            format_progress(PlaybackProgress {
+                seconds: 0,
+                duration: 1,
+            }),
+            "0%"
+        );
+        assert_eq!(
+            format_progress(PlaybackProgress {
+                seconds: 0,
+                duration: 600,
+            }),
+            "0%"
+        );
+        assert_eq!(
+            format_progress(PlaybackProgress {
+                seconds: 0,
+                duration: 0,
+            }),
+            "—"
+        );
+        assert_eq!(
+            format_progress(PlaybackProgress {
+                seconds: 595,
+                duration: 600,
+            }),
+            "99%"
+        );
+        assert_eq!(
+            format_progress(PlaybackProgress {
+                seconds: 599,
+                duration: 600,
+            }),
+            "100%"
+        );
+        assert_eq!(
+            format_progress(PlaybackProgress {
+                seconds: 600,
+                duration: 600,
+            }),
+            "100%"
+        );
     }
 
     #[test]

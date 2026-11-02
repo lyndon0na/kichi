@@ -18,6 +18,7 @@ pub(super) struct ProgressTracker {
     duration: Option<f64>,
     last_emitted: Option<PlaybackProgress>,
     last_emit_at: Instant,
+    reached_end: bool,
 }
 
 impl ProgressTracker {
@@ -32,6 +33,7 @@ impl ProgressTracker {
             duration: None,
             last_emitted: None,
             last_emit_at: now,
+            reached_end: false,
         };
         tracker.update_values(position, duration);
         if tracker.duration.is_none() {
@@ -52,7 +54,16 @@ impl ProgressTracker {
     }
 
     pub(super) fn observe(&mut self, value: &serde_json::Value) {
-        if value.get("event").and_then(serde_json::Value::as_str) != Some("property-change") {
+        let event = value
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if event == "end-file" {
+            self.reached_end =
+                value.get("reason").and_then(serde_json::Value::as_str) == Some("eof");
+            return;
+        }
+        if event != "property-change" {
             return;
         }
         let number = value
@@ -97,18 +108,29 @@ impl ProgressTracker {
 
     fn current(&self) -> Option<PlaybackProgress> {
         let duration = self.duration?;
-        let position = self.position?;
         let duration = duration.floor();
         if duration <= 0.0 {
             return None;
         }
-        let seconds = position.floor().clamp(0.0, duration);
+        let duration = duration as u64;
+        let last_second = duration.saturating_sub(1);
+        if last_second == 0 {
+            return None;
+        }
+        if self.reached_end {
+            return Some(PlaybackProgress {
+                seconds: last_second,
+                duration,
+            });
+        }
+        let position = self.position?;
+        let seconds = position.floor().clamp(0.0, last_second as f64);
         if seconds <= 0.0 {
             return None;
         }
         Some(PlaybackProgress {
             seconds: seconds as u64,
-            duration: duration as u64,
+            duration,
         })
     }
 }
@@ -166,13 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn ignores_bad_values_and_clamps_position() {
+    fn ignores_bad_values_and_never_reports_full_duration() {
         let started = Instant::now();
         let mut tracker = ProgressTracker::new(Some(999.0), Some(30.0), None, started);
         assert_eq!(
             tracker.final_progress(),
             Some(PlaybackProgress {
-                seconds: 30,
+                seconds: 29,
                 duration: 30
             })
         );
@@ -181,9 +203,35 @@ mod tests {
             "name": "time-pos",
             "data": null
         }));
-        assert_eq!(tracker.final_progress().map(|p| p.seconds), Some(30));
+        assert_eq!(tracker.final_progress().map(|p| p.seconds), Some(29));
 
         let none = ProgressTracker::new(Some(-1.0), Some(0.0), None, started);
         assert_eq!(none.final_progress(), None);
+    }
+
+    #[test]
+    fn only_eof_uses_the_last_second_but_manual_quit_does_not() {
+        let started = Instant::now();
+        let mut tracker = ProgressTracker::new(Some(0.5), Some(120.8), None, started);
+        assert_eq!(tracker.final_progress(), None);
+
+        tracker.observe(&serde_json::json!({
+            "event": "end-file",
+            "reason": "quit"
+        }));
+        assert_eq!(tracker.final_progress(), None, "手动关闭不是看完");
+
+        tracker.observe(&serde_json::json!({
+            "event": "end-file",
+            "reason": "eof"
+        }));
+        assert_eq!(
+            tracker.final_progress(),
+            Some(PlaybackProgress {
+                seconds: 119,
+                duration: 120
+            }),
+            "自然播放到结尾上报片尾前一秒，由界面显示 100%"
+        );
     }
 }

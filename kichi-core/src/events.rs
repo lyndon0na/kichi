@@ -35,12 +35,15 @@ pub struct PlaybackProgress {
 }
 
 impl PlaybackProgress {
-    /// 规范化成非零且不超过总时长的进度。官方历史里偶尔会有空值或异常值。
+    /// 规范化成非零、非满且不超过总时长的进度。
+    ///
+    /// 服务端会把 `play_seconds == play_duration` 的满进度保存成 0；上报前
+    /// 必须保留至少一秒余量，完成状态由客户端显示层表达。
     pub fn normalized(self) -> Option<Self> {
         if self.duration == 0 {
             return None;
         }
-        let seconds = self.seconds.min(self.duration);
+        let seconds = self.seconds.min(self.duration.saturating_sub(1));
         (seconds > 0).then_some(Self {
             seconds,
             duration: self.duration,
@@ -56,7 +59,7 @@ pub struct PlaybackHistoryEntry {
     pub file_id: String,
     /// 事件更新时间；用于资料库页排序。
     pub updated_at: Option<DateTime<Utc>>,
-    /// 进度 0 秒或总时长缺失时仍保留历史，但页面显示为「—」。
+    /// 进度 0 秒仍保留历史并显示 `0%`；总时长缺失时页面显示「—」。
     pub progress: Option<PlaybackProgress>,
     /// 事件附带的完整文件；不完整时为 `None`，调用方再按需读取只读详情。
     pub reference_resource: Option<FileEntry>,
@@ -273,9 +276,10 @@ impl EventDto {
     }
 }
 
-/// 播放历史保留 0 秒事件（界面显示 0%），但总时长缺失时没有可展示进度。
-/// 位置超过总时长时按总时长截断。续播路径还会再走一次 `normalized()`，
-/// 因而 0 秒不会被误当成可恢复位置。
+/// 播放历史保留 0 秒事件（界面显示 `0%`），但总时长缺失时没有可展示进度。
+/// 0 秒不是看完标记；服务端会把满进度归零，所以完成记录保留在片尾前一秒，
+/// 由界面显示为 `100%`。位置超过总时长时仍保留读取到的实际值，续播路径还会
+/// 再走一次 `normalized()`，因而 0 秒不会被误当成可恢复位置。
 fn playback_progress(seconds: u64, duration: u64) -> Option<PlaybackProgress> {
     (duration > 0).then_some(PlaybackProgress {
         seconds: seconds.min(duration),
@@ -497,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_progress_is_not_reported() {
+    fn zero_and_full_progress_are_never_reported() {
         assert_eq!(
             PlaybackProgress {
                 seconds: 0,
@@ -510,6 +514,25 @@ mod tests {
             PlaybackProgress {
                 seconds: 10,
                 duration: 0
+            }
+            .normalized(),
+            None
+        );
+        assert_eq!(
+            PlaybackProgress {
+                seconds: 100,
+                duration: 100
+            }
+            .normalized(),
+            Some(PlaybackProgress {
+                seconds: 99,
+                duration: 100
+            })
+        );
+        assert_eq!(
+            PlaybackProgress {
+                seconds: 1,
+                duration: 1
             }
             .normalized(),
             None
