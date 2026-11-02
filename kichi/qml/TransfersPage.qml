@@ -521,6 +521,19 @@ Item {
                 }
             }
 
+            ScrollFirstClickArea {
+                id: firstClickArea
+                view: list
+                scrollBarSlot: metrics.scrollBarSlot
+                z: 0
+
+                onClickedAt: function (index, modifiers, position) {
+                    const item = list.itemAtIndex(index)
+                    firstClickArea.invokeFirstClick(
+                        item, index, 0, position.x, position.y)
+                }
+            }
+
             TransferStickyRow {
                 width: list.width - metrics.scrollBarSlot
                 rowData: page.expandedRowData

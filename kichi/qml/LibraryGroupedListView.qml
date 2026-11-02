@@ -160,4 +160,27 @@ Item {
             }
         }
     }
+
+    ScrollFirstClickArea {
+        id: firstClickArea
+        view: list
+        scrollBarSlot: root.metrics ? root.metrics.scrollBarSlot : 10
+        hitTest: function (x, y) {
+            const rowIndex = list.rowIndexAt(y + list.contentY)
+            if (rowIndex < 0 || rowIndex >= root.rows.length)
+                return -1
+            const rowData = root.rows[rowIndex]
+            return rowData && rowData.rowType !== "header"
+                   ? rowData.entryIndex : -1
+        }
+
+        onClickedAt: function (index, modifiers, position) {
+            const item = root.itemAtIndex(index)
+            if (!item)
+                return
+            list.forceActiveFocus()
+            firstClickArea.invokeFirstClick(item, index, modifiers,
+                                            position.x, position.y)
+        }
+    }
 }

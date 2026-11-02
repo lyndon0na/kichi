@@ -105,6 +105,42 @@ TestCase {
         compare(fired, 1, "点一次只发一次退出登录请求")
     }
 
+    function test_sign_out_first_click_after_flick_emits_once() {
+        var smallPage = pageComponent.createObject(parent, {
+            width: 1000,
+            height: 600,
+            visible: true,
+            backend: backend
+        })
+        verify(smallPage !== null)
+        var scroller = findChild(smallPage, "settingsScroller")
+        var btn = findChild(smallPage, "settingsSignOut")
+        verify(scroller !== null && btn !== null)
+        verify(scroller.contentHeight > scroller.height)
+
+        var fired = 0
+        smallPage.signOutRequested.connect(function () { fired += 1 })
+
+        const buttonY = btn.mapToItem(scroller.contentItem, 0, 0).y
+        const maxY = scroller.contentHeight - scroller.height
+        scroller.contentY = Math.max(0, Math.min(maxY - 140, buttonY - 320))
+        wait(30)
+        scroller.flick(0, -100)
+        wait(30)
+        verify(scroller.moving, "测试必须覆盖惯性滚动期间")
+
+        const point = scroller.mapFromItem(
+            btn, btn.width / 2, btn.height / 2)
+        verify(point.x >= 0 && point.x < scroller.width - 10
+               && point.y >= 0 && point.y < scroller.height)
+        mouseClick(scroller, point.x, point.y)
+        wait(50)
+        compare(fired, 1, "惯性后的第一次点击必须直接请求退出登录")
+
+        scroller.cancelFlick()
+        smallPage.destroy()
+    }
+
     function test_advanced_player_is_collapsed_until_clicked() {
         var row = findChild(page, "settingsAdvancedPlayer")
         var body = findChild(page, "settingsPlayerAdvancedBody")

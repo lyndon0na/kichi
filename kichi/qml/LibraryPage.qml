@@ -343,77 +343,97 @@ Item {
                     secondaryLabel: page.secondaryHeader
                 }
 
-                ListView {
-                    id: libraryList
-                    objectName: "libraryList"
-
+                Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     visible: !page.gridMode && !page.dateGrouped
-                    clip: true
-                    spacing: 0
-                    model: page.dateGrouped ? null : page.libraryRows
-                    currentIndex: -1
-                    boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: KScrollBar {}
-                    focus: true
-                    highlightFollowsCurrentItem: false
-                    Keys.onPressed: function (event) {
-                        page.handleKey(event)
+
+                    ListView {
+                        id: libraryList
+                        objectName: "libraryList"
+
+                        anchors.fill: parent
+                        visible: !page.gridMode && !page.dateGrouped
+                        clip: true
+                        spacing: 0
+                        model: page.dateGrouped ? null : page.libraryRows
+                        currentIndex: -1
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: KScrollBar {}
+                        focus: true
+                        highlightFollowsCurrentItem: false
+                        Keys.onPressed: function (event) {
+                            page.handleKey(event)
+                        }
+                        onContentHeightChanged: page.restoreScroll()
+
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: function (point) {
+                                if (!page.backend)
+                                    return
+                                // position 以内容区为原点，纵向随 contentY 走
+                                // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
+                                const viewport = libraryList.mapFromItem(
+                                    null, point.scenePosition.x,
+                                    point.scenePosition.y)
+                                if (page.rowAt(viewport.x, viewport.y))
+                                    return
+                                page.openBlankMenu(libraryList.mapToItem(
+                                                       null, viewport.x, viewport.y))
+                            }
+                        }
+
+                        delegate: LibraryRow {
+                            id: row
+                            width: ListView.view.width - metrics.scrollBarSlot
+                            backend: page.backend
+                            rowIndex: index
+                            highlighted: ListView.isCurrentItem
+                            thumbnailSlotWidth: density.thumbnailSlotWidth
+                            thumbnailSlotHeight: density.thumbnailSlotHeight
+                            primaryColumnWidth: density.sizeColumnWidth
+                            secondaryColumnWidth: density.modifiedColumnWidth
+                            columnSpacing: density.columnSpacing
+                            contentPadding: density.rowPadding
+                            rowHeight: density.rowHeight
+                            textPixelSize: density.namePixelSize
+                            metaPixelSize: density.metaPixelSize
+                            iconPixelSize: density.iconPixelSize
+                            videoBadgeSize: density.listVideoBadgeSize
+                            videoBadgeMargin: density.listVideoBadgeMargin
+                            playLoading: page.isPlayLoading(entry.id)
+                            playing: page.isPlaying(entry.id)
+
+                            onActivateRequested: function (id) {
+                                if (page.backend)
+                                    page.backend.openLibraryEntry(id)
+                            }
+                            onSelectRequested: function (index) {
+                                page.selectIndex(index)
+                            }
+                            onPlayRequested: function (id, point) {
+                                page.playEntry(id, row.mapToItem(null, point.x, point.y))
+                            }
+                            onContextMenu: function (point) {
+                                page.openEntryMenu(entry,
+                                                   row.mapToItem(null, point.x, point.y))
+                            }
+                        }
                     }
-                    onContentHeightChanged: page.restoreScroll()
 
-                    TapHandler {
-                        acceptedButtons: Qt.RightButton
-                        onTapped: function (point) {
-                            if (!page.backend)
+                    ScrollFirstClickArea {
+                        id: libraryListFirstClick
+                        view: libraryList
+                        scrollBarSlot: metrics.scrollBarSlot
+
+                        onClickedAt: function (index, modifiers, position) {
+                            const item = libraryList.itemAtIndex(index)
+                            if (!item)
                                 return
-                            // position 以内容区为原点，纵向随 contentY 走
-                            // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
-                            const viewport = libraryList.mapFromItem(
-                                null, point.scenePosition.x,
-                                point.scenePosition.y)
-                            if (page.rowAt(viewport.x, viewport.y))
-                                return
-                            page.openBlankMenu(libraryList.mapToItem(
-                                                   null, viewport.x, viewport.y))
-                        }
-                    }
-
-                    delegate: LibraryRow {
-                        id: row
-                        width: ListView.view.width - metrics.scrollBarSlot
-                        backend: page.backend
-                        rowIndex: index
-                        highlighted: ListView.isCurrentItem
-                        thumbnailSlotWidth: density.thumbnailSlotWidth
-                        thumbnailSlotHeight: density.thumbnailSlotHeight
-                        primaryColumnWidth: density.sizeColumnWidth
-                        secondaryColumnWidth: density.modifiedColumnWidth
-                        columnSpacing: density.columnSpacing
-                        contentPadding: density.rowPadding
-                        rowHeight: density.rowHeight
-                        textPixelSize: density.namePixelSize
-                        metaPixelSize: density.metaPixelSize
-                        iconPixelSize: density.iconPixelSize
-                        videoBadgeSize: density.listVideoBadgeSize
-                        videoBadgeMargin: density.listVideoBadgeMargin
-                        playLoading: page.isPlayLoading(entry.id)
-                        playing: page.isPlaying(entry.id)
-
-                        onActivateRequested: function (id) {
-                            if (page.backend)
-                                page.backend.openLibraryEntry(id)
-                        }
-                        onSelectRequested: function (index) {
-                            page.selectIndex(index)
-                        }
-                        onPlayRequested: function (id, point) {
-                            page.playEntry(id, row.mapToItem(null, point.x, point.y))
-                        }
-                        onContextMenu: function (point) {
-                            page.openEntryMenu(entry,
-                                               row.mapToItem(null, point.x, point.y))
+                            libraryList.forceActiveFocus()
+                            libraryListFirstClick.invokeFirstClick(
+                                item, index, modifiers, position.x, position.y)
                         }
                     }
                 }

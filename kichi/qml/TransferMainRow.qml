@@ -30,6 +30,7 @@ ItemDelegate {
     required property string parentKey
     required property bool expandable
     required property bool expanded
+    readonly property var listView: ListView.view
 
     property bool flash: false
     property bool sticky: false
@@ -104,6 +105,16 @@ ItemDelegate {
             row.contextRequested(row.key,
                                  row.mapToItem(null, point.position.x, point.position.y))
         }
+    }
+
+    /// 惯性期间的首击只补发名称 / 箭头这一层的展开动作；按钮仍留给原控件。
+    function firstClick(modifiers, x, y) {
+        if (!row.expandable || !row.listView)
+            return
+        const local = row.listView.mapToItem(row, x, y)
+        if (row.pointerOver(expandArrow, local.x, local.y)
+                || row.pointerOver(nameLabel, local.x, local.y))
+            row.toggleRequested(row.key)
     }
 
     function pagePhaseActive(phase) {

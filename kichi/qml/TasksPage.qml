@@ -112,86 +112,106 @@ Item {
             showCreated: page.showCreatedColumn
         }
 
-        ListView {
-            id: list
-            objectName: "tasksList"
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            spacing: 0
-            model: taskRows
-            boundsBehavior: Flickable.StopAtBounds
 
-            // 列表铺到窗口右缘，条画在右侧 10px 车道里
-            ScrollBar.vertical: KScrollBar {}
+            ListView {
+                id: list
+                objectName: "tasksList"
 
-            delegate: TaskRow {
-                id: row
+                anchors.fill: parent
+                clip: true
+                spacing: 0
+                model: taskRows
+                boundsBehavior: Flickable.StopAtBounds
 
-                // 行宽减去滚动条车道，右边不会压到条
-                width: list.width - metrics.scrollBarSlot
-                rowHeight: page.tableRowHeight
-                backend: page.backend
-                thumbnailColumnWidth: page.thumbnailColumnWidth
-                thumbnailSlotHeight: page.thumbnailSlotHeight
-                sizeColumnWidth: page.sizeColumnWidth
-                createdColumnWidth: page.createdColumnWidth
-                statusColumnWidth: page.statusColumnWidth
-                progressColumnWidth: page.progressColumnWidth
-                columnSpacing: page.tableColumnSpacing
-                contentPadding: page.tableContentPadding
-                showSize: page.showSizeColumn
-                showCreated: page.showCreatedColumn
-                playLoading: page.isTaskPlayLoading(fileId)
-                playing: page.isTaskPlaying(fileId)
-                folderLoading: page.isTaskFolderLoading(fileId)
-                // ⚠ 这里**不要**再写 `key: model.key ?? ""` 这类绑定：TaskRow 的字段
-                // 都是 required property，ListView 会按同名角色自动注入；一旦手写
-                // `model.xxx` 覆盖上去，自动注入就被顶掉，而 ListModel 的 `model`
-                // 对象在这里读不到这些角色 → 整行字段全空。
-                onContextMenu: function (point) {
-                    taskMenu.openFor(row.key, row.name,
-                                     row.mapToItem(null, point.x, point.y),
-                                     row.fileId, row.kind, row.phase, row.playable)
-                }
-                onOpenFolderRequested: function (id) {
-                    page.openFolderRequested(id)
-                }
-                onPlayRequested: function (id, point) {
-                    page.playRequested(id, row.mapToItem(null, point.x, point.y))
-                }
-            }
+                // 列表铺到窗口右缘，条画在右侧 10px 车道里
+                ScrollBar.vertical: KScrollBar {}
 
-            Label {
-                objectName: "tasksEmptyState"
-                anchors.centerIn: parent
-                visible: page.showEmptyState
-                text: qsTr("暂无离线任务\n点击右上角「新任务」添加磁力链接或下载地址")
-                horizontalAlignment: Text.AlignHCenter
-                color: theme.textMuted
-                font.pixelSize: theme.fontBody
-            }
+                delegate: TaskRow {
+                    id: row
 
-            Column {
-                objectName: "tasksLoadingState"
-                anchors.centerIn: parent
-                width: 240
-                spacing: theme.gapSm
-                visible: page.showLoadingState
-
-                BusyIndicator {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 30
-                    height: 30
-                    running: parent.visible
+                    // 行宽减去滚动条车道，右边不会压到条
+                    width: list.width - metrics.scrollBarSlot
+                    rowHeight: page.tableRowHeight
+                    backend: page.backend
+                    thumbnailColumnWidth: page.thumbnailColumnWidth
+                    thumbnailSlotHeight: page.thumbnailSlotHeight
+                    sizeColumnWidth: page.sizeColumnWidth
+                    createdColumnWidth: page.createdColumnWidth
+                    statusColumnWidth: page.statusColumnWidth
+                    progressColumnWidth: page.progressColumnWidth
+                    columnSpacing: page.tableColumnSpacing
+                    contentPadding: page.tableContentPadding
+                    showSize: page.showSizeColumn
+                    showCreated: page.showCreatedColumn
+                    playLoading: page.isTaskPlayLoading(fileId)
+                    playing: page.isTaskPlaying(fileId)
+                    folderLoading: page.isTaskFolderLoading(fileId)
+                    // ⚠ 这里**不要**再写 `key: model.key ?? ""` 这类绑定：TaskRow
+                    // 的字段都是 required property，ListView 会按同名角色自动注入；
+                    // 一旦手写 `model.xxx` 覆盖上去，自动注入就被顶掉，而 ListModel
+                    // 的 `model` 对象在这里读不到这些角色 → 整行字段全空。
+                    onContextMenu: function (point) {
+                        taskMenu.openFor(row.key, row.name,
+                                         row.mapToItem(null, point.x, point.y),
+                                         row.fileId, row.kind, row.phase, row.playable)
+                    }
+                    onOpenFolderRequested: function (id) {
+                        page.openFolderRequested(id)
+                    }
+                    onPlayRequested: function (id, point) {
+                        page.playRequested(id, row.mapToItem(null, point.x, point.y))
+                    }
                 }
 
                 Label {
-                    width: parent.width
-                    text: qsTr("正在加载离线任务…")
+                    objectName: "tasksEmptyState"
+                    anchors.centerIn: parent
+                    visible: page.showEmptyState
+                    text: qsTr("暂无离线任务\n点击右上角「新任务」添加磁力链接或下载地址")
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.textMuted
                     font.pixelSize: theme.fontBody
+                }
+
+                Column {
+                    objectName: "tasksLoadingState"
+                    anchors.centerIn: parent
+                    width: 240
+                    spacing: theme.gapSm
+                    visible: page.showLoadingState
+
+                    BusyIndicator {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 30
+                        height: 30
+                        running: parent.visible
+                    }
+
+                    Label {
+                        width: parent.width
+                        text: qsTr("正在加载离线任务…")
+                        horizontalAlignment: Text.AlignHCenter
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontBody
+                    }
+                }
+            }
+
+            ScrollFirstClickArea {
+                id: firstClickArea
+                view: list
+                scrollBarSlot: metrics.scrollBarSlot
+
+                onClickedAt: function (index, modifiers, position) {
+                    const item = list.itemAtIndex(index)
+                    if (!item)
+                        return
+                    list.forceActiveFocus()
+                    firstClickArea.invokeFirstClick(
+                        item, index, modifiers, position.x, position.y)
                 }
             }
         }

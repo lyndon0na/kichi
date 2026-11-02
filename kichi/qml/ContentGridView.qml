@@ -88,6 +88,10 @@ Item {
         gridView.forceActiveFocus()
     }
 
+    function cancelFlick() {
+        gridView.cancelFlick()
+    }
+
     function itemAtIndex(index) {
         return gridView.itemAtIndex(index)
     }
@@ -163,6 +167,26 @@ Item {
                     return
                 root.blankContextMenuRequested(Qt.point(viewport.x, viewport.y))
             }
+        }
+    }
+
+    ScrollFirstClickArea {
+        id: firstClickArea
+
+        objectName: "gridFirstClickArea"
+        view: gridView
+        scrollBarSlot: root.scrollBarSlot
+        hitTest: function (x, y) {
+            return root.hitItemIndex(x, y)
+        }
+
+        onClickedAt: function (index, modifiers, position) {
+            const item = gridView.itemAtIndex(index)
+            if (!item)
+                return
+            gridView.forceActiveFocus()
+            firstClickArea.invokeFirstClick(item, index, modifiers,
+                                            position.x, position.y)
         }
     }
 }

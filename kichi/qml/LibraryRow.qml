@@ -61,6 +61,10 @@ ItemDelegate {
             row.playRequested(row.entry.id, point)
     }
 
+    function firstClick(modifiers, x, y) {
+        row.selectRequested(row.rowIndex)
+    }
+
     function pointerOver(item, x, y) {
         const topLeft = item.mapToItem(row, 0, 0)
         return x >= topLeft.x && x <= topLeft.x + item.width

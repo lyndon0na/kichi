@@ -296,4 +296,23 @@ Item {
             }
         }
     }
+
+    ScrollFirstClickArea {
+        id: firstClickArea
+        view: groupedList
+        scrollBarSlot: root.scrollBarSlot
+        hitTest: function (x, y) {
+            const card = root.cardAt(x, y)
+            return card ? card.entryIndex : -1
+        }
+
+        onClickedAt: function (index, modifiers, position) {
+            const item = root.itemAtIndex(index)
+            if (!item)
+                return
+            groupedList.forceActiveFocus()
+            firstClickArea.invokeFirstClick(item, index, modifiers,
+                                            position.x, position.y)
+        }
+    }
 }

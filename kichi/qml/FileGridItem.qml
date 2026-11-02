@@ -158,6 +158,18 @@ ItemDelegate {
             card.backend.downloadEntry(card.entry.id)
     }
 
+    /// 惯性期间被 Flickable 吞掉的首击：保留“所在文件夹”链接的单击语义。
+    function firstClick(modifiers, x, y) {
+        const local = card.gridView ? card.gridView.mapToItem(card, x, y)
+                                    : Qt.point(x, y)
+        if (card.detailVisible && card.detailClickable
+                && card.pointerOver(gridDetail, local.x, local.y)) {
+            card.detailRequested()
+            return
+        }
+        card.selectRequested(modifiers, card.rowIndex)
+    }
+
     function pointerOver(item, x, y) {
         const topLeft = item.mapToItem(card, 0, 0)
         return x >= topLeft.x && x <= topLeft.x + item.width

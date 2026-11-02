@@ -115,12 +115,19 @@ TestCase {
         }
     }
 
+    Component {
+        id: interactivePageComponent
+
+        TasksPage {}
+    }
+
     // 任务列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
     property var list: findChild(page, "tasksList")
     property var model: list ? list.model : null
 
     function init() {
         page.active = false
+        list.cancelFlick()
         list.contentY = 0
         backend.tasksLoading = false
         backend.tasksClearing = false
@@ -440,6 +447,60 @@ TestCase {
 
         folderSpy.destroy()
         playSpy.destroy()
+    }
+
+    function test_double_click_after_flick_opens_completed_folder_once() {
+        var interactivePage = interactivePageComponent.createObject(parent, {
+            width: 800,
+            height: 600,
+            visible: true,
+            backend: backend
+        })
+        verify(interactivePage !== null)
+        var testList = findChild(interactivePage, "tasksList")
+        verify(testList !== null)
+        var folderSpy = Qt.createQmlObject(
+                    "import QtTest; SignalSpy { signalName: 'openFolderRequested' }",
+                    interactivePage)
+        folderSpy.target = interactivePage
+
+        var folders = []
+        for (var i = 0; i < 40; i++) {
+            var folder = task("flick-folder-" + i, "completed", 100)
+            folder.name = "文件夹 " + i
+            folder.kind = "folder"
+            folder.fileId = "flick-folder-id-" + i
+            folders.push(folder)
+        }
+        backend.tasks = folders
+        backend.changed()
+        tryVerify(function () {
+            return testList.count === folders.length
+        })
+        tryVerify(function () {
+            return testList.height > 0
+                    && testList.contentHeight > testList.height
+        }, 2000, "列表应有可滚动高度："
+                  + testList.height + " / " + testList.contentHeight)
+
+        testList.flick(0, -600)
+        wait(30)
+        verify(testList.moving, "测试必须覆盖惯性滚动期间")
+        const x = 120
+        const y = testList.height / 2
+        const index = testList.indexAt(x, y + testList.contentY)
+        verify(index >= 0)
+        const row = testList.itemAtIndex(index)
+        verify(row !== null && row.canOpenFolder)
+
+        mouseDoubleClickSequence(testList, x, y)
+        wait(50)
+        compare(folderSpy.count, 1, "惯性后的双击必须一次打开文件夹")
+        compare(folderSpy.signalArguments[0][0], row.fileId)
+
+        folderSpy.destroy()
+        testList.cancelFlick()
+        interactivePage.destroy()
     }
 
     function test_failed_resource_does_not_activate() {

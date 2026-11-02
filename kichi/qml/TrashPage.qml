@@ -186,58 +186,78 @@ Item {
                     headerPixelSize: density.metaPixelSize
                 }
 
-                ListView {
-                    id: trashList
-                    objectName: "trashList"
-
+                Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    visible: !page.gridMode
-                    clip: true
-                    spacing: 0
-                    model: page.trashRows
-                    boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: KScrollBar {}
-                    focus: true
-                    onVisibleChanged: {
-                        if (visible)
-                            forceActiveFocus()
-                    }
-                    Keys.onPressed: function (event) {
-                        page.handleKey(event)
-                    }
-                    onContentHeightChanged: page.restoreScroll()
 
-                    delegate: TrashRow {
-                        id: row
-                        width: ListView.view.width - metrics.scrollBarSlot
-                        backend: page.backend
-                        rowIndex: index
-                        highlighted: !!entry && selection.isSelected(entry.id)
-                        thumbnailSlotWidth: density.thumbnailSlotWidth
-                        thumbnailSlotHeight: density.thumbnailSlotHeight
-                        deletedColumnWidth: density.modifiedColumnWidth
-                        sizeColumnWidth: density.sizeColumnWidth
-                        columnSpacing: density.columnSpacing
-                        contentPadding: density.rowPadding
-                        rowHeight: density.rowHeight
-                        textPixelSize: density.namePixelSize
-                        metaPixelSize: density.metaPixelSize
-                        iconPixelSize: density.iconPixelSize
+                    ListView {
+                        id: trashList
+                        objectName: "trashList"
 
-                        onSelectRequested: function (modifiers, index) {
-                            if (index < 0 || index >= page.entries.length)
-                                return
-                            selection.click(page.entries[index].id, index, modifiers, page.entries)
+                        anchors.fill: parent
+                        visible: !page.gridMode
+                        clip: true
+                        spacing: 0
+                        model: page.trashRows
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: KScrollBar {}
+                        focus: true
+                        onVisibleChanged: {
+                            if (visible)
+                                forceActiveFocus()
                         }
+                        Keys.onPressed: function (event) {
+                            page.handleKey(event)
+                        }
+                        onContentHeightChanged: page.restoreScroll()
 
-                        onContextMenu: function (point) {
-                            if (!entry)
+                        delegate: TrashRow {
+                            id: row
+                            width: ListView.view.width - metrics.scrollBarSlot
+                            backend: page.backend
+                            rowIndex: index
+                            highlighted: !!entry && selection.isSelected(entry.id)
+                            thumbnailSlotWidth: density.thumbnailSlotWidth
+                            thumbnailSlotHeight: density.thumbnailSlotHeight
+                            deletedColumnWidth: density.modifiedColumnWidth
+                            sizeColumnWidth: density.sizeColumnWidth
+                            columnSpacing: density.columnSpacing
+                            contentPadding: density.rowPadding
+                            rowHeight: density.rowHeight
+                            textPixelSize: density.namePixelSize
+                            metaPixelSize: density.metaPixelSize
+                            iconPixelSize: density.iconPixelSize
+
+                            onSelectRequested: function (modifiers, index) {
+                                if (index < 0 || index >= page.entries.length)
+                                    return
+                                selection.click(page.entries[index].id, index,
+                                                modifiers, page.entries)
+                            }
+
+                            onContextMenu: function (point) {
+                                if (!entry)
+                                    return
+                                selection.ensureSelected(entry)
+                                trashList.forceActiveFocus()
+                                var windowPoint = row.mapToItem(null, point.x, point.y)
+                                page.openContext(windowPoint)
+                            }
+                        }
+                    }
+
+                    ScrollFirstClickArea {
+                        id: trashListFirstClick
+                        view: trashList
+                        scrollBarSlot: metrics.scrollBarSlot
+
+                        onClickedAt: function (index, modifiers, position) {
+                            const item = trashList.itemAtIndex(index)
+                            if (!item)
                                 return
-                            selection.ensureSelected(entry)
                             trashList.forceActiveFocus()
-                            var windowPoint = row.mapToItem(null, point.x, point.y)
-                            page.openContext(windowPoint)
+                            trashListFirstClick.invokeFirstClick(
+                                item, index, modifiers, position.x, position.y)
                         }
                     }
                 }

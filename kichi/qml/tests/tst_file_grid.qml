@@ -72,6 +72,7 @@ TestCase {
         property string newTaskDialogFolderPath: ""
         property var newTaskDialogStartPath: []
         property int refreshCalls: 0
+        property int openDirCalls: 0
         property int searchOpenCalls: 0
         property int searchRevealCalls: 0
 
@@ -98,7 +99,9 @@ TestCase {
             contentView = view === "grid" ? "grid" : "list"
         }
 
-        function openDir(id) {}
+        function openDir(id) {
+            openDirCalls += 1
+        }
         function openParent() {}
         function openCrumb(index) {}
         function clearStatusMessage() {}
@@ -245,8 +248,13 @@ TestCase {
     }
 
     function cleanup() {
-        if (page)
+        if (page) {
+            page.activeFileView.cancelFlick()
+            page.visible = false
+            wait(50)
             page.destroy()
+            wait(30)
+        }
         if (gridItem)
             gridItem.destroy()
         if (density)
@@ -298,6 +306,7 @@ TestCase {
         fakeBackend.droppedUploadFolderName = ""
         fakeBackend.droppedUploadUrls = []
         fakeBackend.refreshCalls = 0
+        fakeBackend.openDirCalls = 0
         fakeBackend.searchOpenCalls = 0
         fakeBackend.searchRevealCalls = 0
     }
@@ -737,6 +746,99 @@ TestCase {
         })
         compare(grid.currentIndex, 20)
         verify(grid.contentY > 0, "网格视图也必须滚动到目标")
+    }
+
+    function test_list_first_click_after_flick_selects_and_double_click_opens() {
+        fakeBackend.files = manyEntries(40)
+        fakeBackend.contentView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        verify(list !== null)
+        verify(list.contentHeight > list.height)
+        const x = 120
+        const y = list.height / 2
+
+        list.flick(0, -600)
+        wait(30)
+        verify(list.moving, "测试必须覆盖惯性滚动期间")
+        const index = list.indexAt(x, y + list.contentY)
+        verify(index >= 0)
+        mouseClick(list, x, y)
+        wait(50)
+        const row = list.itemAtIndex(index)
+        verify(row !== null)
+        compare(row.highlighted, true, "滚轮后第一次单击必须选中当前行")
+
+        fakeBackend.openDirCalls = 0
+        list.flick(0, -600)
+        wait(30)
+        verify(list.moving)
+        let folderY = -1
+        for (let scanY = 12; scanY < list.height - 12; scanY += 24) {
+            const scanIndex = list.indexAt(x, scanY + list.contentY)
+            const scanRow = list.itemAtIndex(scanIndex)
+            if (scanRow && scanRow.entry && scanRow.entry.kind === "folder") {
+                folderY = scanY
+                break
+            }
+        }
+        verify(folderY >= 0, "视口内必须能找到一个文件夹")
+        mouseDoubleClickSequence(list, x, folderY)
+        wait(50)
+        compare(fakeBackend.openDirCalls, 1,
+                "惯性期间的双击也必须一次打开文件夹")
+    }
+
+    function test_grid_first_click_after_flick_selects_and_double_click_opens() {
+        fakeBackend.files = manyEntries(40)
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        verify(grid.contentHeight > grid.height)
+
+        grid.flick(0, -600)
+        wait(30)
+        verify(grid.moving, "测试必须覆盖惯性滚动期间")
+        const centerIndex = grid.indexAt(grid.width / 2,
+                                         grid.height / 2 + grid.contentY)
+        verify(centerIndex >= 0)
+        const centerCard = grid.itemAtIndex(centerIndex)
+        verify(centerCard !== null)
+        const center = grid.mapFromItem(centerCard,
+                                        centerCard.width / 2,
+                                        centerCard.height / 2)
+        mouseClick(grid, center.x, center.y)
+        wait(50)
+        verify(centerCard.selected, "滚轮后第一次单击必须选中当前卡片")
+
+        fakeBackend.openDirCalls = 0
+        grid.flick(0, -600)
+        wait(30)
+        verify(grid.moving)
+        let folderPoint = null
+        for (let i = 0; i < grid.count; i++) {
+            const card = grid.itemAtIndex(i)
+            if (!card || !card.entry || card.entry.kind !== "folder")
+                continue
+            const point = grid.mapFromItem(card, card.width / 2, card.height / 2)
+            if (point.y >= 0 && point.y < grid.height
+                    && point.x >= 0 && point.x < grid.width) {
+                folderPoint = point
+                break
+            }
+        }
+        verify(folderPoint !== null, "视口内必须能找到一个文件夹")
+        mouseDoubleClickSequence(grid, folderPoint.x, folderPoint.y)
+        wait(50)
+        compare(fakeBackend.openDirCalls, 1,
+                "网格惯性期间的双击也必须一次打开文件夹")
     }
 
     function test_grid_layout_fills_width_without_a_phantom_column() {

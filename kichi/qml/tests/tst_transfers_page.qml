@@ -282,6 +282,8 @@ TestCase {
     }
 
     function cleanup() {
+        if (list)
+            list.cancelFlick()
         if (header)
             header.destroy()
         if (page)
@@ -459,6 +461,42 @@ TestCase {
         compare(page.expandedKey, "")
         compare(backend.closeCount, 1)
         compare(list.cacheBuffer, 400, "收起文件夹后恢复委托预加载")
+    }
+
+    function test_first_click_after_flick_expands_folder() {
+        var items = []
+        for (var i = 0; i < 30; i++) {
+            items.push(makeRow("flick-folder-" + i, "文件夹 " + i, "done", {
+                folder: true,
+                childCount: 2
+            }))
+        }
+        backend.publish(items)
+        waitRows(30)
+        verify(list.contentHeight > list.height)
+
+        list.flick(0, -600)
+        wait(30)
+        verify(list.moving, "测试必须覆盖惯性滚动期间")
+        const index = list.indexAt(120, list.height / 2 + list.contentY)
+        verify(index >= 0)
+        const item = list.itemAtIndex(index)
+        verify(item !== null)
+        verify(item.expandable)
+        verify(item.listView !== null)
+        const nameLabel = findChild(item, "nameText")
+        verify(nameLabel !== null)
+        const point = list.mapFromItem(
+            nameLabel, nameLabel.width / 2, nameLabel.height / 2)
+        verify(point.x >= 0 && point.x < list.width
+               && point.y >= 0 && point.y < list.height)
+
+        backend.setDetails(item.key, [
+            makeRow(item.key + ":child", "子文件.mkv", "done")
+        ])
+        mouseClick(list, point.x, point.y)
+        tryCompare(page, "expandedKey", item.key)
+        compare(backend.openCount, 1, "惯性后的首击必须直接展开文件夹")
     }
 
     function test_preparing_or_empty_folder_cannot_expand() {

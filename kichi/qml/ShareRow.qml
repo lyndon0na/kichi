@@ -36,6 +36,23 @@ ItemDelegate {
     signal selectRequested(int modifiers, int index)
     signal contextMenu(point position)
 
+    function pointerOver(item, x, y) {
+        const topLeft = item.mapToItem(row, 0, 0)
+        return x >= topLeft.x && x <= topLeft.x + item.width
+                && y >= topLeft.y && y <= topLeft.y + item.height
+    }
+
+    function firstClick(modifiers, x, y) {
+        if (!row.listView)
+            return
+        const local = row.listView.mapToItem(row, x, y)
+        if (copyButton.enabled && row.pointerOver(copyButton, local.x, local.y)) {
+            row.copyRequested(row.copyText)
+            return
+        }
+        row.selectRequested(modifiers, row.rowIndex)
+    }
+
     KTheme { id: theme }
 
     implicitHeight: row.rowHeight
@@ -195,6 +212,7 @@ ItemDelegate {
             }
 
             KButton {
+                id: copyButton
                 objectName: "shareCopyButton"
                 Layout.preferredWidth: row.actionColumnWidth
                 Layout.minimumWidth: row.actionColumnWidth

@@ -328,120 +328,139 @@ Item {
                     headerPixelSize: density.metaPixelSize
                 }
 
-                ListView {
-                    id: fileList
-                    objectName: "fileList"
-
+                Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    clip: true
-                    // 文件页是平铺表格：行和表头共用 34 / 48 高度，
-                    // 只靠 1px 底部分隔线区分，不再用行间缝隙。
-                    spacing: 0
-                    visible: !page.gridMode
-                    model: page.fileRows
-                    boundsBehavior: Flickable.StopAtBounds
-                    // 列表铺满到页面右缘，条画在右侧 10px 车道里；
-                    // 委托宽度减去车道，文字永远停在条左边
-                    ScrollBar.vertical: KScrollBar {}
 
-                    // 快捷键要有焦点才收得到（KDE Wayland 下窗口级 Keys 不可靠）。
-                    //
-                    // ⚠ 只在 Component.onCompleted 抢一次焦点是不够的：本页在登录页
-                    // 之后才可见，创建时拿不到 activeFocus，登录进来后 Qt 也不会自动
-                    // 把焦点交回来（表现就是所有快捷键都没反应）。所以「变成可见」
-                    // 时也要抢一次；从搜索视图切回来同样走这里。
-                    focus: true
-                    Component.onCompleted: forceActiveFocus()
-                    onVisibleChanged: {
-                        if (visible)
-                            forceActiveFocus()
-                    }
-                    Keys.onPressed: function (event) {
-                        interaction.handleKey(event)
+                    ListView {
+                        id: fileList
+                        objectName: "fileList"
+
+                        anchors.fill: parent
+                        clip: true
+                        // 文件页是平铺表格：行和表头共用 34 / 48 高度，
+                        // 只靠 1px 底部分隔线区分，不再用行间缝隙。
+                        spacing: 0
+                        visible: !page.gridMode
+                        model: page.fileRows
+                        boundsBehavior: Flickable.StopAtBounds
+                        // 列表铺满到页面右缘，条画在右侧 10px 车道里；
+                        // 委托宽度减去车道，文字永远停在条左边
+                        ScrollBar.vertical: KScrollBar {}
+
+                        // 快捷键要有焦点才收得到（KDE Wayland 下窗口级 Keys 不可靠）。
+                        //
+                        // ⚠ 只在 Component.onCompleted 抢一次焦点是不够的：本页在登录页
+                        // 之后才可见，创建时拿不到 activeFocus，登录进来后 Qt 也不会自动
+                        // 把焦点交回来（表现就是所有快捷键都没反应）。所以「变成可见」
+                        // 时也要抢一次；从搜索视图切回来同样走这里。
+                        focus: true
+                        Component.onCompleted: forceActiveFocus()
+                        onVisibleChanged: {
+                            if (visible)
+                                forceActiveFocus()
+                        }
+                        Keys.onPressed: function (event) {
+                            interaction.handleKey(event)
+                        }
+
+                        // 布局完成后再恢复滚动位置（模型更新时 contentHeight 是逐步算出来的）
+                        onContentHeightChanged: {
+                            if (!interaction.tryRevealPending())
+                                interaction.restoreScrollNow()
+                        }
+
+                        // 空白处右键：行自己用 MouseArea 处理右键，这里只接住没命中行的位置。
+                        // TapHandler 的 position 以内容区为原点、纵向随 contentY 走
+                        // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: function (point) {
+                                if (!page.backend || page.showingSearchEntries)
+                                    return
+                                const viewport = fileList.mapFromItem(
+                                    null, point.scenePosition.x,
+                                    point.scenePosition.y)
+                                if (fileList.indexAt(viewport.x,
+                                                     viewport.y + fileList.contentY) >= 0)
+                                    return
+                                menu.openBlankAt(fileList.mapToItem(
+                                                     null, viewport.x, viewport.y))
+                            }
+                        }
+
+                        delegate: FileRow {
+                            id: row
+                            width: ListView.view.width - metrics.scrollBarSlot
+                            backend: page.backend
+                            rowIndex: index
+                            thumbnailSlotWidth: density.thumbnailSlotWidth
+                            thumbnailSlotHeight: density.thumbnailSlotHeight
+                            sizeColumnWidth: density.sizeColumnWidth
+                            modifiedColumnWidth: density.modifiedColumnWidth
+                            columnSpacing: density.columnSpacing
+                            contentPadding: density.rowPadding
+                            rowHeight: density.rowHeight
+                            textPixelSize: density.namePixelSize
+                            metaPixelSize: density.metaPixelSize
+                            iconPixelSize: density.iconPixelSize
+                            videoBadgeSize: density.listVideoBadgeSize
+                            videoBadgeMargin: density.listVideoBadgeMargin
+                            playLoading: page.isEntryPlayLoading(entry.id)
+                            playing: page.isEntryPlaying(entry.id)
+                            detailText: page.showingSearchEntries
+                                        ? qsTr("所在文件夹：%1").arg(entry.folderText
+                                                                   || qsTr("（所在文件夹）"))
+                                        : ""
+                            detailClickable: page.showingSearchEntries && !!entry.folderId
+                            // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
+                            highlighted: !!entry && selection.isSelected(entry.id)
+                            // 单击：把修饰键交给 FileSelection 处理（Ctrl 切换 / Shift 区间）
+                            onSelectRequested: function (modifiers, index) {
+                                const entries = page.displayEntries
+                                if (index < 0 || index >= entries.length)
+                                    return
+                                selection.click(entries[index].id, index, modifiers, entries)
+                            }
+                            // 双击文件夹：交给页面先记滚动位置再进目录
+                            onFolderOpenRequested: function (id) {
+                                page.openEntryFolder(id)
+                            }
+                            onDetailRequested: {
+                                page.revealSearchFolder(entry)
+                            }
+                            // 双击媒体文件：把行内的点换算成窗口坐标交给清晰度菜单。
+                            // ⚠ 必须用赋值，不能在上面写 anchorPoint: page.playAnchor 的绑定：
+                            // 给有绑定的属性赋值会永久断掉绑定，菜单就永远停在第一次的位置
+                            onPlayRequested: function (id, point) {
+                                playMenu.anchorPoint = row.mapToItem(null, point.x, point.y)
+                                if (page.backend)
+                                    page.backend.requestPlay(id)
+                            }
+                            // FileRow 给的是行内坐标：换算成窗口坐标再交给右键菜单。
+                            // 右键未选中的行时先收窄成这一条（文件管理器的惯例）
+                            onContextMenu: function (point) {
+                                selection.ensureSelected(entry)
+                                fileList.forceActiveFocus()
+                                var windowPoint = row.mapToItem(null, point.x, point.y)
+                                menu.openContext(entry, windowPoint, selection.idList(),
+                                                 page.searching)
+                            }
+                        }
                     }
 
-                    // 布局完成后再恢复滚动位置（模型更新时 contentHeight 是逐步算出来的）
-                    onContentHeightChanged: {
-                        if (!interaction.tryRevealPending())
-                            interaction.restoreScrollNow()
-                    }
+                    ScrollFirstClickArea {
+                        id: fileListFirstClick
+                        view: fileList
+                        scrollBarSlot: metrics.scrollBarSlot
 
-                    // 空白处右键：行自己用 MouseArea 处理右键，这里只接住没命中行的位置。
-                    // TapHandler 的 position 以内容区为原点、纵向随 contentY 走
-                    // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
-                    TapHandler {
-                        acceptedButtons: Qt.RightButton
-                        onTapped: function (point) {
-                            if (!page.backend || page.showingSearchEntries)
+                        onClickedAt: function (index, modifiers, position) {
+                            const item = fileList.itemAtIndex(index)
+                            if (!item)
                                 return
-                            const viewport = fileList.mapFromItem(
-                                null, point.scenePosition.x,
-                                point.scenePosition.y)
-                            if (fileList.indexAt(viewport.x,
-                                                 viewport.y + fileList.contentY) >= 0)
-                                return
-                            menu.openBlankAt(fileList.mapToItem(
-                                                 null, viewport.x, viewport.y))
-                        }
-                    }
-
-                    delegate: FileRow {
-                        id: row
-                        width: ListView.view.width - metrics.scrollBarSlot
-                        backend: page.backend
-                        rowIndex: index
-                        thumbnailSlotWidth: density.thumbnailSlotWidth
-                        thumbnailSlotHeight: density.thumbnailSlotHeight
-                        sizeColumnWidth: density.sizeColumnWidth
-                        modifiedColumnWidth: density.modifiedColumnWidth
-                        columnSpacing: density.columnSpacing
-                        contentPadding: density.rowPadding
-                        rowHeight: density.rowHeight
-                        textPixelSize: density.namePixelSize
-                        metaPixelSize: density.metaPixelSize
-                        iconPixelSize: density.iconPixelSize
-                        videoBadgeSize: density.listVideoBadgeSize
-                        videoBadgeMargin: density.listVideoBadgeMargin
-                        playLoading: page.isEntryPlayLoading(entry.id)
-                        playing: page.isEntryPlaying(entry.id)
-                        detailText: page.showingSearchEntries
-                                    ? qsTr("所在文件夹：%1").arg(entry.folderText
-                                                               || qsTr("（所在文件夹）"))
-                                    : ""
-                        detailClickable: page.showingSearchEntries && !!entry.folderId
-                        // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
-                        highlighted: !!entry && selection.isSelected(entry.id)
-                        // 单击：把修饰键交给 FileSelection 处理（Ctrl 切换 / Shift 区间）
-                        onSelectRequested: function (modifiers, index) {
-                            const entries = page.displayEntries
-                            if (index < 0 || index >= entries.length)
-                                return
-                            selection.click(entries[index].id, index, modifiers, entries)
-                        }
-                        // 双击文件夹：交给页面先记滚动位置再进目录
-                        onFolderOpenRequested: function (id) {
-                            page.openEntryFolder(id)
-                        }
-                        onDetailRequested: {
-                            page.revealSearchFolder(entry)
-                        }
-                        // 双击媒体文件：把行内的点换算成窗口坐标交给清晰度菜单。
-                        // ⚠ 必须用赋值，不能在上面写 anchorPoint: page.playAnchor 的绑定：
-                        // 给有绑定的属性赋值会永久断掉绑定，菜单就永远停在第一次的位置
-                        onPlayRequested: function (id, point) {
-                            playMenu.anchorPoint = row.mapToItem(null, point.x, point.y)
-                            if (page.backend)
-                                page.backend.requestPlay(id)
-                        }
-                        // FileRow 给的是行内坐标：换算成窗口坐标再交给右键菜单。
-                        // 右键未选中的行时先收窄成这一条（文件管理器的惯例）
-                        onContextMenu: function (point) {
-                            selection.ensureSelected(entry)
                             fileList.forceActiveFocus()
-                            var windowPoint = row.mapToItem(null, point.x, point.y)
-                            menu.openContext(entry, windowPoint, selection.idList(),
-                                             page.searching)
+                            fileListFirstClick.invokeFirstClick(
+                                item, index, modifiers, position.x, position.y)
                         }
                     }
                 }

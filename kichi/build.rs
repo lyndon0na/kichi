@@ -56,6 +56,7 @@ const QML_FILES: &[&str] = &[
     "qml/FileRow.qml",
     "qml/FileGridItem.qml",
     "qml/ContentGridView.qml",
+    "qml/ScrollFirstClickArea.qml",
     "qml/ContentViewToggle.qml",
     "qml/FilesPageHeaderActions.qml",
     "qml/KScrollBar.qml",

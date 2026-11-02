@@ -101,80 +101,99 @@ Item {
             contentPadding: page.contentPadding
         }
 
-        ListView {
-            id: list
-            objectName: "sharesList"
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            spacing: 0
-            model: shareRows
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: KScrollBar {}
-            focus: page.active
-            Keys.onPressed: function (event) {
-                page.handleKey(event)
-            }
 
-            delegate: ShareRow {
-                id: row
-                width: list.width - metrics.scrollBarSlot
-                highlighted: selection.isSelected(key)
-                rowHeight: page.rowHeight
-                iconColumnWidth: page.iconColumnWidth
-                statusColumnWidth: page.statusColumnWidth
-                expirationColumnWidth: page.expirationColumnWidth
-                createdColumnWidth: page.createdColumnWidth
-                actionColumnWidth: page.actionColumnWidth
-                columnSpacing: page.columnSpacing
-                contentPadding: page.contentPadding
-
-                onSelectRequested: function (modifiers, index) {
-                    page.selectRow(key, index, modifiers)
+            ListView {
+                id: list
+                objectName: "sharesList"
+                anchors.fill: parent
+                clip: true
+                spacing: 0
+                model: shareRows
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: KScrollBar {}
+                focus: page.active
+                Keys.onPressed: function (event) {
+                    page.handleKey(event)
                 }
-                onContextMenu: function (point) {
-                    page.openRowMenu(key, row.mapToItem(null, point.x, point.y))
-                }
-                onCopyRequested: function (text) {
-                    if (!clipboard.copyText(text))
-                        return
-                    page.copyNotice = text.indexOf("\n") >= 0
-                            ? qsTr("链接和密码已复制")
-                            : qsTr("链接已复制")
-                    copyNoticeTimer.restart()
-                }
-            }
 
-            Label {
-                objectName: "sharesEmptyState"
-                anchors.centerIn: parent
-                visible: page.showEmptyState
-                text: qsTr("暂无分享链接\n在文件页选中条目后右键即可创建")
-                horizontalAlignment: Text.AlignHCenter
-                color: theme.textMuted
-                font.pixelSize: theme.fontBody
-            }
+                delegate: ShareRow {
+                    id: row
+                    width: list.width - metrics.scrollBarSlot
+                    highlighted: selection.isSelected(key)
+                    rowHeight: page.rowHeight
+                    iconColumnWidth: page.iconColumnWidth
+                    statusColumnWidth: page.statusColumnWidth
+                    expirationColumnWidth: page.expirationColumnWidth
+                    createdColumnWidth: page.createdColumnWidth
+                    actionColumnWidth: page.actionColumnWidth
+                    columnSpacing: page.columnSpacing
+                    contentPadding: page.contentPadding
 
-            Column {
-                objectName: "sharesLoadingState"
-                anchors.centerIn: parent
-                width: 220
-                spacing: theme.gapSm
-                visible: page.showLoadingState
-
-                BusyIndicator {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 30
-                    height: 30
-                    running: parent.visible
+                    onSelectRequested: function (modifiers, index) {
+                        page.selectRow(key, index, modifiers)
+                    }
+                    onContextMenu: function (point) {
+                        page.openRowMenu(key, row.mapToItem(null, point.x, point.y))
+                    }
+                    onCopyRequested: function (text) {
+                        if (!clipboard.copyText(text))
+                            return
+                        page.copyNotice = text.indexOf("\n") >= 0
+                                ? qsTr("链接和密码已复制")
+                                : qsTr("链接已复制")
+                        copyNoticeTimer.restart()
+                    }
                 }
 
                 Label {
-                    width: parent.width
-                    text: qsTr("正在加载分享链接…")
+                    objectName: "sharesEmptyState"
+                    anchors.centerIn: parent
+                    visible: page.showEmptyState
+                    text: qsTr("暂无分享链接\n在文件页选中条目后右键即可创建")
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.textMuted
                     font.pixelSize: theme.fontBody
+                }
+
+                Column {
+                    objectName: "sharesLoadingState"
+                    anchors.centerIn: parent
+                    width: 220
+                    spacing: theme.gapSm
+                    visible: page.showLoadingState
+
+                    BusyIndicator {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 30
+                        height: 30
+                        running: parent.visible
+                    }
+
+                    Label {
+                        width: parent.width
+                        text: qsTr("正在加载分享链接…")
+                        horizontalAlignment: Text.AlignHCenter
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontBody
+                    }
+                }
+            }
+
+            ScrollFirstClickArea {
+                id: firstClickArea
+                view: list
+                scrollBarSlot: metrics.scrollBarSlot
+
+                onClickedAt: function (index, modifiers, position) {
+                    const item = list.itemAtIndex(index)
+                    if (!item)
+                        return
+                    list.forceActiveFocus()
+                    firstClickArea.invokeFirstClick(
+                        item, index, modifiers, position.x, position.y)
                 }
             }
         }

@@ -36,6 +36,10 @@ ItemDelegate {
                 && y >= topLeft.y && y <= topLeft.y + item.height
     }
 
+    function firstClick(modifiers, x, y) {
+        row.selectRequested(modifiers, row.rowIndex)
+    }
+
     implicitHeight: row.rowHeight
     leftPadding: row.contentPadding
     rightPadding: row.contentPadding
