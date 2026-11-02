@@ -64,14 +64,15 @@ pub(crate) fn choose_files(start: &Path) -> Result<Vec<PathBuf>, String> {
     }
 }
 
-/// 打开系统目录选择器，允许多选文件夹。
+/// 打开系统目录选择器，选择一个文件夹。
 ///
-/// Portal 的目录模式只保证用户选的是目录；返回空表表示用户取消。
+/// KDE 的 Portal 目录模式不支持多选；需要一次上传多个文件夹时走文件页拖放。
+/// 返回空表表示用户取消。
 pub(crate) fn choose_folders(start: &Path) -> Result<Vec<PathBuf>, String> {
     let request = SelectedFiles::open_file()
         .title("选择要上传的文件夹")
-        .accept_label("上传这些文件夹")
-        .multiple(true)
+        .accept_label("上传此文件夹")
+        .multiple(false)
         .directory(true)
         .modal(true)
         .current_folder(start)

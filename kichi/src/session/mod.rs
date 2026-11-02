@@ -224,6 +224,25 @@ impl Session {
         }
     }
 
+    /// 测试用会话：带一个长期有效的假令牌，不读写钥匙串。
+    #[cfg(test)]
+    pub(crate) fn for_test(config: Config, access_token: &str) -> Self {
+        let device_id = "d".repeat(32);
+        let saved = PersistedSession {
+            access_token: access_token.to_owned(),
+            refresh_token: String::new(),
+            expires_unix: Utc::now().timestamp() + 3600,
+            device_id: device_id.clone(),
+            user_id: "test-user".to_owned(),
+            email: String::new(),
+            display_name: String::new(),
+            avatar_url: String::new(),
+        };
+        let mut session = Self::new(config, PathBuf::new(), Some(saved), device_id);
+        session.store_disabled = true;
+        session
+    }
+
     /// 借出内部状态。
     ///
     /// 锁中毒时继续使用内部数据：`Inner` 只是纯数据结构（令牌 + 设备 id），

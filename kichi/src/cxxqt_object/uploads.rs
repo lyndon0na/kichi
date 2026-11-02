@@ -90,7 +90,7 @@ impl qobject::Kichi {
         }
     }
 
-    /// 通过 XDG Portal 多选本地文件夹；每个目录各自成为一个上传批次。
+    /// 通过 XDG Portal 选择一个本地文件夹；多个文件夹可拖入文件页。
     pub fn choose_upload_folders(
         mut self: Pin<&mut Self>,
         parent_id: QString,

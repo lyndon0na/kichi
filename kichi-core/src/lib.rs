@@ -14,6 +14,7 @@ pub(crate) mod http;
 pub mod library;
 pub mod manage;
 pub mod media;
+mod naming;
 pub mod search;
 pub mod share;
 pub mod subtitles;

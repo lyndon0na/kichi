@@ -13,10 +13,9 @@ use serde::Deserialize;
 
 use crate::drive::DriveClient;
 use crate::http::Body;
+use crate::naming::{duplicate_folder_name, MAX_DUPLICATE_ATTEMPTS, MAX_NAME_BYTES};
 use crate::{Config, Error};
 
-/// 文件名的最大字节数（官方按 UTF-8 字节算，超出直接拒绝）。
-const MAX_NAME_BYTES: usize = 255;
 /// 一次性最多操作多少个条目（官方批量接口的实际上限附近）。
 const MAX_BATCH: usize = 100;
 
@@ -61,8 +60,8 @@ impl DriveClient {
     /// 新建文件夹并返回云端 id。
     ///
     /// 官方新建接口有时返回条目，有时只回空体。返回空体时先记下创建前父目录
-    /// 的文件夹 id，再轮询列表找新增的那一个；这样官方自动改名（例如追加
-    /// `(1)`）时仍能拿到新目录，而不会误认已有的同名旧目录。
+    /// 的文件夹 id，再轮询列表找新增的那一个；服务端若对名字做了处理（例如追加
+    /// `(1)`）也能拿到新目录，而不会误认已有的同名旧目录。
     ///
     /// 创建前列表失败就直接返回错误，不发出创建请求：否则服务端可能已经建好
     /// 目录，但客户端没有任何安全办法确认它的 id，重试还会再建一份。
@@ -73,28 +72,38 @@ impl DriveClient {
     ) -> Result<String, Error> {
         let name = validate_name(name)?;
         let before = self.folder_ids_in(parent_id)?;
-        let body = create_folder_body(parent_id, name);
-        let response: Option<serde_json::Value> = self.request_optional_json(
-            reqwest::Method::POST,
-            &Config::files_url(self.config()),
-            &[],
-            Body::Json(&body),
-        )?;
-        if let Some(id) = response.as_ref().and_then(folder_id_from_response) {
-            return Ok(id);
-        }
-        for attempt in 0..5 {
-            let entries = self.list_all(parent_id)?;
-            if let Some(id) = pick_new_folder_id(&entries, &before, name) {
+        for attempt in 0..MAX_DUPLICATE_ATTEMPTS {
+            let candidate = duplicate_folder_name(name, attempt);
+            let body = create_folder_body(parent_id, &candidate);
+            let response: Option<serde_json::Value> = match self.request_optional_json(
+                reqwest::Method::POST,
+                &Config::files_url(self.config()),
+                &[],
+                Body::Json(&body),
+            ) {
+                Ok(response) => response,
+                Err(Error::DuplicateName) if attempt + 1 < MAX_DUPLICATE_ATTEMPTS => {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            if let Some(id) = response.as_ref().and_then(folder_id_from_response) {
                 return Ok(id);
             }
-            if attempt < 4 {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+            for retry in 0..5 {
+                let entries = self.list_all(parent_id)?;
+                if let Some(id) = pick_new_folder_id(&entries, &before, &candidate) {
+                    return Ok(id);
+                }
+                if retry < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
             }
+            return Err(Error::ApiChanged(
+                "文件夹已创建，但服务端没有返回可用的目录 id".to_owned(),
+            ));
         }
-        Err(Error::ApiChanged(
-            "文件夹已创建，但服务端没有返回可用的目录 id".to_owned(),
-        ))
+        Err(Error::DuplicateName)
     }
 
     /// 父目录里现有的文件夹 id 集合。
@@ -239,8 +248,8 @@ fn folder_id_from_response(value: &serde_json::Value) -> Option<String> {
 /// 从创建后的目录列表里挑出这次新建的文件夹。
 ///
 /// `before` 是创建前已经存在的 id 集合，因此旧同名目录不会被误认成新目录。
-/// 官方自动改名时优先匹配原名或原名前缀；只有恰好出现一个新目录时才回退到
-/// 它，出现多个无法区分的新目录则返回 `None`，让调用方报错而不是猜。
+/// 服务端若自动改名，优先匹配原名或原名前缀；只有恰好出现一个新目录时才回退
+/// 到它，出现多个无法区分的新目录则返回 `None`，让调用方报错而不是猜。
 fn pick_new_folder_id(
     entries: &[crate::FileEntry],
     before: &BTreeSet<String>,

@@ -80,7 +80,7 @@ RowLayout {
                 }
 
                 ToolTip.visible: hovered
-                ToolTip.text: qsTr("保留目录层级和空文件夹，后台扫描期间可取消")
+                ToolTip.text: qsTr("选择单个文件夹；多个文件夹可直接拖入窗口")
             }
 
             MenuItem {

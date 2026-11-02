@@ -25,6 +25,7 @@ use sha2::{Digest as Sha256Digest, Sha256};
 
 use crate::drive::DriveClient;
 use crate::http::Body as ApiBody;
+use crate::naming::{duplicate_file_name, MAX_DUPLICATE_ATTEMPTS, MAX_NAME_BYTES};
 use crate::{Config, Error};
 
 const SMALL_FILE_LIMIT: u64 = 5 * 1024 * 1024;
@@ -104,27 +105,41 @@ impl DriveClient {
         ensure_not_cancelled(&cancelled)?;
         ensure_file_size(path, size)?;
 
-        let ticket_body = json!({
-            "kind": "drive#file",
-            "name": name,
-            "parent_id": parent_id.trim(),
-            "folder_type": "NORMAL",
-            "size": size,
-            "hash": gcid.to_ascii_uppercase(),
-            "upload_type": "UPLOAD_TYPE_RESUMABLE",
-            "resumable": {"provider": "PROVIDER_ALIYUN"}
-        });
         progress(UploadProgress {
             stage: UploadStage::Preparing,
             bytes: 0,
             total: size,
         });
-        let ticket: UploadTicket = self.request(
-            Method::POST,
-            &Config::files_url(self.config()),
-            &[],
-            ApiBody::Json(&ticket_body),
-        )?;
+        let requested_name;
+        let mut duplicate_attempt = 0u32;
+        let ticket: UploadTicket = loop {
+            let candidate = duplicate_file_name(&name, duplicate_attempt);
+            let ticket_body = json!({
+                "kind": "drive#file",
+                "name": candidate.clone(),
+                "parent_id": parent_id.trim(),
+                "folder_type": "NORMAL",
+                "size": size,
+                "hash": gcid.to_ascii_uppercase(),
+                "upload_type": "UPLOAD_TYPE_RESUMABLE",
+                "resumable": {"provider": "PROVIDER_ALIYUN"}
+            });
+            match self.request(
+                Method::POST,
+                &Config::files_url(self.config()),
+                &[],
+                ApiBody::Json(&ticket_body),
+            ) {
+                Ok(ticket) => {
+                    requested_name = candidate;
+                    break ticket;
+                }
+                Err(Error::DuplicateName) if duplicate_attempt + 1 < MAX_DUPLICATE_ATTEMPTS => {
+                    duplicate_attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        };
         let mut cleanup = UploadCleanup {
             file_id: ticket.file.id.trim().to_owned(),
             task_id: ticket
@@ -141,7 +156,7 @@ impl DriveClient {
         if ticket.file.phase == "PHASE_TYPE_COMPLETE" {
             return Ok(UploadResult {
                 file_id: ticket.file.id,
-                name: non_empty_name(ticket.file.name).unwrap_or(name),
+                name: non_empty_name(ticket.file.name).unwrap_or(requested_name),
                 bytes_sent: 0,
             });
         }
@@ -184,7 +199,8 @@ impl DriveClient {
             .filter(|id| !id.is_empty())
             .map(str::to_owned);
         let mut final_file_id = cleanup.file_id.clone();
-        let mut final_name = non_empty_name(ticket.file.name).unwrap_or_else(|| name.clone());
+        let mut final_name =
+            non_empty_name(ticket.file.name).unwrap_or_else(|| requested_name.clone());
         if let Some(task_id) = task_id {
             cleanup.task_id = task_id.clone();
             match self.wait_upload_task(&task_id, &cancelled) {
@@ -1257,10 +1273,10 @@ fn validate_name(name: &str) -> Result<(), Error> {
     if name.chars().any(char::is_control) {
         return Err(Error::InvalidInput("文件名里不能包含控制字符".to_owned()));
     }
-    if name.len() > 255 {
-        return Err(Error::InvalidInput(
-            "文件名太长（最多 255 字节）".to_owned(),
-        ));
+    if name.len() > MAX_NAME_BYTES {
+        return Err(Error::InvalidInput(format!(
+            "文件名太长（最多 {MAX_NAME_BYTES} 字节）"
+        )));
     }
     Ok(())
 }

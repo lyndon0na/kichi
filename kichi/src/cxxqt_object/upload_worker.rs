@@ -761,3 +761,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "upload_worker_mock_tests.rs"]
+mod mock_tests;

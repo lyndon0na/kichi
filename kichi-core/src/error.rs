@@ -32,6 +32,10 @@ pub enum Error {
     #[error("参数无效：{0}")]
     InvalidInput(String),
 
+    /// 同目录已有同名文件或文件夹；上传路径会自动换名重试。
+    #[error("这个名字已被同目录下的其他条目占用，请换一个")]
+    DuplicateName,
+
     /// 结构合法但未归类的业务错误，保留原始 code 与描述。
     #[error("接口错误 {code} {reason}：{message}")]
     Api {
@@ -82,9 +86,7 @@ impl Error {
             // 存储空间不足（8）
             "file_space_not_enough" => Error::RateLimited { reason: desc },
             // 同目录已有同名文件/文件夹（3）：改名或新建时最常见
-            "file_duplicated_name" => {
-                Error::InvalidInput("这个名字已被同目录下的其他条目占用，请换一个".into())
-            }
+            "file_duplicated_name" => Error::DuplicateName,
             // 条目已被别处删除 / 移动（owner / 多端同时操作）
             "file_not_found" => {
                 Error::InvalidInput("这个条目已不存在（可能在其它设备上被删除或移动了）".into())
@@ -155,7 +157,7 @@ mod tests {
     fn duplicate_name_reads_as_plain_chinese() {
         // 改名 / 新建文件夹最常见的失败：不能把错误码原样丢给用户
         let err = Error::from_api(3, "file_duplicated_name", "name repeated");
-        assert!(matches!(err, Error::InvalidInput(_)));
+        assert!(matches!(err, Error::DuplicateName));
         let text = err.to_string();
         assert!(text.contains("已被同目录"), "要说明是重名：{text}");
         assert!(!text.contains("code"), "不该暴露错误码：{text}");
