@@ -3,7 +3,7 @@ import QtTest
 import ".."
 
 // 回收站表格与危险操作的组件测试。
-// 重点锁住：批量选择、还原调用、彻底删除必须二次确认，失败时弹窗不消失。
+// 重点锁住：批量选择、还原、选中项彻底删除和整库清空的确认与异步边界。
 TestCase {
     name: "TrashPage"
     when: windowShown
@@ -26,6 +26,9 @@ TestCase {
         property int refreshCount: 0
         property var lastUntrashIds: []
         property var lastDeleteIds: []
+        property int clearCount: 0
+        property var deleteSnapshot: []
+        property var clearSnapshot: []
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
 
@@ -45,11 +48,50 @@ TestCase {
 
         function deleteTrashEntries(ids) {
             lastDeleteIds = ids.slice()
+            deleteSnapshot = trashFiles.slice()
+            var wanted = {}
+            for (var i = 0; i < ids.length; ++i)
+                wanted[ids[i]] = true
+            var kept = []
+            for (var j = 0; j < trashFiles.length; ++j) {
+                if (!wanted[trashFiles[j].id])
+                    kept.push(trashFiles[j])
+            }
+            trashFiles = kept
+            trashRevision += 1
             fileActionRunning = true
+            changed()
+            return true
+        }
+
+        function clearTrash() {
+            clearCount += 1
+            clearSnapshot = trashFiles.slice()
+            trashFiles = []
+            trashRevision += 1
+            fileActionRunning = true
+            changed()
+            return true
         }
 
         function finish(action, ok, message) {
             fileActionRunning = false
+            if (!ok) {
+                if (action === "trashDelete" && deleteSnapshot.length > 0) {
+                    trashFiles = deleteSnapshot.slice()
+                    trashRevision += 1
+                    changed()
+                } else if (action === "trashClear" && clearSnapshot.length > 0) {
+                    trashFiles = clearSnapshot.slice()
+                    trashRevision += 1
+                    changed()
+                }
+                statusMessage = message
+            } else {
+                statusMessage = ""
+            }
+            deleteSnapshot = []
+            clearSnapshot = []
             fileActionDone(action, ok, message)
         }
     }
@@ -86,6 +128,9 @@ TestCase {
         backend.refreshCount = 0
         backend.lastUntrashIds = []
         backend.lastDeleteIds = []
+        backend.clearCount = 0
+        backend.deleteSnapshot = []
+        backend.clearSnapshot = []
         page = pageComponent.createObject(parent, {
             visible: true,
             backend: backend
@@ -275,6 +320,9 @@ TestCase {
 
         var menu = findChild(page, "trashContextMenu")
         verify(menu !== null && menu.visible)
+        var deleteItem = findChild(menu, "trashDeleteMenuItem")
+        verify(deleteItem !== null && deleteItem.enabled,
+               "右键菜单仍应提供选中项彻底删除")
         verify(Math.abs(menu.x - expected.x) <= 2,
                "菜单 x 错位：实际 " + menu.x + "，期望 " + expected.x)
         verify(Math.abs(menu.y - expected.y) <= 2,
@@ -299,12 +347,44 @@ TestCase {
         verify(backend.lastUntrashIds.indexOf("c") >= 0)
     }
 
-    function test_permanent_delete_requires_confirmation() {
+    function test_clear_trash_requires_confirmation_and_returns_immediately() {
         publish([entry("a", false), entry("b", false)])
         selection.selectAll(backend.trashFiles)
 
-        mouseClick(findChild(header, "trashDeleteButton"))
+        var clearButton = findChild(header, "trashClearButton")
+        verify(clearButton !== null && clearButton.enabled)
+        mouseClick(clearButton)
         wait(40)
+        compare(backend.clearCount, 0, "确认之前不能请求清空")
+
+        var dialog = findChild(page, "trashClearDialog")
+        verify(dialog !== null && dialog.opened)
+        var message = findChild(dialog, "trashClearMessage")
+        verify(message.text.indexOf("2 项") >= 0, message.text)
+        verify(message.text.indexOf("无法恢复") >= 0, message.text)
+
+        mouseClick(findChild(dialog, "dialogFooterOk"))
+        wait(20)
+        compare(backend.clearCount, 1)
+        compare(dialog.opened, false, "请求发出后立即收起，不阻塞页面")
+        compare(backend.trashFiles.length, 0, "确认后先清空本地列表")
+        compare(list.count, 0)
+        compare(clearButton.enabled, false, "后台请求在途时按钮禁用")
+        compare(selection.count, 2, "异步清空期间保留选择，失败可回滚")
+
+        backend.finish("trashClear", true, "回收站已清空（共 2 项）")
+        wait(20)
+        compare(selection.count, 0, "成功后清空选择")
+        compare(clearButton.enabled, false, "清空后回收站仍为空")
+    }
+
+    function test_permanent_delete_requires_confirmation() {
+        publish([entry("a", false), entry("b", false)])
+        selection.selectAll(backend.trashFiles)
+        list.forceActiveFocus()
+        keyClick(Qt.Key_Delete)
+        wait(40)
+        compare(backend.clearCount, 0)
         compare(backend.lastDeleteIds.length, 0, "确认之前不能请求彻底删除")
 
         var dialog = findChild(page, "trashDeleteDialog")
@@ -316,51 +396,82 @@ TestCase {
         mouseClick(findChild(dialog, "dialogFooterOk"))
         wait(20)
         compare(backend.lastDeleteIds.length, 2)
-        verify(dialog.opened, "请求还没回来，弹窗不关")
+        compare(dialog.opened, false, "请求发出后立即收起，不阻塞页面")
+        compare(backend.trashFiles.length, 0, "确认后先移除选中的行")
+        compare(list.count, 0)
+        compare(selection.count, 2, "乐观移除期间保留选择，失败可回滚")
+        compare(backend.fileActionRunning, true)
         backend.finish("trashDelete", true, "已彻底删除 2 项")
-        tryCompare(dialog, "opened", false)
+        wait(20)
         compare(selection.count, 0, "成功后清空选择")
     }
 
-    function test_delete_key_only_opens_confirmation() {
+    function test_failed_delete_restores_rows_without_reopening_dialog() {
         publish([entry("a", false)])
         selection.selectAll(backend.trashFiles)
         list.forceActiveFocus()
         keyClick(Qt.Key_Delete)
         wait(40)
-        compare(backend.lastDeleteIds.length, 0)
-        var dialog = findChild(page, "trashDeleteDialog")
-        verify(dialog !== null && dialog.opened)
-    }
-
-    function test_failed_delete_stays_open_with_reason() {
-        publish([entry("a", false)])
-        selection.selectAll(backend.trashFiles)
-        mouseClick(findChild(header, "trashDeleteButton"))
-        wait(40)
 
         var dialog = findChild(page, "trashDeleteDialog")
         mouseClick(findChild(dialog, "dialogFooterOk"))
         wait(20)
+        compare(dialog.opened, false)
+        compare(backend.trashFiles.length, 0)
         backend.finish("trashDelete", false, "file_not_found")
         wait(20)
-        verify(dialog.opened)
-        var error = findChild(dialog, "trashDeleteError")
-        verify(error.visible)
-        compare(error.text, "file_not_found")
+        compare(dialog.opened, false, "失败只在底栏提示，不重开确认框")
+        compare(backend.trashFiles.length, 1, "失败后恢复本地行")
+        compare(list.count, 1)
+        compare(list.itemAtIndex(0).entry.id, "a")
+        compare(selection.count, 1, "失败回滚后保留原选择")
+        compare(backend.statusMessage, "file_not_found")
     }
 
-    function test_header_puts_text_refresh_last_and_has_no_clear_entry() {
+    function test_failed_clear_restores_rows_without_reopening_dialog() {
+        publish([entry("a", false), entry("b", true)])
+        selection.selectAll(backend.trashFiles)
+        mouseClick(findChild(header, "trashClearButton"))
+        wait(20)
+
+        var dialog = findChild(page, "trashClearDialog")
+        mouseClick(findChild(dialog, "dialogFooterOk"))
+        wait(20)
+        compare(dialog.opened, false)
+        compare(list.count, 0)
+
+        backend.finish("trashClear", false, "network_error")
+        wait(20)
+        compare(dialog.opened, false, "失败只在底栏提示，不重开确认框")
+        compare(backend.trashFiles.length, 2, "失败后恢复整份列表")
+        compare(list.count, 2)
+        compare(selection.count, 2, "失败回滚后保留原选择")
+        compare(backend.statusMessage, "network_error")
+    }
+
+    function test_clear_button_is_disabled_for_an_empty_trash() {
+        backend.trashLoaded = true
+        backend.changed()
+        wait(20)
+        var clearButton = findChild(header, "trashClearButton")
+        verify(clearButton !== null)
+        compare(clearButton.enabled, false)
+    }
+
+    function test_header_puts_text_refresh_last_and_has_no_delete_entry() {
         publish([entry("a", false), entry("b", true), entry("c", false)])
         var refresh = findChild(header, "trashRefreshButton")
-        var deleteButton = findChild(header, "trashDeleteButton")
+        var clearButton = findChild(header, "trashClearButton")
         var toggle = findChild(header, "viewToggleButton")
         verify(refresh !== null && refresh.visible && refresh.enabled)
+        verify(clearButton !== null && clearButton.visible && clearButton.enabled)
         compare(refresh.text, "刷新")
-        verify(refresh.x > deleteButton.x, "刷新按钮应在最右侧")
+        compare(clearButton.text, "清空回收站")
+        verify(refresh.x > clearButton.x, "刷新按钮应在最右侧")
         verify(toggle !== null && toggle.x < refresh.x,
                "视图切换应排在刷新之前")
-        verify(findChild(header, "trashClearButton") === null, "回收站不再提供清空入口")
+        verify(findChild(header, "trashDeleteButton") === null,
+               "回收站不再提供永久删除入口")
 
         mouseClick(refresh)
         wait(20)

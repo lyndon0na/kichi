@@ -39,13 +39,14 @@ RowLayout {
     }
 
     KButton {
-        objectName: "trashDeleteButton"
+        objectName: "trashClearButton"
         Layout.alignment: Qt.AlignVCenter
-        text: qsTr("彻底删除")
+        text: qsTr("清空回收站")
         iconName: "trash"
         variant: "dangerOutline"
-        enabled: root.backendReady && root.selectedCount > 0 && !root.busy
-        onClicked: root.target.deleteSelected()
+        enabled: root.backendReady && root.target.backend.trashLoaded
+                 && root.target.entries.length > 0 && !root.busy
+        onClicked: root.target.clearAll()
     }
 
     ContentViewToggle {

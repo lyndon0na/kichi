@@ -4,7 +4,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 回收站的彻底删除确认。确认后等待后台结果，失败时保留原因。
+// 回收站的两种危险操作：确认后本地先移除条目，网络结果由底栏提示。
+// 与文件页写入一致，Rust 接受请求后立即收起，不阻塞页面。
 Item {
     id: root
 
@@ -12,9 +13,9 @@ Item {
     property var targetIds: []
     property string targetName: ""
     property bool targetIsFolder: false
-    readonly property int dialogWidth: 400
+    property int clearCount: 0
 
-    KTheme { id: theme }
+    readonly property int dialogWidth: 400
 
     KDialog {
         id: deleteDialog
@@ -24,8 +25,6 @@ Item {
         parent: Overlay.overlay
         anchors.centerIn: Overlay.overlay
         width: root.dialogWidth + leftPadding + rightPadding
-
-        property string errorText: ""
 
         footer: DialogFooter {
             outerMargin: deleteDialog.padding
@@ -37,8 +36,6 @@ Item {
             onCancelClicked: deleteDialog.close()
         }
 
-        onOpened: errorText = ""
-
         ColumnLayout {
             width: root.dialogWidth
             spacing: 8
@@ -49,24 +46,38 @@ Item {
                 wrapMode: Text.Wrap
                 text: root.deleteMessage()
             }
+        }
+    }
+
+    KDialog {
+        id: clearDialog
+        objectName: "trashClearDialog"
+        title: qsTr("清空回收站")
+        modal: true
+        parent: Overlay.overlay
+        anchors.centerIn: Overlay.overlay
+        width: root.dialogWidth + leftPadding + rightPadding
+
+        footer: DialogFooter {
+            outerMargin: clearDialog.padding
+            okText: qsTr("清空回收站")
+            okVariant: "danger"
+            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            cancelEnabled: okEnabled
+            onOkClicked: root.submitClear()
+            onCancelClicked: clearDialog.close()
+        }
+
+        ColumnLayout {
+            width: root.dialogWidth
+            spacing: 8
 
             Label {
+                objectName: "trashClearMessage"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                font.pixelSize: theme.fontMeta
-                color: theme.textMuted
-                visible: root.backend && root.backend.fileActionRunning
-                text: root.backend ? root.backend.statusMessage : ""
-            }
-
-            Label {
-                objectName: "trashDeleteError"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                font.pixelSize: theme.fontMeta
-                color: theme.danger
-                visible: text.length > 0
-                text: deleteDialog.errorText
+                text: qsTr("确定清空回收站中的 %1 项吗？\n其中的文件和文件夹会一并删除，此操作无法恢复。")
+                      .arg(root.clearCount)
             }
         }
     }
@@ -78,6 +89,13 @@ Item {
         targetIsFolder = entry.kind === "folder"
         targetIds = ids && ids.length > 0 ? ids.slice() : [entry.id]
         deleteDialog.open()
+    }
+
+    function openClear(count) {
+        if (!root.backend || count <= 0)
+            return
+        clearCount = count
+        clearDialog.open()
     }
 
     function deleteMessage() {
@@ -95,20 +113,14 @@ Item {
     function submitDelete() {
         if (!root.backend || root.targetIds.length === 0)
             return
-        deleteDialog.errorText = ""
-        root.backend.deleteTrashEntries(root.targetIds)
+        if (root.backend.deleteTrashEntries(root.targetIds) === true)
+            deleteDialog.close()
     }
 
-    Connections {
-        target: root.backend
-
-        function onFileActionDone(action, ok, message) {
-            if (action === "trashDelete" && deleteDialog.visible) {
-                if (ok)
-                    deleteDialog.close()
-                else
-                    deleteDialog.errorText = message
-            }
-        }
+    function submitClear() {
+        if (!root.backend)
+            return
+        if (root.backend.clearTrash() === true)
+            clearDialog.close()
     }
 }

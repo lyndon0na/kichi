@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 回收站表格：查看 / 批量还原 / 彻底删除。
-// 普通文件页不暴露彻底删除，危险操作只能从这里进入。
+// 回收站表格：查看 / 批量还原 / 彻底删除 / 清空回收站。
+// 普通文件页不暴露彻底删除或清空，危险操作只能从这里进入。
 Item {
     id: page
     property var backend: null
@@ -72,6 +72,12 @@ Item {
         if (!entry)
             return
         dialogs.openDelete(entry, selection.idList())
+    }
+
+    function clearAll() {
+        if (!backend || busy || entries.length === 0)
+            return
+        dialogs.openClear(entries.length)
     }
 
     function openContext(point) {
@@ -399,6 +405,7 @@ Item {
         }
 
         MenuItem {
+            objectName: "trashDeleteMenuItem"
             text: qsTr("彻底删除")
             enabled: page.selectedCount > 0 && !page.busy
             onTriggered: page.deleteSelected()
@@ -416,7 +423,9 @@ Item {
         function onChanged() {
             if (!page.backend)
                 return
-            selection.prune(page.entries)
+            // 乐观删除 / 回滚期间保留选择；成功后再由 fileActionDone 清空。
+            if (!page.backend.fileActionRunning)
+                selection.prune(page.entries)
         }
 
         function onFileActionDone(action, ok) {
@@ -427,7 +436,7 @@ Item {
                     page.backend.ensureTrashFresh()
                 return
             }
-            if (action === "untrash" || action === "trashDelete")
+            if (action === "untrash" || action === "trashDelete" || action === "trashClear")
                 selection.clear()
         }
     }

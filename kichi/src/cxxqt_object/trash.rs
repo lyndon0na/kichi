@@ -15,6 +15,8 @@ use super::QVariantList;
 
 #[path = "trash_actions.rs"]
 mod trash_actions;
+#[path = "trash_mutation.rs"]
+mod trash_mutation;
 #[path = "trash_view.rs"]
 mod trash_view;
 

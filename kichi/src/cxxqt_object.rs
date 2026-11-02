@@ -302,15 +302,15 @@ pub mod qobject {
         #[cxx_name = "untrashEntries"]
         fn untrash_entries(self: Pin<&mut Self>, ids: QStringList);
 
-        /// 从回收站彻底删除选中条目，不可恢复
+        /// 从回收站彻底删除选中条目，不可恢复；接受请求后先在本地移除
         #[qinvokable]
         #[cxx_name = "deleteTrashEntries"]
-        fn delete_trash_entries(self: Pin<&mut Self>, ids: QStringList);
+        fn delete_trash_entries(self: Pin<&mut Self>, ids: QStringList) -> bool;
 
-        /// 彻底清空当前账号回收站
+        /// 清空当前账号回收站；接受请求后先清空本地列表，完成后发 `fileActionDone`
         #[qinvokable]
         #[cxx_name = "clearTrash"]
-        fn clear_trash(self: Pin<&mut Self>);
+        fn clear_trash(self: Pin<&mut Self>) -> bool;
 
         #[qinvokable]
         #[cxx_name = "openDir"]
@@ -848,7 +848,7 @@ pub struct KichiRust {
     pub(crate) trash_revision: i32,
     /// 回收站请求代数：退出登录后旧结果作废
     pub(crate) trash_epoch: u64,
-    /// 分批还原 / 彻底删除的进度状态
+    /// 分批还原 / 彻底删除 / 清空的进度状态
     pub(crate) trash_action: Option<trash::TrashActionState>,
     /// 文件页有恢复操作完成，下次显示时重新拉取当前目录
     pub(crate) files_stale: bool,

@@ -5,6 +5,7 @@ use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QStringList};
+use kichi_core::TrashEntry;
 
 use super::super::actions::run_in_background;
 use super::super::qobject;
@@ -49,17 +50,18 @@ impl TrashActionKind {
         match self {
             Self::Restore => format!("已还原 {total} 项"),
             Self::Delete => format!("已彻底删除 {total} 项"),
-            Self::Clear => format!("回收站已清空，共彻底删除 {total} 项"),
+            Self::Clear => format!("回收站已清空（共 {total} 项）"),
         }
     }
 }
 
 /// 分批操作的剩余项与进度（只在 Kichi 主线程读写）。
 pub(crate) struct TrashActionState {
-    kind: TrashActionKind,
-    remaining: VecDeque<String>,
+    pub(super) kind: TrashActionKind,
+    pub(super) remaining: VecDeque<String>,
     total: usize,
     completed: usize,
+    pub(super) removed: Vec<TrashEntry>,
 }
 
 impl qobject::Kichi {
@@ -70,35 +72,47 @@ impl qobject::Kichi {
             self.as_mut().set_message("没有选中要还原的条目");
             return;
         }
-        self.as_mut()
-            .start_trash_action(TrashActionKind::Restore, ids);
-    }
-
-    /// 彻底删除选中条目。不可恢复，QML 负责先弹确认框。
-    pub fn delete_trash_entries(mut self: Pin<&mut Self>, ids: QStringList) {
-        let ids = clean_ids(ids);
-        if ids.is_empty() {
-            self.as_mut().set_message("没有选中要彻底删除的条目");
+        if !self.as_mut().begin_file_action() {
             return;
         }
         self.as_mut()
-            .start_trash_action(TrashActionKind::Delete, ids);
+            .start_trash_action(TrashActionKind::Restore, ids, Vec::new());
+    }
+
+    /// 彻底删除选中条目。不可恢复，QML 负责先弹确认框。
+    pub fn delete_trash_entries(mut self: Pin<&mut Self>, ids: QStringList) -> bool {
+        let ids = clean_ids(ids);
+        if ids.is_empty() {
+            self.as_mut().set_message("没有选中要彻底删除的条目");
+            return false;
+        }
+        if !self.as_mut().begin_file_action() {
+            return false;
+        }
+        let removed = self.as_mut().remove_trash_entries_locally(&ids);
+        self.as_mut()
+            .start_trash_action(TrashActionKind::Delete, ids, removed);
+        true
     }
 
     /// 调用官方 `trash:empty` 一次性清空当前账号的回收站。
-    pub fn clear_trash(mut self: Pin<&mut Self>) {
+    ///
+    /// 请求立即交给后台线程，等待官方任务完成后再回报
+    /// `fileActionDone("trashClear", …)`；QML 不需要同步等待。
+    pub fn clear_trash(mut self: Pin<&mut Self>) -> bool {
         if !self.trash_loaded {
             self.as_mut().set_message("回收站还没读取完成，请稍后再试");
-            return;
+            return false;
         }
         let total = self.trash_list.len();
         if total == 0 {
             self.as_mut().set_message("回收站已经是空的");
-            return;
+            return false;
         }
         if !self.as_mut().begin_file_action() {
-            return;
+            return false;
         }
+        let removed = self.as_mut().clear_trash_locally();
 
         {
             let mut rust = self.as_mut().rust_mut();
@@ -107,6 +121,7 @@ impl qobject::Kichi {
                 remaining: VecDeque::new(),
                 total,
                 completed: 0,
+                removed,
             });
         }
         self.as_mut()
@@ -132,19 +147,26 @@ impl qobject::Kichi {
                         .as_mut()
                         .finish_trash_success(TrashActionKind::Clear, total),
                     Err(err) => {
-                        qichi
-                            .as_mut()
-                            .finish_trash_failure(TrashActionKind::Clear, 0, total, err);
+                        qichi.as_mut().finish_trash_failure(
+                            TrashActionKind::Clear,
+                            0,
+                            total,
+                            &[],
+                            err,
+                        );
                     }
                 }
             },
         );
+        true
     }
 
-    fn start_trash_action(mut self: Pin<&mut Self>, kind: TrashActionKind, ids: Vec<String>) {
-        if !self.as_mut().begin_file_action() {
-            return;
-        }
+    fn start_trash_action(
+        mut self: Pin<&mut Self>,
+        kind: TrashActionKind,
+        ids: Vec<String>,
+        removed: Vec<TrashEntry>,
+    ) {
         let total = ids.len();
         {
             let mut rust = self.as_mut().rust_mut();
@@ -153,6 +175,7 @@ impl qobject::Kichi {
                 remaining: ids.into(),
                 total,
                 completed: 0,
+                removed,
             });
         }
         self.as_mut().run_next_trash_chunk();
@@ -178,6 +201,7 @@ impl qobject::Kichi {
         self.as_mut().set_message(&kind.progress(completed, total));
 
         let session = self.backend.session.clone();
+        let failed_ids = chunk.clone();
         run_in_background(
             move || {
                 let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
@@ -222,9 +246,13 @@ impl qobject::Kichi {
                             .as_ref()
                             .map(|state| state.completed)
                             .unwrap_or(0);
-                        qichi
-                            .as_mut()
-                            .finish_trash_failure(kind, completed, total, err);
+                        qichi.as_mut().finish_trash_failure(
+                            kind,
+                            completed,
+                            total,
+                            &failed_ids,
+                            err,
+                        );
                     }
                 }
             },
@@ -258,9 +286,12 @@ impl qobject::Kichi {
         kind: TrashActionKind,
         completed: usize,
         total: usize,
+        failed_ids: &[String],
         failure: Failure,
     ) {
         let reason = failure.to_string();
+        let restored = self.as_mut().take_entries_to_restore(failed_ids);
+        self.as_mut().publish_restored_entries(restored);
         {
             let mut rust = self.as_mut().rust_mut();
             rust.trash_action = None;
@@ -273,13 +304,22 @@ impl qobject::Kichi {
             self.as_mut().invalidate_file_caches();
         }
         self.as_mut().on_failure(failure);
-        let message = if completed > 0 {
-            format!(
-                "{}中断：已处理 {completed}/{total} 项；{reason}",
+        let message = match kind {
+            TrashActionKind::Restore if completed > 0 => {
+                format!(
+                    "{}中断：已处理 {completed}/{total} 项；{reason}",
+                    kind.label()
+                )
+            }
+            TrashActionKind::Restore => format!("{}失败：{reason}", kind.label()),
+            TrashActionKind::Clear => format!("{}失败，列表已恢复：{reason}", kind.label()),
+            TrashActionKind::Delete if completed > 0 => format!(
+                "{}中断：已删除 {completed}/{total} 项，未完成的已恢复；{reason}",
                 kind.label()
-            )
-        } else {
-            format!("{}失败：{reason}", kind.label())
+            ),
+            TrashActionKind::Delete => {
+                format!("{}失败，列表已恢复：{reason}", kind.label())
+            }
         };
         self.as_mut().set_message(&message);
         self.as_mut().file_action_done(
@@ -287,7 +327,7 @@ impl qobject::Kichi {
             false,
             QString::from(message.as_str()),
         );
-        if completed > 0 {
+        if kind == TrashActionKind::Restore && completed > 0 {
             self.as_mut()
                 .refresh_trash_with_status(Some(message), false);
         }
