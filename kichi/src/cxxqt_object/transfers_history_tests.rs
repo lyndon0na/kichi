@@ -325,6 +325,18 @@ fn pausing_or_paused_rows_restore_as_paused() {
 }
 
 #[test]
+fn paused_upload_restores_as_interrupted_because_it_has_no_resume_point() {
+    let mut row = upload_row(2, "暂停上传.mkv");
+    row.state = TransferState::Paused;
+    let restored = restore(entries(&[row], &[]), 2);
+    assert_eq!(restored[0].state, TransferState::Interrupted);
+    assert!(
+        !restored[0].state.is_cancellable(),
+        "已中断上传不在调度器里，只能重试"
+    );
+}
+
+#[test]
 fn auto_resume_marker_survives_roundtrip_until_consumed() {
     let mut row = file_row(1, "resume.mkv");
     row.state = TransferState::Running;

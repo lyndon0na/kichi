@@ -48,6 +48,7 @@ struct Pending {
 #[derive(Default)]
 struct Scheduler {
     queue: VecDeque<Pending>,
+    paused: Vec<Pending>,
     active: Option<Pending>,
 }
 
@@ -138,6 +139,10 @@ fn is_taken(scheduler: &Scheduler, source_id: &str) -> bool {
             .queue
             .iter()
             .any(|pending| pending.source_id == source_id)
+        || scheduler
+            .paused
+            .iter()
+            .any(|pending| pending.source_id == source_id)
 }
 
 fn reserve_job(job: TransferJob) -> Result<u64, ReserveError> {
@@ -184,6 +189,10 @@ pub(crate) fn counts() -> (bool, i32) {
         let queued = i32::try_from(scheduler.queue.len()).unwrap_or(i32::MAX);
         (running, queued)
     })
+}
+
+pub(crate) fn is_idle() -> bool {
+    with_scheduler(|scheduler| scheduler.active.is_none() && scheduler.queue.is_empty())
 }
 
 fn next_start() -> Option<UploadStart> {
@@ -266,6 +275,15 @@ pub(crate) fn cancel(batch: u64) -> Option<CancelOutcome> {
             pending.cancel.cancel();
             return Some(CancelOutcome::Queued);
         }
+        if let Some(index) = scheduler
+            .paused
+            .iter()
+            .position(|pending| pending.batch == batch)
+        {
+            let pending = scheduler.paused.remove(index);
+            pending.cancel.cancel();
+            return Some(CancelOutcome::Queued);
+        }
         if let Some(active) = scheduler
             .active
             .as_ref()
@@ -287,9 +305,13 @@ pub(crate) fn cancel_all() -> Vec<u64> {
         let queued: Vec<u64> = scheduler
             .queue
             .iter()
+            .chain(scheduler.paused.iter())
             .map(|pending| pending.batch)
             .collect();
         for pending in scheduler.queue.drain(..) {
+            pending.cancel.cancel();
+        }
+        for pending in scheduler.paused.drain(..) {
             pending.cancel.cancel();
         }
         queued
@@ -307,25 +329,61 @@ pub(crate) fn reset() {
         for pending in scheduler.queue.drain(..) {
             pending.cancel.abandon();
         }
+        for pending in scheduler.paused.drain(..) {
+            pending.cancel.abandon();
+        }
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonical_source_id_is_stable_and_direction_specific() {
-        let id = source_id_for(Path::new("/tmp/a b.txt"));
-        assert_eq!(id, "upload:/tmp/a b.txt");
-    }
-
-    #[test]
-    fn non_file_is_rejected_before_a_record_is_created() {
-        let temp = std::env::temp_dir();
-        assert!(matches!(
-            prepare_job(&temp, "", "全部文件"),
-            Err(ReserveError::Invalid(_))
-        ));
-    }
+/// 暂停结果：只有排队中的上传能直接暂停，运行中的仍只能取消。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PauseOutcome {
+    Queued,
+    Running,
+    NotCurrent,
 }
+
+/// 暂停一个尚未开始的上传；保留原批次与任务快照，继续时重新排队。
+pub(crate) fn pause(batch: u64) -> PauseOutcome {
+    with_scheduler(|scheduler| {
+        if let Some(index) = scheduler
+            .queue
+            .iter()
+            .position(|pending| pending.batch == batch)
+        {
+            let Some(pending) = scheduler.queue.remove(index) else {
+                return PauseOutcome::NotCurrent;
+            };
+            scheduler.paused.push(pending);
+            return PauseOutcome::Queued;
+        }
+        if scheduler
+            .active
+            .as_ref()
+            .is_some_and(|active| active.batch == batch)
+        {
+            return PauseOutcome::Running;
+        }
+        PauseOutcome::NotCurrent
+    })
+}
+
+/// 继续一个已暂停的上传：复用原批次，重新排到队尾。
+pub(crate) fn resume(batch: u64) -> bool {
+    with_scheduler(|scheduler| {
+        let Some(index) = scheduler
+            .paused
+            .iter()
+            .position(|pending| pending.batch == batch)
+        else {
+            return false;
+        };
+        let pending = scheduler.paused.remove(index);
+        scheduler.queue.push_back(pending);
+        true
+    })
+}
+
+#[cfg(test)]
+#[path = "upload_queue_tests.rs"]
+mod tests;

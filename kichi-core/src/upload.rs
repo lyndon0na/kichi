@@ -5,8 +5,9 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use reqwest::blocking::{Body, Client};
-use reqwest::header::{CONTENT_TYPE, ETAG, HOST};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, HOST};
 use reqwest::{Method, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::json;
@@ -33,6 +34,9 @@ const CID_FULL_FILE_LIMIT: u64 = 0xF000;
 const TASK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const TASK_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ERROR_BODY: u64 = 64 * 1024;
+const UPLOAD_MAX_ATTEMPTS: u32 = 3;
+const UPLOAD_RETRY_BASE: Duration = Duration::from_millis(500);
+const UPLOAD_RETRY_MAX: Duration = Duration::from_secs(4);
 
 /// 上传阶段。准备阶段也可能包含完整的 GCID 回退计算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,19 +278,16 @@ impl DriveClient {
             });
             let digest = sha256_hex(&mut file, cancelled, progress, size)?;
             let payload_hash = hex_lower(&digest);
-            file.seek(SeekFrom::Start(0))
-                .map_err(|err| Error::Other(format!("无法重新定位本地文件：{err}")))?;
             progress(UploadProgress {
                 stage: UploadStage::Uploading,
                 bytes: 0,
                 total: size,
             });
-            ensure_not_cancelled(cancelled)?;
-            let body = CancelReader::new(file, cancelled.clone());
+            drop(file);
             target.put_object(
+                path,
                 size,
                 &payload_hash,
-                body,
                 "application/octet-stream",
                 cancelled,
             )?;
@@ -309,8 +310,8 @@ impl DriveClient {
                 ensure_file_size(path, size)?;
                 let offset = (part_number - 1) * part_size;
                 let length = part_size.min(size - offset);
-                let bytes = read_exact_range(path, offset, length, cancelled)?;
-                let digest = Sha256::digest(&bytes);
+                let bytes = Arc::new(read_exact_range(path, offset, length, cancelled)?);
+                let digest = Sha256::digest(bytes.as_slice());
                 let etag = target.upload_part(
                     &upload_id,
                     part_number,
@@ -345,9 +346,24 @@ impl DriveClient {
         C: Fn() -> bool + Clone + Send + Sync + 'static,
     {
         let started = Instant::now();
+        let mut transient_failures = 0u32;
         loop {
             ensure_not_cancelled(cancelled)?;
-            let task: TaskDto = self.get(&Config::task_url(self.config(), task_id))?;
+            let task: TaskDto = match self.get(&Config::task_url(self.config(), task_id)) {
+                Ok(task) => {
+                    transient_failures = 0;
+                    task
+                }
+                Err(error)
+                    if transient_failures + 1 < UPLOAD_MAX_ATTEMPTS
+                        && is_retryable_api_error(&error) =>
+                {
+                    transient_failures += 1;
+                    sleep_cancellable(TASK_POLL_INTERVAL, cancelled)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             match task.phase.as_str() {
                 "PHASE_TYPE_COMPLETE" => return Ok(task),
                 "PHASE_TYPE_ERROR" => {
@@ -540,28 +556,40 @@ impl S3Target {
 
     fn put_object<C>(
         &self,
+        path: &Path,
         size: u64,
         payload_hash: &str,
-        body: CancelReader<File, C>,
         content_type: &str,
         cancelled: &C,
     ) -> Result<(), Error>
     where
         C: Fn() -> bool + Clone + Send + Sync + 'static,
     {
-        ensure_not_cancelled(cancelled)?;
-        let response = self.send(
-            Method::PUT,
-            &[],
-            payload_hash,
-            S3RequestBody {
-                content_length: (size > 0).then_some(size),
-                content_type: Some(content_type),
-                body: Some(Body::sized(body, size)),
-            },
-            cancelled,
-        )?;
-        ensure_s3_success(response.status, &response.body)
+        retry_upload(cancelled, |_attempt| {
+            ensure_file_size(path, size).map_err(UploadAttemptError::Fatal)?;
+            let file = File::open(path).map_err(|err| {
+                UploadAttemptError::Fatal(Error::Other(format!("无法打开本地文件：{err}")))
+            })?;
+            let body = CancelReader::new(file, cancelled.clone());
+            let response = self
+                .send(
+                    Method::PUT,
+                    &[],
+                    payload_hash,
+                    S3RequestBody {
+                        content_length: (size > 0).then_some(size),
+                        content_type: Some(content_type),
+                        body: Some(Body::sized(body, size)),
+                    },
+                    cancelled,
+                )
+                .map_err(UploadAttemptError::Retryable)?;
+            if response.status.is_success() {
+                Ok(())
+            } else {
+                Err(s3_attempt_error(response.status, &response.body))
+            }
+        })
     }
 
     fn create_multipart<C>(&self, cancelled: &C) -> Result<String, Error>
@@ -594,34 +622,42 @@ impl S3Target {
         part_number: u64,
         size: u64,
         payload_hash: &str,
-        bytes: Vec<u8>,
+        bytes: Arc<Vec<u8>>,
         cancelled: &C,
     ) -> Result<String, Error>
     where
         C: Fn() -> bool + Clone + Send + Sync + 'static,
     {
-        ensure_not_cancelled(cancelled)?;
-        let body = CancelReader::new(Cursor::new(bytes), cancelled.clone());
-        let response = self.send(
-            Method::PUT,
-            &[
-                ("partNumber", part_number.to_string()),
-                ("uploadId", upload_id.to_owned()),
-            ],
-            payload_hash,
-            S3RequestBody {
-                content_length: Some(size),
-                content_type: Some("application/octet-stream"),
-                body: Some(Body::sized(body, size)),
-            },
-            cancelled,
-        )?;
-        ensure_s3_success(response.status, &response.body)?;
-        response
-            .etag
-            .filter(|etag| !etag.trim().is_empty())
-            .map(|etag| etag.trim().to_owned())
-            .ok_or_else(|| Error::ApiChanged("上传分片响应缺少 ETag".to_owned()))
+        retry_upload(cancelled, |_attempt| {
+            let body =
+                CancelReader::new(ByteSliceReader::new(Arc::clone(&bytes)), cancelled.clone());
+            let response = self
+                .send(
+                    Method::PUT,
+                    &[
+                        ("partNumber", part_number.to_string()),
+                        ("uploadId", upload_id.to_owned()),
+                    ],
+                    payload_hash,
+                    S3RequestBody {
+                        content_length: Some(size),
+                        content_type: Some("application/octet-stream"),
+                        body: Some(Body::sized(body, size)),
+                    },
+                    cancelled,
+                )
+                .map_err(UploadAttemptError::Retryable)?;
+            if !response.status.is_success() {
+                return Err(s3_attempt_error(response.status, &response.body));
+            }
+            response
+                .etag
+                .filter(|etag| !etag.trim().is_empty())
+                .map(|etag| etag.trim().to_owned())
+                .ok_or_else(|| {
+                    UploadAttemptError::Fatal(Error::ApiChanged("上传分片响应缺少 ETag".to_owned()))
+                })
+        })
     }
 
     fn complete_multipart<C>(
@@ -633,7 +669,6 @@ impl S3Target {
     where
         C: Fn() -> bool + Clone + Send + Sync + 'static,
     {
-        ensure_not_cancelled(cancelled)?;
         let mut sorted: Vec<&CompletedPart> = parts.iter().collect();
         sorted.sort_by_key(|part| part.number);
         let mut xml = String::from("<CompleteMultipartUpload>");
@@ -645,26 +680,62 @@ impl S3Target {
             xml.push_str("</ETag></Part>");
         }
         xml.push_str("</CompleteMultipartUpload>");
-        let bytes = xml.into_bytes();
-        let payload_hash = hex_lower(&Sha256::digest(&bytes));
+        let bytes = Arc::new(xml.into_bytes());
+        let payload_hash = hex_lower(&Sha256::digest(bytes.as_slice()));
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let body = CancelReader::new(Cursor::new(bytes), cancelled.clone());
+        retry_upload(cancelled, |attempt| {
+            let body =
+                CancelReader::new(ByteSliceReader::new(Arc::clone(&bytes)), cancelled.clone());
+            let response = self
+                .send(
+                    Method::POST,
+                    &[("uploadId", upload_id.to_owned())],
+                    &payload_hash,
+                    S3RequestBody {
+                        content_length: Some(size),
+                        content_type: Some("application/xml"),
+                        body: Some(Body::sized(body, size)),
+                    },
+                    cancelled,
+                )
+                .map_err(UploadAttemptError::Retryable)?;
+            if response.status.is_success() {
+                if let Some((code, _message)) = parse_s3_error_body(&response.body) {
+                    // 前一次重试可能其实已经完成；先 HEAD 对象再决定是否报错。
+                    if attempt > 0
+                        && code == "NoSuchUpload"
+                        && self.object_exists(size, cancelled).unwrap_or(false)
+                    {
+                        return Ok(());
+                    }
+                    return Err(s3_attempt_error(response.status, &response.body));
+                }
+                return Ok(());
+            }
+            Err(s3_attempt_error(response.status, &response.body))
+        })
+    }
+
+    fn object_exists<C>(&self, size: u64, cancelled: &C) -> Result<bool, Error>
+    where
+        C: Fn() -> bool + Clone + Send + Sync + 'static,
+    {
+        ensure_not_cancelled(cancelled)?;
+        let empty_hash = hex_lower(&Sha256::digest([]));
         let response = self.send(
-            Method::POST,
-            &[("uploadId", upload_id.to_owned())],
-            &payload_hash,
-            S3RequestBody {
-                content_length: Some(size),
-                content_type: Some("application/xml"),
-                body: Some(Body::sized(body, size)),
-            },
+            Method::HEAD,
+            &[],
+            &empty_hash,
+            S3RequestBody::default(),
             cancelled,
         )?;
-        ensure_s3_success(response.status, &response.body)?;
-        if let Some((code, message)) = parse_s3_error_body(&response.body) {
-            return Err(Error::Other(format_s3_error(&code, &message)));
+        if response.status == StatusCode::NOT_FOUND {
+            return Ok(false);
         }
-        Ok(())
+        if !response.status.is_success() {
+            return Err(s3_error(response.status, &response.body));
+        }
+        Ok(response.content_length.is_none_or(|actual| actual == size))
     }
 
     fn abort_multipart(&self, upload_id: &str) -> Result<(), Error> {
@@ -749,8 +820,18 @@ impl S3Target {
             .get(ETAG)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let content_length = response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
         let body = read_limited(response, MAX_ERROR_BODY)?;
-        Ok(S3Response { status, etag, body })
+        Ok(S3Response {
+            status,
+            etag,
+            content_length,
+            body,
+        })
     }
 }
 
@@ -764,7 +845,98 @@ struct S3RequestBody<'a> {
 struct S3Response {
     status: StatusCode,
     etag: Option<String>,
+    content_length: Option<u64>,
     body: String,
+}
+
+enum UploadAttemptError {
+    Retryable(Error),
+    Fatal(Error),
+}
+
+/// 重放可安全重复的 S3 操作。票据申请和 CreateMultipartUpload 不经过这里，
+/// 避免响应丢失时在云端留下两个请求各自创建的上传记录。
+fn retry_upload<T, C, F>(cancelled: &C, mut operation: F) -> Result<T, Error>
+where
+    C: Fn() -> bool,
+    F: FnMut(u32) -> Result<T, UploadAttemptError>,
+{
+    let mut attempt = 0u32;
+    loop {
+        ensure_not_cancelled(cancelled)?;
+        match operation(attempt) {
+            Ok(value) => return Ok(value),
+            Err(UploadAttemptError::Fatal(error)) => return Err(error),
+            Err(UploadAttemptError::Retryable(error)) => {
+                if attempt + 1 >= UPLOAD_MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                sleep_cancellable(retry_delay(attempt), cancelled)?;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    let factor = 1u32 << attempt.min(4);
+    UPLOAD_RETRY_BASE
+        .saturating_mul(factor)
+        .min(UPLOAD_RETRY_MAX)
+}
+
+fn s3_attempt_error(status: StatusCode, body: &str) -> UploadAttemptError {
+    let Some((code, message)) = parse_s3_error_body(body) else {
+        let retryable = retryable_status(status);
+        let error = s3_error(status, body);
+        return if retryable {
+            UploadAttemptError::Retryable(error)
+        } else {
+            UploadAttemptError::Fatal(error)
+        };
+    };
+    let retryable = retryable_status(status) || retryable_s3_code(&code);
+    let error = Error::Other(format_s3_error(&code, &message));
+    if retryable {
+        UploadAttemptError::Retryable(error)
+    } else {
+        UploadAttemptError::Fatal(error)
+    }
+}
+
+fn retryable_status(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 425 | 500 | 502 | 503 | 504)
+}
+
+fn retryable_s3_code(code: &str) -> bool {
+    matches!(
+        code,
+        "RequestTimeout" | "InternalError" | "ServiceUnavailable" | "SlowDown"
+    )
+}
+
+struct ByteSliceReader {
+    bytes: Arc<Vec<u8>>,
+    offset: usize,
+}
+
+impl ByteSliceReader {
+    fn new(bytes: Arc<Vec<u8>>) -> Self {
+        Self { bytes, offset: 0 }
+    }
+}
+
+impl Read for ByteSliceReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.bytes.len().saturating_sub(self.offset);
+        if remaining == 0 || buffer.is_empty() {
+            return Ok(0);
+        }
+        let length = remaining.min(buffer.len());
+        buffer[..length].copy_from_slice(&self.bytes[self.offset..self.offset + length]);
+        self.offset += length;
+        Ok(length)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1122,6 +1294,14 @@ fn is_hard_auth_error(error: &Error) -> bool {
     )
 }
 
+fn is_retryable_api_error(error: &Error) -> bool {
+    matches!(error, Error::Network(_))
+        || matches!(
+            error,
+            Error::Api { code, .. } if matches!(*code, 408 | 425 | 500 | 502 | 503 | 504)
+        )
+}
+
 fn ensure_not_cancelled<C>(cancelled: &C) -> Result<(), Error>
 where
     C: Fn() -> bool,
@@ -1338,6 +1518,7 @@ fn hex_upper(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn zero_byte_cid_is_the_sha1_of_empty_input() {
@@ -1479,6 +1660,50 @@ mod tests {
             parse_s3_error_body(xml),
             Some(("AccessDenied".to_owned(), "bad & denied".to_owned()))
         );
+    }
+
+    #[test]
+    fn transient_s3_failures_are_retryable_but_client_errors_are_not() {
+        assert!(matches!(
+            s3_attempt_error(StatusCode::SERVICE_UNAVAILABLE, ""),
+            UploadAttemptError::Retryable(_)
+        ));
+        let timeout = "<Error><Code>RequestTimeout</Code><Message>try again</Message></Error>";
+        assert!(matches!(
+            s3_attempt_error(StatusCode::BAD_REQUEST, timeout),
+            UploadAttemptError::Retryable(_)
+        ));
+        let denied = "<Error><Code>AccessDenied</Code><Message>no</Message></Error>";
+        assert!(matches!(
+            s3_attempt_error(StatusCode::FORBIDDEN, denied),
+            UploadAttemptError::Fatal(_)
+        ));
+        assert!(matches!(
+            s3_attempt_error(StatusCode::TOO_MANY_REQUESTS, ""),
+            UploadAttemptError::Fatal(_)
+        ));
+    }
+
+    #[test]
+    fn upload_retry_backoff_is_bounded() {
+        assert_eq!(retry_delay(0), UPLOAD_RETRY_BASE);
+        assert_eq!(retry_delay(1), UPLOAD_RETRY_BASE.saturating_mul(2));
+        assert_eq!(retry_delay(20), UPLOAD_RETRY_MAX);
+    }
+
+    #[test]
+    fn shared_part_bytes_can_be_replayed() {
+        let bytes = Arc::new(b"reusable".to_vec());
+        let mut first = CancelReader::new(ByteSliceReader::new(Arc::clone(&bytes)), || false);
+        let mut second = CancelReader::new(ByteSliceReader::new(bytes), || false);
+        let mut first_out = Vec::new();
+        let mut second_out = Vec::new();
+        first.read_to_end(&mut first_out).expect("read first body");
+        second
+            .read_to_end(&mut second_out)
+            .expect("read replayed body");
+        assert_eq!(first_out, b"reusable");
+        assert_eq!(second_out, b"reusable");
     }
 
     #[test]

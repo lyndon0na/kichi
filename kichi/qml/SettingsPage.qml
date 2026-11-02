@@ -56,7 +56,7 @@ Item {
 
                 KSettingsRow {
                     title: qsTr("任务结束通知")
-                    description: qsTr("下载或离线任务结束时通知。")
+                    description: qsTr("下载、上传或离线任务结束时通知。")
 
                     CheckBox {
                         objectName: "settingsNotify"

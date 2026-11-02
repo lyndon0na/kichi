@@ -67,6 +67,30 @@ pub(crate) fn resume_target(key: &str) -> Option<ResumeBatch> {
     })
 }
 
+/// 一条已暂停上传的继续目标。上传暂停只存在于当前进程，不保留跨重启断点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UploadResumeTarget {
+    pub(crate) batch: u64,
+    pub(crate) name: String,
+}
+
+pub(crate) fn upload_resume_target(key: &str) -> Option<UploadResumeTarget> {
+    with_records(|records| {
+        records
+            .iter()
+            .find(|record| {
+                record_key(record) == key
+                    && !record.child
+                    && record.job.is_upload()
+                    && record.state == TransferState::Paused
+            })
+            .map(|record| UploadResumeTarget {
+                batch: record.batch,
+                name: record.display_name(),
+            })
+    })
+}
+
 /// 启动时消费正常退出留下的自动续跑标记。
 ///
 /// 标记与读取在同一把 records 锁里完成；返回后标记已清零，调用方要先强制

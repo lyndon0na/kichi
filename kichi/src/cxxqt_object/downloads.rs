@@ -223,13 +223,18 @@ impl qobject::Kichi {
             return;
         };
         if target.direction == transfers::TransferDirection::Upload {
-            let Some(_) = upload_queue::cancel(target.batch) else {
+            let Some(outcome) = upload_queue::cancel(target.batch) else {
                 self.as_mut().set_message("这条上传记录已经结束");
                 return;
             };
             transfers::cancel_batch(target.batch, "");
+            let prefix = if outcome == upload_queue::CancelOutcome::Running {
+                "正在取消上传"
+            } else {
+                "已取消上传"
+            };
             self.as_mut()
-                .set_message(&format!("正在取消上传：{}", target.name));
+                .set_message(&format!("{prefix}：{}", target.name));
             self.as_mut().advance_uploads();
             return;
         }
@@ -278,8 +283,24 @@ impl qobject::Kichi {
             return;
         };
         if target.direction == transfers::TransferDirection::Upload {
-            self.as_mut()
-                .set_message("上传任务不支持暂停，可在传输页取消");
+            if target.state == transfers::TransferState::Paused {
+                self.as_mut().set_message("这个上传任务已经暂停");
+                return;
+            }
+            match upload_queue::pause(target.batch) {
+                upload_queue::PauseOutcome::Queued => {
+                    transfers::pause_queued(target.batch);
+                    self.as_mut().clear_status_message();
+                }
+                upload_queue::PauseOutcome::Running => {
+                    self.as_mut()
+                        .set_message("正在上传的文件不能暂停，请取消后从头重试");
+                }
+                upload_queue::PauseOutcome::NotCurrent => {
+                    self.as_mut().set_message("这条上传记录已经结束");
+                }
+            }
+            self.as_mut().advance_uploads();
             return;
         }
         if !target.whole_batch {
@@ -311,6 +332,20 @@ impl qobject::Kichi {
     /// 继续一个已暂停的顶层批次；复用原批次、原记录和原下载目录。
     pub fn resume_transfer(mut self: Pin<&mut Self>, key: QString) {
         let key = key.to_string();
+        if let Some(target) = transfers_actions::upload_resume_target(&key) {
+            if !upload_queue::resume(target.batch) {
+                self.as_mut().sync_transfers();
+                self.as_mut().set_message(&format!(
+                    "这条上传任务已经不能继续，请重试：{}",
+                    target.name
+                ));
+                return;
+            }
+            transfers::resume_paused(target.batch);
+            self.as_mut().clear_status_message();
+            self.as_mut().advance_uploads();
+            return;
+        }
         let Some(target) = transfers_actions::resume_target(&key) else {
             self.as_mut().set_message("这条记录当前不能继续");
             return;

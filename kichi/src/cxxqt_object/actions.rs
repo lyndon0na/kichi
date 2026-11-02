@@ -158,6 +158,7 @@ impl qobject::Kichi {
         super::transfers::mark_auto_resume();
         super::upload_queue::reset();
         super::transfers::interrupt_active_for(super::transfers::TransferDirection::Upload);
+        super::transfers::interrupt_paused_for(super::transfers::TransferDirection::Upload);
         super::downloads::flush_history();
         super::tray::stop();
     }

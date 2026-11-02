@@ -730,7 +730,7 @@ TestCase {
         verify(findChild(menu, "transferRemoveItem").visible)
     }
 
-    function test_upload_rows_hide_download_only_actions() {
+    function test_upload_rows_only_pause_before_start() {
         backend.publish([
             makeRow("84:0", "上传中.mkv", "running", {
                 direction: "upload",
@@ -739,13 +739,23 @@ TestCase {
                 progressText: "40%",
                 sizeText: "4 MB / 10 MB"
             }),
+            makeRow("84:1", "排队上传.mkv", "queued", {
+                direction: "upload",
+                stateText: "排队中",
+                sizeText: "3 MB"
+            }),
+            makeRow("84:2", "暂停上传.mkv", "paused", {
+                direction: "upload",
+                stateText: "已暂停",
+                sizeText: "2 MB"
+            }),
             makeRow("85:0", "上传失败.mkv", "failed", {
                 direction: "upload",
                 stateText: "失败",
                 detail: "上传连接中断"
             })
         ], 1, 0)
-        waitRows(2)
+        waitRows(4)
 
         var running = row("84:0")
         verify(running !== null)
@@ -753,7 +763,19 @@ TestCase {
         compare(findChild(running, "resumeLink").visible, false)
         compare(findChild(running, "revealLink").visible, false)
         verify(findChild(running, "cancelLink").visible,
-               "上传不能暂停，但必须能取消")
+               "正在上传不能暂停，但必须能取消")
+
+        var queued = row("84:1")
+        verify(findChild(queued, "pauseLink").visible,
+               "尚未开始的上传可以暂停")
+        compare(findChild(queued, "resumeLink").visible, false)
+        verify(findChild(queued, "cancelLink").visible)
+
+        var paused = row("84:2")
+        compare(findChild(paused, "pauseLink").visible, false)
+        verify(findChild(paused, "resumeLink").visible,
+               "暂停的上传可以继续")
+        verify(findChild(paused, "cancelLink").visible)
 
         var failed = row("85:0")
         verify(findChild(failed, "retryLink").visible, "失败上传可从头重试")
@@ -768,6 +790,20 @@ TestCase {
         verify(findChild(menu, "transferCancelItem").visible)
         compare(findChild(menu, "transferRetryItem").visible, false)
         compare(findChild(menu, "transferRevealItem").visible, false)
+        menu.close()
+
+        mouseClick(queued, 120, queued.height / 2, Qt.RightButton)
+        tryVerify(function() { return menu.opened })
+        verify(findChild(menu, "transferPauseItem").visible)
+        compare(findChild(menu, "transferResumeItem").visible, false)
+        verify(findChild(menu, "transferCancelItem").visible)
+        menu.close()
+
+        mouseClick(paused, 120, paused.height / 2, Qt.RightButton)
+        tryVerify(function() { return menu.opened })
+        compare(findChild(menu, "transferPauseItem").visible, false)
+        verify(findChild(menu, "transferResumeItem").visible)
+        verify(findChild(menu, "transferCancelItem").visible)
         menu.close()
     }
 

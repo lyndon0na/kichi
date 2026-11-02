@@ -2,7 +2,7 @@
 //!
 //! 后台线程绝不碰 Qt 对象；结构变化和实时进度分别经 `enqueue_ui` 回主线程。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use kichi_core::{UploadProgress, UploadResult, UploadStage};
@@ -13,6 +13,57 @@ use crate::session::download::Cancel;
 use crate::session::{Failure, Session};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct UploadNoticeGroup {
+    done: u32,
+    failed: u32,
+    cancelled: u32,
+    interrupted: u32,
+    failure: Option<String>,
+}
+
+fn notice_group() -> &'static Mutex<UploadNoticeGroup> {
+    static GROUP: OnceLock<Mutex<UploadNoticeGroup>> = OnceLock::new();
+    GROUP.get_or_init(|| Mutex::new(UploadNoticeGroup::default()))
+}
+
+fn record_upload_end(end: &UploadEnd) {
+    let mut group = notice_group()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match end {
+        UploadEnd::Done => group.done = group.done.saturating_add(1),
+        UploadEnd::Failed(failure) => {
+            group.failed = group.failed.saturating_add(1);
+            group.failure = Some(failure.to_string());
+        }
+        UploadEnd::Cancelled => group.cancelled = group.cancelled.saturating_add(1),
+        UploadEnd::Interrupted => group.interrupted = group.interrupted.saturating_add(1),
+    }
+}
+
+fn take_upload_notice() -> Option<super::notifications::Notice> {
+    let group = {
+        let mut guard = notice_group()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *guard)
+    };
+    super::notifications::upload_finished(super::notifications::UploadSummary {
+        done: group.done,
+        failed: group.failed,
+        cancelled: group.cancelled,
+        interrupted: group.interrupted,
+        failure: group.failure.as_deref(),
+    })
+}
+
+pub(crate) fn clear_notice_group() {
+    *notice_group()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = UploadNoticeGroup::default();
+}
 
 pub(crate) struct UploadStart {
     pub(crate) batch: u64,
@@ -150,6 +201,7 @@ fn post_finished(batch: u64, job: TransferJob, end: UploadEnd, my_epoch: u64) {
             let current = my_epoch == upload_queue::current_epoch();
             let _ = upload_queue::release(batch);
             if current {
+                record_upload_end(&end);
                 match end {
                     UploadEnd::Done => {
                         if let Some(upload) = job.upload.as_ref() {
@@ -169,6 +221,13 @@ fn post_finished(batch: u64, job: TransferJob, end: UploadEnd, my_epoch: u64) {
                         }
                     },
                     UploadEnd::Cancelled | UploadEnd::Interrupted => {}
+                }
+                if upload_queue::is_idle() {
+                    if let Some(notice) = take_upload_notice() {
+                        if qichi.notify_enabled {
+                            super::notifications::show_notice(&notice);
+                        }
+                    }
                 }
                 qichi.as_mut().sync_transfers();
             }
@@ -225,5 +284,16 @@ mod tests {
             detail: "配额不足".into()
         }));
         assert!(!resets_upload_session(&Failure::Other("连接中断".into())));
+    }
+
+    #[test]
+    fn upload_notice_group_aggregates_and_resets() {
+        clear_notice_group();
+        record_upload_end(&UploadEnd::Done);
+        record_upload_end(&UploadEnd::Cancelled);
+        let notice = take_upload_notice().expect("有成功要通知");
+        assert_eq!(notice.summary, "上传结束");
+        assert!(notice.body.contains("成功 1 个，取消 1 个"));
+        assert!(take_upload_notice().is_none(), "取走后不能重复弹");
     }
 }

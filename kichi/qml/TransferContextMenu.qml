@@ -63,10 +63,10 @@ Item {
         root.targetIsFolder = rowData.folder === true
         root.targetIsChild = rowData.rowKind === "child"
         root.targetChildCount = Number(rowData.childCount || 0)
+        var upload = root.targetDirection === "upload"
         root.targetCanPause = active && !pausing && !root.targetIsChild
-                              && root.targetDirection !== "upload"
+                              && (!upload || phase === "queued")
         root.targetCanResume = paused && !root.targetIsChild
-                               && root.targetDirection !== "upload"
         root.targetCanCancel = (pausing || paused) ? !root.targetIsChild : active
         root.targetCanRetry = (failed || interrupted)
                               && (!root.targetIsFolder || root.targetChildCount === 0)

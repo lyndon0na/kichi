@@ -63,10 +63,10 @@ ItemDelegate {
                                          || row.pausing || row.paused
                                          || row.currentProgress > 0
                                          || row.currentProgress < 0
-    readonly property bool canPause: row.active && !row.pausing
-                                     && !row.child && !row.notice && !row.isUpload
-    readonly property bool canResume: row.paused && !row.child
-                                      && !row.notice && !row.isUpload
+    readonly property bool canPause: !row.child && !row.notice
+                                     && (row.isUpload ? row.phase === "queued"
+                                                      : row.active && !row.pausing)
+    readonly property bool canResume: row.paused && !row.child && !row.notice
     readonly property bool canCancel: !row.notice
                                       && ((row.pausing || row.paused)
                                           ? !row.child : row.active)

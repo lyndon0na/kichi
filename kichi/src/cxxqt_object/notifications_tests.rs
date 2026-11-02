@@ -158,6 +158,63 @@ fn prepare_failure_includes_name_and_reason() {
     assert_eq!(notice.icon, "dialog-error");
 }
 
+fn upload_summary<'a>(
+    done: u32,
+    failed: u32,
+    cancelled: u32,
+    interrupted: u32,
+    failure: Option<&'a str>,
+) -> UploadSummary<'a> {
+    UploadSummary {
+        done,
+        failed,
+        cancelled,
+        interrupted,
+        failure,
+    }
+}
+
+#[test]
+fn upload_success_is_one_summary() {
+    let notice = upload_finished(upload_summary(3, 0, 0, 0, None)).expect("成功要通知");
+    assert_eq!(notice.summary, "上传完成");
+    assert_eq!(notice.body, "3 个文件已上传");
+    assert_eq!(notice.icon, "folder-upload");
+}
+
+#[test]
+fn upload_partial_failure_points_to_transfers_page() {
+    let notice =
+        upload_finished(upload_summary(2, 1, 0, 0, Some("连接中断"))).expect("部分失败要通知");
+    assert_eq!(notice.summary, "上传结束");
+    assert!(notice.body.contains("成功 2 个，失败 1 个"));
+    assert!(notice.body.contains("详情见传输任务页"));
+    assert_eq!(notice.icon, "dialog-warning");
+}
+
+#[test]
+fn upload_total_failure_uses_the_last_reason() {
+    let notice =
+        upload_finished(upload_summary(0, 2, 0, 0, Some("上传连接中断"))).expect("全部失败要通知");
+    assert_eq!(notice.summary, "上传失败");
+    assert!(notice.body.contains("失败 2 个"));
+    assert!(notice.body.contains("上传连接中断"));
+    assert_eq!(notice.icon, "dialog-error");
+}
+
+#[test]
+fn upload_cancel_and_interrupt_alone_stay_silent() {
+    assert!(upload_finished(upload_summary(0, 0, 2, 0, None)).is_none());
+    assert!(upload_finished(upload_summary(0, 0, 0, 1, None)).is_none());
+}
+
+#[test]
+fn upload_mixed_cancel_still_reports_completed_files() {
+    let notice = upload_finished(upload_summary(1, 0, 1, 0, None)).expect("有成功就通知");
+    assert_eq!(notice.summary, "上传结束");
+    assert!(notice.body.contains("成功 1 个，取消 1 个"));
+}
+
 #[test]
 fn empty_batch_is_not_reported_as_success() {
     // 空文件夹已在 `queue_worker::end_notice` 直接返回 None，正常不会走到这里；

@@ -183,6 +183,187 @@ fn live_list_root_with_stored_session() {
     }
 }
 
+/// 真实账号的上传链路验证（默认忽略）。
+///
+/// 前置条件：先在本机用 GUI 登录一次，根目录存在 `Test` 文件夹。
+/// 只在 `Test` 内写入：0 字节、≤5 MiB 单次 PUT、同内容秒传、12 MiB
+/// multipart，以及第一个分片完成后取消并确认服务端临时记录已清理。
+#[test]
+#[ignore = "会在真实账号的 Test 目录写入文件"]
+fn live_upload_roundtrip() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, backend)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    println!("会话来源：{backend:?}");
+
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+    let test_dir = session
+        .list_dir(None)
+        .expect("读取根目录失败")
+        .into_iter()
+        .find(|entry| entry.kind == kichi_core::EntryKind::Folder && entry.name == "Test")
+        .expect("根目录没有 Test 文件夹");
+    println!("目标目录：Test（id={}）", test_dir.id);
+
+    let salt = upload_test_salt();
+    let tag = format!("{}-{}-{salt}", Utc::now().timestamp(), std::process::id());
+    let root = std::env::temp_dir().join(format!("kichi-upload-live-{tag}"));
+    std::fs::create_dir_all(&root).expect("创建本地临时目录失败");
+    let _cleanup = TempUploadFiles(root.clone());
+    let small_a = root.join(format!("kichi-upload-live-{tag}-small-a.bin"));
+    let small_b = root.join(format!("kichi-upload-live-{tag}-small-b.bin"));
+    let zero = root.join(format!("kichi-upload-live-{tag}-zero.bin"));
+    let large = root.join(format!("kichi-upload-live-{tag}-large.bin"));
+    let cancelled = root.join(format!("kichi-upload-live-{tag}-cancelled.bin"));
+    const SMALL_SIZE: u64 = 1024 * 1024;
+    const LARGE_SIZE: u64 = 12 * 1024 * 1024;
+    write_test_file(&small_a, SMALL_SIZE, 0x5eed ^ salt).expect("写入小文件失败");
+    write_test_file(&small_b, SMALL_SIZE, 0x5eed ^ salt).expect("写入秒传副本失败");
+    write_test_file(&zero, 0, 0).expect("写入空文件失败");
+    write_test_file(&large, LARGE_SIZE, 0xc0de ^ salt).expect("写入大文件失败");
+    write_test_file(&cancelled, LARGE_SIZE, 0xbad5 ^ salt).expect("写入取消测试文件失败");
+
+    let client = session.drive().expect("取得网盘 client 失败");
+    let upload = |file: &std::path::Path| {
+        let mut stages = Vec::new();
+        let result = session
+            .upload_file(
+                std::sync::Arc::clone(&client),
+                file,
+                &test_dir.id,
+                std::sync::Arc::new(download::Cancel::default()),
+                |progress| stages.push(progress.stage),
+            )
+            .unwrap_or_else(|err| panic!("上传 {} 失败：{err}", file.display()));
+        (result, stages)
+    };
+
+    let (zero_result, _) = upload(&zero);
+    assert_eq!(zero_result.bytes_sent, 0, "0 字节文件不应发 S3 内容");
+    println!("0 字节文件完成：id={}", zero_result.file_id);
+
+    let (small_result, small_stages) = upload(&small_a);
+    assert_eq!(small_result.bytes_sent, SMALL_SIZE);
+    assert!(
+        small_stages.contains(&kichi_core::UploadStage::Uploading),
+        "小文件没有进入上传阶段：{small_stages:?}"
+    );
+    println!(
+        "小文件完成：id={}，发送 {} 字节",
+        small_result.file_id, small_result.bytes_sent
+    );
+
+    let (dedup_result, _) = upload(&small_b);
+    assert_eq!(dedup_result.bytes_sent, 0, "同内容文件没有走秒传");
+    println!("同内容副本秒传完成：id={}", dedup_result.file_id);
+
+    let (large_result, large_stages) = upload(&large);
+    assert_eq!(large_result.bytes_sent, LARGE_SIZE);
+    assert!(
+        large_stages.contains(&kichi_core::UploadStage::Uploading)
+            && large_stages.contains(&kichi_core::UploadStage::Finalizing),
+        "multipart 阶段不完整：{large_stages:?}"
+    );
+    println!(
+        "multipart 完成：id={}，发送 {} 字节",
+        large_result.file_id, large_result.bytes_sent
+    );
+
+    let cancel = std::sync::Arc::new(download::Cancel::default());
+    let cancel_progress = std::sync::Arc::clone(&cancel);
+    let cancel_result = session.upload_file(
+        std::sync::Arc::clone(&client),
+        &cancelled,
+        &test_dir.id,
+        cancel,
+        move |progress| {
+            if progress.stage == kichi_core::UploadStage::Uploading && progress.bytes > 0 {
+                cancel_progress.cancel();
+            }
+        },
+    );
+    let cancel_error = cancel_result.expect_err("取消后的上传不应成功");
+    assert!(
+        cancel_error.to_string().contains("上传已取消"),
+        "取消错误不明确：{cancel_error}"
+    );
+    println!("取消返回：{cancel_error}");
+
+    let expected = [
+        (zero_result.name.as_str(), 0),
+        (small_result.name.as_str(), SMALL_SIZE),
+        (dedup_result.name.as_str(), SMALL_SIZE),
+        (large_result.name.as_str(), LARGE_SIZE),
+    ];
+    let entries = session
+        .list_dir(Some(test_dir.id.as_str()))
+        .expect("上传后读取 Test 目录失败");
+    for (name, size) in expected {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("Test 目录没有找到上传结果 {name}"));
+        assert_eq!(entry.size, size, "{name} 的远端大小不一致");
+        println!("远端确认：{}（{} 字节）", entry.name, entry.size);
+    }
+
+    let cancelled_name = cancelled
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("取消测试文件名");
+    for _ in 0..10 {
+        let entries = session
+            .list_dir(Some(test_dir.id.as_str()))
+            .expect("取消清理后读取 Test 目录失败");
+        if !entries.iter().any(|entry| entry.name == cancelled_name) {
+            println!("取消清理确认：Test 目录没有残留临时文件");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("取消后 Test 目录仍存在 {cancelled_name}");
+}
+
+struct TempUploadFiles(std::path::PathBuf);
+
+impl Drop for TempUploadFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn write_test_file(path: &std::path::Path, size: u64, seed: u64) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut state = seed | 1;
+    let mut block = [0u8; 64 * 1024];
+    let mut remaining = size;
+    while remaining > 0 {
+        let length = usize::try_from(remaining.min(block.len() as u64)).unwrap_or(0);
+        for byte in &mut block[..length] {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        writer.write_all(&block[..length])?;
+        remaining -= length as u64;
+    }
+    writer.flush()
+}
+
+fn upload_test_salt() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_else(|_| u64::from(std::process::id()))
+}
+
 /// 真实会话的播放档位验证（默认忽略）。
 ///
 /// 前置条件：先在本机用 GUI 登录一次。流程：在根目录里找第一个视频/音频

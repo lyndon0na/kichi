@@ -725,6 +725,24 @@ pub(crate) fn interrupt_active_for(direction: TransferDirection) {
     });
 }
 
+/// 登出 / 退出时把指定方向的暂停行也收成已中断。
+///
+/// 下载暂停会保留断点，重登后仍可继续；上传没有断点，且调度器里的暂停项
+/// 已被清掉，必须转成「已中断」才能给出从头重试的入口。
+pub(crate) fn interrupt_paused_for(direction: TransferDirection) {
+    with_records(|records| {
+        for record in records
+            .iter_mut()
+            .filter(|record| record.job.direction == direction)
+        {
+            if record.state == TransferState::Paused {
+                record.state = TransferState::Interrupted;
+                record.detail.clear();
+            }
+        }
+    });
+}
+
 /// 「清空已完成记录」：清掉整张记录表里所有「所有行都已结束」的批次。
 ///
 /// 不能像 [`clear_finished_in`] 那样只满足 `is_finished()`：已中断的行不算结束，

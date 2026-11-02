@@ -299,8 +299,8 @@ fn batch_is_consistent(rows: &[&EntryRecord]) -> bool {
     })
 }
 
-/// 恢复规则：暂停请求（含线程尚未来得及收尾的「正在暂停」）保持暂停；
-/// 其余没跑完（排队 / 准备 / 下载中）或状态认不出的行 → 已中断。
+/// 恢复规则：下载的暂停请求（含线程尚未来得及收尾的「正在暂停」）保持暂停；
+/// 上传没有断点，暂停态读回为已中断；其余没跑完或状态认不出的行 → 已中断。
 pub(crate) fn recovered_state(stored: TransferState) -> TransferState {
     if matches!(stored, TransferState::Pausing | TransferState::Paused) {
         return TransferState::Paused;
@@ -358,7 +358,10 @@ fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
         }),
     };
     let stored = state_of(&entry.state);
-    let state = recovered_state(stored);
+    let state = match (direction, recovered_state(stored)) {
+        (TransferDirection::Upload, TransferState::Paused) => TransferState::Interrupted,
+        (_, state) => state,
+    };
     // 已中断行的说明由视图层按「上次退出时未完成」拼，这里不覆盖用户能看到的旧原因
     let detail = if state == TransferState::Interrupted && stored.is_active() {
         String::new()

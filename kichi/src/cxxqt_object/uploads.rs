@@ -154,8 +154,10 @@ impl qobject::Kichi {
 
     /// 登出 / 失效时作废在途上传。上传没有断点，下次只能从头重试。
     pub(crate) fn reset_uploads(mut self: Pin<&mut Self>) {
+        super::upload_worker::clear_notice_group();
         upload_queue::reset();
         transfers::interrupt_active_for(TransferDirection::Upload);
+        transfers::interrupt_paused_for(TransferDirection::Upload);
         super::downloads::flush_history();
         self.as_mut().sync_transfers();
     }

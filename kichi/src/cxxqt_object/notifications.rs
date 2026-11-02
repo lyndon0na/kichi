@@ -24,6 +24,70 @@ pub(crate) struct BatchSummary<'a> {
     pub(crate) failure: Option<&'a str>,
 }
 
+/// 一次上传队列排空时的汇总数字。
+pub(crate) struct UploadSummary<'a> {
+    pub(crate) done: u32,
+    pub(crate) failed: u32,
+    pub(crate) cancelled: u32,
+    pub(crate) interrupted: u32,
+    /// 多个失败时用最后一个失败原因；成功 / 取消不写原因。
+    pub(crate) failure: Option<&'a str>,
+}
+
+/// 上传队列排空后最多一条通知；全部取消 / 中断时不打扰。
+pub(crate) fn upload_finished(summary: UploadSummary<'_>) -> Option<Notice> {
+    let UploadSummary {
+        done,
+        failed,
+        cancelled,
+        interrupted,
+        failure,
+    } = summary;
+    if done == 0 && failed == 0 {
+        return None;
+    }
+
+    if failed == 0 && cancelled == 0 && interrupted == 0 {
+        return Some(Notice {
+            summary: "上传完成",
+            body: format!("{done} 个文件已上传"),
+            icon: "folder-upload",
+        });
+    }
+
+    let mut parts = Vec::new();
+    if done > 0 {
+        parts.push(format!("成功 {done} 个"));
+    }
+    if failed > 0 {
+        parts.push(format!("失败 {failed} 个"));
+    }
+    if cancelled > 0 {
+        parts.push(format!("取消 {cancelled} 个"));
+    }
+    if interrupted > 0 {
+        parts.push(format!("中断 {interrupted} 个"));
+    }
+    let counts = parts.join("，");
+
+    if done == 0 {
+        let reason = failure
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or("失败原因见传输任务页");
+        return Some(Notice {
+            summary: "上传失败",
+            body: format!("{counts}\n{reason}"),
+            icon: "dialog-error",
+        });
+    }
+
+    Some(Notice {
+        summary: "上传结束",
+        body: format!("{counts}\n详情见传输任务页"),
+        icon: "dialog-warning",
+    })
+}
+
 /// 正常收尾（跑完、取消之外的结束）→ 一条通知。
 pub(crate) fn batch_finished(summary: BatchSummary<'_>) -> Notice {
     let BatchSummary {
