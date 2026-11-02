@@ -243,8 +243,10 @@ pub struct Settings {
     pub upload_parallel: usize,
     /// 上传全局限速 MiB/s；0 = 不限
     pub upload_rate_mib: u64,
-    /// 正常退出后，下次恢复登录态时自动继续未完成传输
+    /// 正常退出后，下次恢复登录态时自动继续未完成的下载
     pub auto_resume_downloads: bool,
+    /// 正常退出后，下次恢复登录态时自动继续未完成的上传（默认关闭）
+    pub auto_resume_uploads: bool,
 }
 
 impl Default for Settings {
@@ -271,6 +273,7 @@ impl Default for Settings {
             upload_parallel: crate::session::limits::DEFAULT_UPLOAD_PARALLEL,
             upload_rate_mib: 0,
             auto_resume_downloads: true,
+            auto_resume_uploads: false,
         }
     }
 }
@@ -483,6 +486,7 @@ mod tests {
             upload_parallel: 4,
             upload_rate_mib: 8,
             auto_resume_downloads: false,
+            auto_resume_uploads: true,
             ..Settings::default()
         };
         save(&path, &settings).expect("保存失败");
@@ -555,6 +559,7 @@ mod tests {
         );
         assert_eq!(settings.upload_rate_mib, 0, "旧设置上传默认不限速");
         assert!(settings.auto_resume_downloads, "自动续跑默认开启");
+        assert!(!settings.auto_resume_uploads, "上传自动续传默认关闭");
         let _ = std::fs::remove_file(&path);
     }
 

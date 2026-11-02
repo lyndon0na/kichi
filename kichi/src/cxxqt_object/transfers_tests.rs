@@ -11,8 +11,8 @@ use kichi_core::EntryKind;
 
 use super::*;
 use crate::cxxqt_object::transfers_view::{
-    batch_stats, build_detail_snapshot, build_snapshot, live_map, notice_map, ordered,
-    parent_live_map, percent_of, record_map, QVariantMap, MAX_ROWS,
+    build_detail_snapshot, build_snapshot, live_map, notice_map, ordered, parent_live_map,
+    percent_of, record_map, QVariantMap, MAX_ROWS,
 };
 use crate::cxxqt_object::QVariantList;
 
@@ -112,6 +112,7 @@ fn set(records: &mut [Transfer], batch: u64, index: usize, state: TransferState)
 fn set_child(records: &mut [Transfer], batch: u64, index: usize, state: TransferState) {
     let at = child_at(records, batch, index);
     records[at].state = state;
+    rebuild_batch_stats(records, batch);
 }
 
 fn text_of(map: &QVariantMap, key: &str) -> String {
@@ -639,8 +640,8 @@ fn folder_row_aggregates_progress_and_counts() {
         "剧集",
         &[("a.mkv", 10), ("b.mkv", 20), ("c.mkv", 30)],
     );
-    set_child(&mut records, 1, 0, TransferState::Done);
     child_mut(&mut records, 1, 0).bytes = 10;
+    set_child(&mut records, 1, 0, TransferState::Done);
     begin_in(&mut records, 1, 1);
     progress_in(&mut records, 1, 1, 5, Some(20));
 
@@ -669,6 +670,55 @@ fn folder_row_aggregates_progress_and_counts() {
     assert_eq!(text_of(&map, "detail"), "成功 1 个 · 失败 2 个");
     assert_eq!(text_of(&map, "sizeText"), "60 B");
     assert_eq!(int_of(&map, "failedCount"), 2);
+}
+
+#[test]
+fn incremental_batch_cache_matches_a_full_recount() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("a.mkv", 10), ("b.mkv", 20), ("c.mkv", 30)],
+    );
+
+    begin_in(&mut records, 1, 0);
+    progress_in(&mut records, 1, 0, 4, Some(10));
+    finish_ok_in(&mut records, 1, 0, Path::new("/tmp/a.mkv"));
+    begin_in(&mut records, 1, 1);
+    progress_in(&mut records, 1, 1, 5, Some(20));
+    finish_err_in(&mut records, 1, 2, "坏链");
+
+    assert_eq!(
+        records[0].batch_stats,
+        batch_stats(&records, 1),
+        "增量缓存必须与整批重算一致"
+    );
+    assert_eq!(records[0].batch_stats.running_position, Some(2));
+}
+
+#[test]
+fn running_position_uses_the_rank_not_a_sparse_child_index() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("a.mkv", 10), ("b.mkv", 20), ("c.mkv", 30)],
+    );
+
+    // 子文件重试后 index 可能稀疏：index 0 已不在记录表里，剩 1、2。
+    let first = child_at(&records, 1, 0);
+    records.remove(first);
+    rebuild_batch_stats(&mut records, 1);
+    begin_in(&mut records, 1, 2);
+
+    assert_eq!(
+        records[0].batch_stats.running_position,
+        Some(2),
+        "第 2 个（index=2）不是第 3 个"
+    );
+    assert_eq!(records[0].batch_stats, batch_stats(&records, 1));
 }
 
 #[test]
@@ -875,8 +925,8 @@ fn parent_path_requires_a_done_child() {
 fn live_maps_carry_file_and_parent_progress() {
     let mut records = Vec::new();
     folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 20)]);
-    set_child(&mut records, 1, 0, TransferState::Done);
     child_mut(&mut records, 1, 0).bytes = 10;
+    set_child(&mut records, 1, 0, TransferState::Done);
     begin_in(&mut records, 1, 1);
     progress_in(&mut records, 1, 1, 5, Some(20));
 
@@ -1287,6 +1337,140 @@ fn clean_exit_marks_only_active_top_level_batches_for_auto_resume() {
     assert!(
         records.iter().all(|record| !record.auto_resume),
         "正在暂停的任务按用户意图保持暂停，不能在下次启动自动跑起来"
+    );
+}
+
+#[test]
+fn clean_exit_marks_only_active_upload_rows() {
+    let mut records = Vec::new();
+    let parent_job = TransferJob {
+        id: "upload-folder:/home/me/剧集".to_owned(),
+        name: "剧集".to_owned(),
+        kind: EntryKind::Folder,
+        size: 0,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集"),
+            parent_id: "cloud-folder".to_owned(),
+            parent_name: "动画".to_owned(),
+            ..UploadJob::default()
+        }),
+    };
+    let mut parent = row_from(1, 0, &parent_job.id, &parent_job, 1, 1);
+    parent.state = TransferState::Running;
+    records.push(parent);
+    let seeds: Vec<TransferJob> = [
+        ("running.mkv", TransferState::Running),
+        ("queued.mkv", TransferState::Queued),
+        ("paused.mkv", TransferState::Paused),
+        ("failed.mkv", TransferState::Failed),
+    ]
+    .into_iter()
+    .map(|(name, _)| {
+        let mut job = upload_job(name, 10);
+        job.sub_dir = vec!["剧集".to_owned()];
+        job
+    })
+    .collect();
+    expand_folder_in(&mut records, 1, &seeds, 1, 1);
+    for (index, state) in [
+        TransferState::Running,
+        TransferState::Queued,
+        TransferState::Paused,
+        TransferState::Failed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        child_mut(&mut records, 1, index).state = state;
+    }
+    rebuild_batch_stats(&mut records, 1);
+
+    let mut paused = row_from(
+        2,
+        0,
+        "upload:/home/me/paused.mkv",
+        &upload_job("paused.mkv", 10),
+        1,
+        1,
+    );
+    paused.state = TransferState::Paused;
+    records.push(paused);
+
+    mark_auto_resume_uploads_in(&mut records);
+
+    assert!(records[0].auto_resume, "在途文件夹总账行要续传");
+    assert!(records[1].auto_resume, "运行中的子文件要续传");
+    assert!(records[2].auto_resume, "排队中的子文件要续传");
+    assert!(!records[3].auto_resume, "暂停子文件不自动续传");
+    assert!(!records[4].auto_resume, "失败子文件不自动续传");
+    assert!(!records[5].auto_resume, "暂停批次不自动续传");
+}
+
+#[test]
+fn auto_resume_folder_requeues_only_the_selected_interrupted_children() {
+    let mut records = Vec::new();
+    let parent_job = TransferJob {
+        id: "upload-folder:/home/me/剧集".to_owned(),
+        name: "剧集".to_owned(),
+        kind: EntryKind::Folder,
+        size: 0,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集"),
+            parent_id: "cloud-folder".to_owned(),
+            parent_name: "动画".to_owned(),
+            ..UploadJob::default()
+        }),
+    };
+    let mut parent = row_from(1, 0, &parent_job.id, &parent_job, 1, 1);
+    parent.state = TransferState::Interrupted;
+    records.push(parent);
+    let seeds: Vec<TransferJob> = ["a.mkv", "b.mkv", "done.mkv", "failed.mkv"]
+        .into_iter()
+        .map(|name| {
+            let mut job = upload_job(name, 10);
+            job.sub_dir = vec!["剧集".to_owned()];
+            job
+        })
+        .collect();
+    expand_folder_in(&mut records, 1, &seeds, 1, 1);
+    for (index, state) in [
+        TransferState::Interrupted,
+        TransferState::Interrupted,
+        TransferState::Done,
+        TransferState::Failed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        child_mut(&mut records, 1, index).state = state;
+    }
+    rebuild_batch_stats(&mut records, 1);
+
+    assert!(resume_auto_upload_folder_in(&mut records, 1, &[0]));
+    assert_eq!(records[0].state, TransferState::Queued);
+    assert_eq!(child_mut(&mut records, 1, 0).state, TransferState::Queued);
+    assert_eq!(
+        child_mut(&mut records, 1, 1).state,
+        TransferState::Interrupted,
+        "没标过的旧中断项不能被顺手恢复"
+    );
+    assert_eq!(child_mut(&mut records, 1, 2).state, TransferState::Done);
+    assert_eq!(child_mut(&mut records, 1, 3).state, TransferState::Failed);
+    assert_eq!(records[0].batch_stats, batch_stats(&records, 1));
+
+    assert!(resume_auto_upload_folder_in(&mut records, 1, &[1]));
+    assert_eq!(
+        child_mut(&mut records, 1, 1).state,
+        TransferState::Queued,
+        "第二次只恢复显式选中的兄弟文件"
     );
 }
 

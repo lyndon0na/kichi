@@ -16,9 +16,9 @@ use kichi_core::EntryKind;
 use super::queue::{self, Job, ResumeBatch};
 use super::transfers::TransferDirection;
 use super::transfers::{
-    current_session, folder_download_path, has_done_child, is_folder_ledger, record_key,
-    refresh_parent_state, row_from, with_records, with_trees, Transfer, TransferJob, TransferState,
-    UploadDir,
+    current_session, folder_download_path, has_done_child, is_folder_ledger, rebuild_batch_stats,
+    record_key, refresh_parent_state, row_from, with_records, with_trees, Transfer, TransferJob,
+    TransferState, UploadDir,
 };
 
 /// 一条活动记录对应的取消目标。
@@ -228,37 +228,128 @@ pub(crate) fn upload_folder_batch_retry(key: &str) -> Option<UploadFolderBatchRe
     })
 }
 
+#[derive(Default)]
+pub(crate) struct AutoResumeTargets {
+    pub(crate) downloads: Vec<ResumeBatch>,
+    pub(crate) uploads: Vec<UploadResumeBatch>,
+}
+
+/// 正常退出时仍在进行的上传，按单文件 / 文件夹分别恢复。
+pub(crate) enum UploadResumeBatch {
+    Single {
+        batch: u64,
+        key: String,
+        job: TransferJob,
+        name: String,
+    },
+    Folder {
+        batch: u64,
+        parent: TransferJob,
+        files: Vec<(usize, TransferJob)>,
+        dirs: Vec<Vec<String>>,
+        upload_dirs: Vec<UploadDir>,
+        name: String,
+    },
+}
+
 /// 启动时消费正常退出留下的自动续跑标记。
 ///
 /// 标记与读取在同一把 records 锁里完成；返回后标记已清零，调用方要先强制
 /// 写盘再真正启动，避免刚续上就崩溃导致下一轮再自动启动一次。
-pub(crate) fn take_auto_resume() -> Vec<ResumeBatch> {
+pub(crate) fn take_auto_resume() -> AutoResumeTargets {
     with_records(|records| {
-        let batches: Vec<u64> = records
-            .iter()
-            .filter(|record| !record.child && record.auto_resume)
-            .map(|record| record.batch)
-            .collect();
-        let mut targets = Vec::new();
-        for batch in batches {
-            if let Some(target) = resume_batch_in(
-                records,
-                |record| {
-                    record.batch == batch
-                        && !record.child
-                        && record.auto_resume
-                        && record.state == TransferState::Interrupted
-                },
-                |record| record.auto_resume && record.state == TransferState::Interrupted,
-            ) {
-                targets.push(target);
-            }
-        }
-        for record in records.iter_mut() {
-            record.auto_resume = false;
-        }
-        targets
+        auto_resume_targets_in(records, |batch| {
+            with_trees(|trees| trees.get(&batch).cloned().unwrap_or_default())
+        })
     })
+}
+
+fn auto_resume_targets_in(
+    records: &mut [Transfer],
+    mut dirs_for: impl FnMut(u64) -> Vec<Vec<String>>,
+) -> AutoResumeTargets {
+    let download_batches: Vec<u64> = records
+        .iter()
+        .filter(|record| !record.child && record.auto_resume && !record.job.is_upload())
+        .map(|record| record.batch)
+        .collect();
+    let mut downloads = Vec::new();
+    for batch in download_batches {
+        if let Some(target) = resume_batch_in(
+            records,
+            |record| {
+                record.batch == batch
+                    && !record.child
+                    && record.auto_resume
+                    && !record.job.is_upload()
+                    && record.state == TransferState::Interrupted
+            },
+            |record| {
+                record.auto_resume
+                    && !record.job.is_upload()
+                    && record.state == TransferState::Interrupted
+            },
+        ) {
+            downloads.push(target);
+        }
+    }
+
+    let upload_batches: Vec<u64> = records
+        .iter()
+        .filter(|record| !record.child && record.auto_resume && record.job.is_upload())
+        .map(|record| record.batch)
+        .collect();
+    let mut uploads = Vec::new();
+    for batch in upload_batches {
+        let Some(parent) = records
+            .iter()
+            .find(|record| record.batch == batch && !record.child && record.job.is_upload())
+        else {
+            continue;
+        };
+        if is_folder_ledger(parent) {
+            let mut children: Vec<&Transfer> = records
+                .iter()
+                .filter(|record| {
+                    record.batch == batch
+                        && record.child
+                        && record.auto_resume
+                        && record.job.is_upload()
+                        && record.state == TransferState::Interrupted
+                })
+                .collect();
+            children.sort_by_key(|record| record.index);
+            if children.is_empty() {
+                // 还在扫描、没有子行快照的文件夹无法凭空恢复；保留「已中断」，
+                // 让用户显式重试时重新扫描。
+                continue;
+            }
+            let files = children
+                .into_iter()
+                .map(|record| (record.index, record.job.clone()))
+                .collect();
+            uploads.push(UploadResumeBatch::Folder {
+                batch,
+                parent: parent.job.clone(),
+                files,
+                dirs: dirs_for(batch),
+                upload_dirs: parent.upload_dirs.clone(),
+                name: parent.display_name(),
+            });
+        } else if parent.state == TransferState::Interrupted {
+            uploads.push(UploadResumeBatch::Single {
+                batch,
+                key: record_key(parent),
+                job: parent.job.clone(),
+                name: parent.display_name(),
+            });
+        }
+    }
+
+    for record in records.iter_mut() {
+        record.auto_resume = false;
+    }
+    AutoResumeTargets { downloads, uploads }
 }
 
 fn resume_batch_in(
@@ -519,6 +610,7 @@ fn remove_in(records: &mut Vec<Transfer>, key: &str) -> bool {
     };
     let removed = records.remove(index);
     if removed.child {
+        rebuild_batch_stats(records, removed.batch);
         refresh_parent_state(records, removed.batch);
         remove_empty_parent(records, removed.batch);
     }

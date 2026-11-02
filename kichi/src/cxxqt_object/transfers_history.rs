@@ -384,6 +384,13 @@ pub(crate) fn restore(entries: Vec<EntryRecord>, session: u64) -> Vec<Transfer> 
             .collect();
         // 父行在前，子行按 index（统一列表顺序由视图层重新排）
         batch_rows.sort_by_key(|record| (record.child, record.index));
+        let stats = super::transfers::batch_stats(&batch_rows, batch);
+        if let Some(parent) = batch_rows
+            .iter_mut()
+            .find(|record| !record.child && is_folder_ledger(record))
+        {
+            parent.batch_stats = stats;
+        }
         restored.extend(batch_rows);
     }
     restored

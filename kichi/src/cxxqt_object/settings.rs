@@ -231,6 +231,13 @@ impl qobject::Kichi {
         });
     }
 
+    /// 正常退出后是否自动继续未完成的上传；默认关闭。
+    pub fn set_auto_resume_uploads(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().update_settings(|settings| {
+            settings.auto_resume_uploads = enabled;
+        });
+    }
+
     /// 调起系统原生目录选择器，选中后走正常的下载目录保存流程。
     pub fn choose_download_dir(mut self: Pin<&mut Self>) {
         let start = self.settings.download_dir_path();
@@ -340,6 +347,7 @@ impl qobject::Kichi {
             .unwrap_or(limits::DEFAULT_CONNECTIONS as i32);
         rust.download_rate_mib = i32::try_from(snapshot.download_rate_mib).unwrap_or(i32::MAX);
         rust.auto_resume_downloads = snapshot.auto_resume_downloads;
+        rust.auto_resume_uploads = snapshot.auto_resume_uploads;
         rust.upload_parallel = i32::try_from(snapshot.upload_parallel)
             .unwrap_or(limits::DEFAULT_UPLOAD_PARALLEL as i32);
         rust.upload_rate_mib = i32::try_from(snapshot.upload_rate_mib).unwrap_or(i32::MAX);

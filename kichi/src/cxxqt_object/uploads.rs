@@ -187,7 +187,7 @@ impl qobject::Kichi {
 
     /// 扫描中的轻量进度回投：只在父行仍处于「准备中」时更新说明。
     pub(crate) fn on_upload_scan_progress(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         batch: u64,
         files: usize,
         dirs: usize,
@@ -196,7 +196,7 @@ impl qobject::Kichi {
             return;
         }
         transfers::set_upload_folder_detail(batch, &upload_scan::scan_progress_text(files, dirs));
-        self.as_mut().sync_transfers();
+        super::transfers_sync::request();
     }
 
     fn enqueue_scanned_folder(mut self: Pin<&mut Self>, batch: u64, result: ScanResult) {

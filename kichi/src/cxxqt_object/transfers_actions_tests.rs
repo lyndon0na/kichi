@@ -641,3 +641,95 @@ fn empty_folder_row_is_not_retryable_as_a_whole() {
         "空文件夹算成功，没有重试入口"
     );
 }
+
+#[test]
+fn auto_resume_separates_downloads_and_upload_targets() {
+    let mut records = folder_batch(&[
+        ("a.mkv", TransferState::Interrupted),
+        ("b.mkv", TransferState::Done),
+    ]);
+    records[0].state = TransferState::Interrupted;
+    records[0].auto_resume = true;
+    records[1].auto_resume = true;
+
+    let mut single = upload_record(TransferState::Interrupted);
+    single.batch = 8;
+    single.auto_resume = true;
+    records.push(single);
+
+    let mut folder = upload_folder_batch(
+        9,
+        &[
+            ("active.mkv", TransferState::Interrupted),
+            ("done.mkv", TransferState::Done),
+            ("old.mkv", TransferState::Interrupted),
+        ],
+        &[],
+    );
+    folder[0].state = TransferState::Interrupted;
+    folder[0].auto_resume = true;
+    folder[1].auto_resume = true;
+    records.extend(folder);
+
+    let targets = auto_resume_targets_in(&mut records, |batch| {
+        if batch == 9 {
+            vec![vec!["剧集".to_owned(), "第一季".to_owned()]]
+        } else {
+            Vec::new()
+        }
+    });
+
+    assert_eq!(targets.downloads.len(), 1, "下载批次单独恢复");
+    assert_eq!(
+        targets.downloads[0].files.as_ref().map(Vec::len),
+        Some(1),
+        "只恢复当时在途的下载子文件"
+    );
+    assert_eq!(targets.uploads.len(), 2, "单文件和文件夹各一条上传目标");
+
+    let mut saw_single = false;
+    let mut saw_folder = false;
+    for target in targets.uploads {
+        match target {
+            UploadResumeBatch::Single { batch, job, .. } => {
+                saw_single = true;
+                assert_eq!(batch, 8);
+                assert_eq!(job.name, "电影.mkv");
+            }
+            UploadResumeBatch::Folder {
+                batch,
+                files,
+                dirs,
+                upload_dirs,
+                ..
+            } => {
+                saw_folder = true;
+                assert_eq!(batch, 9);
+                assert_eq!(
+                    files.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+                    vec![0],
+                    "没标过的旧中断子文件不能顺手恢复"
+                );
+                assert_eq!(dirs, vec![vec!["剧集".to_owned(), "第一季".to_owned()]]);
+                assert!(!upload_dirs.is_empty(), "复用已创建的云端目录");
+            }
+        }
+    }
+    assert!(saw_single && saw_folder);
+    assert!(
+        records.iter().all(|record| !record.auto_resume),
+        "消费后必须清掉全部标记"
+    );
+}
+
+#[test]
+fn auto_resume_skips_a_folder_that_never_got_child_rows() {
+    let mut records = upload_folder_batch(11, &[], &[]);
+    records[0].state = TransferState::Interrupted;
+    records[0].auto_resume = true;
+
+    let targets = auto_resume_targets_in(&mut records, |_| vec![vec!["剧集".to_owned()]]);
+
+    assert!(targets.uploads.is_empty(), "还在扫描的文件夹没有可恢复子行");
+    assert!(!records[0].auto_resume);
+}

@@ -145,6 +145,10 @@ impl qobject::Kichi {
         // 卡住时下载线程没有进度回调，秒数只能由主线程按 1Hz 自己走。
         // 只改 transferLive，不碰列表模型。
         self.as_mut().maybe_heartbeat_live();
+        // 后台结构变化先置脏，到窗口后在这里补一次尾随刷新。
+        if super::transfers_sync::due() {
+            self.as_mut().sync_transfers();
+        }
     }
 }
 
@@ -156,6 +160,9 @@ impl qobject::Kichi {
     /// 进程直接结束前把记录表落成最后一次（ADR 0014）。
     pub fn shutdown_tray(&self) {
         super::transfers::mark_auto_resume();
+        if self.settings.auto_resume_uploads {
+            super::transfers::mark_auto_resume_uploads();
+        }
         super::upload_queue::reset();
         super::transfers::interrupt_active_for(super::transfers::TransferDirection::Upload);
         super::transfers::interrupt_paused_for(super::transfers::TransferDirection::Upload);

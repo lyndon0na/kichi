@@ -32,6 +32,7 @@ TestCase {
         property int uploadParallel: 2
         property int uploadRateMib: 0
         property bool autoResumeDownloads: true
+        property bool autoResumeUploads: false
         property bool notifyEnabled: true
         property bool closeToTray: false
         property string storageBackend: "KWallet"
@@ -58,6 +59,7 @@ TestCase {
         function setUploadParallel(value) { uploadParallel = value }
         function setUploadRateMib(value) { uploadRateMib = value }
         function setAutoResumeDownloads(value) { autoResumeDownloads = value }
+        function setAutoResumeUploads(value) { autoResumeUploads = value }
         function chooseDownloadDir() { chooseDownloadDirCalls += 1 }
         function openDownloadDir() { openDownloadDirCalls += 1 }
         function setNotifyEnabled(value) { notifyEnabled = value }
@@ -210,16 +212,22 @@ TestCase {
     function test_upload_throughput_controls_are_wired() {
         var parallel = findChild(page, "settingsUploadParallel")
         var rate = findChild(page, "settingsUploadRate")
+        var autoResume = findChild(page, "settingsAutoResumeUploads")
         verify(parallel !== null, "有同时上传任务数")
         verify(rate !== null, "有上传全局限速")
+        verify(autoResume !== null, "有上传自动续传开关")
+        compare(autoResume.checked, false, "上传自动续传默认关闭")
 
         parallel.value = 4
         parallel.valueModified()
         rate.value = 8
         rate.valueModified()
+        autoResume.checked = true
+        autoResume.toggled()
 
         compare(backend.uploadParallel, 4)
         compare(backend.uploadRateMib, 8)
+        compare(backend.autoResumeUploads, true)
     }
 
     function test_upload_group_keeps_the_same_spacing_as_other_groups() {

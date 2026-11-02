@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -44,6 +46,11 @@ const UPLOAD_RETRY_BASE: Duration = Duration::from_millis(500);
 const UPLOAD_RETRY_MAX: Duration = Duration::from_secs(4);
 const S3_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// 同一个 multipart 文件最多同时发送几个分片。
+///
+/// 分片从本地文件流式读取，不再整块常驻内存；跨文件并发仍由 GUI 调度器
+/// 控制，所有连接共享同一个上传限速桶。
+const MAX_PARALLEL_PARTS: usize = 4;
 
 /// 上传阶段。准备阶段也可能包含完整的 GCID 回退计算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,43 +576,141 @@ impl DriveClient {
             total: size,
         });
 
+        let pending_parts: Vec<u64> = (1..=part_count)
+            .filter(|part_number| !completed.contains_key(part_number))
+            .collect();
         let mut sent_this_run = 0u64;
-        for part_number in 1..=part_count {
-            if completed.contains_key(&part_number) {
-                continue;
-            }
-            ensure_not_cancelled(cancelled)?;
-            ensure_file_size(path, size)?;
-            let offset = (part_number - 1) * part_size;
-            let length = part_length(part_number, part_size, size);
-            let bytes = Arc::new(read_exact_range(path, offset, length, cancelled)?);
-            let digest = Sha256::digest(bytes.as_slice());
-            let etag = target.upload_part(
-                &state.upload_id,
-                part_number,
-                length,
-                &hex_lower(&digest),
-                bytes,
-                cancelled,
-            )?;
-            completed.insert(
-                part_number,
-                UploadPart {
-                    number: part_number,
-                    etag,
-                    size: length,
-                },
-            );
-            sent_this_run = sent_this_run.saturating_add(length);
-            state.parts = completed.values().cloned().collect();
-            state.bytes_sent = completed_part_bytes(&completed, part_size, size);
-            state.touch();
-            checkpoint(state);
-            progress(UploadProgress {
-                stage: UploadStage::Uploading,
-                bytes: state.bytes_sent,
-                total: size,
+        if !pending_parts.is_empty() {
+            let upload_id = state.upload_id.clone();
+            let stop = AtomicBool::new(false);
+            let cursor = AtomicUsize::new(0);
+            let first_failure = std::sync::Mutex::new(None);
+            let (sender, receiver) = mpsc::channel();
+            let workers = pending_parts.len().min(MAX_PARALLEL_PARTS);
+
+            std::thread::scope(|scope| {
+                for worker in 0..workers {
+                    let sender = sender.clone();
+                    let pending_parts = &pending_parts;
+                    let stop = &stop;
+                    let cursor = &cursor;
+                    let first_failure = &first_failure;
+                    let target = &target;
+                    let upload_id = &upload_id;
+                    let cancelled = cancelled.clone();
+                    let spawned = std::thread::Builder::new()
+                        .name(format!("kichi-upload-part-{worker}"))
+                        .spawn_scoped(scope, move || {
+                            let worker = || loop {
+                                if stop.load(Ordering::SeqCst) || cancelled() {
+                                    break;
+                                }
+                                let position = cursor.fetch_add(1, Ordering::SeqCst);
+                                let Some(part_number) = pending_parts.get(position).copied() else {
+                                    break;
+                                };
+                                let offset = (part_number - 1) * part_size;
+                                let length = part_length(part_number, part_size, size);
+                                let result = (|| {
+                                    ensure_not_cancelled(&cancelled)?;
+                                    ensure_file_size(path, size)?;
+                                    let digest =
+                                        sha256_file_range(path, offset, length, &cancelled)?;
+                                    target.upload_part_from_file(
+                                        upload_id,
+                                        part_number,
+                                        path,
+                                        offset,
+                                        length,
+                                        size,
+                                        &hex_lower(&digest),
+                                        &cancelled,
+                                    )
+                                })();
+                                match result {
+                                    Ok(etag) => {
+                                        if sender.send((part_number, length, etag)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        // 另一条分片线程因本地 stop 收尾时也会返回
+                                        // “已取消”；只记录真正触发停止的那条错误，
+                                        // 避免把硬错误覆盖成普通取消。
+                                        if !cancelled() && !stop.swap(true, Ordering::SeqCst) {
+                                            let mut slot = first_failure
+                                                .lock()
+                                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                            if slot.is_none() {
+                                                *slot = Some(error);
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            };
+                            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(worker))
+                                .is_err()
+                            {
+                                stop.store(true, Ordering::SeqCst);
+                                let mut slot = first_failure
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                if slot.is_none() {
+                                    *slot = Some(UploadError::fatal(Error::Other(
+                                        "上传分片线程异常中断".to_owned(),
+                                    )));
+                                }
+                            }
+                        });
+                    if let Err(error) = spawned {
+                        let mut slot = first_failure
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if slot.is_none() {
+                            *slot = Some(UploadError::fatal(Error::Other(format!(
+                                "无法创建上传分片线程：{error}"
+                            ))));
+                        }
+                        stop.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+                drop(sender);
+                for (part_number, length, etag) in receiver {
+                    completed.insert(
+                        part_number,
+                        UploadPart {
+                            number: part_number,
+                            etag,
+                            size: length,
+                        },
+                    );
+                    sent_this_run = sent_this_run.saturating_add(length);
+                    state.parts = completed.values().cloned().collect();
+                    state.bytes_sent = completed_part_bytes(&completed, part_size, size);
+                    state.touch();
+                    checkpoint(state);
+                    progress(UploadProgress {
+                        stage: UploadStage::Uploading,
+                        bytes: state.bytes_sent,
+                        total: size,
+                    });
+                }
             });
+
+            if let Some(error) = first_failure
+                .into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+            {
+                return Err(error);
+            }
+        }
+        ensure_not_cancelled(cancelled)?;
+        if state.parts.len() as u64 != part_count {
+            return Err(UploadError::retryable(Error::Other(
+                "上传分片没有全部完成，请稍后重试".to_owned(),
+            )));
         }
         ensure_file_size(path, size)?;
         target.complete_multipart(&state.upload_id, &state.parts, cancelled)?;
@@ -949,21 +1054,27 @@ impl S3Target {
         )))
     }
 
-    fn upload_part<C>(
+    #[allow(clippy::too_many_arguments)]
+    fn upload_part_from_file<C>(
         &self,
         upload_id: &str,
         part_number: u64,
-        size: u64,
+        path: &Path,
+        offset: u64,
+        length: u64,
+        file_size: u64,
         payload_hash: &str,
-        bytes: Arc<Vec<u8>>,
         cancelled: &C,
     ) -> Result<String, UploadError>
     where
         C: Fn() -> bool + Clone + Send + Sync + 'static,
     {
         retry_upload(cancelled, |_attempt| {
+            ensure_file_size(path, file_size).map_err(UploadAttemptError::Fatal)?;
+            let reader =
+                FileRangeReader::open(path, offset, length).map_err(UploadAttemptError::Fatal)?;
             let body = RateLimitedReader::new(
-                CancelReader::new(ByteSliceReader::new(Arc::clone(&bytes)), cancelled.clone()),
+                CancelReader::new(reader, cancelled.clone()),
                 self.limiter.clone(),
                 cancelled.clone(),
             );
@@ -976,9 +1087,9 @@ impl S3Target {
                     ],
                     payload_hash,
                     S3RequestBody {
-                        content_length: Some(size),
+                        content_length: Some(length),
                         content_type: Some("application/octet-stream"),
-                        body: Some(Body::sized(body, size)),
+                        body: Some(Body::sized(body, length)),
                     },
                     cancelled,
                 )
@@ -1552,7 +1663,40 @@ where
     Ok(())
 }
 
-fn read_exact_range<C>(
+/// 只读取文件中一个固定区间；每次上传尝试都重新打开并 seek，重试不会复用
+/// 已经被 reqwest 消费过的读者。
+struct FileRangeReader {
+    file: File,
+    remaining: u64,
+}
+
+impl FileRangeReader {
+    fn open(path: &Path, offset: u64, length: u64) -> Result<Self, Error> {
+        let mut file =
+            File::open(path).map_err(|err| Error::Other(format!("无法打开本地文件：{err}")))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|err| Error::Other(format!("无法定位本地文件：{err}")))?;
+        Ok(Self {
+            file,
+            remaining: length,
+        })
+    }
+}
+
+impl Read for FileRangeReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 || buffer.is_empty() {
+            return Ok(0);
+        }
+        let limit =
+            usize::try_from(self.remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let read = self.file.read(&mut buffer[..limit])?;
+        self.remaining = self.remaining.saturating_sub(read as u64);
+        Ok(read)
+    }
+}
+
+fn sha256_file_range<C>(
     path: &Path,
     offset: u64,
     length: u64,
@@ -1561,26 +1705,23 @@ fn read_exact_range<C>(
 where
     C: Fn() -> bool,
 {
-    ensure_not_cancelled(cancelled)?;
-    let mut file =
-        File::open(path).map_err(|err| Error::Other(format!("无法打开本地文件：{err}")))?;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|err| Error::Other(format!("无法定位本地文件：{err}")))?;
-    let capacity =
-        usize::try_from(length).map_err(|_| Error::Other("单个上传分片过大".to_owned()))?;
-    let mut bytes = vec![0u8; capacity];
-    let mut read = 0usize;
-    while read < bytes.len() {
+    let mut reader = FileRangeReader::open(path, offset, length)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = length;
+    while remaining > 0 {
         ensure_not_cancelled(cancelled)?;
-        let got = file
-            .read(&mut bytes[read..])
+        let limit = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let read = reader
+            .read(&mut buffer[..limit])
             .map_err(|err| Error::Other(format!("读取本地文件失败：{err}")))?;
-        if got == 0 {
+        if read == 0 {
             return Err(Error::Other("文件在上传期间被截短".to_owned()));
         }
-        read += got;
+        hasher.update(&buffer[..read]);
+        remaining = remaining.saturating_sub(read as u64);
     }
-    Ok(bytes)
+    Ok(hasher.finalize().to_vec())
 }
 
 fn sha256_hex<C, P>(
@@ -2283,6 +2424,38 @@ mod tests {
         assert!(ensure_file_size(&path, 5).is_ok());
         assert!(ensure_file_size(&path, 4).is_err());
         assert!(ensure_file_size(&path, 6).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_range_reader_stops_at_the_requested_boundary() {
+        let path = temp_path("range");
+        std::fs::write(&path, b"0123456789").expect("create file");
+        let mut reader = FileRangeReader::open(&path, 2, 5).expect("open range");
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).expect("read range");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(bytes, b"23456");
+    }
+
+    #[test]
+    fn sha256_file_range_matches_the_same_slice() {
+        let path = temp_path("range-hash");
+        let data = b"abcdefghijklmnopqrstuvwxyz";
+        std::fs::write(&path, data).expect("create file");
+        let digest = sha256_file_range(&path, 7, 11, &|| false).expect("hash range");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(digest, Sha256::digest(&data[7..18]).to_vec());
+    }
+
+    #[test]
+    fn sha256_file_range_detects_a_truncated_range() {
+        let path = temp_path("range-short");
+        std::fs::write(&path, b"short").expect("create file");
+        assert!(
+            sha256_file_range(&path, 1, 8, &|| false).is_err(),
+            "区间越过文件末尾时必须报错，而不是悄悄少算"
+        );
         let _ = std::fs::remove_file(path);
     }
 

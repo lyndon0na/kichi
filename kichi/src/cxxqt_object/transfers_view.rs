@@ -12,6 +12,7 @@ use std::time::Instant;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 
 use super::actions::format_size;
+pub(crate) use super::transfers::BatchStats;
 use super::transfers::{
     folder_download_path, is_folder_ledger, record_key, Transfer, TransferState,
 };
@@ -69,73 +70,6 @@ pub(crate) fn text(value: &str) -> QVariant {
 
 pub(crate) fn insert(map: &mut QVariantMap, key: &str, value: QVariant) {
     map.insert_clone(&QString::from(key), &value);
-}
-
-/// 一个文件夹批次的子行聚合。
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct BatchStats {
-    pub(crate) total: usize,
-    pub(crate) done: usize,
-    pub(crate) failed: usize,
-    pub(crate) cancelled: usize,
-    /// 当前下载子行在整批里的 1-based 位置（没有子行在下载时为 None）
-    pub(crate) running_position: Option<usize>,
-    pub(crate) running_name: String,
-    /// 已完成子行字节 + 当前子行已下载字节（失败 / 取消的残量不计入）
-    pub(crate) progress_bytes: u64,
-    /// 所有子行总大小都已知时才有值
-    pub(crate) total_bytes: Option<u64>,
-}
-
-impl BatchStats {
-    pub(crate) fn finished(&self) -> usize {
-        self.done + self.failed + self.cancelled
-    }
-}
-
-/// 聚合一个批次的所有子行（按 index 顺序；子行下载顺序固定）。
-pub(crate) fn batch_stats(records: &[Transfer], batch: u64) -> BatchStats {
-    let mut children: Vec<&Transfer> = records
-        .iter()
-        .filter(|record| record.batch == batch && record.child)
-        .collect();
-    children.sort_by_key(|record| record.index);
-
-    let mut stats = BatchStats::default();
-    let mut total_bytes = 0u64;
-    let mut sizes_known = true;
-    for child in children {
-        stats.total += 1;
-        match child.state {
-            TransferState::Done => {
-                stats.done += 1;
-                stats.progress_bytes += child.bytes;
-            }
-            TransferState::Running => {
-                stats.progress_bytes += child.bytes;
-                if stats.running_position.is_none() {
-                    stats.running_position = Some(stats.total);
-                    stats.running_name = child.job.name.clone();
-                }
-            }
-            TransferState::Failed => stats.failed += 1,
-            TransferState::Cancelled => stats.cancelled += 1,
-            TransferState::Queued | TransferState::Preparing => {}
-            // 暂停保留已下载字节，父行进度条停在当前位置
-            TransferState::Pausing | TransferState::Paused => {
-                stats.progress_bytes += child.bytes;
-            }
-            // 上次没下完：既不算成功也不算失败，父行保持「已中断」
-            TransferState::Interrupted => {}
-        }
-        match child.total {
-            // 0 字节子行按 0 处理，不参与「总量未知」判断
-            Some(size) => total_bytes += size,
-            None => sizes_known = false,
-        }
-    }
-    stats.total_bytes = sizes_known.then_some(total_bytes);
-    stats
 }
 
 fn percent_bytes(stats: &BatchStats) -> Option<i32> {
@@ -504,8 +438,8 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     map
 }
 
-fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
-    let stats = batch_stats(records, record.batch);
+fn folder_record_map(record: &Transfer, _records: &[Transfer]) -> QVariantMap {
+    let stats = &record.batch_stats;
     let has_children = stats.total > 0;
     let partial = record.state == TransferState::Failed && has_children && stats.done > 0;
     let state_text = if partial {
@@ -515,7 +449,7 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
     };
     let running = record.state == TransferState::Running;
     let (progress, progress_text, size_text) = if has_children {
-        folder_progress_fields(&stats, record.state)
+        folder_progress_fields(stats, record.state)
     } else {
         let progress = if record.state == TransferState::Done {
             100
@@ -524,7 +458,7 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
         };
         (progress, String::new(), "—".to_owned())
     };
-    let detail = folder_detail(record, &stats, has_children);
+    let detail = folder_detail(record, stats, has_children);
     // 至少一个子文件完成，或者空文件夹已完成（目录已建出来）：才有落盘路径。
     // 已中断的文件夹若在中断前有子文件落下，同样给路径——那些文件确实在磁盘上。
     let empty_done = record.empty_folder && record.state == TransferState::Done;
@@ -652,9 +586,9 @@ pub(crate) fn parent_live_map_at(
     records: &[Transfer],
     now: Instant,
 ) -> QVariantMap {
-    let stats = batch_stats(records, record.batch);
+    let stats = &record.batch_stats;
     let (progress, progress_text, size_text) =
-        folder_progress_fields(&stats, TransferState::Running);
+        folder_progress_fields(stats, TransferState::Running);
     let rate = batch_rate_info(records, record.batch, now);
 
     let mut map = QVariantMap::default();

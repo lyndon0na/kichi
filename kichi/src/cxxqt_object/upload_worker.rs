@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use kichi_core::{DriveClient, FolderCreateCache, UploadProgress, UploadResult, UploadStage};
 
 use super::transfers::{self, TransferJob, TransferState, UploadDir, UploadProgressState};
+use super::transfers_sync;
 use super::upload_queue;
 use crate::session::download::Cancel;
 use crate::session::limits;
@@ -229,7 +230,6 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
     }
 
     let mut folder_cache = FolderCreateCache::new();
-    let mut last_detail_sync = Instant::now();
     for (position, path) in dirs.iter().enumerate() {
         if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() {
             outcome.interrupted = true;
@@ -281,7 +281,7 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
                     path.join("/")
                 ),
             );
-            post_sync_throttled(&mut last_detail_sync);
+            post_sync();
         }
         match session.create_folder_entry(
             Arc::clone(&client),
@@ -302,7 +302,7 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
                 if same_epoch(my_epoch) {
                     transfers::set_upload_dirs(start.batch, &upload_dirs);
                     transfers::clear_upload_dir_failure(start.batch, path);
-                    post_sync_throttled(&mut last_detail_sync);
+                    post_sync();
                 }
             }
             Err(err) => {
@@ -920,19 +920,7 @@ fn post_finished(batch: u64, outcome: BatchOutcome, my_epoch: u64) {
 }
 
 fn post_sync() {
-    super::actions::enqueue_ui(
-        move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
-            qichi.as_mut().sync_transfers();
-        },
-    );
-}
-
-fn post_sync_throttled(last: &mut Instant) {
-    if last.elapsed() < PROGRESS_INTERVAL {
-        return;
-    }
-    *last = Instant::now();
-    post_sync();
+    transfers_sync::request();
 }
 
 fn post_live() {

@@ -220,6 +220,22 @@ ColumnLayout {
                 }
             }
         }
+
+        KSettingsRow {
+            divider: true
+            title: qsTr("正常退出后自动续传上传")
+            description: qsTr("默认关闭。开启后只恢复正常退出时仍在进行的上传；暂停、失败、取消和崩溃不恢复。有断点的大文件接着传，5 MiB 以内的小文件会从头重传。")
+
+            CheckBox {
+                objectName: "settingsAutoResumeUploads"
+                checked: downloads.backend ? downloads.backend.autoResumeUploads : false
+                Accessible.name: qsTr("正常退出后自动续传上传")
+                onToggled: function () {
+                    if (downloads.backend)
+                        downloads.backend.setAutoResumeUploads(checked)
+                }
+            }
+        }
     }
 
     Connections {

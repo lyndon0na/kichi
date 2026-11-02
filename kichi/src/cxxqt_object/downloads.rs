@@ -386,23 +386,93 @@ impl qobject::Kichi {
         let targets = transfers_actions::take_auto_resume();
         // 无论设置是否开启、是否成功入队，都先把标记清掉并落盘。
         flush_history();
-        if !self.settings.auto_resume_downloads || targets.is_empty() {
-            self.as_mut().sync_transfers();
-            return;
-        }
-        let mut resumed = false;
-        for target in targets {
-            let batch = target.batch;
-            if queue::reserve_resume(target) {
-                transfers::resume_paused(batch);
-                resumed = true;
+        let mut resumed_downloads = false;
+        if self.settings.auto_resume_downloads {
+            for target in targets.downloads {
+                let batch = target.batch;
+                if queue::reserve_resume(target) {
+                    transfers::resume_paused(batch);
+                    resumed_downloads = true;
+                }
             }
         }
-        if resumed {
+
+        let mut resumed_uploads = false;
+        let mut upload_resume_error: Option<String> = None;
+        if self.settings.auto_resume_uploads {
+            for target in targets.uploads {
+                match target {
+                    transfers_actions::UploadResumeBatch::Single {
+                        batch,
+                        key,
+                        job,
+                        name,
+                        ..
+                    } => match upload_queue::reserve_retry(&job) {
+                        Ok(_) => {
+                            let _ = transfers_actions::remove(&key);
+                            resumed_uploads = true;
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "[kichi] 自动续传上传未能恢复（{name}，批次 {batch}）：{}",
+                                err.reason()
+                            );
+                            upload_resume_error
+                                .get_or_insert_with(|| format!("{name}：{}", err.reason()));
+                        }
+                    },
+                    transfers_actions::UploadResumeBatch::Folder {
+                        batch,
+                        parent,
+                        files,
+                        dirs,
+                        upload_dirs,
+                        name,
+                    } => {
+                        let indices: Vec<usize> = files.iter().map(|(index, _)| *index).collect();
+                        match upload_queue::retry_folder(batch, parent, files, dirs, upload_dirs) {
+                            Ok(()) => {
+                                if transfers::resume_auto_upload_folder(batch, &indices) {
+                                    resumed_uploads = true;
+                                } else {
+                                    let _ = upload_queue::release(batch);
+                                    upload_resume_error.get_or_insert_with(|| {
+                                        format!("{name}：记录状态已变化，请手动重试")
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "[kichi] 自动续传上传文件夹未能恢复（{name}，批次 {batch}）：{}",
+                                    err.reason()
+                                );
+                                upload_resume_error
+                                    .get_or_insert_with(|| format!("{name}：{}", err.reason()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if resumed_downloads || resumed_uploads {
             self.as_mut().clear_status_message();
+        }
+        if resumed_downloads {
             self.as_mut().advance_downloads();
-        } else {
+        }
+        if resumed_uploads {
+            self.as_mut().advance_uploads();
+        }
+        if !resumed_downloads && !resumed_uploads {
             self.as_mut().sync_transfers();
+        }
+        if let Some(reason) = upload_resume_error {
+            if self.as_ref().rust().status_message.is_empty() {
+                self.as_mut()
+                    .set_message(&format!("部分上传未能自动续传：{reason}"));
+            }
         }
     }
 
@@ -772,6 +842,7 @@ impl qobject::Kichi {
     /// 结构变化（排队 / 准备 / 开始 / 完成 / 失败 / 取消 / 清空）走这里，整个模型重建；
     /// 顺手按 2 秒节流写一次传输历史（`docs/adr/0014-download-history-on-disk.md`）。
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
+        let sync_generation = super::transfers_sync::generation();
         let (list, active) = transfers_history::snapshot();
         let has_finished = transfers_history::has_finished();
         let has_retryable = transfers_actions::has_retryable_failed();
@@ -795,6 +866,7 @@ impl qobject::Kichi {
             rust.upload_queued = upload_queued;
             rust.upload_active = upload_active.max(if upload_running { 1 } else { 0 });
         }
+        super::transfers_sync::finish(sync_generation);
         mark_live_pushed();
         maybe_write_history();
         self.as_mut().notify();

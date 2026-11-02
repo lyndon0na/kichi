@@ -13,7 +13,7 @@
 //!
 //! **锁顺序**：先 `records`，再 `trees`（文件夹目录树）。任何地方都按这个顺序加锁。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -176,6 +176,236 @@ pub(crate) struct UploadProgressState {
     pub(crate) total: u64,
 }
 
+/// 一个文件夹批次的子行聚合。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct BatchStats {
+    pub(crate) total: usize,
+    pub(crate) queued: usize,
+    pub(crate) preparing: usize,
+    pub(crate) running: usize,
+    pub(crate) pausing: usize,
+    pub(crate) paused: usize,
+    pub(crate) done: usize,
+    pub(crate) failed: usize,
+    pub(crate) cancelled: usize,
+    pub(crate) interrupted: usize,
+    /// 当前下载子行在整批里的 1-based 位置（没有子行在下载时为 None）
+    pub(crate) running_position: Option<usize>,
+    pub(crate) running_name: String,
+    /// 已完成子行字节 + 当前子行已下载字节（失败 / 取消的残量不计入）
+    pub(crate) progress_bytes: u64,
+    /// 所有子行总大小都已知时才有值
+    pub(crate) total_bytes: Option<u64>,
+    known_total_bytes: u64,
+    unknown_totals: usize,
+    child_indices: BTreeSet<usize>,
+    running_children: BTreeMap<usize, String>,
+}
+
+impl BatchStats {
+    pub(crate) fn finished(&self) -> usize {
+        self.done + self.failed + self.cancelled
+    }
+
+    fn add_child(&mut self, child: ChildStats) {
+        self.total += 1;
+        self.child_indices.insert(child.index);
+        self.state_count_mut(child.state, 1);
+        self.progress_bytes = self
+            .progress_bytes
+            .saturating_add(progress_contribution(child.state, child.bytes));
+        match child.total {
+            Some(total) => self.known_total_bytes = self.known_total_bytes.saturating_add(total),
+            None => self.unknown_totals += 1,
+        }
+        if child.state == TransferState::Running {
+            self.running_children.insert(child.index, child.name);
+        }
+        self.refresh_derived();
+    }
+
+    fn remove_child(&mut self, child: ChildStats) {
+        self.total = self.total.saturating_sub(1);
+        self.child_indices.remove(&child.index);
+        self.state_count_mut(child.state, -1);
+        self.progress_bytes = self
+            .progress_bytes
+            .saturating_sub(progress_contribution(child.state, child.bytes));
+        match child.total {
+            Some(total) => {
+                self.known_total_bytes = self.known_total_bytes.saturating_sub(total);
+            }
+            None => self.unknown_totals = self.unknown_totals.saturating_sub(1),
+        }
+        if child.state == TransferState::Running {
+            self.running_children.remove(&child.index);
+        }
+        self.refresh_derived();
+    }
+
+    fn update_child(&mut self, before: ChildStats, after: ChildStats) {
+        if before.index != after.index {
+            self.remove_child(before);
+            self.add_child(after);
+            return;
+        }
+        self.progress_bytes = self
+            .progress_bytes
+            .saturating_sub(progress_contribution(before.state, before.bytes))
+            .saturating_add(progress_contribution(after.state, after.bytes));
+        if before.state != after.state {
+            self.state_count_mut(before.state, -1);
+            self.state_count_mut(after.state, 1);
+            if before.state == TransferState::Running {
+                self.running_children.remove(&before.index);
+            }
+            if after.state == TransferState::Running {
+                self.running_children
+                    .insert(after.index, after.name.clone());
+            }
+        }
+        if before.total != after.total {
+            if let Some(total) = before.total {
+                self.known_total_bytes = self.known_total_bytes.saturating_sub(total);
+            } else {
+                self.unknown_totals = self.unknown_totals.saturating_sub(1);
+            }
+            if let Some(total) = after.total {
+                self.known_total_bytes = self.known_total_bytes.saturating_add(total);
+            } else {
+                self.unknown_totals += 1;
+            }
+        }
+        if after.state == TransferState::Running && before.name != after.name {
+            self.running_children
+                .insert(after.index, after.name.clone());
+        }
+        if before.state != after.state || before.total != after.total {
+            self.refresh_derived();
+        } else if after.state == TransferState::Running && before.name != after.name {
+            self.refresh_running();
+        }
+    }
+
+    fn state_count_mut(&mut self, state: TransferState, delta: i64) {
+        let slot = match state {
+            TransferState::Queued => &mut self.queued,
+            TransferState::Preparing => &mut self.preparing,
+            TransferState::Running => &mut self.running,
+            TransferState::Pausing => &mut self.pausing,
+            TransferState::Paused => &mut self.paused,
+            TransferState::Done => &mut self.done,
+            TransferState::Failed => &mut self.failed,
+            TransferState::Cancelled => &mut self.cancelled,
+            TransferState::Interrupted => &mut self.interrupted,
+        };
+        if delta >= 0 {
+            *slot = slot.saturating_add(delta as usize);
+        } else {
+            *slot = slot.saturating_sub(delta.unsigned_abs() as usize);
+        }
+    }
+
+    fn refresh_derived(&mut self) {
+        self.total_bytes = (self.unknown_totals == 0).then_some(self.known_total_bytes);
+        self.refresh_running();
+    }
+
+    fn refresh_running(&mut self) {
+        let first = self.running_children.iter().next();
+        self.running_position =
+            first.map(|(index, _)| self.child_indices.range(..*index).count().saturating_add(1));
+        self.running_name = first.map(|(_, name)| name.clone()).unwrap_or_default();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ChildStats {
+    index: usize,
+    state: TransferState,
+    bytes: u64,
+    total: Option<u64>,
+    name: String,
+}
+
+impl ChildStats {
+    fn of(record: &Transfer) -> Self {
+        Self {
+            index: record.index,
+            state: record.state,
+            bytes: record.bytes,
+            total: record.total,
+            name: record.job.name.clone(),
+        }
+    }
+}
+
+fn progress_contribution(state: TransferState, bytes: u64) -> u64 {
+    match state {
+        TransferState::Done
+        | TransferState::Running
+        | TransferState::Pausing
+        | TransferState::Paused => bytes,
+        TransferState::Queued
+        | TransferState::Preparing
+        | TransferState::Failed
+        | TransferState::Cancelled
+        | TransferState::Interrupted => 0,
+    }
+}
+
+/// 聚合一个批次的所有子行（按 index 顺序；子行下载顺序固定）。
+///
+/// 生产路径读取父行缓存的 [`BatchStats`]；这个纯函数只用于初始化、整批
+/// 状态迁移和单测，避免在每次完成一个文件时重新扫全批。
+pub(crate) fn batch_stats(records: &[Transfer], batch: u64) -> BatchStats {
+    let mut children: Vec<&Transfer> = records
+        .iter()
+        .filter(|record| record.batch == batch && record.child)
+        .collect();
+    children.sort_by_key(|record| record.index);
+
+    let mut stats = BatchStats::default();
+    for child in children {
+        stats.add_child(ChildStats::of(child));
+    }
+    stats
+}
+
+/// 整批状态迁移（暂停 / 取消 / 中断等）后只重算这一次；文件完成仍走
+/// [`update_child_stats`] 的增量路径。
+pub(crate) fn rebuild_batch_stats(records: &mut [Transfer], batch: u64) {
+    let stats = batch_stats(records, batch);
+    if let Some(parent) = records
+        .iter_mut()
+        .find(|record| record.batch == batch && is_folder_ledger(record))
+    {
+        parent.batch_stats = stats;
+    }
+}
+
+fn rebuild_all_batch_stats(records: &mut [Transfer]) {
+    let mut stats: HashMap<u64, BatchStats> = HashMap::new();
+    for child in records.iter().filter(|record| record.child) {
+        stats
+            .entry(child.batch)
+            .or_default()
+            .add_child(ChildStats::of(child));
+    }
+    for record in records.iter_mut().filter(|record| is_folder_ledger(record)) {
+        record.batch_stats = stats.remove(&record.batch).unwrap_or_default();
+    }
+}
+
+fn update_child_stats(records: &mut [Transfer], batch: u64, before: ChildStats, after: ChildStats) {
+    if let Some(parent) = records
+        .iter_mut()
+        .find(|record| record.batch == batch && is_folder_ledger(record))
+    {
+        parent.batch_stats.update_child(before, after);
+    }
+}
+
 /// 传输记录的重试种子：一行要下载什么、写到哪里。
 #[derive(Debug, Clone)]
 pub(crate) struct TransferJob {
@@ -268,6 +498,9 @@ pub(crate) struct Transfer {
     /// 用路径而不是计数，才能在一棵子树重试成功后把父行从「失败」恢复，
     /// 同时保留其它仍未成功的子树。
     pub(crate) upload_failed_dirs: Vec<Vec<String>>,
+    /// 文件夹总账行的子行聚合缓存；子行状态 / 字节变化时增量维护，
+    /// 视图和父行状态机不再逐次扫描整批。
+    pub(crate) batch_stats: BatchStats,
 }
 
 impl Transfer {
@@ -570,6 +803,7 @@ pub(crate) fn fail_upload_subtree(batch: u64, path: &[String], reason: &str) {
             record.speed = SpeedMeter::default();
             record.note = NoteState::default();
         }
+        rebuild_batch_stats(records, batch);
         if let Some(parent) = records
             .iter_mut()
             .find(|record| record.batch == batch && is_folder_ledger(record))
@@ -649,27 +883,24 @@ pub(crate) fn reset_upload_folder_for_scan(batch: u64) {
 /// 失败 / 已中断的上传子文件重新排队，不新建批次、不重传已完成兄弟文件。
 pub(crate) fn retry_upload_child(batch: u64, index: usize) -> bool {
     with_records(|records| {
-        let changed = if let Some(child) = find_file(records, batch, index) {
+        let changed = update_child_record(records, batch, index, true, |child| {
             if !child.job.is_upload()
                 || !matches!(
                     child.state,
                     TransferState::Failed | TransferState::Interrupted
                 )
             {
-                false
-            } else {
-                child.state = TransferState::Queued;
-                child.bytes = 0;
-                child.total = (child.job.size > 0).then_some(child.job.size);
-                child.detail.clear();
-                child.upload_progress = None;
-                child.speed = SpeedMeter::default();
-                child.note = NoteState::default();
-                true
+                return false;
             }
-        } else {
-            false
-        };
+            child.state = TransferState::Queued;
+            child.bytes = 0;
+            child.total = (child.job.size > 0).then_some(child.job.size);
+            child.detail.clear();
+            child.upload_progress = None;
+            child.speed = SpeedMeter::default();
+            child.note = NoteState::default();
+            true
+        });
         if !changed {
             return false;
         }
@@ -725,6 +956,7 @@ pub(crate) fn retry_upload_folder(batch: u64) -> bool {
             record.speed = SpeedMeter::default();
             record.note = NoteState::default();
         }
+        rebuild_batch_stats(records, batch);
 
         if let Some(parent) = records
             .iter_mut()
@@ -780,6 +1012,7 @@ pub(super) fn restore_row(
         upload_progress: None,
         upload_dirs: Vec::new(),
         upload_failed_dirs: Vec::new(),
+        batch_stats: BatchStats::default(),
     }
 }
 
@@ -848,13 +1081,21 @@ pub(crate) fn mark_auto_resume() {
     with_records(|records| mark_auto_resume_in(records));
 }
 
+/// 正常退出前给仍在排队 / 准备 / 上传中的上传行打自动续传标记。
+///
+/// 暂停、失败、取消、已中断和已完成行一律不标；文件夹批次里只有当时确实
+/// 在途的子文件会被恢复，历史失败 / 中断的兄弟文件仍等用户显式重试。
+pub(crate) fn mark_auto_resume_uploads() {
+    with_records(|records| mark_auto_resume_uploads_in(records));
+}
+
 /// 启动时清掉自动续跑标记：必须在真正启动前写盘，避免随后崩溃又续一轮。
 pub(crate) fn clear_auto_resume() {
     with_records(|records| clear_auto_resume_in(records));
 }
 
 fn mark_auto_resume_in(records: &mut [Transfer]) {
-    let auto_batches: Vec<u64> = records
+    let auto_batches: BTreeSet<u64> = records
         .iter()
         .filter(|record| {
             !record.child
@@ -875,10 +1116,71 @@ fn mark_auto_resume_in(records: &mut [Transfer]) {
     }
 }
 
+fn mark_auto_resume_uploads_in(records: &mut [Transfer]) {
+    let batches: BTreeSet<u64> = records
+        .iter()
+        .filter(|record| {
+            !record.child
+                && record.job.is_upload()
+                && matches!(
+                    record.state,
+                    TransferState::Queued | TransferState::Preparing | TransferState::Running
+                )
+        })
+        .map(|record| record.batch)
+        .collect();
+    for record in records.iter_mut().filter(|record| record.job.is_upload()) {
+        record.auto_resume = batches.contains(&record.batch)
+            && matches!(
+                record.state,
+                TransferState::Queued | TransferState::Preparing | TransferState::Running
+            );
+    }
+}
+
 fn clear_auto_resume_in(records: &mut [Transfer]) {
     for record in records {
         record.auto_resume = false;
     }
+}
+
+/// 自动续传文件夹时只重排当时在途的成员；返回是否真的改到记录。
+pub(crate) fn resume_auto_upload_folder(batch: u64, indices: &[usize]) -> bool {
+    with_records(|records| resume_auto_upload_folder_in(records, batch, indices))
+}
+
+fn resume_auto_upload_folder_in(records: &mut [Transfer], batch: u64, indices: &[usize]) -> bool {
+    let indices: BTreeSet<usize> = indices.iter().copied().collect();
+    let mut changed = false;
+    for record in records.iter_mut().filter(|record| {
+        record.batch == batch
+            && record.job.kind == EntryKind::File
+            && record.job.is_upload()
+            && record.state == TransferState::Interrupted
+            && indices.contains(&record.index)
+    }) {
+        record.state = TransferState::Queued;
+        record.bytes = 0;
+        record.total = (record.job.size > 0).then_some(record.job.size);
+        record.detail.clear();
+        record.upload_progress = None;
+        record.speed = SpeedMeter::default();
+        record.note = NoteState::default();
+        changed = true;
+    }
+    if !changed {
+        return false;
+    }
+    rebuild_batch_stats(records, batch);
+    if let Some(parent) = records
+        .iter_mut()
+        .find(|record| record.batch == batch && is_folder_ledger(record))
+    {
+        parent.state = TransferState::Queued;
+        parent.detail.clear();
+        parent.empty_folder = false;
+    }
+    true
 }
 
 /// 进度更新（只在 Running 时接受，取消后迟到的回调不复活记录）。
@@ -889,10 +1191,11 @@ pub(crate) fn progress(batch: u64, index: usize, bytes: u64, total: Option<u64>)
 /// 上传阶段与进度。进度条按当前阶段自己的总量计算；上传阶段的总量就是文件大小。
 pub(crate) fn upload_progress(batch: u64, index: usize, progress: UploadProgressState) {
     with_records(|records| {
-        if let Some(record) = find_file(records, batch, index) {
+        update_child_record(records, batch, index, false, |record| {
             if record.state != TransferState::Running || !record.job.is_upload() {
-                return;
+                return false;
             }
+            let before = (record.bytes, record.total);
             let old_stage = record.upload_progress.map(|old| old.stage);
             if progress.stage == UploadStage::Uploading && old_stage != Some(UploadStage::Uploading)
             {
@@ -904,7 +1207,8 @@ pub(crate) fn upload_progress(batch: u64, index: usize, progress: UploadProgress
             if progress.stage == UploadStage::Uploading {
                 record.speed.observe(Instant::now(), progress.bytes);
             }
-        }
+            before != (record.bytes, record.total)
+        });
     });
 }
 
@@ -936,7 +1240,7 @@ pub(crate) fn finish_ok(batch: u64, index: usize, path: &Path) {
 /// 上传成功：记录服务端最终名字，不写本地路径（因此不提供「打开位置」）。
 pub(crate) fn finish_upload_ok(batch: u64, index: usize, result: &kichi_core::UploadResult) {
     with_records(|records| {
-        if let Some(record) = find_file(records, batch, index) {
+        update_child_record(records, batch, index, false, |record| {
             record.state = TransferState::Done;
             record.bytes = record.job.size;
             record.total = Some(record.job.size);
@@ -948,8 +1252,8 @@ pub(crate) fn finish_upload_ok(batch: u64, index: usize, result: &kichi_core::Up
                 bytes: record.job.size,
                 total: record.job.size,
             });
-        }
-        refresh_parent_state(records, batch);
+            true
+        });
     });
 }
 
@@ -1010,6 +1314,8 @@ pub(crate) fn cancel_paused_batch(batch: u64) {
                 record.note = NoteState::default();
             }
         }
+        rebuild_batch_stats(records, batch);
+        refresh_parent_state(records, batch);
     });
     discard_batch_parts(batch);
 }
@@ -1134,17 +1440,15 @@ fn discard_parts(batch: u64, index: Option<usize>) {
 }
 
 fn cancel_file_in(records: &mut [Transfer], batch: u64, index: usize) {
-    let changed = match find_file(records, batch, index) {
-        Some(record) if record.state.is_cancellable() => {
+    update_child_record(records, batch, index, false, |record| {
+        if record.state.is_cancellable() {
             record.state = TransferState::Cancelled;
             record.detail.clear();
             true
+        } else {
+            false
         }
-        _ => false,
-    };
-    if changed {
-        refresh_parent_state(records, batch);
-    }
+    });
 }
 
 pub(crate) fn interrupt_active_for(direction: TransferDirection) {
@@ -1164,6 +1468,7 @@ pub(crate) fn interrupt_active_for(direction: TransferDirection) {
                 record.detail.clear();
             }
         }
+        rebuild_all_batch_stats(records);
     });
 }
 
@@ -1185,6 +1490,7 @@ pub(crate) fn interrupt_active_batch(batch: u64) {
                 record.detail.clear();
             }
         }
+        rebuild_batch_stats(records, batch);
     });
 }
 
@@ -1203,6 +1509,7 @@ pub(crate) fn interrupt_paused_for(direction: TransferDirection) {
                 record.detail.clear();
             }
         }
+        rebuild_all_batch_stats(records);
     });
 }
 
@@ -1301,6 +1608,37 @@ fn find_file(records: &mut [Transfer], batch: u64, index: usize) -> Option<&mut 
     })
 }
 
+/// 改一条文件行，并把它的状态 / 字节变化增量并入父行缓存。
+///
+/// `allow_interrupted` 只给「重试」用；下载线程的迟到回调仍不能复活已中断行。
+fn update_child_record(
+    records: &mut [Transfer],
+    batch: u64,
+    index: usize,
+    allow_interrupted: bool,
+    change: impl FnOnce(&mut Transfer) -> bool,
+) -> bool {
+    let Some(position) = records.iter().position(|record| {
+        record.job.kind == EntryKind::File
+            && record.batch == batch
+            && record.index == index
+            && (allow_interrupted || record.state != TransferState::Interrupted)
+    }) else {
+        return false;
+    };
+    let before = ChildStats::of(&records[position]);
+    if !change(&mut records[position]) {
+        return false;
+    }
+    let after = ChildStats::of(&records[position]);
+    let state_changed = before.state != after.state;
+    update_child_stats(records, batch, before, after);
+    if state_changed {
+        refresh_parent_state(records, batch);
+    }
+    true
+}
+
 /// 一条新记录（排队态）。`index` 在文件夹展开时由外层决定。
 pub(super) fn row_from(
     batch: u64,
@@ -1331,6 +1669,7 @@ pub(super) fn row_from(
         upload_progress: None,
         upload_dirs: Vec::new(),
         upload_failed_dirs: Vec::new(),
+        batch_stats: BatchStats::default(),
     }
 }
 
@@ -1374,6 +1713,7 @@ fn expand_folder_in(
         })
         .collect();
     records.splice(at + 1..at + 1, rows);
+    rebuild_batch_stats(records, batch);
     trim(records);
 }
 
@@ -1383,13 +1723,9 @@ fn begin_in(records: &mut [Transfer], batch: u64, index: usize) {
 
 /// [`begin_in`] 的注入时间版本（测试用）。
 pub(crate) fn begin_in_at(records: &mut [Transfer], batch: u64, index: usize, now: Instant) {
-    let changed = match find_file(records, batch, index) {
-        Some(record) => begin_record(record, now),
-        None => false,
-    };
-    if changed {
-        refresh_parent_state(records, batch);
-    }
+    update_child_record(records, batch, index, false, |record| {
+        begin_record(record, now)
+    });
 }
 
 /// 一条记录开始下载：状态转「下载中」，卡住时钟落在 `now`（还没收到字节也算）。
@@ -1420,55 +1756,20 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
         return;
     }
     let failed_dirs = records[parent].upload_failed_dirs.len();
-
-    let mut children = 0usize;
-    let mut active = false;
-    let mut running = false;
-    let mut pausing = false;
-    let mut paused = false;
-    let mut failed = false;
-    let mut cancelled = false;
-    let mut interrupted = false;
-    let mut all_done = true;
-    for child in records
-        .iter()
-        .filter(|record| record.batch == batch && record.child)
-    {
-        children += 1;
-        match child.state {
-            TransferState::Queued | TransferState::Preparing => {
-                active = true;
-                all_done = false;
-            }
-            TransferState::Running => {
-                active = true;
-                running = true;
-                all_done = false;
-            }
-            TransferState::Pausing => {
-                pausing = true;
-                all_done = false;
-            }
-            TransferState::Paused => {
-                paused = true;
-                all_done = false;
-            }
-            TransferState::Done => {}
-            TransferState::Failed => {
-                failed = true;
-                all_done = false;
-            }
-            TransferState::Cancelled => {
-                cancelled = true;
-                all_done = false;
-            }
-            // 上一轮没跑完的子行：父行保持「已中断」，不并入失败
-            TransferState::Interrupted => {
-                interrupted = true;
-                all_done = false;
-            }
-        }
-    }
+    let (children, active, running, pausing, paused, failed, cancelled, interrupted, all_done) = {
+        let stats = &records[parent].batch_stats;
+        (
+            stats.total,
+            stats.queued + stats.preparing + stats.running > 0,
+            stats.running > 0,
+            stats.pausing > 0,
+            stats.paused > 0,
+            stats.failed > 0,
+            stats.cancelled > 0,
+            stats.interrupted > 0,
+            stats.total > 0 && stats.done == stats.total,
+        )
+    };
     if children == 0 {
         if failed_dirs > 0 {
             records[parent].state = TransferState::Failed;
@@ -1522,6 +1823,7 @@ fn mark_pausing_in(records: &mut [Transfer], batch: u64) {
             record.detail.clear();
         }
     }
+    rebuild_batch_stats(records, batch);
 }
 
 fn mark_paused_in(records: &mut [Transfer], batch: u64) {
@@ -1537,6 +1839,7 @@ fn mark_paused_in(records: &mut [Transfer], batch: u64) {
             record.detail.clear();
         }
     }
+    rebuild_batch_stats(records, batch);
 }
 
 fn pause_queued_in(records: &mut [Transfer], batch: u64) {
@@ -1549,6 +1852,7 @@ fn pause_queued_in(records: &mut [Transfer], batch: u64) {
             record.detail.clear();
         }
     }
+    rebuild_batch_stats(records, batch);
 }
 
 fn resume_paused_in(records: &mut [Transfer], batch: u64) {
@@ -1563,6 +1867,7 @@ fn resume_paused_in(records: &mut [Transfer], batch: u64) {
             record.note = NoteState::default();
         }
     }
+    rebuild_batch_stats(records, batch);
 }
 
 fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
@@ -1578,6 +1883,7 @@ fn fail_batch_in(records: &mut [Transfer], batch: u64, reason: &str) {
             record.detail = reason.to_owned();
         }
     }
+    rebuild_batch_stats(records, batch);
 }
 
 /// 跳过数只记在文件夹总账行上（QML 的说明行从这一行取）。
@@ -1628,9 +1934,9 @@ pub(crate) fn progress_in_at(
     total: Option<u64>,
     now: Instant,
 ) {
-    if let Some(record) = find_file(records, batch, index) {
-        progress_record(record, now, bytes, total);
-    }
+    update_child_record(records, batch, index, false, |record| {
+        progress_record(record, now, bytes, total)
+    });
 }
 
 /// 进行中行的字节指纹：判断「上次写盘后有没有真的走到新字节」。
@@ -1656,14 +1962,21 @@ pub(crate) fn progress_stamp() -> u64 {
 }
 
 /// 单条记录的进度：写字节数，同时喂速度窗口与说明状态。
-pub(crate) fn progress_record(record: &mut Transfer, now: Instant, bytes: u64, total: Option<u64>) {
+pub(crate) fn progress_record(
+    record: &mut Transfer,
+    now: Instant,
+    bytes: u64,
+    total: Option<u64>,
+) -> bool {
     if record.state != TransferState::Running {
-        return;
+        return false;
     }
+    let before = (record.bytes, record.total);
     record.bytes = bytes;
     record.total = total.or(record.total);
     record.speed.observe(now, bytes);
     record.note.observe(now, bytes);
+    before != (record.bytes, record.total)
 }
 
 fn note_in(records: &mut [Transfer], batch: u64, index: usize, text: &str) {
@@ -1694,7 +2007,7 @@ pub(crate) fn note_record(record: &mut Transfer, now: Instant, text: &str) {
 
 fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &Path) {
     // 用户点取消后，当前文件仍可能刚好下载完整：文件已在磁盘上，照实记成完成
-    let changed = if let Some(record) = find_file(records, batch, index) {
+    update_child_record(records, batch, index, false, |record| {
         if record.state != TransferState::Done {
             record.state = TransferState::Done;
             record.bytes = record.total.unwrap_or(record.bytes).max(record.bytes);
@@ -1704,16 +2017,11 @@ fn finish_ok_in(records: &mut [Transfer], batch: u64, index: usize, path: &Path)
         } else {
             false
         }
-    } else {
-        false
-    };
-    if changed {
-        refresh_parent_state(records, batch);
-    }
+    });
 }
 
 fn finish_err_in(records: &mut [Transfer], batch: u64, index: usize, reason: &str) {
-    let changed = if let Some(record) = find_file(records, batch, index) {
+    update_child_record(records, batch, index, false, |record| {
         if matches!(
             record.state,
             TransferState::Queued | TransferState::Preparing | TransferState::Running
@@ -1724,16 +2032,11 @@ fn finish_err_in(records: &mut [Transfer], batch: u64, index: usize, reason: &st
         } else {
             false
         }
-    } else {
-        false
-    };
-    if changed {
-        refresh_parent_state(records, batch);
-    }
+    });
 }
 
 fn cancel_active_in(records: &mut [Transfer], batch: Option<u64>, reason: &str) {
-    for record in records {
+    for record in records.iter_mut() {
         if batch.is_some_and(|batch| record.batch != batch) {
             continue;
         }
@@ -1742,6 +2045,7 @@ fn cancel_active_in(records: &mut [Transfer], batch: Option<u64>, reason: &str) 
             record.detail = reason.to_owned();
         }
     }
+    rebuild_all_batch_stats(records);
 }
 
 fn cancel_active_for_in(records: &mut [Transfer], direction: TransferDirection, reason: &str) {
@@ -1754,6 +2058,7 @@ fn cancel_active_for_in(records: &mut [Transfer], direction: TransferDirection, 
             record.detail = reason.to_owned();
         }
     }
+    rebuild_all_batch_stats(records);
 }
 
 /// 文件夹总账行对应的落盘文件夹：下载目录 + 安全化后的文件夹名。
