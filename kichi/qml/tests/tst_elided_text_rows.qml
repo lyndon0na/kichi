@@ -116,6 +116,7 @@ TestCase {
                 folder: false
                 childCount: 0
                 failedCount: 0
+                failedDirs: 0
                 depth: 0
                 rowKind: "parent"
                 parentKey: ""

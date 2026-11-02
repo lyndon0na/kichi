@@ -52,6 +52,7 @@ fn upload_job(name: &str, size: u64) -> TransferJob {
             local_path: PathBuf::from("/home/me").join(name),
             parent_id: "cloud-folder".to_owned(),
             parent_name: "动画".to_owned(),
+            ..UploadJob::default()
         }),
     }
 }
@@ -1275,4 +1276,102 @@ fn progress_stamp_tracks_running_bytes_only() {
     let done = progress_stamp_in(&records);
     progress_in_at(&mut records, 1, 0, 999_999, None, Instant::now());
     assert_eq!(progress_stamp_in(&records), done);
+}
+
+#[test]
+fn retry_upload_folder_keeps_dirs_and_successful_children() {
+    let batch = 9_800_001u64;
+    let parent_job = TransferJob {
+        id: "upload-folder:/home/me/剧集".to_owned(),
+        name: "剧集".to_owned(),
+        kind: EntryKind::Folder,
+        size: 0,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集"),
+            parent_id: "cloud-target".to_owned(),
+            parent_name: "动画".to_owned(),
+            batch_root_id: "root-id".to_owned(),
+            cloud_parent_id: String::new(),
+        }),
+    };
+    let done_job = TransferJob {
+        id: "upload:/home/me/剧集/done.mkv".to_owned(),
+        name: "done.mkv".to_owned(),
+        kind: EntryKind::File,
+        size: 10,
+        audit_flagged: false,
+        sub_dir: vec!["剧集".to_owned()],
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集/done.mkv"),
+            parent_id: "cloud-target".to_owned(),
+            parent_name: "动画".to_owned(),
+            batch_root_id: "root-id".to_owned(),
+            cloud_parent_id: "root-id".to_owned(),
+        }),
+    };
+    let failed_job = TransferJob {
+        id: "upload:/home/me/剧集/failed.mkv".to_owned(),
+        name: "failed.mkv".to_owned(),
+        kind: EntryKind::File,
+        size: 10,
+        audit_flagged: false,
+        sub_dir: vec!["剧集".to_owned(), "失败目录".to_owned()],
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集/失败目录/failed.mkv"),
+            parent_id: "cloud-target".to_owned(),
+            parent_name: "动画".to_owned(),
+            batch_root_id: "root-id".to_owned(),
+            cloud_parent_id: String::new(),
+        }),
+    };
+
+    with_records(|records| {
+        let mut parent = row_from(batch, 0, &parent_job.id, &parent_job, 1_790_000_000, 1);
+        parent.state = TransferState::Failed;
+        parent.upload_dirs = vec![UploadDir {
+            path: vec!["剧集".to_owned()],
+            id: "root-id".to_owned(),
+        }];
+        parent.upload_failed_dirs = vec![vec!["剧集".to_owned(), "失败目录".to_owned()]];
+        records.push(parent);
+
+        let mut done = row_from(batch, 0, &parent_job.id, &done_job, 1_790_000_000, 1);
+        done.child = true;
+        done.state = TransferState::Done;
+        records.push(done);
+
+        let mut failed = row_from(batch, 1, &parent_job.id, &failed_job, 1_790_000_000, 1);
+        failed.child = true;
+        failed.state = TransferState::Failed;
+        records.push(failed);
+    });
+
+    assert!(retry_upload_folder(batch));
+    with_records(|records| {
+        let parent = records
+            .iter()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+            .expect("父行还在");
+        assert_eq!(parent.state, TransferState::Queued);
+        assert_eq!(parent.upload_dirs.len(), 1, "已成功目录不能丢");
+        assert!(parent.upload_failed_dirs.is_empty());
+        assert_eq!(
+            find_file(records, batch, 0).map(|row| row.state),
+            Some(TransferState::Done),
+            "成功文件保持完成，不重新上传"
+        );
+        assert_eq!(
+            find_file(records, batch, 1).map(|row| row.state),
+            Some(TransferState::Queued)
+        );
+    });
+    with_records(|records| records.retain(|record| record.batch != batch));
 }

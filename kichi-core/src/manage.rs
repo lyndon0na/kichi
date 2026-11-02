@@ -49,19 +49,79 @@ impl DriveClient {
     /// 在 `parent_id`（`None` 或空串 = 根目录）下新建一个文件夹。
     pub fn create_folder(&self, parent_id: Option<&str>, name: &str) -> Result<(), Error> {
         let name = validate_name(name)?;
-        let mut body = serde_json::json!({
-            "kind": "drive#folder",
-            "name": name,
-        });
-        if let Some(parent) = parent_id.map(str::trim).filter(|id| !id.is_empty()) {
-            body["parent_id"] = serde_json::Value::String(parent.to_owned());
-        }
+        let body = create_folder_body(parent_id, name);
         self.request_no_response_body(
             reqwest::Method::POST,
             &Config::files_url(self.config()),
             &[],
             &body,
         )
+    }
+
+    /// 新建文件夹并返回云端 id。
+    ///
+    /// 官方新建接口有时返回条目，有时只回空体。返回空体时先记下创建前父目录
+    /// 的文件夹 id，再轮询列表找新增的那一个；这样官方自动改名（例如追加
+    /// `(1)`）时仍能拿到新目录，而不会误认已有的同名旧目录。
+    ///
+    /// 创建前列表失败就直接返回错误，不发出创建请求：否则服务端可能已经建好
+    /// 目录，但客户端没有任何安全办法确认它的 id，重试还会再建一份。
+    pub fn create_folder_entry(
+        &self,
+        parent_id: Option<&str>,
+        name: &str,
+    ) -> Result<String, Error> {
+        let name = validate_name(name)?;
+        let before = self.folder_ids_in(parent_id)?;
+        let body = create_folder_body(parent_id, name);
+        let response: Option<serde_json::Value> = self.request_optional_json(
+            reqwest::Method::POST,
+            &Config::files_url(self.config()),
+            &[],
+            Body::Json(&body),
+        )?;
+        if let Some(id) = response.as_ref().and_then(folder_id_from_response) {
+            return Ok(id);
+        }
+        for attempt in 0..5 {
+            let entries = self.list_all(parent_id)?;
+            if let Some(id) = pick_new_folder_id(&entries, &before, name) {
+                return Ok(id);
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        Err(Error::ApiChanged(
+            "文件夹已创建，但服务端没有返回可用的目录 id".to_owned(),
+        ))
+    }
+
+    /// 父目录里现有的文件夹 id 集合。
+    fn folder_ids_in(&self, parent_id: Option<&str>) -> Result<BTreeSet<String>, Error> {
+        Ok(self
+            .list_all(parent_id)?
+            .into_iter()
+            .filter(|entry| entry.kind == crate::EntryKind::Folder)
+            .map(|entry| entry.id)
+            .collect())
+    }
+
+    /// 读完一个目录的所有分页（新建目录后的回查必须看到完整 id 集合）。
+    fn list_all(&self, parent_id: Option<&str>) -> Result<Vec<crate::FileEntry>, Error> {
+        let mut entries = Vec::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..100 {
+            let (mut page, next) = self.list(parent_id, page_token.as_deref())?;
+            entries.append(&mut page);
+            match next {
+                Some(token) => page_token = Some(token),
+                None => return Ok(entries),
+            }
+        }
+        Err(Error::ApiChanged(
+            "目录条目过多，无法确认新建文件夹的 id".to_owned(),
+        ))
     }
 
     /// 把条目移到 `parent_id` 下。空串表示根目录。
@@ -144,6 +204,59 @@ impl DriveClient {
         )?;
         self.wait_task(&response.task_id)
     }
+}
+
+fn create_folder_body(parent_id: Option<&str>, name: &str) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "kind": "drive#folder",
+        "name": name,
+    });
+    if let Some(parent) = parent_id.map(str::trim).filter(|id| !id.is_empty()) {
+        body["parent_id"] = serde_json::Value::String(parent.to_owned());
+    }
+    body
+}
+
+/// 从官方可能采用的不同响应包裹层里取新建目录 id。
+fn folder_id_from_response(value: &serde_json::Value) -> Option<String> {
+    for candidate in [
+        &value["file"]["id"],
+        &value["data"]["file"]["id"],
+        &value["data"]["id"],
+        &value["id"],
+    ] {
+        if let Some(id) = candidate
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_owned());
+        }
+    }
+    None
+}
+
+/// 从创建后的目录列表里挑出这次新建的文件夹。
+///
+/// `before` 是创建前已经存在的 id 集合，因此旧同名目录不会被误认成新目录。
+/// 官方自动改名时优先匹配原名或原名前缀；只有恰好出现一个新目录时才回退到
+/// 它，出现多个无法区分的新目录则返回 `None`，让调用方报错而不是猜。
+fn pick_new_folder_id(
+    entries: &[crate::FileEntry],
+    before: &BTreeSet<String>,
+    name: &str,
+) -> Option<String> {
+    let candidates: Vec<&crate::FileEntry> = entries
+        .iter()
+        .filter(|entry| entry.kind == crate::EntryKind::Folder && !before.contains(&entry.id))
+        .collect();
+    if let Some(entry) = candidates.iter().find(|entry| entry.name == name) {
+        return Some(entry.id.clone());
+    }
+    if let Some(entry) = candidates.iter().find(|entry| entry.name.starts_with(name)) {
+        return Some(entry.id.clone());
+    }
+    (candidates.len() == 1).then(|| candidates[0].id.clone())
 }
 
 /// 批量移动 / 复制的请求体。
@@ -312,5 +425,57 @@ mod tests {
         let response: BatchTaskAck =
             serde_json::from_str(r#"{"task_id":"task-123"}"#).expect("任务确认应可解析");
         assert_eq!(response.task_id, "task-123");
+    }
+
+    fn folder_entry(id: &str, name: &str) -> crate::FileEntry {
+        crate::FileEntry {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind: crate::EntryKind::Folder,
+            size: 0,
+            created_at: None,
+            modified_at: None,
+            parent_id: String::new(),
+            md5: None,
+            audit_flagged: false,
+            starred: false,
+            media: false,
+            video: false,
+            thumbnail_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn new_folder_id_ignores_old_same_name_and_accepts_an_auto_rename() {
+        let entries = vec![folder_entry("old", "剧集"), folder_entry("new", "剧集 (1)")];
+        let mut before = BTreeSet::new();
+        before.insert("old".to_owned());
+        assert_eq!(
+            pick_new_folder_id(&entries, &before, "剧集"),
+            Some("new".to_owned()),
+            "旧同名目录不能被当成刚创建的新目录"
+        );
+    }
+
+    #[test]
+    fn new_folder_id_prefers_exact_name_over_other_new_candidates() {
+        let entries = vec![
+            folder_entry("other", "剧集 (1)"),
+            folder_entry("exact", "剧集"),
+        ];
+        assert_eq!(
+            pick_new_folder_id(&entries, &BTreeSet::new(), "剧集"),
+            Some("exact".to_owned())
+        );
+    }
+
+    #[test]
+    fn new_folder_id_refuses_to_guess_between_multiple_candidates() {
+        let entries = vec![folder_entry("one", "甲"), folder_entry("two", "乙")];
+        assert_eq!(
+            pick_new_folder_id(&entries, &BTreeSet::new(), "剧集"),
+            None,
+            "无法确认哪个是新建目录时不能猜"
+        );
     }
 }

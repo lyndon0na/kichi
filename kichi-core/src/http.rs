@@ -242,6 +242,52 @@ impl HttpClient {
             .map_err(|e| Error::Network(network_reason(&e)))?;
         Err(api_error(status, &text))
     }
+
+    /// 发请求并解析可选的 JSON 响应体。
+    ///
+    /// 新建文件夹等写接口成功时可能返回空体，也可能返回条目；调用方需要在
+    /// 不把“空成功”误判成失败的前提下读取 id。响应体非空但不是 JSON 仍按
+    /// 协议变化报错，不吞掉真正的解析问题。
+    pub(crate) fn call_with_query_optional_json<R: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        body: Body<'_>,
+        access: Option<&str>,
+        captcha: Option<&str>,
+    ) -> Result<Option<R>, Error> {
+        let url = append_query(url, query);
+        let mut req = self
+            .client
+            .request(method, &url)
+            .header("Referer", "https://mypikpak.com/")
+            .header("x-client-id", &self.config.client_id)
+            .header("x-client-version", &self.config.client_version)
+            .header("x-device-id", &self.device_id);
+        if let Some(token) = access {
+            req = req.bearer_auth(token);
+        }
+        if let Some(token) = captcha {
+            req = req.header("x-captcha-token", token);
+        }
+        req = attach_body(req, body);
+
+        let response = req.send().map_err(|e| Error::Network(network_reason(&e)))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .map_err(|e| Error::Network(network_reason(&e)))?;
+        if !status.is_success() {
+            return Err(api_error(status, &text));
+        }
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| Error::ApiChanged(format!("响应不是预期的 JSON：{e}")))
+    }
 }
 
 fn normalized_host(host: Option<&str>) -> Option<String> {

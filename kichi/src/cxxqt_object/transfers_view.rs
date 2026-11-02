@@ -193,7 +193,10 @@ fn folder_progress_fields(stats: &BatchStats, state: TransferState) -> (i32, Str
 /// 已中断的父行单独处理：它的说明是「上次退出时未完成 · 完成 x 个 · 失败 y 个」，
 /// 不参与下面按状态拼的文案（那些都是当前这一轮才有的结果）。
 fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> String {
-    let skipped = skip_suffix(record.skipped);
+    if record.job.is_upload() {
+        return upload_folder_detail(record, stats, has_children);
+    }
+    let skipped = skip_suffix(record, record.skipped);
     if record.state == TransferState::Interrupted && !record.detail.is_empty() {
         // 读目录前就中断：原因由历史文件带来
         return record.detail.clone();
@@ -266,12 +269,128 @@ fn folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> S
 }
 
 /// 说明行末尾的跳过后缀（没有跳过时为空串）。
-fn skip_suffix(skipped: usize) -> String {
+fn skip_suffix(record: &Transfer, skipped: usize) -> String {
     if skipped == 0 {
         String::new()
+    } else if record.job.is_upload() {
+        format!(" · 跳过 {skipped} 个特殊项")
     } else {
         format!(" · 跳过 {skipped} 个目录")
     }
+}
+
+fn upload_folder_detail(record: &Transfer, stats: &BatchStats, has_children: bool) -> String {
+    let skipped = skip_suffix(record, record.skipped);
+    let failed_dirs = record.upload_failed_dirs.len();
+    if record.state == TransferState::Interrupted && !record.detail.is_empty() {
+        return record.detail.clone();
+    }
+    if record.state == TransferState::Interrupted {
+        let mut text = if has_children {
+            format!(
+                "上次上传未完成 · 成功 {} 个 · 失败 {} 个",
+                stats.done, stats.failed
+            )
+        } else {
+            "上次上传未完成".to_owned()
+        };
+        text.push_str(&skipped);
+        return text;
+    }
+    if !has_children {
+        let mut text = match record.state {
+            TransferState::Preparing => record.detail.clone(),
+            TransferState::Running => record.detail.clone(),
+            TransferState::Done if record.empty_folder => {
+                let target = record
+                    .job
+                    .upload
+                    .as_ref()
+                    .map(|upload| upload.parent_name.as_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("云端目录");
+                format!("空文件夹 · 已创建到 {target}")
+            }
+            TransferState::Failed => {
+                if record.detail.is_empty() {
+                    format!("{failed_dirs} 个云端目录创建失败")
+                } else {
+                    record.detail.clone()
+                }
+            }
+            _ => record.detail.clone(),
+        };
+        if text.is_empty() {
+            text = match record.state {
+                TransferState::Preparing => "正在准备上传…".to_owned(),
+                TransferState::Running => "正在创建云端目录…".to_owned(),
+                _ => String::new(),
+            };
+        }
+        text.push_str(&skipped);
+        return text;
+    }
+
+    if record.state == TransferState::Running
+        && (record.detail.starts_with("正在创建云端目录")
+            || record.detail.starts_with("正在准备上传文件"))
+    {
+        return record.detail.clone();
+    }
+    let mut text = match record.state {
+        TransferState::Queued => return String::new(),
+        TransferState::Preparing => {
+            if record.detail.is_empty() {
+                format!("准备上传 {} 个文件…", stats.total)
+            } else {
+                record.detail.clone()
+            }
+        }
+        TransferState::Running => {
+            let position = stats
+                .running_position
+                .unwrap_or_else(|| (stats.finished() + 1).min(stats.total));
+            format!("第 {position}/{} 个", stats.total)
+        }
+        TransferState::Pausing => "正在暂停…".to_owned(),
+        TransferState::Paused => "已暂停，已上传的进度不会保留".to_owned(),
+        TransferState::Done => {
+            let target = record
+                .job
+                .upload
+                .as_ref()
+                .map(|upload| upload.parent_name.as_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("云端目录");
+            format!("{} 个文件 · 已上传到 {target}", stats.total)
+        }
+        TransferState::Interrupted => "上次上传未完成".to_owned(),
+        TransferState::Failed => {
+            let mut detail = format!("成功 {} 个 · 失败 {} 个", stats.done, stats.failed);
+            if failed_dirs > 0 {
+                detail.push_str(&format!(" · {failed_dirs} 个目录创建失败"));
+            }
+            if stats.cancelled > 0 {
+                detail.push_str(&format!(" · 取消 {} 个", stats.cancelled));
+            }
+            detail
+        }
+        TransferState::Cancelled => {
+            let mut detail = format!("完成 {} 个", stats.done);
+            if stats.cancelled > 0 {
+                detail.push_str(&format!(" · 取消 {} 个", stats.cancelled));
+            }
+            if stats.failed > 0 {
+                detail.push_str(&format!(" · 失败 {} 个", stats.failed));
+            }
+            if failed_dirs > 0 {
+                detail.push_str(&format!(" · {failed_dirs} 个目录创建失败"));
+            }
+            detail
+        }
+    };
+    text.push_str(&skipped);
+    text
 }
 
 fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
@@ -323,6 +442,7 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     // 完成行的说明由落盘路径派生；准备中 / 已中断的说明行直接由状态决定
     let detail = match record.state {
         TransferState::Running if record.job.is_upload() => upload_running_detail(record),
+        TransferState::Preparing if record.job.is_upload() => "正在准备上传…".to_owned(),
         TransferState::Preparing => "正在读取目录结构…".to_owned(),
         TransferState::Done if record.job.is_upload() => record
             .job
@@ -336,6 +456,9 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
             .map(|path| format!("保存到 {}", path.display()))
             .unwrap_or_default(),
         // 已中断：说明由 QML 的「重试」行补断点文案，这里给状态说明
+        TransferState::Interrupted if record.job.is_upload() && record.child => {
+            "上次上传未完成，重试只重传此文件".to_owned()
+        }
         TransferState::Interrupted if record.job.is_upload() => {
             "上次退出时上传未完成，重试会从头开始".to_owned()
         }
@@ -372,6 +495,7 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
     insert(&mut map, "folder", QVariant::from(&false));
     insert(&mut map, "childCount", QVariant::from(&0i32));
     insert(&mut map, "failedCount", QVariant::from(&0i32));
+    insert(&mut map, "failedDirs", QVariant::from(&0i32));
     insert(
         &mut map,
         "createdUnix",
@@ -387,7 +511,7 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
     let state_text = if partial {
         "部分失败".to_owned()
     } else {
-        record.state.text().to_owned()
+        record.state.text_for(record.job.direction).to_owned()
     };
     let running = record.state == TransferState::Running;
     let (progress, progress_text, size_text) = if has_children {
@@ -404,7 +528,9 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
     // 至少一个子文件完成，或者空文件夹已完成（目录已建出来）：才有落盘路径。
     // 已中断的文件夹若在中断前有子文件落下，同样给路径——那些文件确实在磁盘上。
     let empty_done = record.empty_folder && record.state == TransferState::Done;
-    let path_text = if (has_children && stats.done > 0) || empty_done {
+    let path_text = if record.job.is_upload() {
+        String::new()
+    } else if (has_children && stats.done > 0) || empty_done {
         folder_download_path(record)
             .map(|path| path.display().to_string())
             .unwrap_or_default()
@@ -435,6 +561,11 @@ fn folder_record_map(record: &Transfer, records: &[Transfer]) -> QVariantMap {
         &mut map,
         "failedCount",
         QVariant::from(&i32::try_from(stats.failed).unwrap_or(i32::MAX)),
+    );
+    insert(
+        &mut map,
+        "failedDirs",
+        QVariant::from(&i32::try_from(record.upload_failed_dirs.len()).unwrap_or(i32::MAX)),
     );
     insert(
         &mut map,
@@ -553,6 +684,7 @@ fn notice(key: &str, message: &str) -> QVariantMap {
     insert(&mut map, "folder", QVariant::from(&false));
     insert(&mut map, "childCount", QVariant::from(&0i32));
     insert(&mut map, "failedCount", QVariant::from(&0i32));
+    insert(&mut map, "failedDirs", QVariant::from(&0i32));
     insert(&mut map, "createdUnix", QVariant::from(&0i64));
     map
 }
@@ -595,13 +727,19 @@ pub(crate) fn ordered(records: &[Transfer]) -> Vec<&Transfer> {
     active
 }
 
-/// 记录表 → 统一列表模型 + 进行中条数（按批次算，一个文件夹算 1）。
+/// 记录表 → 统一列表模型 + 正在下载的顶层批次数（按批次算，一个文件夹算 1）。
+///
+/// 上传单独由 `transfers::upload_active_count()` 计数，避免底栏把同一个
+/// 上传父行同时算进 `downloadActive` 和 `uploadActive`。
 pub(crate) fn build_snapshot(records: &[Transfer]) -> (QVariantList, i32) {
     let top_level: Vec<&Transfer> = records.iter().filter(|record| !record.child).collect();
     let total = top_level.len();
     let active = top_level
         .iter()
-        .filter(|record| record.state.is_active())
+        .filter(|record| {
+            record.state.is_active()
+                && record.job.direction == super::transfers::TransferDirection::Download
+        })
         .count();
     let mut list = QVariantList::default();
     for record in ordered(records).into_iter().take(MAX_ROWS) {

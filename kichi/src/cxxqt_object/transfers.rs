@@ -85,6 +85,7 @@ impl TransferState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn text(self) -> &'static str {
         self.text_for(TransferDirection::Download)
     }
@@ -147,11 +148,24 @@ impl TransferDirection {
 }
 
 /// 上传记录额外需要的重试目标；下载记录为 `None`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct UploadJob {
     pub(crate) local_path: PathBuf,
     pub(crate) parent_id: String,
     pub(crate) parent_name: String,
+    /// 上传文件夹批次：根目录创建后的云端 id；单文件上传为空。
+    pub(crate) batch_root_id: String,
+    /// 上传文件夹子文件：目录链就绪后的直接父目录 id；未就绪为空。
+    pub(crate) cloud_parent_id: String,
+}
+
+/// 上传文件夹批次里已经创建成功的云端目录。
+///
+/// `path` 是相对目标目录的完整层级，包含本地选中的根文件夹名。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UploadDir {
+    pub(crate) path: Vec<String>,
+    pub(crate) id: String,
 }
 
 /// 上传进行中阶段。只存在内存里，重启后的活动记录已经是「已中断」。
@@ -247,6 +261,13 @@ pub(crate) struct Transfer {
     pub(crate) auto_resume: bool,
     /// 上传阶段（只影响实时进度显示，不落盘）
     pub(crate) upload_progress: Option<UploadProgressState>,
+    /// 上传文件夹父行：已创建的云端目录路径 → id，用于重试时复用而不重复建树。
+    pub(crate) upload_dirs: Vec<UploadDir>,
+    /// 上传文件夹父行：当前失败的云端目录路径；重试成功后逐项移除。
+    ///
+    /// 用路径而不是计数，才能在一棵子树重试成功后把父行从「失败」恢复，
+    /// 同时保留其它仍未成功的子树。
+    pub(crate) upload_failed_dirs: Vec<Vec<String>>,
 }
 
 impl Transfer {
@@ -404,6 +425,311 @@ pub(crate) fn expand_folder(batch: u64, jobs: &[TransferJob], dirs: &[Vec<String
     prune_trees();
 }
 
+/// 上传文件夹扫描完成、等上传调度器接手：父行从「准备中」落成「排队中」。
+pub(crate) fn mark_folder_queued(batch: u64) {
+    with_records(|records| {
+        for record in records
+            .iter_mut()
+            .filter(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            if record.state == TransferState::Preparing {
+                record.state = TransferState::Queued;
+                record.detail.clear();
+            }
+        }
+    });
+}
+
+/// 上传文件夹轮到了：父行进入「上传中」，worker 开始建目录 / 传文件。
+pub(crate) fn mark_upload_folder_running(batch: u64) {
+    with_records(|records| {
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            if matches!(
+                parent.state,
+                TransferState::Queued | TransferState::Preparing
+            ) {
+                parent.state = TransferState::Running;
+            }
+        }
+    });
+}
+
+/// 上传文件夹父行的重试种子（扫描完成回调要用它构造子文件）。
+pub(crate) fn upload_folder_job(batch: u64) -> Option<TransferJob> {
+    with_records(|records| {
+        records
+            .iter()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+            .map(|record| record.job.clone())
+    })
+}
+
+/// 上传文件夹父行当前状态；扫描回调据此丢弃已经取消 / 中断的批次。
+pub(crate) fn upload_folder_state(batch: u64) -> Option<TransferState> {
+    with_records(|records| {
+        records
+            .iter()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+            .map(|record| record.state)
+    })
+}
+
+/// 扫描 / 建云端目录期间给上传父行的说明。
+pub(crate) fn set_upload_folder_detail(batch: u64, detail: &str) {
+    with_records(|records| {
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            parent.detail = detail.to_owned();
+        }
+    });
+}
+
+/// 某个云端目录后来创建成功：移除它自己的失败标记（父行可能因此恢复）。
+pub(crate) fn clear_upload_dir_failure(batch: u64, path: &[String]) {
+    with_records(|records| {
+        let mut changed = false;
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            let before = parent.upload_failed_dirs.len();
+            parent
+                .upload_failed_dirs
+                .retain(|failed| failed.as_slice() != path);
+            changed = parent.upload_failed_dirs.len() != before;
+        }
+        if changed {
+            refresh_parent_state(records, batch);
+        }
+    });
+}
+
+/// 上传文件夹父行记录已创建的云端目录；同时把根目录 id 同步给所有子文件，
+/// 这样失败子文件重试时不必重新猜根目录。
+pub(crate) fn set_upload_dirs(batch: u64, dirs: &[UploadDir]) {
+    with_records(|records| {
+        let root_id = dirs
+            .iter()
+            .find(|dir| dir.path.len() == 1)
+            .map(|dir| dir.id.clone())
+            .unwrap_or_default();
+        for record in records.iter_mut().filter(|record| record.batch == batch) {
+            if is_folder_ledger(record) {
+                record.upload_dirs = dirs.to_vec();
+            }
+            if let Some(upload) = record.job.upload.as_mut() {
+                if !root_id.is_empty() {
+                    upload.batch_root_id = root_id.clone();
+                }
+            }
+        }
+    });
+}
+
+/// 子文件的目录链已就绪：写入直接云端父目录 id，供历史重试直接复用。
+pub(crate) fn set_upload_file_parent(batch: u64, index: usize, parent_id: &str) {
+    with_records(|records| {
+        if let Some(record) = find_file(records, batch, index) {
+            if let Some(upload) = record.job.upload.as_mut() {
+                upload.cloud_parent_id = parent_id.to_owned();
+            }
+        }
+    });
+}
+
+/// 一个云端目录创建失败：只把它子树里的待上传文件标失败，父行记一个跳过项。
+pub(crate) fn fail_upload_subtree(batch: u64, path: &[String], reason: &str) {
+    with_records(|records| {
+        for record in records.iter_mut().filter(|record| {
+            record.batch == batch
+                && record.child
+                && record.job.direction == TransferDirection::Upload
+                && record.job.sub_dir.starts_with(path)
+                && matches!(
+                    record.state,
+                    TransferState::Queued | TransferState::Preparing | TransferState::Running
+                )
+        }) {
+            record.state = TransferState::Failed;
+            record.detail = reason.to_owned();
+            record.speed = SpeedMeter::default();
+            record.note = NoteState::default();
+        }
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            if !parent
+                .upload_failed_dirs
+                .iter()
+                .any(|failed| failed.as_slice() == path)
+            {
+                parent.upload_failed_dirs.push(path.to_vec());
+            }
+            // detail 在失败前通常是「正在创建云端目录：…」；失败后必须换成
+            // 真实原因，否则空目录批次会一直显示进度文案而不是错误。
+            parent.detail = reason.to_owned();
+        }
+        refresh_parent_state(records, batch);
+    });
+}
+
+/// 上传文件夹批次收尾：没有子行时由空目录逻辑落状态，有子行时按子行和
+/// 目录失败集合重新聚合。
+pub(crate) fn finish_upload_folder(batch: u64) {
+    with_records(|records| {
+        let has_children = records
+            .iter()
+            .any(|record| record.batch == batch && record.child);
+        if !has_children {
+            if let Some(parent) = records
+                .iter_mut()
+                .find(|record| record.batch == batch && is_folder_ledger(record))
+            {
+                if !matches!(
+                    parent.state,
+                    TransferState::Cancelled | TransferState::Interrupted
+                ) {
+                    parent.empty_folder = parent.upload_failed_dirs.is_empty();
+                    parent.state = if parent.empty_folder {
+                        parent.detail.clear();
+                        TransferState::Done
+                    } else {
+                        TransferState::Failed
+                    };
+                }
+            }
+            return;
+        }
+        refresh_parent_state(records, batch);
+    });
+}
+
+/// 把上传文件夹父行重置为「准备中」，用于失败后重新扫描本地目录。
+pub(crate) fn reset_upload_folder_for_scan(batch: u64) {
+    with_records(|records| {
+        for record in records.iter_mut().filter(|record| record.batch == batch) {
+            record.detail.clear();
+            record.speed = SpeedMeter::default();
+            record.note = NoteState::default();
+            record.upload_progress = None;
+            record.upload_dirs.clear();
+            record.upload_failed_dirs.clear();
+            if let Some(upload) = record.job.upload.as_mut() {
+                upload.batch_root_id.clear();
+                upload.cloud_parent_id.clear();
+            }
+        }
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            parent.state = TransferState::Preparing;
+            parent.skipped = 0;
+            parent.empty_folder = false;
+        }
+    });
+}
+
+/// 失败 / 已中断的上传子文件重新排队，不新建批次、不重传已完成兄弟文件。
+pub(crate) fn retry_upload_child(batch: u64, index: usize) -> bool {
+    with_records(|records| {
+        let changed = if let Some(child) = find_file(records, batch, index) {
+            if !child.job.is_upload()
+                || !matches!(
+                    child.state,
+                    TransferState::Failed | TransferState::Interrupted
+                )
+            {
+                false
+            } else {
+                child.state = TransferState::Queued;
+                child.bytes = 0;
+                child.total = (child.job.size > 0).then_some(child.job.size);
+                child.detail.clear();
+                child.upload_progress = None;
+                child.speed = SpeedMeter::default();
+                child.note = NoteState::default();
+                true
+            }
+        } else {
+            false
+        };
+        if !changed {
+            return false;
+        }
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            parent.state = TransferState::Queued;
+            parent.detail.clear();
+            parent.empty_folder = false;
+        }
+        true
+    })
+}
+
+/// 上传文件夹父行的原地重试：保留已创建的云端目录和已完成文件，只把失败 /
+/// 中断的成员重新置为排队。worker 会根据目录树补建缺失目录，因此失败的空目录
+/// 也有重试入口，而不会重传已成功的兄弟文件。
+pub(crate) fn retry_upload_folder(batch: u64) -> bool {
+    with_records(|records| {
+        let Some(parent) = records
+            .iter()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        else {
+            return false;
+        };
+        if !parent.job.is_upload()
+            || !matches!(
+                parent.state,
+                TransferState::Failed | TransferState::Interrupted
+            )
+        {
+            return false;
+        }
+
+        for record in records.iter_mut().filter(|record| {
+            record.batch == batch
+                && record.child
+                && record.job.is_upload()
+                && matches!(
+                    record.state,
+                    TransferState::Failed
+                        | TransferState::Interrupted
+                        | TransferState::Queued
+                        | TransferState::Preparing
+                )
+        }) {
+            record.state = TransferState::Queued;
+            record.bytes = 0;
+            record.total = (record.job.size > 0).then_some(record.job.size);
+            record.detail.clear();
+            record.upload_progress = None;
+            record.speed = SpeedMeter::default();
+            record.note = NoteState::default();
+        }
+
+        if let Some(parent) = records
+            .iter_mut()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+        {
+            parent.state = TransferState::Queued;
+            parent.detail.clear();
+            parent.empty_folder = false;
+            // 旧失败集合只代表上一轮；worker 会按本轮实际结果重新收集。
+            parent.upload_failed_dirs.clear();
+        }
+        true
+    })
+}
+
 /// 读回一条历史行（`transfers_history::restore` 用）：不跑任何状态迁移。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn restore_row(
@@ -442,6 +768,8 @@ pub(super) fn restore_row(
         session,
         auto_resume,
         upload_progress: None,
+        upload_dirs: Vec::new(),
+        upload_failed_dirs: Vec::new(),
     }
 }
 
@@ -570,6 +898,18 @@ pub(crate) fn upload_progress(batch: u64, index: usize, progress: UploadProgress
     });
 }
 
+/// 上传子文件当前状态（worker 在开始前用它跳过已被目录失败标记的行）。
+pub(crate) fn upload_child_state(batch: u64, index: usize) -> Option<TransferState> {
+    with_records(|records| {
+        records
+            .iter()
+            .find(|record| {
+                record.job.kind == EntryKind::File && record.batch == batch && record.index == index
+            })
+            .map(|record| record.state)
+    })
+}
+
 /// 下载中的状态提示（续传 / 重试原因）；只写进行中行的 detail。
 ///
 /// 走 `post_live()` 下发（见 `queue_worker`）：它是下载中的高频说明，
@@ -599,6 +939,7 @@ pub(crate) fn finish_upload_ok(batch: u64, index: usize, result: &kichi_core::Up
                 total: record.job.size,
             });
         }
+        refresh_parent_state(records, batch);
     });
 }
 
@@ -774,6 +1115,17 @@ pub(crate) fn has_running_file() -> bool {
     })
 }
 
+/// 正在扫描 / 上传的顶层上传批次数（扫描中的父行也算进行中）。
+pub(crate) fn upload_active_count() -> i32 {
+    with_records(|records| {
+        let count = records
+            .iter()
+            .filter(|record| !record.child && record.job.is_upload() && record.state.is_active())
+            .count();
+        i32::try_from(count).unwrap_or(i32::MAX)
+    })
+}
+
 /// 所有正在下载文件的实时进度（各文件行 + 文件夹父行聚合）。
 ///
 /// 单独成一路属性：进度每 250ms 变一次，若跟着整个模型重建，`ListView`
@@ -855,6 +1207,8 @@ pub(super) fn row_from(
         session,
         auto_resume: false,
         upload_progress: None,
+        upload_dirs: Vec::new(),
+        upload_failed_dirs: Vec::new(),
     }
 }
 
@@ -943,6 +1297,7 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
     ) {
         return;
     }
+    let failed_dirs = records[parent].upload_failed_dirs.len();
 
     let mut children = 0usize;
     let mut active = false;
@@ -993,6 +1348,9 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
         }
     }
     if children == 0 {
+        if failed_dirs > 0 {
+            records[parent].state = TransferState::Failed;
+        }
         return;
     }
 
@@ -1009,7 +1367,7 @@ pub(crate) fn refresh_parent_state(records: &mut [Transfer], batch: u64) {
         TransferState::Paused
     } else if interrupted {
         TransferState::Interrupted
-    } else if failed {
+    } else if failed || failed_dirs > 0 {
         TransferState::Failed
     } else if all_done {
         TransferState::Done
@@ -1278,7 +1636,7 @@ fn cancel_active_for_in(records: &mut [Transfer], direction: TransferDirection, 
 
 /// 文件夹总账行对应的落盘文件夹：下载目录 + 安全化后的文件夹名。
 pub(crate) fn folder_download_path(record: &Transfer) -> Option<PathBuf> {
-    is_folder_ledger(record).then(|| {
+    (is_folder_ledger(record) && !record.job.is_upload()).then(|| {
         record
             .job
             .dir

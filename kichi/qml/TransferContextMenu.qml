@@ -15,6 +15,7 @@ Item {
     property bool targetIsFolder: false
     property bool targetIsChild: false
     property int targetChildCount: 0
+    property int targetFailedDirs: 0
     property bool targetCanPause: false
     property bool targetCanResume: false
     property bool targetCanCancel: false
@@ -63,13 +64,15 @@ Item {
         root.targetIsFolder = rowData.folder === true
         root.targetIsChild = rowData.rowKind === "child"
         root.targetChildCount = Number(rowData.childCount || 0)
+        root.targetFailedDirs = Number(rowData.failedDirs || 0)
         var upload = root.targetDirection === "upload"
         root.targetCanPause = active && !pausing && !root.targetIsChild
                               && (!upload || phase === "queued")
         root.targetCanResume = paused && !root.targetIsChild
         root.targetCanCancel = (pausing || paused) ? !root.targetIsChild : active
         root.targetCanRetry = (failed || interrupted)
-                              && (!root.targetIsFolder || root.targetChildCount === 0)
+                              && (!root.targetIsFolder || root.targetChildCount === 0
+                                  || root.targetFailedDirs > 0)
         root.targetCanReveal = String(rowData.path || "").length > 0
         root.targetCanRemove = !root.targetIsChild
                                && (root.phaseFinished(phase) || interrupted)

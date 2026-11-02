@@ -42,7 +42,7 @@ RowLayout {
         enabled: root.canUpload || root.canCreateFolder || root.canCreateTask
         showTextToolTip: false
         ToolTip.visible: hovered
-        ToolTip.text: qsTr("上传文件、新建文件夹或离线任务")
+        ToolTip.text: qsTr("上传文件 / 文件夹、新建文件夹或离线任务")
         Accessible.name: qsTr("添加")
         onClicked: root.openAddMenu()
 
@@ -66,6 +66,21 @@ RowLayout {
 
                 ToolTip.visible: hovered
                 ToolTip.text: qsTr("上传到当前文件夹，可一次选择多个文件")
+            }
+
+            MenuItem {
+                objectName: "filesAddFolderUploadItem"
+                text: qsTr("上传文件夹…")
+                enabled: root.canUpload
+                onTriggered: {
+                    if (root.backend) {
+                        root.backend.chooseUploadFolders(
+                            root.backend.currentDirId, root.currentFolderPath())
+                    }
+                }
+
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("保留目录层级和空文件夹，后台扫描期间可取消")
             }
 
             MenuItem {

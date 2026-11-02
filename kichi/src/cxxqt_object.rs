@@ -591,6 +591,11 @@ pub mod qobject {
         #[cxx_name = "chooseUploadFiles"]
         fn choose_upload_files(self: Pin<&mut Self>, parent_id: QString, parent_name: QString);
 
+        /// 通过 XDG Desktop Portal 多选本地文件夹，每个文件夹各成一个上传批次
+        #[qinvokable]
+        #[cxx_name = "chooseUploadFolders"]
+        fn choose_upload_folders(self: Pin<&mut Self>, parent_id: QString, parent_name: QString);
+
         /// 接收文件管理器拖入的本地文件，上传到拖入时所在的云端目录
         #[qinvokable]
         #[cxx_name = "uploadDroppedFiles"]
@@ -768,6 +773,7 @@ mod trash;
 mod tray;
 mod tray_icon;
 mod upload_queue;
+mod upload_scan;
 mod upload_worker;
 mod uploads;
 

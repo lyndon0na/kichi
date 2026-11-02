@@ -91,7 +91,8 @@ TestCase {
             })
             transferHasRetryable = items.some(function(item) {
                 return item.state === "failed"
-                        && (item.folder !== true || item.childCount === 0)
+                        && (item.folder !== true || item.childCount === 0
+                            || (item.failedDirs || 0) > 0)
             })
             transferRevision += 1
             changed()
@@ -211,7 +212,8 @@ TestCase {
             path: "",
             folder: false,
             childCount: 0,
-            failedCount: 0
+            failedCount: 0,
+            failedDirs: 0
         }
         var fields = extra || {}
         for (var field in fields)
@@ -839,6 +841,38 @@ TestCase {
                 "部分失败文件夹不能整批重试")
         verify(findChild(menu, "transferRemoveItem").visible,
                "顶层文件夹记录可以整批移除")
+    }
+
+    function test_folder_with_failed_directory_can_retry_from_parent() {
+        backend.setDetails("91:folder", [
+            makeRow("91:0", "失败子文件.mkv", "failed", {
+                detail: "目录创建失败"
+            })
+        ])
+        backend.publish([
+            makeRow("91:folder", "剧集", "failed", {
+                folder: true,
+                childCount: 1,
+                failedCount: 1,
+                failedDirs: 1,
+                detail: "成功 0 个 · 失败 1 个 · 1 个目录创建失败"
+            })
+        ], 0, 0)
+        waitRows(1)
+
+        var parent = row("91:folder")
+        verify(parent !== null)
+        verify(findChild(parent, "retryLink").visible,
+               "目录创建失败的父行需要重试入口")
+        mouseClick(findChild(parent, "retryLink"))
+        wait(20)
+        compare(backend.retriedKey, "91:folder")
+        compare(backend.retryCount, 1)
+
+        mouseClick(parent, 120, 24, Qt.RightButton)
+        var menu = findChild(page, "transferContextMenu")
+        tryVerify(function() { return menu.opened })
+        verify(findChild(menu, "transferRetryItem").visible)
     }
 
     function test_remove_record_requires_confirmation_and_keeps_files_notice() {

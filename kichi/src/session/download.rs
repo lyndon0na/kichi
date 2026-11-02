@@ -81,6 +81,14 @@ impl Cancel {
                 .is_some_and(|parent| parent.is_cancelled())
     }
 
+    /// 只检查这一级自己的取消标志，不向上继承。
+    ///
+    /// 上传文件夹用父信号取消整批、子信号取消单个文件；worker 需要区分
+    /// 这两种情况，才能在取消一个文件后继续上传其它兄弟文件。
+    pub fn is_local_cancelled(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+
     /// 是否因登出而中止（命中时保留断点，绝不 rename 成品）。
     pub fn is_abandoned(&self) -> bool {
         self.abandon.load(Ordering::Relaxed)

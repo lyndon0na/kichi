@@ -25,11 +25,11 @@ use serde::{Deserialize, Serialize};
 
 use super::transfers::{
     is_folder_ledger, restore_row, with_records, Transfer, TransferDirection, TransferJob,
-    TransferState, UploadJob,
+    TransferState, UploadDir, UploadJob,
 };
 
 /// 落盘格式版本。读取不看版本号：高版本也只按已知字段解析，未知字段忽略。
-pub(crate) const HISTORY_VERSION: u32 = 2;
+pub(crate) const HISTORY_VERSION: u32 = 3;
 /// 两次写盘至少间隔这么久（进度回调很密，不能每次写盘）。
 pub(crate) const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// 失败 / 取消 / 已中断旧批次保留的天数。
@@ -73,6 +73,12 @@ pub(crate) struct EntryRecord {
     /// 文件夹批次的目录树（相对下载根目录，含根文件夹名）
     #[serde(default)]
     pub(crate) dirs: Vec<Vec<String>>,
+    /// 上传文件夹批次已经建好的云端目录（只写在父行上）
+    #[serde(default)]
+    pub(crate) upload_dirs: Vec<UploadDirRecord>,
+    /// 上传文件夹批次当前创建失败的云端目录路径（只写在父行上）
+    #[serde(default)]
+    pub(crate) upload_failed_dirs: Vec<Vec<String>>,
     /// 批次入队时刻（Unix 秒）：90 天清理与整批重试保留原时刻
     #[serde(default)]
     pub(crate) created_unix: i64,
@@ -111,6 +117,20 @@ pub(crate) struct JobRecord {
     pub(crate) parent_id: String,
     #[serde(default)]
     pub(crate) parent_name: String,
+    /// 上传文件夹根目录的云端 id
+    #[serde(default)]
+    pub(crate) batch_root_id: String,
+    /// 上传子文件直接父目录的云端 id
+    #[serde(default)]
+    pub(crate) cloud_parent_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct UploadDirRecord {
+    #[serde(default)]
+    pub(crate) path: Vec<String>,
+    #[serde(default)]
+    pub(crate) id: String,
 }
 
 /// 落盘格式：`{ version, entries }`。
@@ -220,6 +240,18 @@ pub(crate) fn entry_of(record: &Transfer, dirs: Vec<Vec<String>>) -> EntryRecord
                 .as_ref()
                 .map(|upload| upload.parent_name.clone())
                 .unwrap_or_default(),
+            batch_root_id: record
+                .job
+                .upload
+                .as_ref()
+                .map(|upload| upload.batch_root_id.clone())
+                .unwrap_or_default(),
+            cloud_parent_id: record
+                .job
+                .upload
+                .as_ref()
+                .map(|upload| upload.cloud_parent_id.clone())
+                .unwrap_or_default(),
         },
         state: record.state.name().to_owned(),
         bytes: record.bytes,
@@ -229,6 +261,23 @@ pub(crate) fn entry_of(record: &Transfer, dirs: Vec<Vec<String>>) -> EntryRecord
         empty_folder: record.empty_folder,
         skipped: record.skipped,
         dirs,
+        upload_dirs: if is_folder_ledger(record) {
+            record
+                .upload_dirs
+                .iter()
+                .map(|dir| UploadDirRecord {
+                    path: dir.path.clone(),
+                    id: dir.id.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        upload_failed_dirs: if is_folder_ledger(record) {
+            record.upload_failed_dirs.clone()
+        } else {
+            Vec::new()
+        },
         created_unix: record.created_unix,
         session: record.session,
         auto_resume: record.auto_resume,
@@ -355,6 +404,8 @@ fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
             local_path: PathBuf::from(&entry.job.local_path),
             parent_id: entry.job.parent_id.clone(),
             parent_name: entry.job.parent_name.clone(),
+            batch_root_id: entry.job.batch_root_id.clone(),
+            cloud_parent_id: entry.job.cloud_parent_id.clone(),
         }),
     };
     let stored = state_of(&entry.state);
@@ -368,7 +419,7 @@ fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
     } else {
         entry.detail.clone()
     };
-    restore_row(
+    let mut row = restore_row(
         entry.batch,
         entry.index,
         entry.child,
@@ -384,7 +435,17 @@ fn restore_entry(entry: &EntryRecord, session: u64) -> Transfer {
         entry.created_unix,
         session,
         entry.auto_resume,
-    )
+    );
+    row.upload_dirs = entry
+        .upload_dirs
+        .iter()
+        .map(|dir| UploadDir {
+            path: dir.path.clone(),
+            id: dir.id.clone(),
+        })
+        .collect();
+    row.upload_failed_dirs = entry.upload_failed_dirs.clone();
+    row
 }
 
 // —— 清理规则（全是纯函数） ——

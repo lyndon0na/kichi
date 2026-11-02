@@ -38,6 +38,7 @@ fn upload_record(state: TransferState) -> Transfer {
         local_path: PathBuf::from("/home/me/电影.mkv"),
         parent_id: "cloud-folder".to_owned(),
         parent_name: "动画".to_owned(),
+        ..Default::default()
     });
     let mut row = row_from(7, 0, &seed.id, &seed, 1_790_000_000, 1);
     row.state = state;
@@ -51,6 +52,71 @@ fn folder_batch(children: &[(&str, TransferState)]) -> Vec<Transfer> {
     for (index, (name, state)) in children.iter().enumerate() {
         let seed = job(name, name, EntryKind::File, &["剧集"]);
         let mut child = row_from(7, index, "folder-id", &seed, 1_790_000_000, 1);
+        child.child = true;
+        child.state = *state;
+        records.push(child);
+    }
+    records
+}
+
+fn upload_folder_batch(
+    batch: u64,
+    children: &[(&str, TransferState)],
+    failed_dirs: &[&[&str]],
+) -> Vec<Transfer> {
+    let parent_job = TransferJob {
+        id: format!("upload-folder:/home/me/剧集-{batch}"),
+        name: "剧集".to_owned(),
+        kind: EntryKind::Folder,
+        size: 0,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(crate::cxxqt_object::transfers::UploadJob {
+            local_path: PathBuf::from("/home/me/剧集"),
+            parent_id: "cloud-folder".to_owned(),
+            parent_name: "动画".to_owned(),
+            batch_root_id: "cloud-root".to_owned(),
+            ..Default::default()
+        }),
+    };
+    let mut parent = row_from(batch, 0, &parent_job.id, &parent_job, 1_790_000_000, 1);
+    parent.state = TransferState::Failed;
+    parent.upload_dirs = vec![
+        crate::cxxqt_object::transfers::UploadDir {
+            path: vec!["剧集".to_owned()],
+            id: "cloud-root".to_owned(),
+        },
+        crate::cxxqt_object::transfers::UploadDir {
+            path: vec!["剧集".to_owned(), "第一季".to_owned()],
+            id: "cloud-season".to_owned(),
+        },
+    ];
+    parent.upload_failed_dirs = failed_dirs
+        .iter()
+        .map(|path| path.iter().map(|part| (*part).to_owned()).collect())
+        .collect();
+    let mut records = vec![parent];
+    for (index, (name, state)) in children.iter().enumerate() {
+        let child_job = TransferJob {
+            id: format!("upload:/home/me/剧集/{name}"),
+            name: (*name).to_owned(),
+            kind: EntryKind::File,
+            size: 1234,
+            audit_flagged: false,
+            sub_dir: vec!["剧集".to_owned()],
+            dir: PathBuf::new(),
+            direction: TransferDirection::Upload,
+            upload: Some(crate::cxxqt_object::transfers::UploadJob {
+                local_path: PathBuf::from(format!("/home/me/剧集/{name}")),
+                parent_id: "cloud-folder".to_owned(),
+                parent_name: "动画".to_owned(),
+                batch_root_id: "cloud-root".to_owned(),
+                cloud_parent_id: "cloud-root".to_owned(),
+            }),
+        };
+        let mut child = row_from(batch, index, &parent_job.id, &child_job, 1_790_000_000, 1);
         child.child = true;
         child.state = *state;
         records.push(child);
@@ -179,6 +245,61 @@ fn failed_keys_include_a_folder_that_failed_before_reading_children() {
         vec!["7:folder".to_owned()],
         "没有子行时文件夹自身重新读目录"
     );
+}
+
+#[test]
+fn failed_keys_use_a_upload_folder_parent_when_a_directory_failed() {
+    let records = upload_folder_batch(
+        7,
+        &[
+            ("done.mkv", TransferState::Done),
+            ("failed.mkv", TransferState::Failed),
+        ],
+        &[&["剧集", "空目录"]],
+    );
+
+    assert_eq!(
+        retryable_failed_keys_in(&records),
+        vec!["7:folder".to_owned()],
+        "目录失败由父行一次重试，避免重复登记同一批子文件"
+    );
+}
+
+#[test]
+fn upload_folder_batch_retry_keeps_dirs_and_selects_unfinished_children() {
+    let batch = 9_700_001u64;
+    let records = upload_folder_batch(
+        batch,
+        &[
+            ("done.mkv", TransferState::Done),
+            ("failed.mkv", TransferState::Failed),
+            ("cancelled.mkv", TransferState::Cancelled),
+        ],
+        &[&["剧集", "空目录"]],
+    );
+    with_records(|global| global.extend(records));
+    with_trees(|trees| {
+        trees.insert(
+            batch,
+            vec![
+                vec!["剧集".to_owned()],
+                vec!["剧集".to_owned(), "第一季".to_owned()],
+                vec!["剧集".to_owned(), "空目录".to_owned()],
+            ],
+        );
+    });
+
+    let retry = upload_folder_batch_retry(&format!("{batch}:folder")).expect("父批次可重试");
+    assert_eq!(retry.batch, batch);
+    assert_eq!(retry.files.len(), 1, "只选中失败子文件");
+    assert_eq!(retry.files[0].0, 1);
+    assert_eq!(retry.upload_dirs.len(), 2, "已创建的云端目录保留");
+    assert!(!retry.dirs.is_empty(), "目录树保留，空目录也可以补建");
+
+    with_records(|global| global.retain(|record| record.batch != batch));
+    with_trees(|trees| {
+        trees.remove(&batch);
+    });
 }
 
 #[test]

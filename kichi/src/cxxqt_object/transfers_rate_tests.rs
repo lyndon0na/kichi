@@ -430,6 +430,7 @@ fn upload_rate_is_hidden_outside_the_actual_transfer_stage() {
         local_path: PathBuf::from("/home/me/电影.mkv"),
         parent_id: "cloud-folder".to_owned(),
         parent_name: "动画".to_owned(),
+        ..UploadJob::default()
     });
     start(&mut record, base);
     record.upload_progress = Some(UploadProgressState {

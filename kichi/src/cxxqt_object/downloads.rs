@@ -31,6 +31,7 @@ use super::transfers_detail;
 use super::transfers_history::{self, StoreTarget};
 use super::transfers_rate::heartbeat_due;
 use super::upload_queue;
+use super::upload_scan;
 use crate::session::Failure;
 
 /// 上一次推 `transferLive` 的时刻（心跳节流；只有主线程读写）。
@@ -223,12 +224,24 @@ impl qobject::Kichi {
             return;
         };
         if target.direction == transfers::TransferDirection::Upload {
-            let Some(outcome) = upload_queue::cancel(target.batch) else {
-                self.as_mut().set_message("这条上传记录已经结束");
+            if !target.whole_batch {
+                if upload_queue::cancel_file(target.batch, target.index) {
+                    transfers::cancel_file(target.batch, target.index);
+                    self.as_mut()
+                        .set_message(&format!("已取消上传：{}", target.name));
+                } else {
+                    self.as_mut().set_message("这个上传文件已经结束");
+                }
+                self.as_mut().advance_uploads();
                 return;
-            };
+            }
+            let scanning = upload_scan::cancel(target.batch);
+            let outcome = upload_queue::cancel(target.batch);
+            // 扫描线程可能已经结束、回投主线程的回调还没跑；这时调度器里还
+            // 没有批次，但记录仍是「准备中」。先把记录标取消，回调会据此
+            // 丢掉扫描结果，不能让用户刚点的取消被随后入队覆盖。
             transfers::cancel_batch(target.batch, "");
-            let prefix = if outcome == upload_queue::CancelOutcome::Running {
+            let prefix = if scanning || outcome == Some(upload_queue::CancelOutcome::Running) {
                 "正在取消上传"
             } else {
                 "已取消上传"
@@ -433,10 +446,73 @@ impl qobject::Kichi {
     /// 顺序：取目标（记录锁）→ 查重 + 登记（调度锁）→ 成功后才删旧行。
     /// 调用方负责在批量登记完成后统一推进队列。
     fn retry_one(self: Pin<&mut Self>, key: &str) -> RetryOutcome {
+        // 上传文件夹的父行可能已有子行：目录创建失败时不能走 `retry_target`
+        // （它对有子行的文件夹返回 None），也不能把整批重新扫描。先在原批次
+        // 里复用已创建的目录，只重排失败 / 中断的成员。
+        if let Some(retry) = transfers_actions::upload_folder_batch_retry(key) {
+            let batch = retry.batch;
+            let source_id = retry.parent.id.clone();
+            return match upload_queue::retry_folder(
+                batch,
+                retry.parent.clone(),
+                retry.files,
+                retry.dirs,
+                retry.upload_dirs,
+            ) {
+                Ok(()) => {
+                    if transfers::retry_upload_folder(batch) {
+                        RetryOutcome::QueuedUpload
+                    } else {
+                        let _ = upload_queue::release(batch);
+                        RetryOutcome::Unavailable
+                    }
+                }
+                Err(upload_queue::ReserveError::AlreadyPending) => {
+                    RetryOutcome::AlreadyPending(source_id)
+                }
+                Err(err) => RetryOutcome::Invalid(err.reason()),
+            };
+        }
+
         let Some(job) = transfers_actions::retry_target(key) else {
             return RetryOutcome::Unavailable;
         };
         if job.is_upload() {
+            if let Some((batch, parent_job)) = transfers_actions::upload_folder_retry(key) {
+                transfers::reset_upload_folder_for_scan(batch);
+                return match upload_scan::start(batch, parent_job) {
+                    Ok(()) => RetryOutcome::QueuedUpload,
+                    Err(reason) => {
+                        transfers::fail_batch(batch, &reason);
+                        RetryOutcome::Invalid(reason)
+                    }
+                };
+            }
+            if let Some(retry) = transfers_actions::upload_child_retry(key) {
+                let batch = retry.batch;
+                let index = retry.index;
+                return match upload_queue::retry_child(
+                    batch,
+                    index,
+                    retry.parent,
+                    retry.file,
+                    retry.dirs,
+                    retry.upload_dirs,
+                ) {
+                    Ok(()) => {
+                        if transfers::retry_upload_child(batch, index) {
+                            RetryOutcome::QueuedUpload
+                        } else {
+                            let _ = upload_queue::release(batch);
+                            RetryOutcome::Unavailable
+                        }
+                    }
+                    Err(upload_queue::ReserveError::AlreadyPending) => {
+                        RetryOutcome::AlreadyPending(job.id)
+                    }
+                    Err(err) => RetryOutcome::Invalid(err.reason()),
+                };
+            }
             return match upload_queue::reserve_retry(&job) {
                 Ok(_) => {
                     transfers_actions::remove(key);
@@ -693,6 +769,7 @@ impl qobject::Kichi {
         let (detail, detail_active) = transfers_detail::detail_snapshot();
         let (running, queued) = queue::counts();
         let (upload_running, upload_queued) = upload_queue::counts();
+        let upload_active = transfers::upload_active_count();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.transfers = list;
@@ -706,7 +783,7 @@ impl qobject::Kichi {
             rust.download_running = running;
             rust.download_queued = queued;
             rust.upload_queued = upload_queued;
-            rust.upload_active = if upload_running { 1 } else { 0 };
+            rust.upload_active = upload_active.max(if upload_running { 1 } else { 0 });
         }
         mark_live_pushed();
         maybe_write_history();

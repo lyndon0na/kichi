@@ -60,6 +60,7 @@ fn upload_row(batch: u64, name: &str) -> crate::cxxqt_object::transfers::Transfe
             local_path: PathBuf::from(format!("/home/me/{name}")),
             parent_id: "parent-42".to_owned(),
             parent_name: "动画".to_owned(),
+            ..UploadJob::default()
         }),
     };
     let mut row = row_from(batch, 0, &upload_job.id, &upload_job, 1_790_000_000, 7);
@@ -269,6 +270,158 @@ fn upload_record_round_trips_with_its_retry_target() {
     assert_eq!(upload.parent_name, "动画");
     assert_eq!(restored[0].state, TransferState::Failed);
     assert_eq!(restored[0].detail, "上传连接中断");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn v2_upload_record_without_folder_batch_fields_still_loads() {
+    let path = temp_path("v2-upload");
+    std::fs::write(
+        &path,
+        r#"{
+            "version": 2,
+            "entries": [{
+                "batch": 6, "index": 0, "child": false,
+                "source_id": "upload:/home/me/旧上传.mkv",
+                "job": {
+                    "id": "upload:/home/me/旧上传.mkv",
+                    "name": "旧上传.mkv", "kind": "file",
+                    "size": 2048, "dir": "",
+                    "direction": "upload",
+                    "local_path": "/home/me/旧上传.mkv",
+                    "parent_id": "parent-42",
+                    "parent_name": "动画"
+                },
+                "state": "failed"
+            }]
+        }"#,
+    )
+    .expect("写 v2 上传历史");
+
+    let restored = restore(load(&path), 8);
+    assert_eq!(restored.len(), 1);
+    let upload = restored[0].job.upload.as_ref().expect("上传字段仍在");
+    assert_eq!(upload.local_path, PathBuf::from("/home/me/旧上传.mkv"));
+    assert_eq!(upload.parent_id, "parent-42");
+    assert!(upload.batch_root_id.is_empty());
+    assert!(upload.cloud_parent_id.is_empty());
+    assert!(restored[0].upload_dirs.is_empty());
+    assert!(restored[0].upload_failed_dirs.is_empty());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn upload_folder_batch_round_trips_v3_directory_progress() {
+    let path = temp_path("upload-folder-v3");
+    let batch = 6_201;
+    let folder_job = TransferJob {
+        id: "upload-folder:/home/me/剧集".to_owned(),
+        name: "剧集".to_owned(),
+        kind: EntryKind::Folder,
+        size: 0,
+        audit_flagged: false,
+        sub_dir: Vec::new(),
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集"),
+            parent_id: "cloud-target".to_owned(),
+            parent_name: "动画".to_owned(),
+            batch_root_id: "root-cloud-id".to_owned(),
+            cloud_parent_id: String::new(),
+        }),
+    };
+    let child_job = TransferJob {
+        id: "upload:/home/me/剧集/第一季/a.mkv".to_owned(),
+        name: "a.mkv".to_owned(),
+        kind: EntryKind::File,
+        size: 512,
+        audit_flagged: false,
+        sub_dir: vec!["剧集".to_owned(), "第一季".to_owned()],
+        dir: PathBuf::new(),
+        direction: TransferDirection::Upload,
+        upload: Some(UploadJob {
+            local_path: PathBuf::from("/home/me/剧集/第一季/a.mkv"),
+            parent_id: "cloud-target".to_owned(),
+            parent_name: "动画".to_owned(),
+            batch_root_id: "root-cloud-id".to_owned(),
+            cloud_parent_id: "season-cloud-id".to_owned(),
+        }),
+    };
+    let mut parent = restore_row(
+        batch,
+        0,
+        false,
+        &folder_job,
+        &folder_job.id,
+        TransferState::Failed,
+        0,
+        None,
+        "空目录创建失败".to_owned(),
+        None,
+        false,
+        2,
+        1_790_000_000,
+        7,
+        false,
+    );
+    parent.upload_dirs = vec![
+        UploadDir {
+            path: vec!["剧集".to_owned()],
+            id: "root-cloud-id".to_owned(),
+        },
+        UploadDir {
+            path: vec!["剧集".to_owned(), "第一季".to_owned()],
+            id: "season-cloud-id".to_owned(),
+        },
+    ];
+    parent.upload_failed_dirs = vec![vec!["剧集".to_owned(), "空目录".to_owned()]];
+    let mut child = restore_row(
+        batch,
+        0,
+        true,
+        &child_job,
+        &folder_job.id,
+        TransferState::Failed,
+        0,
+        Some(512),
+        "网络中断".to_owned(),
+        None,
+        false,
+        0,
+        1_790_000_000,
+        7,
+        false,
+    );
+    child.child = true;
+    let dirs = vec![(
+        batch,
+        vec![
+            vec!["剧集".to_owned()],
+            vec!["剧集".to_owned(), "第一季".to_owned()],
+            vec!["剧集".to_owned(), "空目录".to_owned()],
+        ],
+    )];
+    save(&path, &entries(&[parent, child], &dirs)).expect("写上传文件夹历史");
+
+    let raw = std::fs::read(&path).expect("读回上传历史");
+    let json: serde_json::Value = serde_json::from_slice(&raw).expect("历史是 JSON");
+    assert_eq!(json["version"], HISTORY_VERSION);
+    assert_eq!(json["entries"][0]["upload_dirs"][0]["id"], "root-cloud-id");
+    assert_eq!(json["entries"][0]["upload_failed_dirs"][0][1], "空目录");
+
+    let restored = restore(load(&path), 8);
+    assert_eq!(restored.len(), 2);
+    let parent = restored.iter().find(|row| !row.child).expect("父行");
+    let child = restored.iter().find(|row| row.child).expect("子行");
+    assert_eq!(parent.state, TransferState::Failed);
+    assert_eq!(parent.upload_dirs.len(), 2);
+    assert_eq!(parent.upload_failed_dirs.len(), 1);
+    let upload = parent.job.upload.as_ref().expect("父行上传字段");
+    assert_eq!(upload.batch_root_id, "root-cloud-id");
+    let child_upload = child.job.upload.as_ref().expect("子行上传字段");
+    assert_eq!(child_upload.batch_root_id, "root-cloud-id");
+    assert_eq!(child_upload.cloud_parent_id, "season-cloud-id");
     let _ = std::fs::remove_file(&path);
 }
 

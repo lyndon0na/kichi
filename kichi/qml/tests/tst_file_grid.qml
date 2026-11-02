@@ -60,6 +60,9 @@ TestCase {
         property int uploadCalls: 0
         property string uploadFolderId: ""
         property string uploadFolderName: ""
+        property int uploadFolderCalls: 0
+        property string uploadFolderFolderId: ""
+        property string uploadFolderFolderName: ""
         property int droppedUploadCalls: 0
         property string droppedUploadFolderId: ""
         property string droppedUploadFolderName: ""
@@ -109,6 +112,11 @@ TestCase {
             uploadCalls += 1
             uploadFolderId = String(folderId || "")
             uploadFolderName = String(folderName || "")
+        }
+        function chooseUploadFolders(folderId, folderName) {
+            uploadFolderCalls += 1
+            uploadFolderFolderId = String(folderId || "")
+            uploadFolderFolderName = String(folderName || "")
         }
         function uploadDroppedFiles(folderId, folderName, urls) {
             droppedUploadCalls += 1
@@ -279,6 +287,12 @@ TestCase {
         fakeBackend.newTaskDialogFolderId = ""
         fakeBackend.newTaskDialogFolderPath = ""
         fakeBackend.newTaskDialogStartPath = []
+        fakeBackend.uploadCalls = 0
+        fakeBackend.uploadFolderId = ""
+        fakeBackend.uploadFolderName = ""
+        fakeBackend.uploadFolderCalls = 0
+        fakeBackend.uploadFolderFolderId = ""
+        fakeBackend.uploadFolderFolderName = ""
         fakeBackend.droppedUploadCalls = 0
         fakeBackend.droppedUploadFolderId = ""
         fakeBackend.droppedUploadFolderName = ""
@@ -1063,21 +1077,34 @@ TestCase {
 
         const menu = findChild(headerActions, "filesAddMenu")
         const upload = findChild(menu, "filesAddUploadItem")
+        const folderUpload = findChild(menu, "filesAddFolderUploadItem")
         const newFolder = findChild(menu, "filesAddNewFolderItem")
         const newTask = findChild(menu, "filesAddNewTaskItem")
         verify(menu !== null && menu.opened)
         verify(upload !== null && upload.enabled)
+        verify(folderUpload !== null && folderUpload.enabled)
         verify(newFolder !== null && newFolder.enabled)
         verify(newTask !== null && newTask.enabled)
         compare(upload.text, qsTr("上传文件…"))
+        compare(folderUpload.text, qsTr("上传文件夹…"))
         compare(newFolder.text, qsTr("新建文件夹…"))
         compare(newTask.text, qsTr("新建离线任务…"))
+        verify(upload.y < folderUpload.y, "上传文件在上传文件夹之前")
+        verify(folderUpload.y < newFolder.y, "上传文件夹在新建文件夹之前")
 
         mouseClick(upload)
         wait(20)
         compare(fakeBackend.uploadCalls, 1)
         compare(fakeBackend.uploadFolderId, "folder-current")
         compare(fakeBackend.uploadFolderName, "全部文件 / 动画")
+
+        mouseClick(add)
+        wait(20)
+        mouseClick(findChild(menu, "filesAddFolderUploadItem"))
+        wait(20)
+        compare(fakeBackend.uploadFolderCalls, 1)
+        compare(fakeBackend.uploadFolderFolderId, "folder-current")
+        compare(fakeBackend.uploadFolderFolderName, "全部文件 / 动画")
 
         mouseClick(add)
         wait(20)
@@ -1141,9 +1168,11 @@ TestCase {
         wait(30)
 
         const upload = findChild(headerActions, "filesAddUploadItem")
+        const folderUpload = findChild(headerActions, "filesAddFolderUploadItem")
         const newFolder = findChild(headerActions, "filesAddNewFolderItem")
         const newTask = findChild(headerActions, "filesAddNewTaskItem")
         verify(upload !== null && !upload.enabled)
+        verify(folderUpload !== null && !folderUpload.enabled)
         verify(newFolder !== null && !newFolder.enabled)
         verify(newTask !== null && newTask.enabled)
     }

@@ -18,6 +18,7 @@ use super::transfers::TransferDirection;
 use super::transfers::{
     current_session, folder_download_path, has_done_child, is_folder_ledger, record_key,
     refresh_parent_state, row_from, with_records, with_trees, Transfer, TransferJob, TransferState,
+    UploadDir,
 };
 
 /// 一条活动记录对应的取消目标。
@@ -88,6 +89,142 @@ pub(crate) fn upload_resume_target(key: &str) -> Option<UploadResumeTarget> {
                 batch: record.batch,
                 name: record.display_name(),
             })
+    })
+}
+
+/// 上传文件夹里一个失败 / 已中断子文件的原地重试上下文。
+///
+/// 重试复用原批次、原父行和已创建的云端目录 id，只把这一条文件重新排队；
+/// 已完成的兄弟文件不会再次上传。
+#[derive(Debug, Clone)]
+pub(crate) struct UploadChildRetry {
+    pub(crate) batch: u64,
+    pub(crate) index: usize,
+    pub(crate) parent: TransferJob,
+    pub(crate) file: TransferJob,
+    pub(crate) dirs: Vec<Vec<String>>,
+    pub(crate) upload_dirs: Vec<UploadDir>,
+}
+
+pub(crate) fn upload_child_retry(key: &str) -> Option<UploadChildRetry> {
+    with_records(|records| {
+        let child = records.iter().find(|record| {
+            record_key(record) == key
+                && record.child
+                && record.job.is_upload()
+                && matches!(
+                    record.state,
+                    TransferState::Failed | TransferState::Interrupted
+                )
+        })?;
+        let parent = records.iter().find(|record| {
+            record.batch == child.batch && is_folder_ledger(record) && record.job.is_upload()
+        })?;
+        let dirs = with_trees(|trees| trees.get(&child.batch).cloned().unwrap_or_default());
+        Some(UploadChildRetry {
+            batch: child.batch,
+            index: child.index,
+            parent: parent.job.clone(),
+            file: child.job.clone(),
+            dirs,
+            upload_dirs: parent.upload_dirs.clone(),
+        })
+    })
+}
+
+/// 上传文件夹父行在扫描 / 建目录前整体失败时，重试要重新扫描本地目录。
+pub(crate) fn upload_folder_retry(key: &str) -> Option<(u64, TransferJob)> {
+    with_records(|records| {
+        let parent = records.iter().find(|record| {
+            record_key(record) == key
+                && is_folder_ledger(record)
+                && record.job.is_upload()
+                && matches!(
+                    record.state,
+                    TransferState::Failed | TransferState::Interrupted
+                )
+        })?;
+        if records
+            .iter()
+            .any(|record| record.batch == parent.batch && record.child)
+        {
+            return None;
+        }
+        // 扫描结果已经落过盘时，优先复用目录树和已创建的云端目录；只有
+        // 扫描前就失败（没有目录树、也没有任何已创建目录）才需要重扫。
+        let dirs = with_trees(|trees| trees.get(&parent.batch).cloned().unwrap_or_default());
+        if !dirs.is_empty() || !parent.upload_dirs.is_empty() {
+            return None;
+        }
+        Some((parent.batch, parent.job.clone()))
+    })
+}
+
+/// 上传文件夹已有目录树 / 子行时的批次重试上下文。
+///
+/// 与 [`upload_folder_retry`] 的区别：这里保留已经创建成功的云端目录和已完成
+/// 文件，只重新排队失败 / 中断的子文件，并让 worker 补建缺失目录。这样目录
+/// 创建失败（可能没有文件子行，例如空目录）也有可点击的父行重试入口，且不会
+/// 因为重扫把成功的目录再建一遍。
+#[derive(Debug, Clone)]
+pub(crate) struct UploadFolderBatchRetry {
+    pub(crate) batch: u64,
+    pub(crate) parent: TransferJob,
+    pub(crate) files: Vec<(usize, TransferJob)>,
+    pub(crate) dirs: Vec<Vec<String>>,
+    pub(crate) upload_dirs: Vec<UploadDir>,
+}
+
+pub(crate) fn upload_folder_batch_retry(key: &str) -> Option<UploadFolderBatchRetry> {
+    with_records(|records| {
+        let parent = records.iter().find(|record| {
+            record_key(record) == key
+                && is_folder_ledger(record)
+                && record.job.is_upload()
+                && matches!(
+                    record.state,
+                    TransferState::Failed | TransferState::Interrupted
+                )
+        })?;
+        let children: Vec<&Transfer> = records
+            .iter()
+            .filter(|record| record.batch == parent.batch && record.child)
+            .collect();
+        let has_children = !children.is_empty();
+        // 有子行的普通部分失败继续沿用逐个子文件重试；只有目录创建失败
+        // 需要父行把整条目录链和失败子树一起重新排入原批次。
+        if has_children && parent.upload_failed_dirs.is_empty() {
+            return None;
+        }
+
+        let dirs = with_trees(|trees| trees.get(&parent.batch).cloned().unwrap_or_default());
+        if !has_children && dirs.is_empty() && parent.upload_dirs.is_empty() {
+            return None;
+        }
+
+        let mut files: Vec<(usize, TransferJob)> = children
+            .into_iter()
+            .filter(|record| {
+                record.job.is_upload()
+                    && matches!(
+                        record.state,
+                        TransferState::Failed
+                            | TransferState::Interrupted
+                            | TransferState::Queued
+                            | TransferState::Preparing
+                    )
+            })
+            .map(|record| (record.index, record.job.clone()))
+            .collect();
+        files.sort_by_key(|(index, _)| *index);
+
+        Some(UploadFolderBatchRetry {
+            batch: parent.batch,
+            parent: parent.job.clone(),
+            files,
+            dirs,
+            upload_dirs: parent.upload_dirs.clone(),
+        })
     })
 }
 
@@ -221,16 +358,34 @@ fn retryable_failed_keys_in(records: &[Transfer]) -> Vec<String> {
     records
         .iter()
         .filter(|record| is_retryable_failed_record(records, record))
+        .filter(|record| {
+            // 目录创建失败的父行会一次重试整条目录链和失败子文件；
+            // 不要再把同一批的子行当成独立项重复登记。
+            if !record.child || !record.job.is_upload() {
+                return true;
+            }
+            !records.iter().any(|parent| {
+                parent.batch == record.batch
+                    && is_folder_ledger(parent)
+                    && parent.state == TransferState::Failed
+                    && !parent.upload_failed_dirs.is_empty()
+            })
+        })
         .map(record_key)
         .collect()
 }
 
 fn is_retryable_failed_record(records: &[Transfer], record: &Transfer) -> bool {
-    record.state == TransferState::Failed
-        && !(is_folder_ledger(record)
-            && records
-                .iter()
-                .any(|row| row.batch == record.batch && row.child))
+    if record.state != TransferState::Failed {
+        return false;
+    }
+    if is_folder_ledger(record) && record.job.is_upload() && !record.upload_failed_dirs.is_empty() {
+        return true;
+    }
+    !(is_folder_ledger(record)
+        && records
+            .iter()
+            .any(|row| row.batch == record.batch && row.child))
 }
 
 fn retry_target_in(records: &[Transfer], key: &str) -> Option<TransferJob> {

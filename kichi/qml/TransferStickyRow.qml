@@ -59,6 +59,7 @@ Item {
         folder: sticky.value("folder", true)
         childCount: sticky.value("childCount", 0)
         failedCount: sticky.value("failedCount", 0)
+        failedDirs: sticky.value("failedDirs", 0)
         depth: 0
         rowKind: "folder"
         parentKey: ""

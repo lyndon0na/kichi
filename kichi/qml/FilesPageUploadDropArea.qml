@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 文件页的外部拖放入口。DropArea 只负责接住 text/uri-list，
-// 本地文件解析、普通文件检查和去重都交给 Rust，和 Portal 入口共用规则。
+// 本地文件 / 文件夹解析、特殊项检查和去重都交给 Rust，和 Portal 入口共用规则。
 Item {
     id: root
 
@@ -111,7 +111,7 @@ Item {
 
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("可一次拖入多个普通文件；文件夹暂不支持")
+                    text: qsTr("可一次拖入多个普通文件或文件夹；符号链接和特殊文件会跳过")
                     color: theme.textSecondary
                     font.pixelSize: theme.fontMeta
                     horizontalAlignment: Text.AlignHCenter

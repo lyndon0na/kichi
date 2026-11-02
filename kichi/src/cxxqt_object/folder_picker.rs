@@ -64,6 +64,33 @@ pub(crate) fn choose_files(start: &Path) -> Result<Vec<PathBuf>, String> {
     }
 }
 
+/// 打开系统目录选择器，允许多选文件夹。
+///
+/// Portal 的目录模式只保证用户选的是目录；返回空表表示用户取消。
+pub(crate) fn choose_folders(start: &Path) -> Result<Vec<PathBuf>, String> {
+    let request = SelectedFiles::open_file()
+        .title("选择要上传的文件夹")
+        .accept_label("上传这些文件夹")
+        .multiple(true)
+        .directory(true)
+        .modal(true)
+        .current_folder(start)
+        .map_err(|err| format!("无法设置目录选择器的起始位置：{err}"))?;
+
+    let result = ashpd::zbus::block_on(async { request.send().await?.response() });
+    match result {
+        Ok(files) => files.uris().iter().map(path_from_uri).collect(),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Ok(Vec::new()),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Other)) => {
+            Err("系统目录选择器没有返回结果".to_owned())
+        }
+        Err(ashpd::Error::PortalNotFound(_)) => Err(
+            "系统未提供目录选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+        ),
+        Err(err) => Err(format!("无法打开系统目录选择器：{err}")),
+    }
+}
+
 fn path_from_uri(uri: &Url) -> Result<PathBuf, String> {
     if uri.scheme() != "file" {
         return Err(format!("系统选择器返回了非本地路径：{uri}"));
@@ -79,7 +106,7 @@ fn path_from_uri(uri: &Url) -> Result<PathBuf, String> {
 pub(crate) fn drop_path_from_uri(uri: &str) -> Result<PathBuf, String> {
     let parsed = Url::parse(uri).map_err(|_| "拖入的不是有效的本地文件地址".to_owned())?;
     if parsed.scheme() != "file" {
-        return Err("只能拖入本地文件".to_owned());
+        return Err("只能拖入本地文件或文件夹".to_owned());
     }
     parsed
         .to_file_path()
@@ -114,7 +141,7 @@ mod tests {
         );
         assert_eq!(
             drop_path_from_uri("https://example.com/a.mkv").expect_err("非本地 URI"),
-            "只能拖入本地文件"
+            "只能拖入本地文件或文件夹"
         );
         assert_eq!(
             drop_path_from_uri("not a uri").expect_err("无效 URI"),

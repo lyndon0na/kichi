@@ -24,6 +24,7 @@ ItemDelegate {
     required property bool folder
     required property int childCount
     required property int failedCount
+    required property int failedDirs
     required property int depth
     required property string rowKind
     required property string parentKey
@@ -71,7 +72,8 @@ ItemDelegate {
                                       && ((row.pausing || row.paused)
                                           ? !row.child : row.active)
     readonly property bool canRetry: (row.failed || row.interrupted)
-                                     && (!row.folder || row.childCount === 0)
+                                     && (!row.folder || row.childCount === 0
+                                         || row.failedDirs > 0)
     readonly property bool canReveal: row.path.length > 0
     readonly property int currentProgress: row.liveProgress(row.progress)
     readonly property string currentProgressText: row.progressLabel()
@@ -143,6 +145,8 @@ ItemDelegate {
         if (row.failed) {
             if (row.folder && row.childCount > 0 && row.failedCount > 0)
                 return row.stateText + " · " + row.failedCount + qsTr(" 个失败")
+            if (row.folder && row.failedDirs > 0)
+                return row.stateText + " · " + row.failedDirs + qsTr(" 个目录失败")
             if (row.detail.length > 0)
                 return row.stateText + " · " + row.detail
         }
@@ -477,7 +481,11 @@ ItemDelegate {
                     ToolTip.visible: (row.interrupted || row.failed) && hovered
                     ToolTip.delay: 400
                     ToolTip.text: row.isUpload
-                                  ? qsTr("上传没有断点，重试会从头上传")
+                                  ? (row.child
+                                     ? qsTr("只重传这个文件，已成功的兄弟文件不会重传")
+                                     : row.failedDirs > 0
+                                       ? qsTr("只补建失败目录并重传失败文件，已成功的不会重传")
+                                       : qsTr("上传没有断点，重试会从头上传"))
                                   : qsTr("上次未完成，若下载目录未变会从断点续传")
                     onClicked: row.retryRequested(row.key)
                 }

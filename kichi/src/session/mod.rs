@@ -429,6 +429,20 @@ impl Session {
         client.create_folder(parent_id, name).map_err(Failure::from)
     }
 
+    /// 新建文件夹并返回云端 id（上传文件夹批次建目录链用）。
+    ///
+    /// 调用方先取得并持有 client，保证登出后收尾阶段仍使用同一会话实例。
+    pub fn create_folder_entry(
+        &self,
+        client: Arc<DriveClient>,
+        parent_id: Option<&str>,
+        name: &str,
+    ) -> Result<String, Failure> {
+        client
+            .create_folder_entry(parent_id, name)
+            .map_err(Failure::from)
+    }
+
     /// 把普通文件页的条目移入回收站（阻塞）。
     pub fn trash_entries(&self, ids: &[&str]) -> Result<(), Failure> {
         let client = self.drive()?;

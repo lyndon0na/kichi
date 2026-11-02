@@ -230,6 +230,42 @@ impl DriveClient {
         }
     }
 
+    /// 同 [`DriveClient::request`]，但允许成功响应为空，返回 `None`。
+    pub(crate) fn request_optional_json<R: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(String, String)],
+        body: Body<'_>,
+    ) -> Result<Option<R>, Error> {
+        let action = action_for(method.as_str(), url);
+        let token = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+        let access = Some(self.access_token.as_ref());
+        let first = self.http.call_with_query_optional_json(
+            method.clone(),
+            url,
+            query,
+            body.reborrow(),
+            access,
+            Some(token.token.as_str()).filter(|t| !t.is_empty()),
+        );
+        match first {
+            Err(err) if err.is_captcha() => {
+                self.captcha.invalidate();
+                let retry = self.captcha.acquire(&action, None, Some(&self.user_id))?;
+                self.http.call_with_query_optional_json(
+                    method,
+                    url,
+                    query,
+                    body,
+                    access,
+                    Some(retry.token.as_str()).filter(|t| !t.is_empty()),
+                )
+            }
+            other => other,
+        }
+    }
+
     /// 同 [`DriveClient::request`]，但响应体可能为空（DELETE 之类）。
     pub(crate) fn request_no_response(
         &self,
