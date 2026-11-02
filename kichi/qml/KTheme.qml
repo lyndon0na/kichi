@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import org.kde.kirigami as Kirigami
 
 // 全应用视觉令牌（圆角 / 间距 / 字号 / 表面色）。
 //
@@ -48,6 +49,16 @@ Item {
     readonly property int fontBody: 13
     readonly property int fontMeta: 12
     readonly property int fontCaption: 11
+
+    // —— 动效 ——
+    // 时长直接取 Kirigami 的令牌：org.kde.desktop 平台插件会把 KDE
+    // 「动画速度」（AnimationDurationFactor）乘进去；关闭动画时归零或接近零。
+    /// 快速状态反馈：侧栏选中
+    readonly property int motionFast: Kirigami.Units.shortDuration
+    /// 页面级过渡与侧栏竖条滑动
+    readonly property int motionNormal: Kirigami.Units.longDuration
+    /// 页面标题淡入时的轻微上移距离
+    readonly property int motionPageLift: 3
 
     // —— 强调色（= Plasma 系统强调色，Primary 按钮 / 选中态 / 关键高亮） ——
     readonly property color accent: palette.highlight

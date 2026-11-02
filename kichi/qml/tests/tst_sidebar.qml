@@ -133,6 +133,32 @@ TestCase {
         compare(settingsSpy.count, 1)
     }
 
+    function test_selection_surface_follows_current_page() {
+        const filesSurface = findChild(navItem(0), "sidebarSelectionSurface")
+        const targetSurface = findChild(navItem(6), "sidebarSelectionSurface")
+        const selectionBar = findChild(sidebar, "sidebarSelectionBar")
+        verify(filesSurface !== null, "当前页缺少选中底色")
+        verify(targetSurface !== null, "目标页缺少选中底色")
+        verify(selectionBar !== null, "侧栏缺少滑动选中竖条")
+
+        sidebar.currentIndex = 0
+        tryCompare(filesSurface, "opacity", 1, 1000)
+        tryCompare(targetSurface, "opacity", 0, 1000)
+        compare(selectionBar.visible, true)
+
+        sidebar.currentIndex = 6
+        tryCompare(targetSurface, "opacity", 1, 1000)
+        tryCompare(filesSurface, "opacity", 0, 1000)
+
+        const target = navItem(6)
+        const expectedY = target.mapToItem(
+            sidebar, 0, (target.height - selectionBar.height) / 2).y
+        tryCompare(selectionBar, "y", expectedY, 1000)
+
+        sidebar.currentIndex = 5
+        compare(selectionBar.visible, false, "设置页没有侧栏入口，竖条应隐藏")
+    }
+
     function test_offline_task_badge_counts_only_unfinished_tasks() {
         const badge = findChild(sidebar, "sidebarTaskBadge")
         verify(badge !== null, "侧栏缺少离线任务数量徽标")

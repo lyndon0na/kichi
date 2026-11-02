@@ -222,6 +222,11 @@ ApplicationWindow {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         text: root.pageTitle()
+                        opacity: 1
+                        transform: Translate {
+                            id: pageTitleShift
+                            y: 0
+                        }
                         // 一级标题：18px Bold，和正文（13）拉开层级（docs/ui.md）
                         font.pixelSize: theme.fontTitle
                         font.weight: Font.Bold
@@ -552,9 +557,12 @@ ApplicationWindow {
 
                 // 内容区：与页头同一块底色（窗口色就是 palette.base），中间不画分隔线
                 StackLayout {
+                    id: contentStack
+
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     currentIndex: root.currentPage
+                    opacity: 1
 
                     FilesPage {
                         id: filesPage
@@ -731,6 +739,39 @@ ApplicationWindow {
     }
 
     property int currentPage: pageIds.files
+
+    onCurrentPageChanged: pageTransition.restart()
+
+    ParallelAnimation {
+        id: pageTransition
+
+        NumberAnimation {
+            target: contentStack
+            property: "opacity"
+            from: 0
+            to: 1
+            duration: theme.motionNormal
+            easing.type: Easing.OutCubic
+        }
+
+        NumberAnimation {
+            target: pageTitleLabel
+            property: "opacity"
+            from: 0
+            to: 1
+            duration: theme.motionNormal
+            easing.type: Easing.OutCubic
+        }
+
+        NumberAnimation {
+            target: pageTitleShift
+            property: "y"
+            from: theme.motionPageLift
+            to: 0
+            duration: theme.motionNormal
+            easing.type: Easing.OutCubic
+        }
+    }
 
     Shortcut {
         sequence: "Ctrl+,"

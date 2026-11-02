@@ -12,6 +12,8 @@ Rectangle {
 
     property var backend: null
     property int currentIndex: 0
+    property Item selectedNavItem: null
+    property bool hasNavSelection: false
 
     signal pageRequested(int pageIndex)
     signal settingsRequested()
@@ -64,24 +66,27 @@ Rectangle {
                 padding: 0
                 leftPadding: 12
                 rightPadding: 12
+                Component.onCompleted: bar.updateNavSelection(navButton, navSelected)
+                onNavSelectedChanged: bar.updateNavSelection(navButton, navSelected)
                 onClicked: bar.pageRequested(modelData.page)
 
                 background: Rectangle {
                     radius: theme.radiusCard
-                    color: navButton.navSelected ? theme.accentSoft
-                         : navButton.hovered ? theme.accentGhost : theme.accentClear
+                    color: navButton.hovered ? theme.accentGhost : theme.accentClear
 
-
-                    // 选中竖条：和文件列表的选中语言一致
+                    // 选中底色单独一层，只过渡透明度；悬停仍即时变色。
                     Rectangle {
-                        visible: navButton.navSelected
-                        width: 3
-                        height: parent.height - 16
-                        radius: 1.5
-                        anchors.left: parent.left
-                        anchors.leftMargin: 1
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: theme.accent
+                        objectName: "sidebarSelectionSurface"
+                        anchors.fill: parent
+                        radius: parent.radius
+                        color: theme.accentSoft
+                        opacity: navButton.navSelected ? 1 : 0
+                        Behavior on opacity {
+                            NumberAnimation {
+                                duration: theme.motionFast
+                                easing.type: Easing.OutCubic
+                            }
+                        }
                     }
                 }
 
@@ -135,6 +140,41 @@ Rectangle {
             vip: bar.backend ? bar.backend.quotaVip : false
             settingsActive: bar.currentIndex === pages.settings
             onSettingsRequested: bar.settingsRequested()
+        }
+    }
+
+    // 全侧栏只有一根选中竖条，切页时滑动到新入口。
+    Rectangle {
+        id: selectionBar
+
+        objectName: "sidebarSelectionBar"
+        visible: bar.hasNavSelection && bar.selectedNavItem !== null
+        enabled: false
+        x: theme.gapMd + 1
+        y: bar.selectedNavItem
+           ? bar.selectedNavItem.mapToItem(
+                 bar, 0, (bar.selectedNavItem.height - height) / 2).y
+           : 0
+        width: 3
+        height: 24
+        radius: 1.5
+        z: 2
+        color: theme.accent
+
+        Behavior on y {
+            NumberAnimation {
+                duration: theme.motionNormal
+                easing.type: Easing.OutCubic
+            }
+        }
+    }
+
+    function updateNavSelection(item, selected) {
+        if (selected) {
+            bar.selectedNavItem = item
+            bar.hasNavSelection = true
+        } else if (bar.selectedNavItem === item) {
+            bar.hasNavSelection = false
         }
     }
 }
