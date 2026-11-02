@@ -591,6 +591,16 @@ pub mod qobject {
         #[cxx_name = "chooseUploadFiles"]
         fn choose_upload_files(self: Pin<&mut Self>, parent_id: QString, parent_name: QString);
 
+        /// 接收文件管理器拖入的本地文件，上传到拖入时所在的云端目录
+        #[qinvokable]
+        #[cxx_name = "uploadDroppedFiles"]
+        fn upload_dropped_files(
+            self: Pin<&mut Self>,
+            parent_id: QString,
+            parent_name: QString,
+            uris: QStringList,
+        );
+
         /// 给条目改名（当前列表先更新，失败自动回滚）
         #[qinvokable]
         #[cxx_name = "renameEntry"]

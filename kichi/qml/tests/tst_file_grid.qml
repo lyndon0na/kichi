@@ -26,6 +26,7 @@ TestCase {
 
         property var files: []
         property var searchResults: []
+        property string authState: "signedIn"
         property string contentView: "list"
         property bool searchActive: false
         property bool searchSettled: true
@@ -59,6 +60,10 @@ TestCase {
         property int uploadCalls: 0
         property string uploadFolderId: ""
         property string uploadFolderName: ""
+        property int droppedUploadCalls: 0
+        property string droppedUploadFolderId: ""
+        property string droppedUploadFolderName: ""
+        property var droppedUploadUrls: []
         property int newTaskDialogCalls: 0
         property string newTaskDialogFolderId: ""
         property string newTaskDialogFolderPath: ""
@@ -104,6 +109,12 @@ TestCase {
             uploadCalls += 1
             uploadFolderId = String(folderId || "")
             uploadFolderName = String(folderName || "")
+        }
+        function uploadDroppedFiles(folderId, folderName, urls) {
+            droppedUploadCalls += 1
+            droppedUploadFolderId = String(folderId || "")
+            droppedUploadFolderName = String(folderName || "")
+            droppedUploadUrls = urls.slice()
         }
         function openNewTaskDialog(folderId, folderPath, startPath) {
             newTaskDialogCalls += 1
@@ -252,6 +263,7 @@ TestCase {
         fakeBackend.searchTruncated = false
         fakeBackend.searchStatus = ""
         fakeBackend.searchQuery = ""
+        fakeBackend.authState = "signedIn"
         fakeBackend.filesLoading = false
         fakeBackend.filesRefreshing = false
         fakeBackend.filesRevision = 1
@@ -267,6 +279,10 @@ TestCase {
         fakeBackend.newTaskDialogFolderId = ""
         fakeBackend.newTaskDialogFolderPath = ""
         fakeBackend.newTaskDialogStartPath = []
+        fakeBackend.droppedUploadCalls = 0
+        fakeBackend.droppedUploadFolderId = ""
+        fakeBackend.droppedUploadFolderName = ""
+        fakeBackend.droppedUploadUrls = []
         fakeBackend.refreshCalls = 0
         fakeBackend.searchOpenCalls = 0
         fakeBackend.searchRevealCalls = 0
@@ -1086,6 +1102,31 @@ TestCase {
         mouseClick(refresh)
         wait(20)
         compare(fakeBackend.refreshCalls, 1)
+    }
+
+    function test_file_page_drops_files_into_the_current_directory() {
+        fakeBackend.currentDirId = "folder-current"
+        fakeBackend.breadcrumb = ["全部文件", "动画"]
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(40)
+
+        const dropRoot = findChild(page, "uploadDropRoot")
+        verify(dropRoot !== null)
+        compare(dropRoot.acceptsDrops, true)
+        dropRoot.submitUrls(["file:///tmp/a%20b.mkv", "file:///tmp/c.mp4"])
+        compare(fakeBackend.droppedUploadCalls, 1)
+        compare(fakeBackend.droppedUploadFolderId, "folder-current")
+        compare(fakeBackend.droppedUploadFolderName, "全部文件 / 动画")
+        compare(fakeBackend.droppedUploadUrls.length, 2)
+
+        fakeBackend.filesLoading = true
+        wait(10)
+        compare(dropRoot.acceptsDrops, false, "目录加载中不能继续接收拖放")
+        fakeBackend.filesLoading = false
+        fakeBackend.searchActive = true
+        wait(10)
+        compare(dropRoot.acceptsDrops, false, "搜索结果里不能把文件传到旧目录")
     }
 
     function test_add_menu_disables_folder_and_upload_while_searching() {

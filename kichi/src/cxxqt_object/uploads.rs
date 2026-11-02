@@ -1,8 +1,9 @@
 //! 上传的 QML 入口：系统多选文件、串行调度、成功后的当前目录校准。
 
+use std::path::PathBuf;
 use std::pin::Pin;
 
-use cxx_qt_lib::QString;
+use cxx_qt_lib::{QString, QStringList};
 
 use super::qobject;
 use super::transfers::{self, TransferDirection};
@@ -32,30 +33,13 @@ impl qobject::Kichi {
                         {
                             return;
                         }
-                        let (mut added, mut already, mut invalid) = (0u32, 0u32, 0u32);
-                        let mut first_error = String::new();
-                        for path in paths {
-                            match upload_queue::reserve(&path, &parent_id, &parent_name) {
-                                Ok(_) => added += 1,
-                                Err(upload_queue::ReserveError::AlreadyPending) => already += 1,
-                                Err(err) => {
-                                    invalid += 1;
-                                    if first_error.is_empty() {
-                                        first_error = err.reason();
-                                    }
-                                }
-                            }
-                        }
-                        if added > 0 {
-                            qichi.as_mut().advance_uploads();
-                        } else {
-                            qichi.as_mut().sync_transfers();
-                        }
-                        let message =
-                            upload_selection_message(added, already, invalid, &first_error);
-                        if !message.is_empty() {
-                            qichi.as_mut().set_message(&message);
-                        }
+                        qichi.as_mut().enqueue_upload_paths(
+                            paths,
+                            &parent_id,
+                            &parent_name,
+                            0,
+                            String::new(),
+                        );
                     });
                 }
                 Err(reason) => {
@@ -73,6 +57,61 @@ impl qobject::Kichi {
         if let Err(err) = spawned {
             self.as_mut()
                 .set_message(&format!("无法启动系统文件选择器：{err}"));
+        }
+    }
+
+    /// 文件管理器把本地文件拖进文件页时，直接并入同一条上传队列。
+    ///
+    /// QML 只负责提供当前目录快照和 URI；本地路径解析、普通文件检查、去重和
+    /// 结果提示都由 Rust 完成，避免拖放与 Portal 两套入口的规则漂移。
+    pub fn upload_dropped_files(
+        mut self: Pin<&mut Self>,
+        parent_id: QString,
+        parent_name: QString,
+        uris: QStringList,
+    ) {
+        if self.backend.session.state() != State::SignedIn {
+            self.as_mut().set_message("请先登录再上传文件");
+            return;
+        }
+        let parent_id = parent_id.to_string();
+        let parent_name = parent_name.to_string();
+        let (paths, invalid, first_error) =
+            classify_dropped_uris(uris.iter().map(ToString::to_string));
+        self.as_mut()
+            .enqueue_upload_paths(paths, &parent_id, &parent_name, invalid, first_error);
+    }
+
+    /// 两个上传入口共用的入队与结果提示。
+    fn enqueue_upload_paths(
+        mut self: Pin<&mut Self>,
+        paths: Vec<PathBuf>,
+        parent_id: &str,
+        parent_name: &str,
+        mut invalid: u32,
+        mut first_error: String,
+    ) {
+        let (mut added, mut already) = (0u32, 0u32);
+        for path in paths {
+            match upload_queue::reserve(&path, parent_id, parent_name) {
+                Ok(_) => added += 1,
+                Err(upload_queue::ReserveError::AlreadyPending) => already += 1,
+                Err(err) => {
+                    invalid += 1;
+                    if first_error.is_empty() {
+                        first_error = err.reason();
+                    }
+                }
+            }
+        }
+        if added > 0 {
+            self.as_mut().advance_uploads();
+        } else {
+            self.as_mut().sync_transfers();
+        }
+        let message = upload_selection_message(added, already, invalid, &first_error);
+        if !message.is_empty() {
+            self.as_mut().set_message(&message);
         }
     }
 
@@ -122,6 +161,27 @@ impl qobject::Kichi {
     }
 }
 
+fn classify_dropped_uris(uris: impl IntoIterator<Item = String>) -> (Vec<PathBuf>, u32, String) {
+    let mut paths = Vec::new();
+    let mut invalid = 0;
+    let mut first_error = String::new();
+    for uri in uris {
+        if uri.trim().is_empty() {
+            continue;
+        }
+        match super::folder_picker::drop_path_from_uri(&uri) {
+            Ok(path) => paths.push(path),
+            Err(reason) => {
+                invalid += 1;
+                if first_error.is_empty() {
+                    first_error = reason;
+                }
+            }
+        }
+    }
+    (paths, invalid, first_error)
+}
+
 fn upload_selection_message(added: u32, already: u32, invalid: u32, first_error: &str) -> String {
     if added == 0 && already == 0 && invalid == 0 {
         return String::new();
@@ -146,7 +206,8 @@ fn upload_selection_message(added: u32, already: u32, invalid: u32, first_error:
 
 #[cfg(test)]
 mod tests {
-    use super::upload_selection_message;
+    use super::{classify_dropped_uris, upload_selection_message};
+    use std::path::PathBuf;
 
     #[test]
     fn selection_message_reports_added_and_rejected_files() {
@@ -159,5 +220,26 @@ mod tests {
     #[test]
     fn cancelled_selection_stays_silent() {
         assert_eq!(upload_selection_message(0, 0, 0, ""), "");
+    }
+
+    #[test]
+    fn dropped_uris_keep_local_files_and_report_the_first_error() {
+        let (paths, invalid, first_error) = classify_dropped_uris(
+            [
+                "file:///tmp/a%20b.mkv".to_owned(),
+                "https://example.com/c.mkv".to_owned(),
+                "file:///tmp/%E7%94%B5%E5%BD%B1.mp4".to_owned(),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/tmp/a b.mkv"),
+                PathBuf::from("/tmp/电影.mp4")
+            ]
+        );
+        assert_eq!(invalid, 1);
+        assert_eq!(first_error, "只能拖入本地文件");
     }
 }

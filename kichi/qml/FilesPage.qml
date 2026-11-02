@@ -25,6 +25,18 @@ Item {
     // 目录与搜索结果共用当前显示方式
     readonly property bool gridMode: page.backend !== null
                                      && page.backend.contentView === "grid"
+    readonly property bool canDropUploads: page.backend !== null
+                                           && page.backend.authState === "signedIn"
+                                           && !page.searching
+                                           && !page.backend.filesLoading
+    readonly property string uploadDestinationName: {
+        const crumbs = page.backend && page.backend.breadcrumb
+                     ? page.backend.breadcrumb : []
+        const parts = []
+        for (let i = 0; i < crumbs.length; i++)
+            parts.push(String(crumbs[i]))
+        return parts.length > 0 ? parts.join(" / ") : qsTr("全部文件")
+    }
     // 从搜索结果进目录时，Rust 会先退出搜索、再异步读目标目录。这里保留
     // 点击瞬间的结果快照，等 filesLoading 结束再换 model，避免闪回原目录。
     property var heldSearchEntries: []
@@ -540,6 +552,15 @@ Item {
                 running: page.holdingSearchEntries
             }
         }
+    }
+
+    FilesPageUploadDropArea {
+        anchors.fill: parent
+        z: 40
+        backend: page.backend
+        acceptsDrops: page.canDropUploads
+        parentId: page.backend ? page.backend.currentDirId : ""
+        destinationName: page.uploadDestinationName
     }
 
     // —— 右键菜单与写操作弹窗（内容在 FilesPageMenu.qml / FileActionDialogs.qml）——

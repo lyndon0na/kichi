@@ -72,9 +72,23 @@ fn path_from_uri(uri: &Url) -> Result<PathBuf, String> {
         .map_err(|_| format!("无法把系统选择器返回的地址转换为本地路径：{uri}"))
 }
 
+/// 把文件管理器拖放得到的 URI 转成本地路径。
+///
+/// 拖放和 Portal 使用两套不同的错误文案：前者是用户直接拖进来的东西，
+/// 后者是系统选择器返回的结果。
+pub(crate) fn drop_path_from_uri(uri: &str) -> Result<PathBuf, String> {
+    let parsed = Url::parse(uri).map_err(|_| "拖入的不是有效的本地文件地址".to_owned())?;
+    if parsed.scheme() != "file" {
+        return Err("只能拖入本地文件".to_owned());
+    }
+    parsed
+        .to_file_path()
+        .map_err(|_| "无法把拖入的地址转换为本地路径".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::path_from_uri;
+    use super::{drop_path_from_uri, path_from_uri};
     use ashpd::url::Url;
 
     #[test]
@@ -90,5 +104,21 @@ mod tests {
     fn non_file_uri_is_rejected() {
         let uri = Url::parse("https://example.com/downloads").expect("URI");
         assert!(path_from_uri(&uri).is_err());
+    }
+
+    #[test]
+    fn dropped_file_uri_is_decoded_and_non_file_is_rejected() {
+        assert_eq!(
+            drop_path_from_uri("file:///tmp/%E7%94%B5%E5%BD%B1%20%E7%89%87.mkv").expect("本地路径"),
+            std::path::PathBuf::from("/tmp/电影 片.mkv")
+        );
+        assert_eq!(
+            drop_path_from_uri("https://example.com/a.mkv").expect_err("非本地 URI"),
+            "只能拖入本地文件"
+        );
+        assert_eq!(
+            drop_path_from_uri("not a uri").expect_err("无效 URI"),
+            "拖入的不是有效的本地文件地址"
+        );
     }
 }
