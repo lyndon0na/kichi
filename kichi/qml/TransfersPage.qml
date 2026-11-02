@@ -473,7 +473,10 @@ Item {
                 spacing: 0
                 model: rows
                 boundsBehavior: Flickable.StopAtBounds
-                cacheBuffer: 400
+                // 切换展开项会重挂模型强制重排；缓存中的旧委托在 reset 时
+                // 会刷 `DelegateModel::cancel: index out range`（QTBUG-66749
+                // 同类）。只在展开期间关闭预加载，收起后恢复。
+                cacheBuffer: page.expandedKey.length > 0 ? 0 : 400
                 ScrollBar.vertical: KScrollBar {}
 
                 delegate: TransferMainRow {

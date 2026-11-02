@@ -882,6 +882,13 @@ mod tests {
             .expect("启动 sleep 失败")
     }
 
+    fn wait_for_no_sessions() {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while active_count() > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn cancel_marks_only_that_session() {
         let _guard = serial();
@@ -1302,7 +1309,9 @@ while True:
             Some(StartEvent::Failed(text)) => assert!(text.contains("加载前退出"), "{text}"),
             other => panic!("应当报 VLC 加载失败，实际 {other:?}"),
         }
-        assert_eq!(active_count(), 0);
+        // 失败事件是在监控线程里发出的；会话表要等回调返回后才移除。
+        wait_for_no_sessions();
+        assert_eq!(active_count(), 0, "加载失败的会话要从登记表移除");
         let _ = std::fs::remove_file(log);
     }
 

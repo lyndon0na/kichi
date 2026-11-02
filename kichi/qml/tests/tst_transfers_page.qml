@@ -437,6 +437,7 @@ TestCase {
         waitRows(4)
         compare(page.expandedKey, "10:folder")
         compare(backend.openedKey, "10:folder")
+        compare(list.cacheBuffer, 0, "展开期间关闭缓存，避免重挂模型刷 Qt 告警")
         compare(row("10:0").depth, 1)
         compare(row("10:0").rowKind, "child")
         compare(row("10:0").parentKey, "10:folder")
@@ -455,6 +456,7 @@ TestCase {
         waitRows(2)
         compare(page.expandedKey, "")
         compare(backend.closeCount, 1)
+        compare(list.cacheBuffer, 400, "收起文件夹后恢复委托预加载")
     }
 
     function test_preparing_or_empty_folder_cannot_expand() {
