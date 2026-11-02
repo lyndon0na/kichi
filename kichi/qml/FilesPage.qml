@@ -52,6 +52,10 @@ Item {
             return page.heldSearchEntries
         return page.searching ? page.backend.searchResults : page.backend.files
     }
+    readonly property bool backendSessionActive: page.backend === null
+                                                 || typeof page.backend.authState === "undefined"
+                                                 || page.backend.authState === "signedIn"
+    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
     readonly property var fileRows: entryRows.model
     readonly property var activeFileView: page.gridMode ? fileGrid : fileList
     readonly property string playLoadingId: {
@@ -123,6 +127,16 @@ Item {
     EntryRows {
         id: entryRows
         source: page.displayEntries
+    }
+
+    FirstLoadGate {
+        id: initialLoadGate
+
+        objectName: "filesFirstLoadGate"
+        active: page.visible && !page.showingSearchEntries
+        sessionActive: page.backendSessionActive
+        loading: page.backend !== null && page.backend.filesLoading
+        count: page.displayEntries.length
     }
 
     // 页面尺寸常量（滚动条车道 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -254,6 +268,7 @@ Item {
                 page.backend.ensureFilesFresh()
             else if (page.backend.filesStale)
                 page.backend.refreshFiles()
+            Qt.callLater(initialLoadGate.start)
         }
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
@@ -550,6 +565,18 @@ Item {
                 }
             }
 
+            LoadingSkeleton {
+                anchors.fill: parent
+                visible: page.showInitialSkeleton
+                gridMode: page.gridMode
+                density: density
+                metrics: metrics
+                gridView: page.gridMode ? fileGrid : null
+                listTopInset: page.gridMode ? 0 : density.headerRowHeight + 4
+                trailingColumnWidths: [density.sizeColumnWidth,
+                                       density.modifiedColumnWidth]
+            }
+
             // 居中对齐到列表区域：表头在时提示落在列表中间，不会压在表头上
             Label {
                 anchors.centerIn: parent
@@ -557,6 +584,7 @@ Item {
                 color: palette.placeholderText
                 visible: !page.showingSearchEntries && page.backend !== null
                          && !page.backend.filesLoading
+                         && !page.showInitialSkeleton
                          && page.backend.files.length === 0
             }
 

@@ -65,6 +65,8 @@ const QML_FILES: &[&str] = &[
     "qml/StandardDialogFooter.qml",
     "qml/UiMetrics.qml",
     "qml/KTheme.qml",
+    "qml/FirstLoadGate.qml",
+    "qml/LoadingSkeleton.qml",
     "qml/KButton.qml",
     "qml/KIconButton.qml",
     "qml/KTextField.qml",

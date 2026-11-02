@@ -336,6 +336,48 @@ TestCase {
         compare(findChild(page, "libraryFailureHint").visible, true)
     }
 
+    function test_first_loading_uses_skeleton_then_restores_spinner() {
+        const freshPage = pageComponent.createObject(parent, {
+            visible: false,
+            active: false,
+            backend: backend
+        })
+        verify(freshPage !== null)
+
+        backend.libraryRows = []
+        backend.libraryLoaded = false
+        backend.libraryLoading = true
+        backend.libraryRevision += 1
+        backend.libraryDataRevision += 1
+        backend.changed()
+        freshPage.visible = true
+        freshPage.active = true
+        wait(30)
+
+        const skeleton = findChild(freshPage, "pageLoadingSkeleton")
+        const spinner = findChild(freshPage, "libraryLoadingIndicator")
+        verify(skeleton !== null && spinner !== null)
+        compare(skeleton.visible, true, "首次读取显示骨架")
+        compare(spinner.visible, false, "首次读取不叠原来的转圈")
+
+        backend.libraryLoading = false
+        publish([row("first", false)], true)
+        wait(30)
+        compare(skeleton.visible, false, "数据到达后收起骨架")
+
+        backend.libraryRows = []
+        backend.libraryLoaded = false
+        backend.libraryLoading = true
+        backend.libraryRevision += 1
+        backend.libraryDataRevision += 1
+        backend.changed()
+        wait(30)
+        compare(skeleton.visible, false, "第二次读取不再显示骨架")
+        compare(spinner.visible, true, "第二次读取恢复原加载态")
+
+        freshPage.destroy()
+    }
+
     function test_refresh_failure_keeps_existing_rows_and_hides_failure_hint() {
         publish([row("one", false), row("two", false)], true)
         var list = findChild(page, "libraryList")

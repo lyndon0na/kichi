@@ -12,10 +12,15 @@ Item {
 
     readonly property bool loading: backend ? backend.sharesLoading : false
     readonly property bool actionRunning: backend ? backend.shareActionRunning : false
+    readonly property bool backendSessionActive: page.backend === null
+                                                 || typeof page.backend.authState === "undefined"
+                                                 || page.backend.authState === "signedIn"
+    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
     readonly property int selectedCount: selection.count
     readonly property int shareCount: shareRows.count
     readonly property bool showEmptyState: shareRows.count === 0 && !loading
     readonly property bool showLoadingState: shareRows.count === 0 && loading
+                                             && !showInitialSkeleton
 
     readonly property int contentPadding: 12
     readonly property int columnSpacing: 12
@@ -34,6 +39,7 @@ Item {
             page.backend.ensureSharesFresh()
         else
             page.refresh()
+        Qt.callLater(initialLoadGate.start)
         Qt.callLater(function () { list.forceActiveFocus() })
     }
 
@@ -41,6 +47,15 @@ Item {
     KTheme { id: theme }
     ClipboardHelper { id: clipboard }
     FileSelection { id: selection }
+
+    FirstLoadGate {
+        id: initialLoadGate
+
+        active: page.active
+        sessionActive: page.backendSessionActive
+        loading: page.loading
+        count: shareRows.count
+    }
 
     ShareContextMenu {
         id: shareMenuView
@@ -180,6 +195,17 @@ Item {
                         font.pixelSize: theme.fontBody
                     }
                 }
+            }
+
+            LoadingSkeleton {
+                anchors.fill: parent
+                visible: page.showInitialSkeleton
+                leadingWidth: page.iconColumnWidth
+                leadingHeight: 16
+                trailingColumnWidths: [page.statusColumnWidth,
+                                       page.expirationColumnWidth,
+                                       page.createdColumnWidth,
+                                       page.actionColumnWidth]
             }
 
             ScrollFirstClickArea {

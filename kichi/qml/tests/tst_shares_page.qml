@@ -156,6 +156,31 @@ TestCase {
         tryCompare(backend, "refreshCalls", 3)
     }
 
+    function test_first_loading_uses_skeleton_then_restores_spinner() {
+        backend.shares = []
+        backend.sharesLoading = true
+        page.active = true
+        wait(30)
+
+        const skeleton = findChild(page, "pageLoadingSkeleton")
+        const loadingState = findChild(page, "sharesLoadingState")
+        verify(skeleton !== null && loadingState !== null)
+        compare(skeleton.visible, true, "首次读取显示骨架")
+        compare(loadingState.visible, false, "首次读取不叠原来的转圈")
+
+        backend.sharesLoading = false
+        push([share("a")])
+        wait(30)
+        compare(skeleton.visible, false, "数据到达后收起骨架")
+
+        push([])
+        backend.sharesLoading = true
+        backend.changed()
+        wait(30)
+        compare(skeleton.visible, false, "第二次读取不再显示骨架")
+        compare(loadingState.visible, true, "第二次读取恢复原加载态")
+    }
+
     function test_header_refresh_feedback_hides_idle_count() {
         push([share("a"), share("b")])
         waitForRendering(list)

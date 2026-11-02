@@ -107,6 +107,50 @@ TestCase {
         backend.refreshCount = 0
     }
 
+    function test_first_loading_uses_skeleton_then_restores_spinner() {
+        backend.trashFiles = []
+        backend.trashLoaded = false
+        backend.trashLoading = true
+        const freshPage = pageComponent.createObject(parent, {
+            visible: false,
+            backend: backend
+        })
+        verify(freshPage !== null)
+
+        freshPage.visible = true
+        wait(30)
+        const skeleton = findChild(freshPage, "pageLoadingSkeleton")
+        const spinner = findChild(freshPage, "trashLoadingIndicator")
+        verify(skeleton !== null && spinner !== null)
+        compare(skeleton.visible, true, "首次读取显示骨架")
+        compare(spinner.visible, false, "首次读取不叠原来的转圈")
+
+        backend.trashLoading = false
+        backend.trashLoaded = true
+        backend.trashFiles = [{
+            id: "trash-first",
+            name: "first.txt",
+            kind: "file",
+            sizeText: "1 KB",
+            deletedText: "2026-11-02 10:00"
+        }]
+        backend.trashRevision += 1
+        backend.changed()
+        wait(30)
+        compare(skeleton.visible, false, "数据到达后收起骨架")
+
+        backend.trashFiles = []
+        backend.trashLoaded = false
+        backend.trashLoading = true
+        backend.trashRevision += 1
+        backend.changed()
+        wait(30)
+        compare(skeleton.visible, false, "第二次读取不再显示骨架")
+        compare(spinner.visible, true, "第二次读取恢复原加载态")
+
+        freshPage.destroy()
+    }
+
     function cleanup() {
         if (page)
             page.destroy()

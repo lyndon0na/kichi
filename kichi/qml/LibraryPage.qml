@@ -27,6 +27,10 @@ Item {
     readonly property bool loading: page.activeCollection && page.backend.libraryLoading
     readonly property bool loaded: page.activeCollection && page.backend.libraryLoaded
     readonly property string errorText: page.activeCollection ? page.backend.libraryError : ""
+    readonly property bool backendSessionActive: page.backend === null
+                                                 || typeof page.backend.authState === "undefined"
+                                                 || page.backend.authState === "signedIn"
+    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
     property int lastRevision: -1
     property string currentEntryId: ""
     readonly property bool gridMode: page.backend !== null
@@ -52,6 +56,15 @@ Item {
     }
     UiMetrics { id: metrics }
     KTheme { id: theme }
+
+    FirstLoadGate {
+        id: initialLoadGate
+
+        active: page.active
+        sessionActive: page.backendSessionActive
+        loading: page.loading
+        count: page.entries.length
+    }
 
     function isPlayLoading(id) {
         return page.backend !== null
@@ -279,6 +292,7 @@ Item {
             return
         }
         page.ensureFresh()
+        Qt.callLater(initialLoadGate.start)
         page.acceptBackendEntries()
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
@@ -526,9 +540,24 @@ Item {
                 onContentHeightChanged: page.restoreScroll()
             }
 
+            LoadingSkeleton {
+                anchors.fill: parent
+                visible: page.showInitialSkeleton
+                gridMode: page.gridMode
+                density: density
+                metrics: metrics
+                gridView: page.gridMode
+                          ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid) : null
+                listTopInset: page.gridMode ? 0 : density.headerRowHeight + 4
+                trailingColumnWidths: [density.sizeColumnWidth,
+                                       density.modifiedColumnWidth]
+            }
+
             BusyIndicator {
+                objectName: "libraryLoadingIndicator"
                 anchors.centerIn: parent
                 visible: page.loading && page.entries.length === 0
+                         && !page.showInitialSkeleton
                 running: visible
                 width: 28
                 height: 28

@@ -23,6 +23,10 @@ Item {
     readonly property var trashRows: entryRows.model
     readonly property int selectedCount: selection.count
     readonly property bool busy: backend !== null && (backend.trashLoading || backend.fileActionRunning)
+    readonly property bool backendSessionActive: page.backend === null
+                                                 || typeof page.backend.authState === "undefined"
+                                                 || page.backend.authState === "signedIn"
+    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
     readonly property bool gridMode: backend !== null
                                      && backend.contentView === "grid"
     readonly property var activeView: gridMode ? trashGrid : trashList
@@ -33,6 +37,15 @@ Item {
     EntryRows {
         id: entryRows
         source: page.entries
+    }
+
+    FirstLoadGate {
+        id: initialLoadGate
+
+        active: page.visible
+        sessionActive: page.backendSessionActive
+        loading: page.backend !== null && page.backend.trashLoading
+        count: page.entries.length
     }
 
     function selectedEntry() {
@@ -138,6 +151,7 @@ Item {
                 backend.ensureTrashFresh()
             else
                 backend.refreshTrash()
+            Qt.callLater(initialLoadGate.start)
         }
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
@@ -325,9 +339,23 @@ Item {
                 }
             }
 
+            LoadingSkeleton {
+                anchors.fill: parent
+                visible: page.showInitialSkeleton
+                gridMode: page.gridMode
+                density: density
+                metrics: metrics
+                gridView: page.gridMode ? trashGrid : null
+                listTopInset: page.gridMode ? 0 : density.headerRowHeight + 4
+                trailingColumnWidths: [density.modifiedColumnWidth,
+                                       density.sizeColumnWidth]
+            }
+
             BusyIndicator {
+                objectName: "trashLoadingIndicator"
                 anchors.centerIn: parent
                 visible: page.backend && page.backend.trashLoading
+                         && !page.showInitialSkeleton
                 running: visible
                 width: 28
                 height: 28

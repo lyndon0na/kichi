@@ -19,8 +19,13 @@ Item {
 
     readonly property bool tasksLoading: backend ? backend.tasksLoading : false
     readonly property bool tasksClearing: backend ? backend.tasksClearing === true : false
+    readonly property bool backendSessionActive: page.backend === null
+                                                 || typeof page.backend.authState === "undefined"
+                                                 || page.backend.authState === "signedIn"
+    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
     readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
     readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
+                                             && !showInitialSkeleton
     readonly property int taskCount: taskRows.count
     readonly property int finishedCount: {
         var tasks = page.backend ? page.backend.tasks : []
@@ -51,6 +56,7 @@ Item {
             page.backend.ensureTasksFresh()
         else
             page.refresh()
+        Qt.callLater(initialLoadGate.start)
     }
 
     // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -59,6 +65,15 @@ Item {
     }
 
     KTheme { id: theme }
+
+    FirstLoadGate {
+        id: initialLoadGate
+
+        active: page.active
+        sessionActive: page.backendSessionActive
+        loading: page.tasksLoading
+        count: taskRows.count
+    }
 
     // —— 列表模型 ——
     // ⚠ 不能把 `backend.tasks` 直接当 ListView.model：每次轮询都是一个新数组，
@@ -197,6 +212,21 @@ Item {
                         color: theme.textMuted
                         font.pixelSize: theme.fontBody
                     }
+                }
+            }
+
+            LoadingSkeleton {
+                anchors.fill: parent
+                visible: page.showInitialSkeleton
+                columnSpacing: page.tableColumnSpacing
+                trailingColumnWidths: {
+                    const widths = [page.statusColumnWidth,
+                                    page.progressColumnWidth]
+                    if (page.showSizeColumn)
+                        widths.push(page.sizeColumnWidth)
+                    if (page.showCreatedColumn)
+                        widths.push(page.createdColumnWidth)
+                    return widths
                 }
             }
 
