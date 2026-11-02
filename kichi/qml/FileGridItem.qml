@@ -23,6 +23,8 @@ ItemDelegate {
     property bool playLoading: false
     /// 播放器已经真正开播、尚未退出
     property bool playing: false
+    /// 刚创建成功：短暂铺一层强调色，不改变选择态。
+    property bool createdFlash: false
     readonly property bool showPlayingState: card.playing && !card.playLoading
     /// 卡片底部的单行说明：普通文件显示大小 / 修改时间，搜索结果显示所在文件夹。
     property string detailText: ""
@@ -88,6 +90,22 @@ ItemDelegate {
                    : card.showPlayingState
                      ? theme.accentGhost
                      : theme.surfaceClear
+
+        Rectangle {
+            objectName: "gridCreatedFlash"
+            anchors.fill: parent
+            radius: parent.radius
+            color: theme.accentGhost
+            opacity: card.createdFlash ? 1 : 0
+            visible: opacity > 0
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: theme.motionFast
+                    easing: Easing.OutCubic
+                }
+            }
+        }
     }
 
     MouseArea {

@@ -580,13 +580,13 @@ impl qobject::Kichi {
             .last()
             .map(|crumb| crumb.id.clone())
             .unwrap_or_default();
-        let (entries, files, changed) = {
+        let (entries, files, changed, created_ids) = {
             let mut rust = self.as_mut().rust_mut();
-            let mut entries = merge_unresolved_create(&mut rust, entries);
+            let (mut entries, created_ids) = merge_unresolved_create(&mut rust, entries);
             sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
             let changed = rust.entries != entries;
             let files = changed.then(|| list_from_with_pending(&entries, &rust.pending_entry_ids));
-            (entries, files, changed)
+            (entries, files, changed, created_ids)
         };
         let visible = {
             let mut rust = self.as_mut().rust_mut();
@@ -606,6 +606,9 @@ impl qobject::Kichi {
         };
         if changed || visible {
             self.as_mut().notify();
+        }
+        for id in created_ids {
+            self.as_mut().folder_created(QString::from(id.as_str()));
         }
     }
 

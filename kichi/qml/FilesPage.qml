@@ -107,6 +107,7 @@ Item {
         selection: selection
         fileList: page.activeFileView
         menu: menu
+        flashTimer: createdFlashTimer
         entries: page.displayEntries
         searching: page.showingSearchEntries
         navigationLocked: page.holdingSearchEntries
@@ -114,6 +115,13 @@ Item {
         onFolderOpenRequested: function (id) {
             page.openEntryFolder(id)
         }
+    }
+
+    Timer {
+        id: createdFlashTimer
+        interval: 1400
+        repeat: false
+        onTriggered: interaction.clearCreatedFlash()
     }
 
     // 列表密度（行高 / 字号 / 图标 / 列宽）都在 FileListDensity 里，
@@ -257,6 +265,7 @@ Item {
     // （搜索框里的字由 FilesPageSearchBar 自己跟着 searchActive 清）
     onVisibleChanged: {
         if (!page.visible) {
+            interaction.clearCreatedFlash()
             interaction.rememberScroll()
             page.clearHeldSearchEntries()
             if (page.searching && page.backend)
@@ -381,7 +390,8 @@ Item {
 
                         // 布局完成后再恢复滚动位置（模型更新时 contentHeight 是逐步算出来的）
                         onContentHeightChanged: {
-                            if (!interaction.tryRevealPending())
+                            if (!interaction.tryRevealPending()
+                                    && !interaction.tryRevealCreated())
                                 interaction.restoreScrollNow()
                         }
 
@@ -423,6 +433,8 @@ Item {
                             videoBadgeMargin: density.listVideoBadgeMargin
                             playLoading: page.isEntryPlayLoading(entry.id)
                             playing: page.isEntryPlaying(entry.id)
+                            createdFlash: !!entry
+                                          && entry.id === interaction.createdFlashId
                             detailText: page.showingSearchEntries
                                         ? qsTr("所在文件夹：%1").arg(entry.folderText
                                                                    || qsTr("（所在文件夹）"))
@@ -497,7 +509,8 @@ Item {
                     interaction.handleKey(event)
                 }
                 onContentHeightChanged: {
-                    if (!interaction.tryRevealPending())
+                    if (!interaction.tryRevealPending()
+                            && !interaction.tryRevealCreated())
                         interaction.restoreScrollNow()
                 }
                 onBlankContextMenuRequested: function (point) {
@@ -530,6 +543,8 @@ Item {
                         playLoading: page.isEntryPlayLoading(entry.id)
                         playing: page.isEntryPlaying(entry.id)
                         selected: !!entry && selection.isSelected(entry.id)
+                        createdFlash: !!entry
+                                      && entry.id === interaction.createdFlashId
                         detailText: page.gridDetailText(entry)
                         detailClickable: page.showingSearchEntries && !!entry.folderId
 
@@ -656,6 +671,16 @@ Item {
 
         function onFileActionDone(action, ok) {
             interaction.handleFileActionDone(action, ok)
+        }
+
+        function onFolderCreateStarted(id) {
+            if (page.visible && !page.showingSearchEntries)
+                interaction.flashCreatedEntry(id)
+        }
+
+        function onFolderCreated(id) {
+            if (page.visible && !page.showingSearchEntries)
+                interaction.resolveCreatedEntry(id)
         }
     }
 

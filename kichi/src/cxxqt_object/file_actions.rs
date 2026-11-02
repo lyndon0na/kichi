@@ -106,14 +106,16 @@ impl qobject::Kichi {
         let parent_for_cache = parent_id.clone().unwrap_or_default();
         let session = self.backend.session.clone();
         let for_message = name.trim().to_owned();
-        if !self.as_mut().optimistic_create_folder(&name) {
+        let Some(temp_id) = self.as_mut().optimistic_create_folder(&name) else {
             self.as_mut().fail_file_action(
                 "folder",
                 Failure::Other("无法在当前目录插入新文件夹".into()),
             );
             return false;
-        }
+        };
         self.as_mut().set_message("正在新建文件夹……");
+        self.as_mut()
+            .folder_create_started(QString::from(temp_id.as_str()));
         run_in_background(
             move || session.create_folder(parent_id.as_deref(), &name),
             move |mut qichi, result| match result {

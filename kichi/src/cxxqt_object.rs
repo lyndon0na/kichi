@@ -199,6 +199,16 @@ pub mod qobject {
         #[cxx_name = "fileActionDone"]
         fn file_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
 
+        /// 新建文件夹的临时行已插入：界面立即定位并强调，不等待网络结果。
+        #[qsignal]
+        #[cxx_name = "folderCreateStarted"]
+        fn folder_create_started(self: Pin<&mut Self>, id: QString);
+
+        /// 临时文件夹已校准到真实云端 id：界面只把强调原位交给新 id，不再次滚动。
+        #[qsignal]
+        #[cxx_name = "folderCreated"]
+        fn folder_created(self: Pin<&mut Self>, id: QString);
+
         /// 分享创建 / 撤销结束：`action` 为 `create` 或 `revoke`
         #[qsignal]
         #[cxx_name = "shareActionDone"]

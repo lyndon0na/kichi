@@ -95,7 +95,7 @@ impl qobject::Kichi {
         true
     }
 
-    pub(crate) fn optimistic_create_folder(mut self: Pin<&mut Self>, name: &str) -> bool {
+    pub(crate) fn optimistic_create_folder(mut self: Pin<&mut Self>, name: &str) -> Option<String> {
         self.as_mut().cancel_files_refresh_for_mutation();
         let before_entries = self.entries.clone();
         let parent_id = self.current_dir_id.to_string();
@@ -127,7 +127,7 @@ impl qobject::Kichi {
         let search_before = Vec::new();
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.pending_entry_ids.insert(temp_id);
+            rust.pending_entry_ids.insert(temp_id.clone());
             rust.file_mutation = Some(FileMutation {
                 dir_id: rust.current_dir_id.to_string(),
                 before_entries,
@@ -136,7 +136,7 @@ impl qobject::Kichi {
             });
         }
         self.as_mut().publish_optimistic_entries(next);
-        true
+        Some(temp_id)
     }
 
     pub(crate) fn optimistic_remove_entries(mut self: Pin<&mut Self>, ids: &[String]) -> bool {
@@ -333,13 +333,40 @@ impl qobject::Kichi {
 /// 被误当成刚创建成功。
 pub(crate) fn merge_unresolved_create(
     rust: &mut KichiRust,
-    mut entries: Vec<FileEntry>,
-) -> Vec<FileEntry> {
+    entries: Vec<FileEntry>,
+) -> (Vec<FileEntry>, Vec<String>) {
     // 用户已经切到别的目录时，临时行不能跟着这一次目录结果塞进去。
     // 保留待确认状态，等回到原父目录后的下一次读取再换真实 id。
     let current_dir = rust.current_dir_id.to_string();
     let pending_creates = std::mem::take(&mut rust.unresolved_create);
+    let merged = merge_pending_creates(&current_dir, pending_creates, entries);
+    for temp_id in &merged.added_temp_ids {
+        rust.pending_entry_ids.insert(temp_id.clone());
+    }
+    for temp_id in &merged.resolved_temp_ids {
+        rust.pending_entry_ids.remove(temp_id);
+    }
+    rust.unresolved_create = merged.unresolved;
+    (merged.entries, merged.resolved_real_ids)
+}
+
+struct MergedCreates {
+    entries: Vec<FileEntry>,
+    unresolved: Vec<PendingCreate>,
+    added_temp_ids: Vec<String>,
+    resolved_temp_ids: Vec<String>,
+    resolved_real_ids: Vec<String>,
+}
+
+fn merge_pending_creates(
+    current_dir: &str,
+    pending_creates: Vec<PendingCreate>,
+    mut entries: Vec<FileEntry>,
+) -> MergedCreates {
     let mut unresolved = Vec::with_capacity(pending_creates.len());
+    let mut added_temp_ids = Vec::new();
+    let mut resolved_temp_ids = Vec::new();
+    let mut resolved_real_ids = Vec::new();
     let mut matched_ids = HashSet::new();
     for pending in pending_creates {
         if pending.entry.parent_id != current_dir {
@@ -347,17 +374,23 @@ pub(crate) fn merge_unresolved_create(
             continue;
         }
         if let Some(real_id) = pending.matching_new_id(&entries, &matched_ids) {
-            matched_ids.insert(real_id);
-            rust.pending_entry_ids.remove(&pending.entry.id);
+            matched_ids.insert(real_id.clone());
+            resolved_temp_ids.push(pending.entry.id);
+            resolved_real_ids.push(real_id);
             continue;
         }
         let temp_id = pending.entry.id.clone();
         entries.push(pending.entry.clone());
-        rust.pending_entry_ids.insert(temp_id);
+        added_temp_ids.push(temp_id);
         unresolved.push(pending);
     }
-    rust.unresolved_create = unresolved;
-    entries
+    MergedCreates {
+        entries,
+        unresolved,
+        added_temp_ids,
+        resolved_temp_ids,
+        resolved_real_ids,
+    }
 }
 
 pub(crate) fn is_unconfirmed_create(rust: &KichiRust, id: &str) -> bool {
@@ -437,5 +470,41 @@ mod tests {
         assert!(pending
             .matching_new_id(&[same_pending_row], &HashSet::new())
             .is_none());
+    }
+
+    #[test]
+    fn merge_reports_the_real_id_only_after_the_temp_row_is_resolved() {
+        let temp_id = "kichi-pending-folder-1".to_owned();
+        let pending = PendingCreate {
+            entry: folder(&temp_id, "新建文件夹", "parent"),
+            known_ids: HashSet::from(["old".to_owned()]),
+        };
+
+        let pending_merge = merge_pending_creates(
+            "parent",
+            vec![pending],
+            vec![folder("old", "新建文件夹", "parent")],
+        );
+        assert!(pending_merge.resolved_real_ids.is_empty());
+        assert!(pending_merge
+            .entries
+            .iter()
+            .any(|entry| entry.id == temp_id));
+
+        let resolved = merge_pending_creates(
+            "parent",
+            pending_merge.unresolved,
+            vec![
+                folder("old", "新建文件夹", "parent"),
+                folder("real", "新建文件夹", "parent"),
+            ],
+        );
+        assert_eq!(resolved.resolved_real_ids, vec!["real"]);
+        assert_eq!(resolved.resolved_temp_ids, vec![temp_id]);
+        assert!(resolved.unresolved.is_empty());
+        assert!(!resolved
+            .entries
+            .iter()
+            .any(|entry| entry.id.starts_with(TEMP_FOLDER_PREFIX)));
     }
 }

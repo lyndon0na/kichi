@@ -11,6 +11,7 @@ QtObject {
     property var selection: null
     property var fileList: null
     property var menu: null
+    property var flashTimer: null
     /// 当前视图真正显示的条目：普通目录或搜索结果。
     property var entries: []
     property bool searching: false
@@ -30,6 +31,10 @@ QtObject {
     property int seenFilesRevision: -1
     /// 离线任务 / 搜索结果定位：等目录模型真正显示后再选中目标。
     property string pendingRevealId: ""
+    /// 新建文件夹的临时行出现后，等模型回填再滚动到它。
+    property string pendingCreatedRevealId: ""
+    /// 当前正在强调的新建文件夹 id（不改选择）。
+    property string createdFlashId: ""
 
     function entryForId(id) {
         for (let i = 0; i < ctl.entries.length; i++) {
@@ -84,7 +89,8 @@ QtObject {
 
     function restoreScrollNow() {
         // 定位目标时以“让目标可见”为准，旧的目录滚动位置不能随后把它盖掉。
-        if (pendingRevealId.length > 0)
+        if (pendingRevealId.length > 0 || pendingCreatedRevealId.length > 0
+                || createdFlashId.length > 0)
             return
         if (pendingScrollY < 0)
             return
@@ -138,6 +144,77 @@ QtObject {
         return true
     }
 
+    /// 新建文件夹的临时行一出现就定位并强调，不进入目录，也不改变当前选择。
+    function flashCreatedEntry(id) {
+        const target = String(id || "")
+        if (target.length === 0 || ctl.searching)
+            return
+        pendingCreatedRevealId = target
+        createdFlashId = ""
+        if (ctl.flashTimer)
+            ctl.flashTimer.stop()
+        Qt.callLater(ctl.tryRevealCreated)
+    }
+
+    function tryRevealCreated() {
+        if (pendingCreatedRevealId.length === 0 || !ctl.backend || !ctl.fileList
+                || ctl.backend.filesLoading === true || ctl.navigationLocked)
+            return false
+        const entries = ctl.entries
+        let index = -1
+        for (let i = 0; i < (entries ? entries.length : 0); i++) {
+            if (entries[i] && String(entries[i].id) === pendingCreatedRevealId) {
+                index = i
+                break
+            }
+        }
+        if (index < 0 || ctl.fileList.contentHeight <= 0)
+            return false
+
+        const target = pendingCreatedRevealId
+        pendingCreatedRevealId = ""
+        createdFlashId = target
+        cancelScrollRestore()
+        ctl.fileList.currentIndex = index
+        ctl.fileList.positionViewAtIndex(
+            index, ctl.viewMode === "grid" ? GridView.Contain : ListView.Contain)
+        if (ctl.flashTimer)
+            ctl.flashTimer.restart()
+        return true
+    }
+
+    /// 真实 id 回来后原位接管强调；首次定位尚未完成时才补一次滚动。
+    function resolveCreatedEntry(id) {
+        const target = String(id || "")
+        if (target.length === 0 || ctl.searching)
+            return
+        if (pendingCreatedRevealId.length > 0) {
+            pendingCreatedRevealId = target
+            Qt.callLater(ctl.tryRevealCreated)
+            return
+        }
+        if (createdFlashId.length === 0)
+            return
+        const entries = ctl.entries
+        for (let i = 0; i < (entries ? entries.length : 0); i++) {
+            if (entries[i] && String(entries[i].id) === target) {
+                if (ctl.fileList)
+                    ctl.fileList.currentIndex = i
+                break
+            }
+        }
+        createdFlashId = target
+        if (ctl.flashTimer)
+            ctl.flashTimer.restart()
+    }
+
+    function clearCreatedFlash() {
+        pendingCreatedRevealId = ""
+        createdFlashId = ""
+        if (ctl.flashTimer)
+            ctl.flashTimer.stop()
+    }
+
     /// 切换列表 / 网格：先把当前视图的位置记下来，等目标视图真正可见后再恢复。
     function prepareViewSwitch(view) {
         if (!ctl.backend)
@@ -152,6 +229,8 @@ QtObject {
     onViewModeChanged: {
         if (pendingRevealId.length > 0)
             Qt.callLater(ctl.tryRevealPending)
+        else if (pendingCreatedRevealId.length > 0)
+            Qt.callLater(ctl.tryRevealCreated)
         else if (pendingViewMode === viewMode)
             Qt.callLater(ctl.restoreScrollNow)
     }
@@ -159,6 +238,8 @@ QtObject {
     onEntriesChanged: {
         if (pendingRevealId.length > 0)
             Qt.callLater(ctl.tryRevealPending)
+        if (pendingCreatedRevealId.length > 0)
+            Qt.callLater(ctl.tryRevealCreated)
     }
 
     function noteFilesRevision() {
@@ -191,6 +272,7 @@ QtObject {
     function navigateToDir(id) {
         if (!ctl.backend)
             return
+        ctl.clearCreatedFlash()
         rememberScroll()
         restoreScrollPending = true
         ctl.backend.openDir(id)
@@ -199,6 +281,7 @@ QtObject {
     function goParent() {
         if (!ctl.backend)
             return
+        ctl.clearCreatedFlash()
         rememberScroll()
         restoreScrollPending = true
         ctl.backend.openParent()
@@ -207,6 +290,7 @@ QtObject {
     function goCrumb(index) {
         if (!ctl.backend)
             return
+        ctl.clearCreatedFlash()
         rememberScroll()
         restoreScrollPending = true
         ctl.backend.openCrumb(index)
@@ -223,6 +307,8 @@ QtObject {
 
     /// 文件操作结果回到界面：乐观模型已原位更新，移走 / 删掉的清空选择。
     function handleFileActionDone(action, ok) {
+        if (action === "folder" && !ok)
+            ctl.clearCreatedFlash()
         if (!ok)
             return
         if (action === "trash" || action === "move")

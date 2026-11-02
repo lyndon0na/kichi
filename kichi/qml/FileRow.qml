@@ -23,6 +23,8 @@ ItemDelegate {
     property bool playLoading: false
     /// 播放器已经真正开播、尚未退出
     property bool playing: false
+    /// 刚创建成功：短暂铺一层强调色，不改变选择态。
+    property bool createdFlash: false
     readonly property bool showPlayingState: row.playing && !row.playLoading
     /// 可选的第二行说明（搜索结果用它显示所在文件夹）。
     property string detailText: ""
@@ -187,6 +189,20 @@ ItemDelegate {
                    ? theme.surfaceHover
                    : theme.surfaceClear
 
+        Rectangle {
+            objectName: "fileRowCreatedFlash"
+            anchors.fill: parent
+            color: theme.accentGhost
+            opacity: row.createdFlash ? 1 : 0
+            visible: opacity > 0
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: theme.motionFast
+                    easing: Easing.OutCubic
+                }
+            }
+        }
 
         Rectangle {
             objectName: "fileRowAccent"

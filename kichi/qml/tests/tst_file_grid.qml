@@ -78,6 +78,8 @@ TestCase {
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message)
+        signal folderCreateStarted(string id)
+        signal folderCreated(string id)
         signal shareActionDone(string action, bool ok, string message)
         signal thumbnailReady(string id, string path)
 
@@ -780,6 +782,136 @@ TestCase {
         })
         compare(grid.currentIndex, 20)
         verify(grid.contentY > 0, "网格视图也必须滚动到目标")
+    }
+
+    function test_created_folder_is_revealed_without_entering_or_selecting() {
+        const pendingEntries = manyEntries(30)
+        pendingEntries[25] = entry(25, "folder")
+        pendingEntries[25].id = "pending-folder-25"
+        pendingEntries[25].name = "新建文件夹"
+        fakeBackend.files = pendingEntries
+        fakeBackend.contentView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        verify(list !== null)
+        fakeBackend.folderCreateStarted("pending-folder-25")
+        tryVerify(function () {
+            const row = list.itemAtIndex(25)
+            return row !== null && row.createdFlash === true
+        })
+
+        const row = list.itemAtIndex(25)
+        verify(row !== null)
+        const flash = findChild(row, "fileRowCreatedFlash")
+        verify(flash !== null)
+        tryVerify(function () {
+            return flash.visible && flash.opacity > 0
+        })
+        compare(list.currentIndex, 25)
+        verify(list.contentY > 0, "新文件夹不在首屏时必须滚动到它")
+        compare(row.highlighted, false, "只强调，不改变当前选择")
+        compare(fakeBackend.openDirCalls, 0, "不能进入新目录")
+        compare(fakeBackend.currentDirId, "", "当前目录保持不变")
+
+        const revealedY = list.contentY
+        const resolvedEntries = manyEntries(30)
+        resolvedEntries[25] = entry(25, "folder")
+        resolvedEntries[25].name = "新建文件夹"
+        fakeBackend.files = resolvedEntries
+        fakeBackend.filesRevision += 1
+        fakeBackend.changed()
+        fakeBackend.folderCreated("entry-25")
+        tryVerify(function () {
+            const resolved = list.itemAtIndex(25)
+            return resolved !== null && resolved.createdFlash === true
+        })
+        compare(list.currentIndex, 25)
+        verify(Math.abs(list.contentY - revealedY) <= 1,
+               "真实 id 接管时不能再次滚动")
+        compare(fakeBackend.openDirCalls, 0, "真实 id 回来也不能进入目录")
+
+        tryVerify(function () {
+            const current = list.itemAtIndex(25)
+            return current !== null && current.createdFlash === false
+        }, 3000)
+    }
+
+    function test_created_folder_flash_works_in_grid_without_navigation() {
+        const pendingEntries = manyEntries(30)
+        pendingEntries[25] = entry(25, "folder")
+        pendingEntries[25].id = "pending-folder-25"
+        pendingEntries[25].name = "新建文件夹"
+        fakeBackend.files = pendingEntries
+        fakeBackend.contentView = "grid"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const grid = findChild(page, "fileGrid")
+        verify(grid !== null)
+        fakeBackend.folderCreateStarted("pending-folder-25")
+        tryVerify(function () {
+            const card = grid.itemAtIndex(25)
+            return card !== null && card.createdFlash === true
+        })
+
+        const card = grid.itemAtIndex(25)
+        verify(card !== null)
+        const flash = findChild(card, "gridCreatedFlash")
+        verify(flash !== null)
+        tryVerify(function () {
+            return flash.visible && flash.opacity > 0
+        })
+        compare(grid.currentIndex, 25)
+        verify(grid.contentY > 0, "网格也必须滚动到新文件夹")
+        compare(card.selected, false, "只强调，不改变当前选择")
+        compare(fakeBackend.openDirCalls, 0, "不能进入新目录")
+
+        const revealedY = grid.contentY
+        const resolvedEntries = manyEntries(30)
+        resolvedEntries[25] = entry(25, "folder")
+        resolvedEntries[25].name = "新建文件夹"
+        fakeBackend.files = resolvedEntries
+        fakeBackend.filesRevision += 1
+        fakeBackend.changed()
+        fakeBackend.folderCreated("entry-25")
+        tryVerify(function () {
+            const resolved = grid.itemAtIndex(25)
+            return resolved !== null && resolved.createdFlash === true
+        })
+        verify(Math.abs(grid.contentY - revealedY) <= 1,
+               "网格里真实 id 接管时也不能再次滚动")
+        compare(fakeBackend.openDirCalls, 0, "真实 id 回来也不能进入目录")
+    }
+
+    function test_created_folder_failure_clears_flash() {
+        const pendingEntries = manyEntries(30)
+        pendingEntries[25] = entry(25, "folder")
+        pendingEntries[25].id = "pending-folder-25"
+        pendingEntries[25].name = "新建文件夹"
+        fakeBackend.files = pendingEntries
+        fakeBackend.contentView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        verify(list !== null)
+        fakeBackend.folderCreateStarted("pending-folder-25")
+        tryVerify(function () {
+            const row = list.itemAtIndex(25)
+            return row !== null && row.createdFlash === true
+        })
+
+        fakeBackend.fileActionDone("folder", false, "同名文件夹已存在")
+        tryVerify(function () {
+            const row = list.itemAtIndex(25)
+            return row !== null && row.createdFlash === false
+        })
+        compare(fakeBackend.currentDirId, "", "失败也不能改变当前目录")
     }
 
     function test_list_first_click_after_flick_selects_and_double_click_opens() {
