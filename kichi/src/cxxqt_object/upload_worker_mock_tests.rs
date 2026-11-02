@@ -210,9 +210,10 @@ fn start(
                 job,
                 cancel: Arc::new(Cancel::default()),
             })
-            .collect(),
-        dirs,
-        upload_dirs,
+            .collect::<Vec<_>>()
+            .into(),
+        dirs: dirs.into(),
+        upload_dirs: upload_dirs.into(),
     }
 }
 
@@ -431,7 +432,22 @@ fn child_retry_only_uploads_failed_file() {
     {
         let state = state.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(state.folder_names, vec!["root", "bad", "good"]);
-        assert_eq!(state.file_names, vec!["good.bin", "bad.bin"]);
+        assert_eq!(
+            state
+                .file_names
+                .iter()
+                .filter(|name| name.as_str() == "good.bin")
+                .count(),
+            1
+        );
+        assert_eq!(
+            state
+                .file_names
+                .iter()
+                .filter(|name| name.as_str() == "bad.bin")
+                .count(),
+            1
+        );
     }
 
     assert!(transfers::retry_upload_child(batch, 1));
@@ -469,9 +485,22 @@ fn child_retry_only_uploads_failed_file() {
     {
         let state = state.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(
-            state.file_names,
-            vec!["good.bin", "bad.bin", "bad.bin"],
-            "子文件重试只重传失败文件"
+            state
+                .file_names
+                .iter()
+                .filter(|name| name.as_str() == "good.bin")
+                .count(),
+            1,
+            "已完成的 good.bin 不能重传"
+        );
+        assert_eq!(
+            state
+                .file_names
+                .iter()
+                .filter(|name| name.as_str() == "bad.bin")
+                .count(),
+            2,
+            "子文件重试只重传失败的 bad.bin"
         );
     }
 

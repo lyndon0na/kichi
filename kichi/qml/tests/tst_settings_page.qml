@@ -29,6 +29,8 @@ TestCase {
         property int downloadParallel: 3
         property int downloadConnections: 4
         property int downloadRateMib: 0
+        property int uploadParallel: 2
+        property int uploadRateMib: 0
         property bool autoResumeDownloads: true
         property bool notifyEnabled: true
         property bool closeToTray: false
@@ -53,6 +55,8 @@ TestCase {
         function setDownloadParallel(value) { downloadParallel = value }
         function setDownloadConnections(value) { downloadConnections = value }
         function setDownloadRateMib(value) { downloadRateMib = value }
+        function setUploadParallel(value) { uploadParallel = value }
+        function setUploadRateMib(value) { uploadRateMib = value }
         function setAutoResumeDownloads(value) { autoResumeDownloads = value }
         function chooseDownloadDir() { chooseDownloadDirCalls += 1 }
         function openDownloadDir() { openDownloadDirCalls += 1 }
@@ -201,5 +205,29 @@ TestCase {
         compare(backend.downloadConnections, 6)
         compare(backend.downloadRateMib, 12)
         compare(backend.autoResumeDownloads, false)
+    }
+
+    function test_upload_throughput_controls_are_wired() {
+        var parallel = findChild(page, "settingsUploadParallel")
+        var rate = findChild(page, "settingsUploadRate")
+        verify(parallel !== null, "有同时上传任务数")
+        verify(rate !== null, "有上传全局限速")
+
+        parallel.value = 4
+        parallel.valueModified()
+        rate.value = 8
+        rate.valueModified()
+
+        compare(backend.uploadParallel, 4)
+        compare(backend.uploadRateMib, 8)
+    }
+
+    function test_upload_group_keeps_the_same_spacing_as_other_groups() {
+        var download = findChild(page, "settingsDownloadGroup")
+        var upload = findChild(page, "settingsUploadGroup")
+        verify(download !== null, "有下载设置分组")
+        verify(upload !== null, "有上传设置分组")
+        compare(upload.y - (download.y + download.height), 24,
+                "上传分组与上一组之间必须保留 gapXl")
     }
 }

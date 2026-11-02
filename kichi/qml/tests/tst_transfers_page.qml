@@ -732,7 +732,7 @@ TestCase {
         verify(findChild(menu, "transferRemoveItem").visible)
     }
 
-    function test_upload_rows_only_pause_before_start() {
+    function test_upload_rows_can_pause_waiting_or_running() {
         backend.publish([
             makeRow("84:0", "上传中.mkv", "running", {
                 direction: "upload",
@@ -761,11 +761,17 @@ TestCase {
 
         var running = row("84:0")
         verify(running !== null)
-        compare(findChild(running, "pauseLink").visible, false)
+        verify(findChild(running, "pauseLink").visible,
+               "运行中的上传也可以暂停")
         compare(findChild(running, "resumeLink").visible, false)
         compare(findChild(running, "revealLink").visible, false)
         verify(findChild(running, "cancelLink").visible,
-               "正在上传不能暂停，但必须能取消")
+               "正在上传必须能暂停和取消")
+
+        mouseClick(findChild(running, "pauseLink"))
+        wait(20)
+        compare(backend.pauseCount, 1)
+        compare(backend.pausedKey, "84:0")
 
         var queued = row("84:1")
         verify(findChild(queued, "pauseLink").visible,
@@ -780,14 +786,14 @@ TestCase {
         verify(findChild(paused, "cancelLink").visible)
 
         var failed = row("85:0")
-        verify(findChild(failed, "retryLink").visible, "失败上传可从头重试")
+        verify(findChild(failed, "retryLink").visible, "失败上传可重试并从断点继续")
         compare(findChild(failed, "revealLink").visible, false,
                 "上传没有本地落点可打开")
 
         mouseClick(running, 120, running.height / 2, Qt.RightButton)
         var menu = findChild(page, "transferContextMenu")
         tryVerify(function() { return menu.opened })
-        compare(findChild(menu, "transferPauseItem").visible, false)
+        verify(findChild(menu, "transferPauseItem").visible)
         compare(findChild(menu, "transferResumeItem").visible, false)
         verify(findChild(menu, "transferCancelItem").visible)
         compare(findChild(menu, "transferRetryItem").visible, false)
@@ -1120,7 +1126,7 @@ TestCase {
         compare(findChild(dialog, "cancelAllConfirmText").text.indexOf("断点") >= 0,
                 true, "确认框要说明断点会被删除")
         compare(findChild(dialog, "cancelAllConfirmText").text.indexOf("上传") >= 0,
-                true, "确认框要说明上传也会停止且不能续传")
+                true, "确认框要说明上传也会停止")
 
         var confirm = findChild(dialog, "cancelAllConfirmButton")
         verify(confirm !== null)

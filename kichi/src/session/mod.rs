@@ -26,6 +26,7 @@ mod tasks;
 mod throttle;
 pub mod thumbnail_cache;
 pub mod upload;
+pub(crate) mod upload_resume;
 
 mod client_cache;
 mod refresh;

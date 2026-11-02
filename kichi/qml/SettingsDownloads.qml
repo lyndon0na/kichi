@@ -10,9 +10,10 @@ ColumnLayout {
 
     readonly property KTheme theme: KTheme { parent: downloads }
 
-    spacing: 0
+    spacing: theme.gapXl
 
     KSettingsGroup {
+        objectName: "settingsDownloadGroup"
         title: qsTr("下载")
         Layout.fillWidth: true
 
@@ -163,6 +164,64 @@ ColumnLayout {
         }
     }
 
+    KSettingsGroup {
+        objectName: "settingsUploadGroup"
+        title: qsTr("上传")
+        Layout.fillWidth: true
+
+        KSettingsRow {
+            title: qsTr("同时上传任务数")
+            description: qsTr("单文件任务跨批共用；文件夹批次独占启动、批内共用，范围 1–8。")
+
+            SpinBox {
+                id: uploadParallelBox
+                objectName: "settingsUploadParallel"
+                from: 1
+                to: 8
+                stepSize: 1
+                editable: true
+                value: downloads.backend ? downloads.backend.uploadParallel : 2
+                Accessible.name: qsTr("同时上传任务数")
+                onValueModified: {
+                    if (downloads.backend)
+                        downloads.backend.setUploadParallel(value)
+                }
+            }
+        }
+
+        KSettingsRow {
+            divider: true
+            title: qsTr("全局限速")
+            description: qsTr("所有上传连接共享此上限，0 表示不限速；只限制实际上传的字节。")
+
+            RowLayout {
+                spacing: theme.gapXs
+
+                SpinBox {
+                    id: uploadRateBox
+                    objectName: "settingsUploadRate"
+                    from: 0
+                    to: 1024
+                    stepSize: 1
+                    editable: true
+                    implicitWidth: 96
+                    value: downloads.backend ? downloads.backend.uploadRateMib : 0
+                    Accessible.name: qsTr("上传全局限速")
+                    onValueModified: {
+                        if (downloads.backend)
+                            downloads.backend.setUploadRateMib(value)
+                    }
+                }
+
+                Label {
+                    text: qsTr("MiB/s")
+                    color: theme.textMuted
+                    font.pixelSize: theme.fontMeta
+                }
+            }
+        }
+    }
+
     Connections {
         target: downloads.backend
         function onChanged() {
@@ -181,6 +240,10 @@ ColumnLayout {
             connectionsBox.value = downloads.backend.downloadConnections
         if (!rateBox.activeFocus)
             rateBox.value = downloads.backend.downloadRateMib
+        if (!uploadParallelBox.activeFocus)
+            uploadParallelBox.value = downloads.backend.uploadParallel
+        if (!uploadRateBox.activeFocus)
+            uploadRateBox.value = downloads.backend.uploadRateMib
     }
 
     function applyDownloadDir() {

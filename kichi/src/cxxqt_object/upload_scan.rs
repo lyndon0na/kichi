@@ -1,15 +1,24 @@
 //! 本地文件夹扫描：后台遍历、可取消、不跟随符号链接。
 //!
 //! 扫描只产出相对路径和普通文件大小，不碰 Qt。完成后回投主线程，由
-//! `uploads.rs` 把结果展开成传输记录并交给串行上传调度器。
+//! `uploads.rs` 把结果展开成传输记录并交给上传调度器。
 
 use std::collections::HashMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::transfers::TransferJob;
+use super::upload_queue::{MAX_NAME_BYTES, MAX_PATH_BYTES};
 use crate::session::download::Cancel;
+
+const MAX_SCAN_FILES: usize = 100_000;
+const MAX_SCAN_DIRS: usize = 20_000;
+const MAX_SCAN_ENTRIES: usize = MAX_SCAN_FILES + MAX_SCAN_DIRS;
+const MAX_SCAN_RELATIVE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_SCAN_ABSOLUTE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SCAN_DEPTH: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScannedFile {
@@ -35,6 +44,140 @@ pub(crate) enum ScanOutcome {
     Done(ScanResult),
     Cancelled,
     Failed(String),
+}
+
+struct ScanBudget {
+    files: usize,
+    dirs: usize,
+    entries: usize,
+    relative_bytes: u64,
+    absolute_bytes: u64,
+}
+
+impl ScanBudget {
+    fn new(root_name: &str, root: &Path) -> Result<Self, String> {
+        check_name(root_name)?;
+        check_absolute_path(root)?;
+        let root_bytes = u64::try_from(root.as_os_str().as_bytes().len()).unwrap_or(u64::MAX);
+        Ok(Self {
+            files: 0,
+            dirs: 1,
+            entries: 0,
+            relative_bytes: u64::try_from(root_name.len()).unwrap_or(u64::MAX),
+            absolute_bytes: root_bytes,
+        })
+    }
+
+    fn observe_entry(&mut self) -> Result<(), String> {
+        if self.entries >= MAX_SCAN_ENTRIES {
+            return Err(format!(
+                "文件夹里的条目太多（最多 {MAX_SCAN_ENTRIES} 个），已取消整批上传"
+            ));
+        }
+        self.entries = self.entries.saturating_add(1);
+        Ok(())
+    }
+
+    fn reserve_dir(&mut self, path: &[String], absolute: &Path) -> Result<(), String> {
+        check_depth(path.len())?;
+        check_absolute_path(absolute)?;
+        if self.dirs >= MAX_SCAN_DIRS {
+            return Err(format!(
+                "文件夹目录太多（最多 {MAX_SCAN_DIRS} 个），已取消整批上传"
+            ));
+        }
+        self.check_relative(path)?;
+        self.check_absolute_total(absolute)?;
+        self.dirs = self.dirs.saturating_add(1);
+        self.relative_bytes = self
+            .relative_bytes
+            .saturating_add(relative_path_bytes(path));
+        self.absolute_bytes = self.absolute_bytes.saturating_add(
+            u64::try_from(absolute.as_os_str().as_bytes().len()).unwrap_or(u64::MAX),
+        );
+        Ok(())
+    }
+
+    fn add_file(&mut self, parent: &[String], name: &str, path: &Path) -> Result<(), String> {
+        check_name(name)?;
+        check_depth(parent.len().saturating_add(1))?;
+        check_absolute_path(path)?;
+        if self.files >= MAX_SCAN_FILES {
+            return Err(format!(
+                "文件夹里的文件太多（最多 {MAX_SCAN_FILES} 个），已取消整批上传"
+            ));
+        }
+        let mut full = parent.to_vec();
+        full.push(name.to_owned());
+        self.check_relative(&full)?;
+        self.check_absolute_total(path)?;
+        self.files = self.files.saturating_add(1);
+        self.relative_bytes = self
+            .relative_bytes
+            .saturating_add(relative_path_bytes(&full));
+        self.absolute_bytes = self
+            .absolute_bytes
+            .saturating_add(u64::try_from(path.as_os_str().as_bytes().len()).unwrap_or(u64::MAX));
+        Ok(())
+    }
+
+    fn check_relative(&self, path: &[String]) -> Result<(), String> {
+        if self
+            .relative_bytes
+            .saturating_add(relative_path_bytes(path))
+            > MAX_SCAN_RELATIVE_BYTES
+        {
+            return Err(format!(
+                "文件夹路径总量超过 {} MiB，已取消整批上传",
+                MAX_SCAN_RELATIVE_BYTES / (1024 * 1024)
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_absolute_total(&self, path: &Path) -> Result<(), String> {
+        let bytes = u64::try_from(path.as_os_str().as_bytes().len()).unwrap_or(u64::MAX);
+        if self.absolute_bytes.saturating_add(bytes) > MAX_SCAN_ABSOLUTE_BYTES {
+            return Err(format!(
+                "本地路径总量超过 {} MiB，已取消整批上传",
+                MAX_SCAN_ABSOLUTE_BYTES / (1024 * 1024)
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn check_name(name: &str) -> Result<(), String> {
+    if name.len() > MAX_NAME_BYTES {
+        return Err(format!(
+            "文件或文件夹名太长（最多 {MAX_NAME_BYTES} 字节）：{name}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_depth(depth: usize) -> Result<(), String> {
+    if depth > MAX_SCAN_DEPTH {
+        return Err(format!(
+            "文件夹层级太深（最多 {MAX_SCAN_DEPTH} 层），已取消整批上传"
+        ));
+    }
+    Ok(())
+}
+
+fn check_absolute_path(path: &Path) -> Result<(), String> {
+    if path.as_os_str().as_bytes().len() > MAX_PATH_BYTES {
+        return Err(format!(
+            "本地路径太长（最多 {MAX_PATH_BYTES} 字节），已取消整批上传：{}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn relative_path_bytes(path: &[String]) -> u64 {
+    let bytes: usize = path.iter().map(String::len).sum();
+    u64::try_from(bytes.saturating_add(path.len().saturating_sub(1))).unwrap_or(u64::MAX)
 }
 
 struct ScanEntry {
@@ -174,6 +317,13 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
     if root_name.trim().is_empty() {
         return ScanOutcome::Failed("文件夹名不能为空".to_owned());
     }
+    if let Err(reason) = check_absolute_path(root) {
+        return ScanOutcome::Failed(reason);
+    }
+    let mut budget = match ScanBudget::new(root_name, root) {
+        Ok(budget) => budget,
+        Err(reason) => return ScanOutcome::Failed(reason),
+    };
 
     let mut result = ScanResult {
         root_name: root_name.to_owned(),
@@ -218,13 +368,16 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
             }
             Err(err) => return ScanOutcome::Failed(format!("无法读取本地文件夹：{err}")),
         };
-        // 目录成功打开后才记入上传树；读失败 / 被替换的子树不会被误建成
-        // 云端空目录。
+        // 目录成功打开后才记入上传树；预算在发现时就已经占用，避免一个超大
+        // 目录先把栈撑爆才在读取阶段报错。
         if !is_root {
             result.dirs.push(relative.clone());
         }
         let mut entries = Vec::new();
         for entry in dir_entries {
+            if let Err(reason) = budget.observe_entry() {
+                return ScanOutcome::Failed(reason);
+            }
             match entry {
                 Ok(entry) => entries.push(entry),
                 Err(_) => result.skipped += 1,
@@ -240,6 +393,12 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
                 result.skipped += 1;
                 continue;
             };
+            if let Err(reason) = check_name(&name) {
+                return ScanOutcome::Failed(reason);
+            }
+            if let Err(reason) = check_absolute_path(&entry.path()) {
+                return ScanOutcome::Failed(reason);
+            }
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
                 Err(_) => {
@@ -254,6 +413,9 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
             if file_type.is_dir() {
                 let mut child = relative.clone();
                 child.push(name);
+                if let Err(reason) = budget.reserve_dir(&child, &entry.path()) {
+                    return ScanOutcome::Failed(reason);
+                }
                 child_dirs.push((entry.path(), child, false));
                 continue;
             }
@@ -269,6 +431,9 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 result.skipped += 1;
                 continue;
+            }
+            if let Err(reason) = budget.add_file(&relative, &name, &entry.path()) {
+                return ScanOutcome::Failed(reason);
             }
             result.files.push(ScannedFile {
                 path: entry.path(),
@@ -307,6 +472,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("建测试目录");
         path
+    }
+
+    #[test]
+    fn scan_budget_rejects_size_path_and_depth_edges() {
+        assert!(check_name(&"a".repeat(MAX_NAME_BYTES)).is_ok());
+        assert!(check_name(&"a".repeat(MAX_NAME_BYTES + 1)).is_err());
+        assert!(check_depth(MAX_SCAN_DEPTH).is_ok());
+        assert!(check_depth(MAX_SCAN_DEPTH + 1).is_err());
+
+        let long_path = PathBuf::from("/").join("a".repeat(MAX_PATH_BYTES));
+        assert!(check_absolute_path(&long_path).is_err());
+
+        let mut budget = ScanBudget::new("root", Path::new("/tmp/root")).expect("短根名合法");
+        budget.relative_bytes.clone_from(&MAX_SCAN_RELATIVE_BYTES);
+        assert!(budget.check_relative(&["x".to_owned()]).is_err());
+
+        let mut files = ScanBudget::new("root", Path::new("/tmp/root")).expect("短根名合法");
+        files.files = MAX_SCAN_FILES;
+        assert!(files
+            .add_file(&[], "a.txt", Path::new("/tmp/a.txt"))
+            .is_err());
+
+        let mut dirs = ScanBudget::new("root", Path::new("/tmp/root")).expect("短根名合法");
+        dirs.dirs = MAX_SCAN_DIRS;
+        assert!(dirs
+            .reserve_dir(
+                &["root".to_owned(), "child".to_owned()],
+                Path::new("/tmp/root/child")
+            )
+            .is_err());
+
+        let mut entries = ScanBudget::new("root", Path::new("/tmp/root")).expect("短根名合法");
+        entries.entries = MAX_SCAN_ENTRIES;
+        assert!(entries.observe_entry().is_err());
+
+        let mut absolute = ScanBudget::new("root", Path::new("/tmp/root")).expect("短根名合法");
+        absolute.absolute_bytes = MAX_SCAN_ABSOLUTE_BYTES;
+        assert!(absolute
+            .add_file(&[], "a.txt", Path::new("/tmp/a.txt"))
+            .is_err());
     }
 
     #[test]

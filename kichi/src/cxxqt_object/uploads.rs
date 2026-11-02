@@ -1,4 +1,4 @@
-//! 上传的 QML 入口：系统多选文件 / 文件夹、拖放、后台扫描与串行调度。
+//! 上传的 QML 入口：系统多选文件 / 文件夹、拖放、后台扫描与并发调度。
 //!
 //! 本地路径解析、普通文件 / 文件夹检查、去重和结果提示都在 Rust 侧完成，
 //! 让 Portal、拖放和扫描三条入口遵守同一套规则。
@@ -247,13 +247,23 @@ impl qobject::Kichi {
         } else {
             self.as_mut().sync_transfers();
         }
-        let message = upload_selection_message(&summary);
+        let mut message = upload_selection_message(&summary);
+        if summary.added() > 0 {
+            if let Some(warning) = crate::session::upload_resume::take_persistence_warning() {
+                if message.is_empty() {
+                    message = warning.to_owned();
+                } else {
+                    message.push('；');
+                    message.push_str(warning);
+                }
+            }
+        }
         if !message.is_empty() {
             self.as_mut().set_message(&message);
         }
     }
 
-    /// 推进串行上传队列（空闲时启动下一个文件 / 文件夹批次）。
+    /// 推进上传队列（填满单文件并发槽；文件夹批次等待槽清空后独占启动）。
     pub(crate) fn advance_uploads(mut self: Pin<&mut Self>) {
         let session = self.backend.session.clone();
         let failures = upload_queue::advance(&session);
@@ -283,15 +293,18 @@ impl qobject::Kichi {
 
     /// 页头「取消全部」：下载与上传都取消，扫描中的文件夹也停下。
     pub fn cancel_all_transfers(mut self: Pin<&mut Self>) {
+        let session = self.backend.session.clone();
         self.as_mut().cancel_downloads();
         upload_scan::cancel_all();
         let _ = upload_queue::cancel_all();
+        let targets = transfers::cancellable_upload_resume_targets();
+        crate::session::upload::discard_upload_resumes(&session, targets);
         transfers::cancel_active_for(TransferDirection::Upload, "");
         self.as_mut().set_message("正在取消全部传输……");
         self.as_mut().sync_transfers();
     }
 
-    /// 登出 / 失效时作废在途上传。上传没有断点，下次只能从头重试。
+    /// 登出 / 失效时作废在途上传；已写入钥匙串的断点按账号保留。
     pub(crate) fn reset_uploads(mut self: Pin<&mut Self>) {
         super::upload_worker::clear_notice_group();
         upload_scan::reset();

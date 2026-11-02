@@ -48,6 +48,8 @@ pub struct Cancel {
     abandon: AtomicBool,
     /// 用户暂停：停止 + 保留 part；与登出不同，不提升会话代数。
     paused: AtomicBool,
+    /// 上传队列遇到 429 / 配额 / 鉴权错误：停止在途请求、保留断点，但不算用户取消。
+    halted: AtomicBool,
     /// 文件夹批次的单个文件继承整批取消，但取消子项不会反向停掉整批。
     parent: Option<std::sync::Arc<Cancel>>,
 }
@@ -58,6 +60,7 @@ impl Default for Cancel {
             flag: AtomicBool::new(false),
             abandon: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            halted: AtomicBool::new(false),
             parent: None,
         }
     }
@@ -107,6 +110,15 @@ impl Cancel {
                 .is_some_and(|parent| parent.is_paused())
     }
 
+    /// 是否因官方限制 / 鉴权错误停住上传；命中时保留上传断点，不清理服务端。
+    pub fn is_halted(&self) -> bool {
+        self.halted.load(Ordering::Acquire)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.is_halted())
+    }
+
     /// 停止后要不要保留 `.kichi-part` 与断点索引。
     pub fn preserves_part(&self) -> bool {
         self.is_abandoned() || self.is_paused()
@@ -129,13 +141,29 @@ impl Cancel {
     /// `preserves_part()` 保留断点，和用户明确取消的语义相反。
     pub fn cancel(&self) {
         self.paused.store(false, Ordering::Relaxed);
+        self.halted.store(false, Ordering::Relaxed);
         self.flag.store(true, Ordering::Relaxed);
+    }
+
+    /// 上传队列因官方限制 / 鉴权错误停住：停止在途请求但保留断点。
+    pub fn halt(&self) {
+        self.halted.store(true, Ordering::Relaxed);
+        self.flag.store(true, Ordering::Release);
     }
 
     /// 用户暂停：先写暂停标记再停止，读线程看到停止标志时一定能看到暂停标记。
     pub fn pause(&self) {
         self.paused.store(true, Ordering::Relaxed);
         self.flag.store(true, Ordering::Release);
+    }
+
+    /// 继续一个暂停的上传批次：清掉本级的暂停与停止标志。
+    ///
+    /// 只用于上传调度器重新入队前；不会清掉子文件自己的取消，也不会
+    /// 把登出 / 失败停队状态误恢复。
+    pub(crate) fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+        self.flag.store(false, Ordering::Release);
     }
 
     /// 登出：停止并保留断点。

@@ -410,7 +410,7 @@ Item {
         + "进行中、排队与已中断的记录会保留。确定清空？")
     readonly property string cancelAllConfirmMessage: qsTr(
         "将取消所有进行中、排队和已暂停的传输。\n"
-        + "未完成下载的断点会被删除；上传会停止，之后只能从头重试。"
+        + "未完成下载的断点会被删除；上传会停止并丢弃断点，之后只能从头重试。"
         + "已下载完成的文件会保留。"
         + "确定取消全部？")
     property string pendingRemoveKey: ""

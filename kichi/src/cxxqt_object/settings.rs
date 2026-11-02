@@ -200,6 +200,30 @@ impl qobject::Kichi {
         self.as_mut().apply_download_limits();
     }
 
+    /// 同时上传的文件数；单文件任务跨批共用，文件夹批次独占后批内共用。
+    pub fn set_upload_parallel(mut self: Pin<&mut Self>, value: i32) {
+        let value = usize::try_from(value)
+            .unwrap_or(limits::DEFAULT_UPLOAD_PARALLEL)
+            .clamp(1, limits::MAX_UPLOAD_PARALLEL);
+        self.as_mut().update_settings(|settings| {
+            settings.upload_parallel = value;
+        });
+        self.as_mut().apply_upload_limits();
+        // 调高并发后立即填满新增的空闲槽。
+        self.as_mut().advance_uploads();
+    }
+
+    /// 上传全局限速 MiB/s；0 = 不限。
+    pub fn set_upload_rate_mib(mut self: Pin<&mut Self>, value: i32) {
+        let value = u64::try_from(value)
+            .unwrap_or(0)
+            .min(limits::MAX_UPLOAD_RATE_MIB);
+        self.as_mut().update_settings(|settings| {
+            settings.upload_rate_mib = value;
+        });
+        self.as_mut().apply_upload_limits();
+    }
+
     /// 正常退出后，下次恢复登录态时是否自动继续未完成传输。
     pub fn set_auto_resume_downloads(mut self: Pin<&mut Self>, enabled: bool) {
         self.as_mut().update_settings(|settings| {
@@ -316,6 +340,9 @@ impl qobject::Kichi {
             .unwrap_or(limits::DEFAULT_CONNECTIONS as i32);
         rust.download_rate_mib = i32::try_from(snapshot.download_rate_mib).unwrap_or(i32::MAX);
         rust.auto_resume_downloads = snapshot.auto_resume_downloads;
+        rust.upload_parallel = i32::try_from(snapshot.upload_parallel)
+            .unwrap_or(limits::DEFAULT_UPLOAD_PARALLEL as i32);
+        rust.upload_rate_mib = i32::try_from(snapshot.upload_rate_mib).unwrap_or(i32::MAX);
     }
 }
 
@@ -330,6 +357,10 @@ impl qobject::Kichi {
             self.settings.download_connections,
             self.settings.download_rate_mib,
         );
+    }
+
+    pub(super) fn apply_upload_limits(&self) {
+        limits::configure_uploads(self.settings.upload_parallel, self.settings.upload_rate_mib);
     }
 }
 

@@ -239,6 +239,10 @@ pub struct Settings {
     pub download_connections: usize,
     /// 全局限速 MiB/s；0 = 不限
     pub download_rate_mib: u64,
+    /// 同时上传的文件数（1–8）
+    pub upload_parallel: usize,
+    /// 上传全局限速 MiB/s；0 = 不限
+    pub upload_rate_mib: u64,
     /// 正常退出后，下次恢复登录态时自动继续未完成传输
     pub auto_resume_downloads: bool,
 }
@@ -264,6 +268,8 @@ impl Default for Settings {
             download_parallel: crate::session::limits::DEFAULT_PARALLEL,
             download_connections: crate::session::limits::DEFAULT_CONNECTIONS,
             download_rate_mib: 0,
+            upload_parallel: crate::session::limits::DEFAULT_UPLOAD_PARALLEL,
+            upload_rate_mib: 0,
             auto_resume_downloads: true,
         }
     }
@@ -379,6 +385,12 @@ impl Settings {
         self.download_rate_mib = self
             .download_rate_mib
             .min(crate::session::limits::MAX_RATE_MIB);
+        self.upload_parallel = self
+            .upload_parallel
+            .clamp(1, crate::session::limits::MAX_UPLOAD_PARALLEL);
+        self.upload_rate_mib = self
+            .upload_rate_mib
+            .min(crate::session::limits::MAX_UPLOAD_RATE_MIB);
         self
     }
 }
@@ -468,6 +480,8 @@ mod tests {
             download_parallel: 5,
             download_connections: 6,
             download_rate_mib: 12,
+            upload_parallel: 4,
+            upload_rate_mib: 8,
             auto_resume_downloads: false,
             ..Settings::default()
         };
@@ -535,6 +549,11 @@ mod tests {
             "旧设置没有分片字段时取默认"
         );
         assert_eq!(settings.download_rate_mib, 0, "旧设置默认不限速");
+        assert_eq!(
+            settings.upload_parallel, 2,
+            "旧设置没有上传并发字段时取默认"
+        );
+        assert_eq!(settings.upload_rate_mib, 0, "旧设置上传默认不限速");
         assert!(settings.auto_resume_downloads, "自动续跑默认开启");
         let _ = std::fs::remove_file(&path);
     }
@@ -586,11 +605,13 @@ mod tests {
     }
 
     #[test]
-    fn download_limits_are_clamped_when_loaded() {
+    fn throughput_limits_are_clamped_when_loaded() {
         let normalized = Settings {
             download_parallel: 99,
             download_connections: 0,
             download_rate_mib: u64::MAX,
+            upload_parallel: 99,
+            upload_rate_mib: u64::MAX,
             ..Settings::default()
         }
         .normalized();
@@ -602,6 +623,14 @@ mod tests {
         assert_eq!(
             normalized.download_rate_mib,
             crate::session::limits::MAX_RATE_MIB
+        );
+        assert_eq!(
+            normalized.upload_parallel,
+            crate::session::limits::MAX_UPLOAD_PARALLEL
+        );
+        assert_eq!(
+            normalized.upload_rate_mib,
+            crate::session::limits::MAX_UPLOAD_RATE_MIB
         );
     }
 

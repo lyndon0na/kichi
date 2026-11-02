@@ -140,9 +140,9 @@ pub mod qobject {
         #[qproperty(bool, download_running, cxx_name = "downloadRunning", READ, NOTIFY = changed)]
         /// 排队中的批次数（不含正在跑的那一批）
         #[qproperty(i32, download_queued, cxx_name = "downloadQueued", READ, NOTIFY = changed)]
-        /// 排队中的上传文件数（上传串行，不含正在上传的那一个）
+        /// 排队中的上传批次数（不含正在上传的批次）
         #[qproperty(i32, upload_queued, cxx_name = "uploadQueued", READ, NOTIFY = changed)]
-        /// 正在上传的文件数（串行队列，只会是 0 或 1）
+        /// 正在上传的批次数
         #[qproperty(i32, upload_active, cxx_name = "uploadActive", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, transfers, READ, NOTIFY = changed)]
         /// 传输记录的结构版本号：只有排队 / 开始 / 完成 / 失败 / 取消 / 清空才 +1。
@@ -164,6 +164,8 @@ pub mod qobject {
         #[qproperty(i32, download_connections, cxx_name = "downloadConnections", READ, NOTIFY = changed)]
         #[qproperty(i32, download_rate_mib, cxx_name = "downloadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, auto_resume_downloads, cxx_name = "autoResumeDownloads", READ, NOTIFY = changed)]
+        #[qproperty(i32, upload_parallel, cxx_name = "uploadParallel", READ, NOTIFY = changed)]
+        #[qproperty(i32, upload_rate_mib, cxx_name = "uploadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
         /// 移动 / 复制选择器当前层的文件夹（QML 当 model 用）
         #[qproperty(QVariantList, move_targets, cxx_name = "moveTargets", READ, NOTIFY = changed)]
@@ -500,7 +502,7 @@ pub mod qobject {
         #[cxx_name = "cancelDownloads"]
         fn cancel_downloads(self: Pin<&mut Self>);
 
-        /// 取消传输页里所有下载与上传；上传没有断点，重试只能从头开始
+        /// 取消传输页里所有下载与上传；上传会丢弃断点，之后只能从头重试
         #[qinvokable]
         #[cxx_name = "cancelAllTransfers"]
         fn cancel_all_transfers(self: Pin<&mut Self>);
@@ -580,6 +582,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setAutoResumeDownloads"]
         fn set_auto_resume_downloads(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "setUploadParallel"]
+        fn set_upload_parallel(self: Pin<&mut Self>, value: i32);
+
+        #[qinvokable]
+        #[cxx_name = "setUploadRateMib"]
+        fn set_upload_rate_mib(self: Pin<&mut Self>, value: i32);
 
         /// 通过 XDG Desktop Portal 调起系统原生目录选择器
         #[qinvokable]
@@ -1017,7 +1027,7 @@ pub struct KichiRust {
     pub(crate) download_queued: i32,
     /// 排队中的上传文件数（不含正在上传的那一个）
     pub(crate) upload_queued: i32,
-    /// 正在上传的文件数（串行队列，只会是 0 或 1）
+    /// 正在上传的文件数（单文件批次可并发，文件夹批内也按并发上限运行）
     pub(crate) upload_active: i32,
     /// 下载目录的展示值（空串 = 用默认，界面上显示实际路径）
     pub(crate) download_dir: QString,
@@ -1025,6 +1035,8 @@ pub struct KichiRust {
     pub(crate) download_connections: i32,
     pub(crate) download_rate_mib: i32,
     pub(crate) auto_resume_downloads: bool,
+    pub(crate) upload_parallel: i32,
+    pub(crate) upload_rate_mib: i32,
     /// 启动时自动续跑标记是否已经处理过（每进程一次）
     pub(crate) auto_resume_checked: bool,
     /// 有文件操作（改名 / 新建 / 删除 / 移动 / 复制）在途，界面上禁用相关入口
@@ -1211,6 +1223,9 @@ impl Default for KichiRust {
                 .unwrap_or(4),
             download_rate_mib: 0,
             auto_resume_downloads: true,
+            upload_parallel: i32::try_from(crate::session::limits::DEFAULT_UPLOAD_PARALLEL)
+                .unwrap_or(2),
+            upload_rate_mib: 0,
             auto_resume_checked: false,
             file_action_running: false,
             move_targets: QVariantList::default(),
@@ -1291,6 +1306,10 @@ impl KichiRust {
             self.settings.download_connections,
             self.settings.download_rate_mib,
         );
+        crate::session::limits::configure_uploads(
+            self.settings.upload_parallel,
+            self.settings.upload_rate_mib,
+        );
         self.sync_settings_initial();
         if let Some(warning) = warning {
             // 设置坏掉不该拦住使用：提示走状态栏，其余照默认跑
@@ -1324,6 +1343,9 @@ impl KichiRust {
             .unwrap_or(crate::session::limits::DEFAULT_CONNECTIONS as i32);
         self.download_rate_mib = i32::try_from(settings.download_rate_mib).unwrap_or(i32::MAX);
         self.auto_resume_downloads = settings.auto_resume_downloads;
+        self.upload_parallel = i32::try_from(settings.upload_parallel)
+            .unwrap_or(crate::session::limits::DEFAULT_UPLOAD_PARALLEL as i32);
+        self.upload_rate_mib = i32::try_from(settings.upload_rate_mib).unwrap_or(i32::MAX);
         let backend = self.backend.restored_backend();
         self.storage_backend = QString::from(match backend {
             Some(crate::session::Backend::Keychain) => "系统钥匙串（KWallet）",

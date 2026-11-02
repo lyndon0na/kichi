@@ -67,7 +67,7 @@ Item {
         root.targetFailedDirs = Number(rowData.failedDirs || 0)
         var upload = root.targetDirection === "upload"
         root.targetCanPause = active && !pausing && !root.targetIsChild
-                              && (!upload || phase === "queued")
+                              && (!upload || phase === "queued" || phase === "running")
         root.targetCanResume = paused && !root.targetIsChild
         root.targetCanCancel = (pausing || paused) ? !root.targetIsChild : active
         root.targetCanRetry = (failed || interrupted)

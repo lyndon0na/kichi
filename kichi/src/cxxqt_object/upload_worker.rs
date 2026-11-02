@@ -1,8 +1,9 @@
-//! 上传线程：取得会话 client、建上传文件夹的目录链、串行上传文件并回投进度。
+//! 上传线程：取得会话 client、建上传文件夹的目录链、并发上传文件并回投进度。
 //!
 //! 后台线程绝不碰 Qt 对象；结构变化和实时进度分别经 `enqueue_ui` 回主线程。
-//! 文件夹批次由队列一次交给本线程，目录链和文件都在同一个线程里按顺序处理。
+//! 文件夹批次先由一个线程建目录链，再按上传并发数启动文件 worker。
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ use kichi_core::{DriveClient, UploadProgress, UploadResult, UploadStage};
 use super::transfers::{self, TransferJob, TransferState, UploadDir, UploadProgressState};
 use super::upload_queue;
 use crate::session::download::Cancel;
+use crate::session::limits;
 use crate::session::{Failure, Session};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -78,9 +80,9 @@ pub(crate) struct UploadStart {
     pub(crate) batch: u64,
     pub(crate) batch_cancel: Arc<Cancel>,
     pub(crate) parent: Option<TransferJob>,
-    pub(crate) files: Vec<UploadFile>,
-    pub(crate) dirs: Vec<Vec<String>>,
-    pub(crate) upload_dirs: Vec<UploadDir>,
+    pub(crate) files: Arc<[UploadFile]>,
+    pub(crate) dirs: Arc<[Vec<String>]>,
+    pub(crate) upload_dirs: Arc<[UploadDir]>,
 }
 
 pub(crate) fn spawn_upload(session: &Arc<Session>, start: &UploadStart) -> std::io::Result<()> {
@@ -116,6 +118,12 @@ fn run(session: Arc<Session>, start: UploadStart, my_epoch: u64) {
             }
         }
     };
+    if outcome.interrupted && same_epoch(my_epoch) {
+        transfers::interrupt_active_batch(batch);
+        if start.parent.is_some() {
+            transfers::finish_upload_folder(batch);
+        }
+    }
     post_finished(batch, outcome, my_epoch);
 }
 
@@ -123,11 +131,32 @@ fn run(session: Arc<Session>, start: UploadStart, my_epoch: u64) {
 struct BatchOutcome {
     fatal: Option<Failure>,
     success_parent: Option<String>,
+    paused: bool,
     interrupted: bool,
     batch_cancelled: bool,
     dir_failures: usize,
     first_dir_error: Option<String>,
     file_end_recorded: bool,
+}
+
+#[derive(Default)]
+struct FilePhaseOutcome {
+    fatal: Option<Failure>,
+    success: bool,
+    paused: bool,
+    interrupted: bool,
+    batch_cancelled: bool,
+    file_end_recorded: bool,
+}
+
+enum FileWorkResult {
+    Success,
+    Paused,
+    Interrupted,
+    BatchCancelled,
+    LocalCancelled,
+    Failed { failure: Failure, stop_queue: bool },
+    Skipped,
 }
 
 fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> BatchOutcome {
@@ -159,6 +188,14 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         outcome.interrupted = true;
         return outcome;
     }
+    if start.batch_cancel.is_halted() {
+        outcome.interrupted = true;
+        return outcome;
+    }
+    if start.batch_cancel.is_paused() {
+        outcome.paused = true;
+        return outcome;
+    }
     if start.batch_cancel.is_cancelled() {
         outcome.batch_cancelled = true;
         if same_epoch(my_epoch) {
@@ -171,7 +208,7 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         transfers::mark_upload_folder_running(start.batch);
     }
     let dirs = all_dirs(start);
-    let mut upload_dirs = start.upload_dirs.clone();
+    let mut upload_dirs = start.upload_dirs.to_vec();
     if let Some(upload) = parent.upload.as_ref() {
         if !upload.batch_root_id.is_empty() {
             if let Some(root_path) = dirs.iter().find(|path| path.len() == 1) {
@@ -187,11 +224,21 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
     let mut failed_paths: Vec<Vec<String>> = Vec::new();
     if same_epoch(my_epoch) {
         transfers::set_upload_folder_detail(start.batch, "正在创建云端目录…");
+        // 父行转「上传中」和说明变化都是结构变化；只发进度刷新不会改 QML 的 phase。
+        post_sync();
     }
 
     for path in &dirs {
         if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() {
             outcome.interrupted = true;
+            return finish_folder_outcome(start, outcome);
+        }
+        if start.batch_cancel.is_halted() {
+            outcome.interrupted = true;
+            return finish_folder_outcome(start, outcome);
+        }
+        if start.batch_cancel.is_paused() {
+            outcome.paused = true;
             return finish_folder_outcome(start, outcome);
         }
         if start.batch_cancel.is_cancelled() {
@@ -248,6 +295,10 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
                 let reason = err.to_string();
                 fail_dir(start, path, &reason, &mut outcome, &mut failed_paths);
                 if fatal_failure(&err) {
+                    if same_epoch(my_epoch) {
+                        transfers::fail_batch(start.batch, &reason);
+                    }
+                    upload_queue::halt_for_failure(&reason);
                     outcome.fatal = Some(err);
                     break;
                 }
@@ -255,7 +306,7 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         }
     }
 
-    if outcome.fatal.is_some() || outcome.batch_cancelled || outcome.interrupted {
+    if outcome.fatal.is_some() || outcome.paused || outcome.batch_cancelled || outcome.interrupted {
         if let Some(failure) = outcome.fatal.as_ref() {
             if same_epoch(my_epoch) {
                 transfers::fail_batch(start.batch, &failure.to_string());
@@ -271,94 +322,24 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         transfers::set_upload_folder_detail(start.batch, "");
         post_sync();
     }
-    for file in &start.files {
-        if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() {
-            outcome.interrupted = true;
-            break;
-        }
-        if start.batch_cancel.is_cancelled() {
-            outcome.batch_cancelled = true;
-            if same_epoch(my_epoch) {
-                transfers::cancel_batch(start.batch, "");
-            }
-            break;
-        }
-        if file.cancel.is_cancelled() {
-            if same_epoch(my_epoch) {
-                transfers::cancel_file(start.batch, file.index);
-                record_upload_end(&UploadEnd::Cancelled);
-                outcome.file_end_recorded = true;
-            }
-            continue;
-        }
-        if transfers::upload_child_state(start.batch, file.index) != Some(TransferState::Queued) {
-            continue;
-        }
-        let parent_id = if file.job.sub_dir.is_empty() {
-            Some(target_parent.clone())
-        } else {
-            upload_dirs
-                .iter()
-                .find(|dir| dir.path == file.job.sub_dir)
-                .map(|dir| dir.id.clone())
-        };
-        let Some(parent_id) = parent_id else {
-            let reason = "云端目录没有准备成功".to_owned();
-            if same_epoch(my_epoch) {
-                transfers::finish_err(start.batch, file.index, &reason);
-                record_upload_end(&UploadEnd::Failed(reason));
-                outcome.file_end_recorded = true;
-            }
-            continue;
-        };
-        if same_epoch(my_epoch) {
-            transfers::set_upload_file_parent(start.batch, file.index, &parent_id);
-            transfers::begin(start.batch, file.index);
-        }
-        match upload_one(session, &client, start.batch, file, &parent_id) {
-            Ok(result) => {
-                if same_epoch(my_epoch) {
-                    transfers::finish_upload_ok(start.batch, file.index, &result);
-                    record_upload_end(&UploadEnd::Done);
-                    outcome.file_end_recorded = true;
-                    outcome.success_parent = Some(target_parent.clone());
-                    post_sync();
-                }
-            }
-            Err(_) if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() => {
-                outcome.interrupted = true;
-                break;
-            }
-            Err(_) if start.batch_cancel.is_cancelled() => {
-                outcome.batch_cancelled = true;
-                if same_epoch(my_epoch) {
-                    transfers::cancel_batch(start.batch, "");
-                    record_upload_end(&UploadEnd::Cancelled);
-                    outcome.file_end_recorded = true;
-                }
-                break;
-            }
-            Err(_) if file.cancel.is_local_cancelled() => {
-                if same_epoch(my_epoch) {
-                    transfers::cancel_file(start.batch, file.index);
-                    record_upload_end(&UploadEnd::Cancelled);
-                    outcome.file_end_recorded = true;
-                }
-            }
-            Err(err) => {
-                let reason = err.to_string();
-                if same_epoch(my_epoch) {
-                    transfers::finish_err(start.batch, file.index, &reason);
-                    record_upload_end(&UploadEnd::Failed(reason));
-                    outcome.file_end_recorded = true;
-                    post_sync();
-                }
-                if fatal_failure(&err) {
-                    outcome.fatal = Some(err);
-                    break;
-                }
-            }
-        }
+    let phase = run_folder_files(
+        session,
+        &client,
+        start,
+        &target_parent,
+        &upload_dirs,
+        my_epoch,
+    );
+    outcome.fatal = phase.fatal;
+    outcome.paused |= phase.paused;
+    outcome.interrupted |= phase.interrupted;
+    outcome.batch_cancelled |= phase.batch_cancelled;
+    outcome.file_end_recorded |= phase.file_end_recorded;
+    if phase.success {
+        outcome.success_parent = Some(target_parent.clone());
+    }
+    if outcome.batch_cancelled && same_epoch(my_epoch) {
+        transfers::cancel_batch(start.batch, "");
     }
 
     if let Some(failure) = outcome.fatal.as_ref() {
@@ -367,6 +348,219 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         }
     }
     finish_folder_outcome(start, outcome)
+}
+
+fn run_folder_files(
+    session: &Arc<Session>,
+    client: &Arc<DriveClient>,
+    start: &UploadStart,
+    target_parent: &str,
+    upload_dirs: &[UploadDir],
+    my_epoch: u64,
+) -> FilePhaseOutcome {
+    let state = Mutex::new(FilePhaseOutcome::default());
+    let stop = AtomicBool::new(false);
+    let panicked = AtomicBool::new(false);
+    let cursor = AtomicUsize::new(0);
+    let workers = limits::upload_parallel().min(start.files.len().max(1));
+    let work = || loop {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let index = cursor.fetch_add(1, Ordering::SeqCst);
+        let Some(file) = start.files.get(index) else {
+            break;
+        };
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let result = upload_folder_file(
+            session,
+            client,
+            start,
+            target_parent,
+            upload_dirs,
+            file,
+            my_epoch,
+        );
+        let mut outcome = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match result {
+            FileWorkResult::Success => {
+                outcome.success = true;
+                outcome.file_end_recorded = true;
+            }
+            FileWorkResult::Paused => {
+                outcome.paused = true;
+                stop.store(true, Ordering::SeqCst);
+            }
+            FileWorkResult::Interrupted => outcome.interrupted = true,
+            FileWorkResult::BatchCancelled => outcome.batch_cancelled = true,
+            FileWorkResult::LocalCancelled => outcome.file_end_recorded = true,
+            FileWorkResult::Failed {
+                failure,
+                stop_queue,
+            } => {
+                outcome.file_end_recorded = true;
+                if stop_queue {
+                    stop.store(true, Ordering::SeqCst);
+                    if outcome.fatal.is_none() {
+                        outcome.fatal = Some(failure);
+                    }
+                }
+            }
+            FileWorkResult::Skipped => {}
+        }
+    };
+    let work = &work;
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for number in 1..workers {
+            let panic_flag = &panicked;
+            let stop_flag = &stop;
+            let spawned = std::thread::Builder::new()
+                .name(format!("kichi-upload-{number}"))
+                .spawn_scoped(scope, move || {
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
+                        panic_flag.store(true, Ordering::SeqCst);
+                        stop_flag.store(true, Ordering::SeqCst);
+                    }
+                });
+            match spawned {
+                Ok(handle) => handles.push(handle),
+                Err(err) => eprintln!("[kichi] 无法创建上传线程（{number}）：{err}"),
+            }
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
+            panicked.store(true, Ordering::SeqCst);
+            stop.store(true, Ordering::SeqCst);
+        }
+        for handle in handles {
+            if handle.join().is_err() {
+                panicked.store(true, Ordering::SeqCst);
+                stop.store(true, Ordering::SeqCst);
+            }
+        }
+    });
+
+    let mut outcome = state
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if panicked.load(Ordering::SeqCst) {
+        let reason = "上传线程异常中断".to_owned();
+        if same_epoch(my_epoch) {
+            transfers::fail_batch(start.batch, &reason);
+            record_upload_end(&UploadEnd::Failed(reason.clone()));
+        }
+        outcome.file_end_recorded = true;
+        outcome.interrupted = true;
+        outcome.fatal = Some(Failure::Other(reason));
+    }
+    outcome
+}
+
+fn upload_folder_file(
+    session: &Arc<Session>,
+    client: &Arc<DriveClient>,
+    start: &UploadStart,
+    target_parent: &str,
+    upload_dirs: &[UploadDir],
+    file: &UploadFile,
+    my_epoch: u64,
+) -> FileWorkResult {
+    if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() {
+        return FileWorkResult::Interrupted;
+    }
+    if start.batch_cancel.is_halted() || file.cancel.is_halted() {
+        return FileWorkResult::Interrupted;
+    }
+    if start.batch_cancel.is_paused() || file.cancel.is_paused() {
+        return FileWorkResult::Paused;
+    }
+    if start.batch_cancel.is_cancelled() {
+        return FileWorkResult::BatchCancelled;
+    }
+    if file.cancel.is_local_cancelled() {
+        if same_epoch(my_epoch) {
+            transfers::cancel_file(start.batch, file.index);
+            record_upload_end(&UploadEnd::Cancelled);
+            post_sync();
+        }
+        return FileWorkResult::LocalCancelled;
+    }
+    if transfers::upload_child_state(start.batch, file.index) != Some(TransferState::Queued) {
+        return FileWorkResult::Skipped;
+    }
+    let parent_id = if file.job.sub_dir.is_empty() {
+        Some(target_parent.to_owned())
+    } else {
+        upload_dirs
+            .iter()
+            .find(|dir| dir.path == file.job.sub_dir)
+            .map(|dir| dir.id.clone())
+    };
+    let Some(parent_id) = parent_id else {
+        let reason = "云端目录没有准备成功".to_owned();
+        if same_epoch(my_epoch) {
+            transfers::finish_err(start.batch, file.index, &reason);
+            record_upload_end(&UploadEnd::Failed(reason));
+        }
+        return FileWorkResult::Failed {
+            failure: Failure::Other("云端目录没有准备成功".to_owned()),
+            stop_queue: false,
+        };
+    };
+    if same_epoch(my_epoch) {
+        transfers::set_upload_file_parent(start.batch, file.index, &parent_id);
+        transfers::begin(start.batch, file.index);
+        // 开始上传是结构变化；只发进度刷新不会把 QML 里的「排队中」改成上传阶段。
+        post_sync();
+    }
+    match upload_one(session, client, start.batch, file, &parent_id) {
+        Ok(result) => {
+            if same_epoch(my_epoch) {
+                transfers::finish_upload_ok(start.batch, file.index, &result);
+                record_upload_end(&UploadEnd::Done);
+                post_sync();
+            }
+            FileWorkResult::Success
+        }
+        Err(_) if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() => {
+            FileWorkResult::Interrupted
+        }
+        Err(_) if start.batch_cancel.is_halted() || file.cancel.is_halted() => {
+            FileWorkResult::Interrupted
+        }
+        Err(_) if start.batch_cancel.is_paused() || file.cancel.is_paused() => {
+            FileWorkResult::Paused
+        }
+        Err(_) if start.batch_cancel.is_cancelled() => FileWorkResult::BatchCancelled,
+        Err(_) if file.cancel.is_local_cancelled() => {
+            if same_epoch(my_epoch) {
+                transfers::cancel_file(start.batch, file.index);
+                record_upload_end(&UploadEnd::Cancelled);
+            }
+            FileWorkResult::LocalCancelled
+        }
+        Err(error) => {
+            let stop_queue = error.stop_queue || fatal_failure(&error.failure);
+            let reason = error.failure.to_string();
+            if same_epoch(my_epoch) {
+                transfers::finish_err(start.batch, file.index, &reason);
+                record_upload_end(&UploadEnd::Failed(reason.clone()));
+                post_sync();
+            }
+            if stop_queue {
+                upload_queue::halt_for_failure(&reason);
+            }
+            FileWorkResult::Failed {
+                failure: error.failure,
+                stop_queue,
+            }
+        }
+    }
 }
 
 fn run_single_file(
@@ -383,6 +577,14 @@ fn run_single_file(
         outcome.interrupted = true;
         return;
     }
+    if start.batch_cancel.is_halted() || file.cancel.is_halted() {
+        outcome.interrupted = true;
+        return;
+    }
+    if start.batch_cancel.is_paused() || file.cancel.is_paused() {
+        outcome.paused = true;
+        return;
+    }
     if start.batch_cancel.is_cancelled() {
         outcome.batch_cancelled = true;
         if same_epoch(my_epoch) {
@@ -394,12 +596,19 @@ fn run_single_file(
         Ok(client) => client,
         Err(err) => {
             let reason = err.to_string();
+            let stop_queue = fatal_failure(&err);
             if same_epoch(my_epoch) {
                 transfers::finish_err(start.batch, file.index, &reason);
-                record_upload_end(&UploadEnd::Failed(reason));
+                record_upload_end(&UploadEnd::Failed(reason.clone()));
                 outcome.file_end_recorded = true;
             }
-            outcome.fatal = Some(err);
+            if stop_queue {
+                if same_epoch(my_epoch) {
+                    transfers::fail_batch(start.batch, &reason);
+                }
+                upload_queue::halt_for_failure(&reason);
+                outcome.fatal = Some(err);
+            }
             return;
         }
     };
@@ -416,6 +625,8 @@ fn run_single_file(
     if same_epoch(my_epoch) {
         transfers::set_upload_file_parent(start.batch, file.index, &upload.parent_id);
         transfers::begin(start.batch, file.index);
+        // 同上：phase 从排队变上传中必须走结构同步，不能让并发批次停在旧快照。
+        post_sync();
     }
     match upload_one(session, &client, start.batch, file, &upload.parent_id) {
         Ok(result) => {
@@ -430,6 +641,12 @@ fn run_single_file(
         Err(_) if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() => {
             outcome.interrupted = true;
         }
+        Err(_) if start.batch_cancel.is_halted() || file.cancel.is_halted() => {
+            outcome.interrupted = true;
+        }
+        Err(_) if start.batch_cancel.is_paused() || file.cancel.is_paused() => {
+            outcome.paused = true;
+        }
         Err(_) if start.batch_cancel.is_cancelled() => {
             outcome.batch_cancelled = true;
             if same_epoch(my_epoch) {
@@ -438,16 +655,29 @@ fn run_single_file(
                 outcome.file_end_recorded = true;
             }
         }
-        Err(err) => {
-            let reason = err.to_string();
+        Err(_) if file.cancel.is_local_cancelled() => {
             if same_epoch(my_epoch) {
-                transfers::finish_err(start.batch, file.index, &reason);
-                record_upload_end(&UploadEnd::Failed(reason));
+                transfers::cancel_file(start.batch, file.index);
+                record_upload_end(&UploadEnd::Cancelled);
                 outcome.file_end_recorded = true;
                 post_sync();
             }
-            if fatal_failure(&err) {
-                outcome.fatal = Some(err);
+        }
+        Err(error) => {
+            let stop_queue = error.stop_queue || fatal_failure(&error.failure);
+            let reason = error.failure.to_string();
+            if same_epoch(my_epoch) {
+                transfers::finish_err(start.batch, file.index, &reason);
+                record_upload_end(&UploadEnd::Failed(reason.clone()));
+                outcome.file_end_recorded = true;
+                post_sync();
+            }
+            if stop_queue {
+                if same_epoch(my_epoch) {
+                    transfers::fail_batch(start.batch, &reason);
+                }
+                upload_queue::halt_for_failure(&reason);
+                outcome.fatal = Some(error.failure);
             }
         }
     }
@@ -455,9 +685,16 @@ fn run_single_file(
 
 fn finish_folder_outcome(start: &UploadStart, mut outcome: BatchOutcome) -> BatchOutcome {
     if same_epoch(upload_queue::current_epoch()) && start.parent.is_some() {
-        transfers::finish_upload_folder(start.batch);
+        if outcome.paused {
+            // 父行与仍在途的子行由 `post_finished` 统一落成「已暂停」。
+        } else if outcome.interrupted {
+            transfers::interrupt_active_batch(start.batch);
+            transfers::finish_upload_folder(start.batch);
+        } else {
+            transfers::finish_upload_folder(start.batch);
+        }
     }
-    if !outcome.file_end_recorded && same_epoch(upload_queue::current_epoch()) {
+    if !outcome.paused && !outcome.file_end_recorded && same_epoch(upload_queue::current_epoch()) {
         if let Some(failure) = outcome.fatal.as_ref() {
             record_upload_end(&UploadEnd::Failed(failure.to_string()));
         } else if outcome.batch_cancelled {
@@ -503,8 +740,8 @@ fn fail_dir(
 }
 
 fn all_dirs(start: &UploadStart) -> Vec<Vec<String>> {
-    let mut dirs = start.dirs.clone();
-    for file in &start.files {
+    let mut dirs = start.dirs.to_vec();
+    for file in start.files.iter() {
         for depth in 1..=file.job.sub_dir.len() {
             dirs.push(file.job.sub_dir[..depth].to_vec());
         }
@@ -543,18 +780,23 @@ fn upload_one(
     batch: u64,
     file: &UploadFile,
     parent_id: &str,
-) -> Result<UploadResult, Failure> {
-    let upload = file
-        .job
-        .upload
-        .as_ref()
-        .ok_or_else(|| Failure::Other("上传任务缺少本地文件信息".to_owned()))?;
+) -> Result<UploadResult, crate::session::upload::SessionUploadError> {
+    let upload =
+        file.job
+            .upload
+            .as_ref()
+            .ok_or_else(|| crate::session::upload::SessionUploadError {
+                failure: Failure::Other("上传任务缺少本地文件信息".to_owned()),
+                keep_resume: false,
+                stop_queue: false,
+            })?;
     let mut throttle = ProgressThrottle::default();
     session.upload_file(
         Arc::clone(client),
         &upload.local_path,
         parent_id,
         Arc::clone(&file.cancel),
+        Some(limits::upload_limiter()),
         |progress| {
             if throttle.should_send(progress) {
                 transfers::upload_progress(
@@ -566,7 +808,13 @@ fn upload_one(
                         total: progress.total,
                     },
                 );
-                post_live();
+                // 阶段名（准备 / 校验 / 上传 / 收尾）在主模型里，只有整表同步
+                // 才会更新；百分比和速度仍走轻量 live，避免整页重灌。
+                if throttle.stage_changed() {
+                    post_sync();
+                } else {
+                    post_live();
+                }
             }
         },
     )
@@ -578,6 +826,7 @@ struct ProgressThrottle {
     last_sent: Option<Instant>,
     stage: Option<UploadStage>,
     percent: i32,
+    stage_changed: bool,
 }
 
 impl ProgressThrottle {
@@ -592,15 +841,22 @@ impl ProgressThrottle {
         let due = self
             .last_sent
             .is_some_and(|last| now.saturating_duration_since(last) >= PROGRESS_INTERVAL);
-        let changed = self.stage != Some(progress.stage) || self.percent != percent;
+        let stage_changed = self.stage != Some(progress.stage);
+        let changed = stage_changed || self.percent != percent;
         if first || due || changed {
             self.last_sent = Some(now);
             self.stage = Some(progress.stage);
             self.percent = percent;
+            self.stage_changed = stage_changed;
             true
         } else {
+            self.stage_changed = false;
             false
         }
+    }
+
+    fn stage_changed(&self) -> bool {
+        self.stage_changed
     }
 }
 
@@ -616,8 +872,15 @@ fn post_finished(batch: u64, outcome: BatchOutcome, my_epoch: u64) {
     super::actions::enqueue_ui(
         move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
             let current = same_epoch(my_epoch);
-            let _ = upload_queue::release(batch);
+            let paused = outcome.paused;
+            let kept_paused = current && paused && upload_queue::finish_paused(batch);
+            if !kept_paused {
+                let _ = upload_queue::release(batch);
+            }
             if current {
+                if paused {
+                    transfers::mark_paused(batch);
+                }
                 if let Some(parent_id) = outcome.success_parent.as_ref() {
                     qichi.as_mut().on_upload_succeeded(parent_id);
                 }
@@ -628,7 +891,7 @@ fn post_finished(batch: u64, outcome: BatchOutcome, my_epoch: u64) {
                     }
                     qichi.as_mut().on_failure(failure);
                 }
-                if upload_queue::is_idle() {
+                if !paused && upload_queue::is_idle() {
                     if let Some(notice) = take_upload_notice() {
                         if qichi.notify_enabled {
                             super::notifications::show_notice(&notice);
@@ -681,21 +944,25 @@ mod tests {
             bytes: 0,
             total: 1000,
         }));
+        assert!(throttle.stage_changed(), "首帧要整表同步阶段名");
         assert!(!throttle.should_send(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: 1,
             total: 1000,
         }));
+        assert!(!throttle.stage_changed(), "被节流的刷新不能留下阶段变更");
         assert!(throttle.should_send(UploadProgress {
             stage: UploadStage::Hashing,
             bytes: 10,
             total: 1000,
         }));
+        assert!(!throttle.stage_changed(), "同阶段只走轻量进度刷新");
         assert!(throttle.should_send(UploadProgress {
             stage: UploadStage::Uploading,
             bytes: 20,
             total: 1000,
         }));
+        assert!(throttle.stage_changed(), "校验转上传必须整表同步");
     }
 
     #[test]
@@ -748,9 +1015,10 @@ mod tests {
                     upload: None,
                 },
                 cancel: Arc::new(Cancel::default()),
-            }],
-            dirs: Vec::new(),
-            upload_dirs: Vec::new(),
+            }]
+            .into(),
+            dirs: Vec::new().into(),
+            upload_dirs: Vec::new().into(),
         };
         assert_eq!(
             all_dirs(&start),

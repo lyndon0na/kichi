@@ -224,8 +224,12 @@ impl qobject::Kichi {
             return;
         };
         if target.direction == transfers::TransferDirection::Upload {
+            let session = self.backend.session.clone();
             if !target.whole_batch {
                 if upload_queue::cancel_file(target.batch, target.index) {
+                    let targets =
+                        transfers::upload_resume_targets(target.batch, Some(target.index));
+                    crate::session::upload::discard_upload_resumes(&session, targets);
                     transfers::cancel_file(target.batch, target.index);
                     self.as_mut()
                         .set_message(&format!("已取消上传：{}", target.name));
@@ -237,6 +241,8 @@ impl qobject::Kichi {
             }
             let scanning = upload_scan::cancel(target.batch);
             let outcome = upload_queue::cancel(target.batch);
+            let targets = transfers::upload_resume_targets(target.batch, None);
+            crate::session::upload::discard_upload_resumes(&session, targets);
             // 扫描线程可能已经结束、回投主线程的回调还没跑；这时调度器里还
             // 没有批次，但记录仍是「准备中」。先把记录标取消，回调会据此
             // 丢掉扫描结果，不能让用户刚点的取消被随后入队覆盖。
@@ -305,9 +311,10 @@ impl qobject::Kichi {
                     transfers::pause_queued(target.batch);
                     self.as_mut().clear_status_message();
                 }
-                upload_queue::PauseOutcome::Running => {
+                upload_queue::PauseOutcome::Pausing => {
+                    transfers::mark_pausing(target.batch);
                     self.as_mut()
-                        .set_message("正在上传的文件不能暂停，请取消后从头重试");
+                        .set_message(&format!("正在暂停：{}", target.name));
                 }
                 upload_queue::PauseOutcome::NotCurrent => {
                     self.as_mut().set_message("这条上传记录已经结束");
@@ -564,6 +571,9 @@ impl qobject::Kichi {
             }
             RetryOutcome::QueuedUpload => {
                 self.as_mut().clear_status_message();
+                if let Some(warning) = crate::session::upload_resume::take_persistence_warning() {
+                    self.as_mut().set_message(warning);
+                }
                 self.as_mut().advance_uploads();
             }
             RetryOutcome::AlreadyPending(source_id) => {
@@ -611,7 +621,7 @@ impl qobject::Kichi {
                 if invalid > 0 {
                     text.push_str(&format!("；{invalid} 项无法重试：{first_invalid}"));
                 }
-                self.as_mut().set_message(&format!("{text}"));
+                self.as_mut().set_message(&text);
             } else {
                 self.as_mut().clear_status_message();
             }

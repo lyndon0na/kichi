@@ -948,6 +948,98 @@ fn upload_record_maps_stage_target_and_final_name() {
 }
 
 #[test]
+fn upload_resume_targets_cover_single_and_folder_paths() {
+    let single = row_from(
+        91,
+        0,
+        "upload:/home/me/single.mkv",
+        &upload_job("single.mkv", 10),
+        1_790_000_000,
+        1,
+    );
+    assert_eq!(
+        upload_resume_targets_in(&[single], 91, None),
+        vec![(
+            PathBuf::from("/home/me/single.mkv"),
+            "cloud-folder".to_owned()
+        )]
+    );
+
+    let mut root_job = upload_job("root.mkv", 10);
+    let root_upload = root_job.upload.as_mut().expect("root upload");
+    root_upload.parent_id.clear();
+    let root = row_from(
+        93,
+        0,
+        "upload:/home/me/root.mkv",
+        &root_job,
+        1_790_000_000,
+        1,
+    );
+    assert_eq!(
+        upload_resume_targets_in(&[root], 93, None),
+        vec![(PathBuf::from("/home/me/root.mkv"), String::new())],
+        "上传到根目录时 parent_id 为空串，仍必须清理对应断点"
+    );
+
+    let mut parent = upload_job("剧集", 0);
+    parent.kind = EntryKind::Folder;
+    parent.upload.as_mut().expect("parent upload").local_path = PathBuf::from("/home/me/剧集");
+    let mut parent_row = row_from(
+        92,
+        0,
+        "upload-folder:/home/me/剧集",
+        &parent,
+        1_790_000_000,
+        1,
+    );
+    parent_row.upload_dirs = vec![UploadDir {
+        path: vec!["剧集".to_owned(), "子目录".to_owned()],
+        id: "cloud-subdir".to_owned(),
+    }];
+
+    let mut child_job = upload_job("child.mkv", 10);
+    child_job.sub_dir = vec!["剧集".to_owned(), "子目录".to_owned()];
+    child_job.upload.as_mut().expect("child upload").local_path =
+        PathBuf::from("/home/me/剧集/子目录/child.mkv");
+    child_job
+        .upload
+        .as_mut()
+        .expect("child upload")
+        .cloud_parent_id = "cloud-subdir-renamed".to_owned();
+    let mut child = row_from(92, 0, child_job.id.as_str(), &child_job, 1_790_000_000, 1);
+    child.child = true;
+    child.state = TransferState::Queued;
+
+    let mut records = vec![parent_row, child];
+    let targets = upload_resume_targets_in(&records, 92, None);
+    assert_eq!(
+        targets,
+        vec![
+            (
+                PathBuf::from("/home/me/剧集/子目录/child.mkv"),
+                "cloud-folder".to_owned()
+            ),
+            (
+                PathBuf::from("/home/me/剧集/子目录/child.mkv"),
+                "cloud-subdir-renamed".to_owned()
+            ),
+            (
+                PathBuf::from("/home/me/剧集/子目录/child.mkv"),
+                "cloud-subdir".to_owned()
+            ),
+        ],
+        "文件夹父行不产生断点；子文件同时覆盖目标目录、实际父目录和目录树 id"
+    );
+
+    records[1].state = TransferState::Running;
+    assert!(
+        upload_resume_targets_in(&records, 92, None).is_empty(),
+        "已开始发送的文件必须由 worker 自己清理，避免误删刚成功的上传"
+    );
+}
+
+#[test]
 fn done_row_detail_comes_from_path() {
     let mut record = row_from(7, 0, "file-1", &job("a.mkv"), 1_790_000_000, 1);
     record.path = Some(PathBuf::from("/home/me/Downloads/a.mkv"));

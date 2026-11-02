@@ -349,7 +349,7 @@ fn batch_is_consistent(rows: &[&EntryRecord]) -> bool {
 }
 
 /// 恢复规则：下载的暂停请求（含线程尚未来得及收尾的「正在暂停」）保持暂停；
-/// 上传没有断点，暂停态读回为已中断；其余没跑完或状态认不出的行 → 已中断。
+/// 上传暂停不跨进程，暂停态读回为已中断；其余没跑完或状态认不出的行 → 已中断。
 pub(crate) fn recovered_state(stored: TransferState) -> TransferState {
     if matches!(stored, TransferState::Pausing | TransferState::Paused) {
         return TransferState::Paused;

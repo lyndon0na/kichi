@@ -235,6 +235,7 @@ fn live_upload_roundtrip() {
                 file,
                 &test_dir.id,
                 std::sync::Arc::new(download::Cancel::default()),
+                None,
                 |progress| stages.push(progress.stage),
             )
             .unwrap_or_else(|err| panic!("上传 {} 失败：{err}", file.display()));
@@ -279,6 +280,7 @@ fn live_upload_roundtrip() {
         &cancelled,
         &test_dir.id,
         cancel,
+        None,
         move |progress| {
             if progress.stage == kichi_core::UploadStage::Uploading && progress.bytes > 0 {
                 cancel_progress.cancel();

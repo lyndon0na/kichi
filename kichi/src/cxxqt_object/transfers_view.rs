@@ -353,7 +353,7 @@ fn upload_folder_detail(record: &Transfer, stats: &BatchStats, has_children: boo
             format!("第 {position}/{} 个", stats.total)
         }
         TransferState::Pausing => "正在暂停…".to_owned(),
-        TransferState::Paused => "已暂停，已上传的进度不会保留".to_owned(),
+        TransferState::Paused => "已暂停，继续后重新进入上传队列".to_owned(),
         TransferState::Done => {
             let target = record
                 .job
@@ -460,7 +460,7 @@ fn file_record_map(record: &Transfer, name: String) -> QVariantMap {
             "上次上传未完成，重试只重传此文件".to_owned()
         }
         TransferState::Interrupted if record.job.is_upload() => {
-            "上次退出时上传未完成，重试会从头开始".to_owned()
+            "上次上传未完成，重试会尽量从断点继续".to_owned()
         }
         TransferState::Interrupted if record.detail.is_empty() => "上次退出时未完成".to_owned(),
         _ => record.detail.clone(),

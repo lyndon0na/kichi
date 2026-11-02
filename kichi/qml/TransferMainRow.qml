@@ -65,7 +65,9 @@ ItemDelegate {
                                          || row.currentProgress > 0
                                          || row.currentProgress < 0
     readonly property bool canPause: !row.child && !row.notice
-                                     && (row.isUpload ? row.phase === "queued"
+                                     && (row.isUpload
+                                         ? (row.phase === "queued"
+                                            || row.phase === "running")
                                                       : row.active && !row.pausing)
     readonly property bool canResume: row.paused && !row.child && !row.notice
     readonly property bool canCancel: !row.notice
@@ -485,7 +487,7 @@ ItemDelegate {
                                      ? qsTr("只重传这个文件，已成功的兄弟文件不会重传")
                                      : row.failedDirs > 0
                                        ? qsTr("只补建失败目录并重传失败文件，已成功的不会重传")
-                                       : qsTr("上传没有断点，重试会从头上传"))
+                                       : qsTr("重试会尽量从上次完成的分片继续"))
                                   : qsTr("上次未完成，若下载目录未变会从断点续传")
                     onClicked: row.retryRequested(row.key)
                 }

@@ -467,6 +467,16 @@ pub(crate) fn upload_folder_job(batch: u64) -> Option<TransferJob> {
     })
 }
 
+/// 暂停继续前刷新调度器快照：目录 id 会随 worker 进度增长，不能一直用入队时的空表。
+pub(crate) fn upload_folder_resume_state(batch: u64) -> Option<(TransferJob, Vec<UploadDir>)> {
+    with_records(|records| {
+        records
+            .iter()
+            .find(|record| record.batch == batch && is_folder_ledger(record))
+            .map(|record| (record.job.clone(), record.upload_dirs.clone()))
+    })
+}
+
 /// 上传文件夹父行当前状态；扫描回调据此丢弃已经取消 / 中断的批次。
 pub(crate) fn upload_folder_state(batch: u64) -> Option<TransferState> {
     with_records(|records| {
@@ -1014,6 +1024,97 @@ pub(crate) fn discard_file_part(batch: u64, index: usize) {
     discard_parts(batch, Some(index));
 }
 
+/// 取消上传时要摘掉的 KWallet 断点（本地路径 + 当时的直接父目录 id）。
+///
+/// 文件夹子文件的直接父目录可能是建出来的子目录；同一文件的旧记录还可能
+/// 保存在重命名前的目录 id 下，因此把记录里的目标目录、最近一次上传父目录
+/// 和目录树中的对应 id 都列出来，逐个查找并删除。
+///
+/// `Running` / `Pausing` 仍由正在收尾的 worker 删除断点并清理；主线程只处理
+/// 还没有线程接手的行，避免把刚好成功、已经写进云端的上传误删。
+pub(crate) fn upload_resume_targets(batch: u64, index: Option<usize>) -> Vec<(PathBuf, String)> {
+    with_records(|records| upload_resume_targets_in(records, batch, index))
+}
+
+fn upload_resume_targets_in(
+    records: &[Transfer],
+    batch: u64,
+    index: Option<usize>,
+) -> Vec<(PathBuf, String)> {
+    let mut targets = Vec::new();
+    for record in records.iter().filter(|record| {
+        record.batch == batch
+            && record.job.kind == EntryKind::File
+            && record.job.is_upload()
+            && !matches!(
+                record.state,
+                TransferState::Running | TransferState::Pausing
+            )
+            && index.is_none_or(|index| record.index == index)
+    }) {
+        collect_upload_resume_targets(records, record, &mut targets);
+    }
+    targets
+}
+
+/// 「取消全部」只动仍可取消的上传行，失败 / 已中断的断点留下供重试。
+pub(crate) fn cancellable_upload_resume_targets() -> Vec<(PathBuf, String)> {
+    with_records(|records| {
+        let mut targets = Vec::new();
+        for record in records.iter().filter(|record| {
+            record.job.kind == EntryKind::File
+                && record.job.is_upload()
+                && record.state.is_cancellable()
+                && !matches!(
+                    record.state,
+                    TransferState::Running | TransferState::Pausing
+                )
+        }) {
+            collect_upload_resume_targets(records, record, &mut targets);
+        }
+        targets
+    })
+}
+
+fn collect_upload_resume_targets(
+    records: &[Transfer],
+    record: &Transfer,
+    targets: &mut Vec<(PathBuf, String)>,
+) {
+    let Some(upload) = record.job.upload.as_ref() else {
+        return;
+    };
+    let mut parent_ids = vec![upload.parent_id.as_str()];
+    if !upload.cloud_parent_id.is_empty() {
+        parent_ids.push(upload.cloud_parent_id.as_str());
+    }
+    if !record.job.sub_dir.is_empty() {
+        if let Some(parent) = records.iter().find(|candidate| {
+            candidate.batch == record.batch
+                && is_folder_ledger(candidate)
+                && candidate.job.is_upload()
+        }) {
+            if let Some(dir) = parent
+                .upload_dirs
+                .iter()
+                .find(|dir| dir.path == record.job.sub_dir)
+            {
+                parent_ids.push(dir.id.as_str());
+            }
+        }
+    }
+    for parent_id in parent_ids {
+        let parent_id = parent_id.trim();
+        if targets
+            .iter()
+            .any(|(path, id)| *path == upload.local_path && id == parent_id)
+        {
+            continue;
+        }
+        targets.push((upload.local_path.clone(), parent_id.to_owned()));
+    }
+}
+
 fn discard_parts(batch: u64, index: Option<usize>) {
     let jobs = with_records(|records| {
         records
@@ -1066,10 +1167,31 @@ pub(crate) fn interrupt_active_for(direction: TransferDirection) {
     });
 }
 
+/// 只把某一批里仍在途的上传行收成「已中断」。
+///
+/// 用于 429 / 配额 / 鉴权停队后各批次自己的收尾：不能全局标记，否则另一个
+/// 批次刚成功、结果还没回写时会被误吞。
+pub(crate) fn interrupt_active_batch(batch: u64) {
+    with_records(|records| {
+        for record in records.iter_mut().filter(|record| record.batch == batch) {
+            if matches!(
+                record.state,
+                TransferState::Queued
+                    | TransferState::Preparing
+                    | TransferState::Running
+                    | TransferState::Pausing
+            ) {
+                record.state = TransferState::Interrupted;
+                record.detail.clear();
+            }
+        }
+    });
+}
+
 /// 登出 / 退出时把指定方向的暂停行也收成已中断。
 ///
-/// 下载暂停会保留断点，重登后仍可继续；上传没有断点，且调度器里的暂停项
-/// 已被清掉，必须转成「已中断」才能给出从头重试的入口。
+/// 下载暂停会保留断点，重登后仍可继续；上传暂停只存在于当前进程，调度器里
+/// 的暂停项已被清掉，必须转成「已中断」才能给出重新入队的入口。
 pub(crate) fn interrupt_paused_for(direction: TransferDirection) {
     with_records(|records| {
         for record in records
