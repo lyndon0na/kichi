@@ -42,6 +42,7 @@ const MAX_ERROR_BODY: u64 = 64 * 1024;
 const UPLOAD_MAX_ATTEMPTS: u32 = 3;
 const UPLOAD_RETRY_BASE: Duration = Duration::from_millis(500);
 const UPLOAD_RETRY_MAX: Duration = Duration::from_secs(4);
+const S3_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 上传阶段。准备阶段也可能包含完整的 GCID 回退计算。
@@ -76,6 +77,33 @@ struct LocalFileInfo {
 }
 
 impl DriveClient {
+    /// 上传专用 client：所有上传文件共用一个连接池，避免每个文件重建
+    /// client 导致反复 TCP/TLS 握手。超时语义是单次 S3 请求最多 5 分钟。
+    fn upload_client(&self) -> Result<Arc<Client>, Error> {
+        {
+            let cached = self.upload.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(client) = cached.as_ref() {
+                return Ok(Arc::clone(client));
+            }
+        }
+        // 锁外构建：reqwest blocking client 会起一条专属运行时线程。
+        let built = Arc::new(
+            Client::builder()
+                .user_agent(&self.config().user_agent)
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(S3_REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|_| Error::Network("无法创建上传 HTTP 客户端".to_owned()))?,
+        );
+        let mut cached = self.upload.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = cached.as_ref() {
+            return Ok(Arc::clone(client));
+        }
+        *cached = Some(Arc::clone(&built));
+        Ok(built)
+    }
+
     /// 把本地普通文件上传到 `parent_id`（空串 = 根目录）。
     ///
     /// 这是不带断点的兼容入口；需要跨进程续传时用
@@ -432,7 +460,12 @@ impl DriveClient {
         F: FnMut(&UploadResume),
     {
         ensure_file_size(path, size)?;
-        let target = S3Target::new(self.config(), &state.credentials, limiter.cloned())?;
+        let target = S3Target::new_with_client(
+            self.config(),
+            &state.credentials,
+            limiter.cloned(),
+            self.upload_client()?,
+        )?;
         if size <= SMALL_FILE_LIMIT {
             if state.content_uploaded {
                 return Ok((state.bytes_sent, 0));
@@ -729,7 +762,7 @@ struct UploadCleanup {
 }
 
 struct S3Target {
-    client: Client,
+    client: Arc<Client>,
     credentials: UploadCredentials,
     host: String,
     path: String,
@@ -737,19 +770,11 @@ struct S3Target {
 }
 
 impl S3Target {
-    fn new(
+    fn new_with_client(
         config: &Config,
         credentials: &UploadCredentials,
         limiter: Option<Arc<UploadRateLimiter>>,
-    ) -> Result<Self, Error> {
-        Self::new_with_timeout(config, credentials, limiter, Duration::from_secs(300))
-    }
-
-    fn new_with_timeout(
-        config: &Config,
-        credentials: &UploadCredentials,
-        limiter: Option<Arc<UploadRateLimiter>>,
-        timeout: Duration,
+        client: Arc<Client>,
     ) -> Result<Self, Error> {
         let base = Url::parse(&config.upload_base)
             .map_err(|_| Error::InvalidInput("上传基地址无效".to_owned()))?;
@@ -766,15 +791,6 @@ impl S3Target {
         }
         let bucket = credentials.bucket.trim().to_ascii_lowercase();
         let host = format!("{bucket}.{base_host}");
-        let client = Client::builder()
-            .user_agent(&config.user_agent)
-            .connect_timeout(Duration::from_secs(15))
-            // 单次 S3 请求最坏 5 分钟；不是整文件的固定总分片时限。
-            .timeout(timeout)
-            // 上传请求只允许直连收窄后的 mypikpak.com 主机，不能跟去别处。
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| Error::Network("无法创建上传 HTTP 客户端".to_owned()))?;
         Ok(Self {
             client,
             credentials: credentials.clone(),
@@ -782,6 +798,26 @@ impl S3Target {
             path: encode_path(credentials.key.trim()),
             limiter,
         })
+    }
+
+    fn new_with_timeout(
+        config: &Config,
+        credentials: &UploadCredentials,
+        limiter: Option<Arc<UploadRateLimiter>>,
+        timeout: Duration,
+    ) -> Result<Self, Error> {
+        let client = Arc::new(
+            Client::builder()
+                .user_agent(&config.user_agent)
+                .connect_timeout(Duration::from_secs(15))
+                // 单次 S3 请求最坏 5 分钟；不是整文件的固定总分片时限。
+                .timeout(timeout)
+                // 上传请求只允许直连收窄后的 mypikpak.com 主机，不能跟去别处。
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|_| Error::Network("无法创建上传 HTTP 客户端".to_owned()))?,
+        );
+        Self::new_with_client(config, credentials, limiter, client)
     }
 
     fn put_object<C>(
@@ -2114,6 +2150,16 @@ mod tests {
     use super::*;
     use crate::upload_state::valid_bucket;
     use std::io::Cursor;
+
+    #[test]
+    fn upload_client_is_reused_across_files() {
+        let device_id = "0".repeat(32);
+        let client = DriveClient::new(&Config::default(), &device_id, "token", "user")
+            .expect("构造客户端（无 I/O）");
+        let first = client.upload_client().expect("建上传 client 失败");
+        let second = client.upload_client().expect("取缓存失败");
+        assert!(Arc::ptr_eq(&first, &second), "同一会话必须复用上传连接池");
+    }
 
     #[test]
     fn zero_byte_cid_is_the_sha1_of_empty_input() {

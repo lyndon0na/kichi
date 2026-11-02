@@ -457,9 +457,10 @@ impl Session {
         client: Arc<DriveClient>,
         parent_id: Option<&str>,
         name: &str,
+        cache: &mut kichi_core::FolderCreateCache,
     ) -> Result<String, Failure> {
         client
-            .create_folder_entry(parent_id, name)
+            .create_folder_entry_cached(parent_id, name, cache)
             .map_err(Failure::from)
     }
 

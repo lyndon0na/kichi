@@ -43,6 +43,11 @@ pub struct DriveClient {
     ///
     /// `pub(crate)`：`media.rs` 的 `impl DriveClient` 在另一个模块里取它。
     pub(crate) download: Mutex<Option<(Duration, Arc<reqwest::blocking::Client>)>>,
+    /// 上传专用 client：同一个 `DriveClient` 的所有文件共用连接池。
+    ///
+    /// 上传请求按单次 S3 请求设置总时限，和下载的「空闲读超时」语义不同，
+    /// 因此单独缓存；清理请求仍在 `upload.rs` 里按 5 秒时限临时构建。
+    pub(crate) upload: Mutex<Option<Arc<reqwest::blocking::Client>>>,
 }
 
 /// 当前用户摘要。
@@ -122,6 +127,7 @@ impl DriveClient {
             access_token,
             user_id: user_id.to_owned(),
             download: Mutex::new(None),
+            upload: Mutex::new(None),
         }
     }
 

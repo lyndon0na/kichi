@@ -7,7 +7,7 @@
 //! 回收站页可显式调用 `batchUntrash` 或 `batchDelete`；后者不可恢复，
 //! 只能由回收站专用界面在二次确认后调用。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
@@ -24,6 +24,57 @@ const ACTION_MOVE: &str = "batchMove";
 const ACTION_COPY: &str = "batchCopy";
 const ACTION_STAR: &str = "star";
 const ACTION_UNSTAR: &str = "unstar";
+
+/// 上传文件夹批次内复用「父目录已有文件夹 id」的快照。
+///
+/// 建目录链时同一父目录下常有多个子目录；没有缓存时每建一个目录都要把父目录
+/// 重新列一遍。缓存只在当前批次内有效，不跨批次复用，避免外部增删导致误判。
+#[derive(Debug, Default)]
+pub struct FolderCreateCache {
+    folders: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl FolderCreateCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn key(parent_id: Option<&str>) -> String {
+        parent_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    fn ids(&self, key: &str) -> Option<&BTreeSet<String>> {
+        self.folders.get(key)
+    }
+
+    fn remember_ids(&mut self, key: &str, ids: BTreeSet<String>) {
+        self.folders.insert(key.to_owned(), ids);
+    }
+
+    fn remember_entries(&mut self, key: &str, entries: &[crate::FileEntry]) {
+        let ids = entries
+            .iter()
+            .filter(|entry| entry.kind == crate::EntryKind::Folder)
+            .map(|entry| entry.id.clone())
+            .collect();
+        self.remember_ids(key, ids);
+    }
+
+    fn remember_created(&mut self, key: &str, id: &str) {
+        self.folders
+            .entry(key.to_owned())
+            .or_default()
+            .insert(id.to_owned());
+    }
+
+    fn invalidate(&mut self, key: &str) {
+        self.folders.remove(key);
+    }
+}
 
 #[derive(Deserialize)]
 struct BatchTaskAck {
@@ -70,8 +121,27 @@ impl DriveClient {
         parent_id: Option<&str>,
         name: &str,
     ) -> Result<String, Error> {
+        let mut cache = FolderCreateCache::new();
+        self.create_folder_entry_cached(parent_id, name, &mut cache)
+    }
+
+    /// 同 [`DriveClient::create_folder_entry`]，但复用批次内的父目录列表。
+    pub fn create_folder_entry_cached(
+        &self,
+        parent_id: Option<&str>,
+        name: &str,
+        cache: &mut FolderCreateCache,
+    ) -> Result<String, Error> {
         let name = validate_name(name)?;
-        let before = self.folder_ids_in(parent_id)?;
+        let key = FolderCreateCache::key(parent_id);
+        let before = match cache.ids(&key) {
+            Some(ids) => ids.clone(),
+            None => {
+                let ids = self.folder_ids_in(parent_id)?;
+                cache.remember_ids(&key, ids.clone());
+                ids
+            }
+        };
         for attempt in 0..MAX_DUPLICATE_ATTEMPTS {
             let candidate = duplicate_folder_name(name, attempt);
             let body = create_folder_body(parent_id, &candidate);
@@ -85,24 +155,38 @@ impl DriveClient {
                 Err(Error::DuplicateName) if attempt + 1 < MAX_DUPLICATE_ATTEMPTS => {
                     continue;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    cache.invalidate(&key);
+                    return Err(err);
+                }
             };
             if let Some(id) = response.as_ref().and_then(folder_id_from_response) {
+                cache.remember_created(&key, &id);
                 return Ok(id);
             }
             for retry in 0..5 {
-                let entries = self.list_all(parent_id)?;
+                let entries = match self.list_all(parent_id) {
+                    Ok(entries) => entries,
+                    Err(err) => {
+                        cache.invalidate(&key);
+                        return Err(err);
+                    }
+                };
                 if let Some(id) = pick_new_folder_id(&entries, &before, &candidate) {
+                    cache.remember_entries(&key, &entries);
+                    cache.remember_created(&key, &id);
                     return Ok(id);
                 }
                 if retry < 4 {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
             }
+            cache.invalidate(&key);
             return Err(Error::ApiChanged(
                 "文件夹已创建，但服务端没有返回可用的目录 id".to_owned(),
             ));
         }
+        cache.invalidate(&key);
         Err(Error::DuplicateName)
     }
 

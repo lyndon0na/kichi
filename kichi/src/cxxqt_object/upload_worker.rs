@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use kichi_core::{DriveClient, UploadProgress, UploadResult, UploadStage};
+use kichi_core::{DriveClient, FolderCreateCache, UploadProgress, UploadResult, UploadStage};
 
 use super::transfers::{self, TransferJob, TransferState, UploadDir, UploadProgressState};
 use super::upload_queue;
@@ -228,7 +228,9 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         post_sync();
     }
 
-    for path in &dirs {
+    let mut folder_cache = FolderCreateCache::new();
+    let mut last_detail_sync = Instant::now();
+    for (position, path) in dirs.iter().enumerate() {
         if !same_epoch(my_epoch) || start.batch_cancel.is_abandoned() {
             outcome.interrupted = true;
             return finish_folder_outcome(start, outcome);
@@ -272,10 +274,21 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
         if same_epoch(my_epoch) {
             transfers::set_upload_folder_detail(
                 start.batch,
-                &format!("正在创建云端目录：{}", path.join("/")),
+                &format!(
+                    "正在创建云端目录 {}/{}：{}",
+                    position + 1,
+                    dirs.len(),
+                    path.join("/")
+                ),
             );
+            post_sync_throttled(&mut last_detail_sync);
         }
-        match session.create_folder_entry(Arc::clone(&client), Some(&parent_id), &name) {
+        match session.create_folder_entry(
+            Arc::clone(&client),
+            Some(&parent_id),
+            &name,
+            &mut folder_cache,
+        ) {
             Ok(id) => {
                 upload_dirs.push(UploadDir {
                     path: path.clone(),
@@ -289,6 +302,7 @@ fn run_batch(session: &Arc<Session>, start: &UploadStart, my_epoch: u64) -> Batc
                 if same_epoch(my_epoch) {
                     transfers::set_upload_dirs(start.batch, &upload_dirs);
                     transfers::clear_upload_dir_failure(start.batch, path);
+                    post_sync_throttled(&mut last_detail_sync);
                 }
             }
             Err(err) => {
@@ -911,6 +925,14 @@ fn post_sync() {
             qichi.as_mut().sync_transfers();
         },
     );
+}
+
+fn post_sync_throttled(last: &mut Instant) {
+    if last.elapsed() < PROGRESS_INTERVAL {
+        return;
+    }
+    *last = Instant::now();
+    post_sync();
 }
 
 fn post_live() {

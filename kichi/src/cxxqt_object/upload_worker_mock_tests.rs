@@ -24,6 +24,7 @@ use crate::session::Session;
 struct MockState {
     folder_names: Vec<String>,
     file_names: Vec<String>,
+    list_requests: usize,
     fail_bad_once: bool,
     fail_file_once: Option<String>,
 }
@@ -47,10 +48,16 @@ fn handle(mut stream: TcpStream, state: &Arc<Mutex<MockState>>) {
         return;
     };
     let (status, body) = match (method.as_str(), path.as_str()) {
-        ("GET", path) if path.starts_with("/drive/v1/files") => (
-            "200 OK".to_owned(),
-            r#"{"kind":"drive#fileList","files":[]}"#.to_owned(),
-        ),
+        ("GET", path) if path.starts_with("/drive/v1/files") => {
+            state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .list_requests += 1;
+            (
+                "200 OK".to_owned(),
+                r#"{"kind":"drive#fileList","files":[]}"#.to_owned(),
+            )
+        }
         ("POST", "/drive/v1/files") => create_entry(state, &body),
         _ => (
             "404 Not Found".to_owned(),
@@ -218,6 +225,67 @@ fn start(
 }
 
 #[test]
+fn sibling_directories_reuse_parent_folder_list() {
+    let state = Arc::new(Mutex::new(MockState::default()));
+    let base = spawn_mock(Arc::clone(&state));
+    let session = Arc::new(Session::for_test(
+        Config {
+            drive_base: base,
+            ..Config::default()
+        },
+        "mock-token",
+    ));
+
+    let root = std::env::temp_dir().join(format!("kichi-upload-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("root/one")).expect("创建 one 目录");
+    std::fs::create_dir_all(root.join("root/two")).expect("创建 two 目录");
+    let one_path = root.join("root/one/one.bin");
+    let two_path = root.join("root/two/two.bin");
+    std::fs::File::create(&one_path).expect("创建 one 文件");
+    std::fs::File::create(&two_path).expect("创建 two 文件");
+
+    let parent = folder_job(root.join("root"));
+    let one = file_job("one.bin", one_path, &["root", "one"]);
+    let two = file_job("two.bin", two_path, &["root", "two"]);
+    let dirs = vec![
+        vec!["root".to_owned()],
+        vec!["root".to_owned(), "one".to_owned()],
+        vec!["root".to_owned(), "two".to_owned()],
+    ];
+
+    let batch = transfers::new_batch();
+    transfers::start_batch(batch, &parent.id, &parent);
+    transfers::expand_folder(batch, &[one.clone(), two.clone()], &dirs);
+    clear_notice_group();
+
+    let _ = run_batch(
+        &session,
+        &start(batch, parent, vec![(0, one), (1, two)], dirs, Vec::new()),
+        upload_queue::current_epoch(),
+    );
+
+    let state = state.lock().unwrap_or_else(|err| err.into_inner());
+    assert_eq!(
+        state.folder_names,
+        vec!["root", "one", "two"],
+        "建目录顺序应保持按深度和名字"
+    );
+    assert_eq!(
+        state.list_requests, 2,
+        "root 和两个兄弟目录只应触发两次列表：目标父目录一次、root 一次"
+    );
+    drop(state);
+
+    transfers::with_records(|records| records.retain(|record| record.batch != batch));
+    transfers::with_trees(|trees| {
+        trees.remove(&batch);
+    });
+    clear_notice_group();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn directory_failure_retry_only_touches_failed_subtree() {
     let state = Arc::new(Mutex::new(MockState {
         fail_bad_once: true,
@@ -298,6 +366,10 @@ fn directory_failure_retry_only_touches_failed_subtree() {
         let state = state.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(state.folder_names, vec!["root", "bad", "good"]);
         assert_eq!(state.file_names, vec!["good.bin"]);
+        assert_eq!(
+            state.list_requests, 3,
+            "同一父目录正常只列一次；bad 创建失败后为避免误认残留目录会重新列一次"
+        );
     }
 
     assert!(transfers::retry_upload_folder(batch));
@@ -344,6 +416,10 @@ fn directory_failure_retry_only_touches_failed_subtree() {
             &state.file_names[1..],
             &["bad.bin".to_owned()],
             "重试只重传失败文件"
+        );
+        assert_eq!(
+            state.list_requests, 4,
+            "重试只应重新列一次待补建目录的父目录"
         );
     }
 

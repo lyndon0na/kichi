@@ -11,7 +11,7 @@ use cxx_qt_lib::{QString, QStringList};
 use kichi_core::EntryKind;
 
 use super::qobject;
-use super::transfers::{self, TransferDirection, TransferJob, UploadJob};
+use super::transfers::{self, TransferDirection, TransferJob, TransferState, UploadJob};
 use super::upload_queue::{self, ReserveError};
 use super::upload_scan::{self, ScanOutcome, ScanResult, ScannedFile};
 use super::upload_worker::UploadFile;
@@ -183,6 +183,20 @@ impl qobject::Kichi {
                 self.as_mut().enqueue_scanned_folder(batch, result);
             }
         }
+    }
+
+    /// 扫描中的轻量进度回投：只在父行仍处于「准备中」时更新说明。
+    pub(crate) fn on_upload_scan_progress(
+        mut self: Pin<&mut Self>,
+        batch: u64,
+        files: usize,
+        dirs: usize,
+    ) {
+        if transfers::upload_folder_state(batch) != Some(TransferState::Preparing) {
+            return;
+        }
+        transfers::set_upload_folder_detail(batch, &upload_scan::scan_progress_text(files, dirs));
+        self.as_mut().sync_transfers();
     }
 
     fn enqueue_scanned_folder(mut self: Pin<&mut Self>, batch: u64, result: ScanResult) {

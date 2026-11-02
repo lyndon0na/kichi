@@ -31,6 +31,7 @@ pub use drive::{DriveClient, UserInfo};
 pub use error::Error;
 pub use events::{PlaybackHistoryEntry, PlaybackProgress, RecentSavedEvent};
 pub use library::{LibraryEntry, LibraryKind};
+pub use manage::FolderCreateCache;
 pub use media::{FileInfo, NoLinkReason};
 pub use search::FileHit;
 pub use share::{CreateShareOptions, CreatedShare, MyShare};

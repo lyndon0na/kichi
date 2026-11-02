@@ -8,6 +8,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::transfers::TransferJob;
 use super::upload_queue::{MAX_NAME_BYTES, MAX_PATH_BYTES};
@@ -19,6 +20,7 @@ const MAX_SCAN_ENTRIES: usize = MAX_SCAN_FILES + MAX_SCAN_DIRS;
 const MAX_SCAN_RELATIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SCAN_ABSOLUTE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 256;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScannedFile {
@@ -186,6 +188,52 @@ struct ScanEntry {
     abandoned: bool,
 }
 
+struct ScanProgress {
+    batch: u64,
+    epoch: u64,
+    last_report: Option<Instant>,
+    last_counts: Option<(usize, usize)>,
+}
+
+impl ScanProgress {
+    fn new(batch: u64, epoch: u64) -> Self {
+        Self {
+            batch,
+            epoch,
+            last_report: None,
+            last_counts: None,
+        }
+    }
+
+    fn report(&mut self, files: usize, dirs: usize) {
+        if self.last_counts == Some((files, dirs)) {
+            return;
+        }
+        if self
+            .last_report
+            .is_some_and(|last| last.elapsed() < PROGRESS_INTERVAL)
+        {
+            return;
+        }
+        self.last_report = Some(Instant::now());
+        self.last_counts = Some((files, dirs));
+        let batch = self.batch;
+        let epoch = self.epoch;
+        super::actions::enqueue_ui(
+            move |mut qichi: std::pin::Pin<&mut super::qobject::Kichi>| {
+                if epoch != current_epoch() {
+                    return;
+                }
+                qichi.as_mut().on_upload_scan_progress(batch, files, dirs);
+            },
+        );
+    }
+}
+
+pub(crate) fn scan_progress_text(files: usize, dirs: usize) -> String {
+    format!("正在扫描本地文件夹… 已发现 {files} 个文件 · {dirs} 个子目录")
+}
+
 fn scans() -> &'static Mutex<HashMap<u64, ScanEntry>> {
     static SCANS: OnceLock<Mutex<HashMap<u64, ScanEntry>>> = OnceLock::new();
     SCANS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -240,7 +288,10 @@ pub(crate) fn start(batch: u64, parent: TransferJob) -> Result<(), String> {
     let spawned = std::thread::Builder::new()
         .name("kichi-upload-scan".into())
         .spawn(move || {
-            let outcome = scan_folder(&root, &thread_cancel);
+            let mut progress = ScanProgress::new(batch, my_epoch);
+            let outcome = scan_folder_with_progress(&root, &thread_cancel, |files, dirs| {
+                progress.report(files, dirs);
+            });
             let current = take_if_current(batch, my_epoch);
             if !current {
                 return;
@@ -300,7 +351,15 @@ pub(crate) fn reset() {
     });
 }
 
+#[cfg(test)]
 fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
+    scan_folder_with_progress(root, cancel, |_, _| {})
+}
+
+fn scan_folder_with_progress<F>(root: &Path, cancel: &Cancel, mut progress: F) -> ScanOutcome
+where
+    F: FnMut(usize, usize),
+{
     let metadata = match std::fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
         Err(err) => return ScanOutcome::Failed(format!("无法读取本地文件夹：{err}")),
@@ -331,6 +390,7 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
         dirs: vec![vec![root_name.to_owned()]],
         skipped: 0,
     };
+    progress(0, 0);
     let mut stack = vec![(root.to_path_buf(), vec![root_name.to_owned()], true)];
     while let Some((dir, relative, is_root)) = stack.pop() {
         if cancel.is_cancelled() {
@@ -372,6 +432,7 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
         // 目录先把栈撑爆才在读取阶段报错。
         if !is_root {
             result.dirs.push(relative.clone());
+            progress(result.files.len(), result.dirs.len().saturating_sub(1));
         }
         let mut entries = Vec::new();
         for entry in dir_entries {
@@ -441,6 +502,7 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
                 name,
                 size: metadata.len(),
             });
+            progress(result.files.len(), result.dirs.len().saturating_sub(1));
         }
         // 反着压栈，保持目录名升序遍历；文件最终再统一按相对路径排序。
         for child in child_dirs.into_iter().rev() {
@@ -458,6 +520,7 @@ fn scan_folder(root: &Path, cancel: &Cancel) -> ScanOutcome {
     result
         .dirs
         .sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    progress(result.files.len(), result.dirs.len().saturating_sub(1));
     ScanOutcome::Done(result)
 }
 
@@ -545,6 +608,34 @@ mod tests {
             == vec![root_name.clone(), "sub".to_owned()]
             && file.name == "b.txt"));
         assert_eq!(result.skipped, 2, "符号链接文件和目录都不跟随");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_reports_progress_without_partial_results() {
+        let root = temp_dir("progress");
+        std::fs::create_dir(root.join("sub")).expect("建子目录");
+        std::fs::write(root.join("a.txt"), b"a").expect("写文件");
+        std::fs::write(root.join("sub/b.txt"), b"b").expect("写文件");
+
+        let mut reports = Vec::new();
+        let outcome = scan_folder_with_progress(&root, &Cancel::default(), |files, dirs| {
+            reports.push((files, dirs));
+        });
+        let ScanOutcome::Done(result) = outcome else {
+            panic!("扫描应成功：{outcome:?}");
+        };
+        assert_eq!(result.files.len(), 2);
+        assert_eq!(reports.first(), Some(&(0, 0)));
+        assert_eq!(
+            reports.last(),
+            Some(&(2, 1)),
+            "扫描结束前要报告最终文件 / 子目录数"
+        );
+        assert_eq!(
+            scan_progress_text(2, 1),
+            "正在扫描本地文件夹… 已发现 2 个文件 · 1 个子目录"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
