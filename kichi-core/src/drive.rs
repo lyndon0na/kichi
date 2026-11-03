@@ -519,9 +519,9 @@ pub(crate) struct FileDto {
     file_extension: String,
     #[serde(default)]
     thumbnail_link: String,
-    /// 所在文件夹 id：全盘列举时靠它还原真实路径；根目录的条目为空串
+    /// 所在文件夹 id：全盘列举时靠它还原真实路径；根目录为空串，未下发为 None。
     #[serde(default)]
-    parent_id: String,
+    parent_id: Option<String>,
     /// 详情接口里不可靠；列表同时兼容显式布尔值和 `tags[].name == "STAR"`。
     #[serde(default)]
     starred: bool,
@@ -554,6 +554,11 @@ impl FileDto {
     /// 事件参考资源的 id；缺失时为空串。
     pub(crate) fn event_resource_id(&self) -> &str {
         self.id.trim()
+    }
+
+    /// 所在文件夹 id；缺失时为空串。
+    pub(crate) fn parent_id(&self) -> Option<String> {
+        self.parent_id.as_deref().map(str::trim).map(str::to_owned)
     }
 
     /// 转换成领域类型。
@@ -595,7 +600,7 @@ impl FileDto {
             size: self.size,
             created_at: self.created_time,
             modified_at: self.modified_time,
-            parent_id: self.parent_id.trim().to_owned(),
+            parent_id: self.parent_id.as_deref().unwrap_or("").trim().to_owned(),
             md5: (!self.md5_checksum.is_empty()).then_some(self.md5_checksum),
             audit_flagged: self.audit.is_some_and(|audit| audit_flagged(&audit.status)),
             starred,
@@ -631,7 +636,7 @@ impl FileDto {
 
     /// 转换成回收站条目：保留原父目录与删除时间。
     pub(crate) fn into_trash_entry(self) -> TrashEntry {
-        let parent_id = self.parent_id.trim().to_owned();
+        let parent_id = self.parent_id.as_deref().unwrap_or("").trim().to_owned();
         let deleted_at = self.delete_time;
         TrashEntry {
             entry: self.into_entry(),
@@ -642,7 +647,7 @@ impl FileDto {
 
     /// 转换成搜索命中：条目 + 所在文件夹 id（全盘列举用）。
     pub(crate) fn into_hit(self) -> crate::search::FileHit {
-        let parent_id = self.parent_id.trim().to_owned();
+        let parent_id = self.parent_id.as_deref().unwrap_or("").trim().to_owned();
         crate::search::FileHit {
             entry: self.into_entry(),
             parent_id,
@@ -651,7 +656,10 @@ impl FileDto {
 
     /// 单个条目自身：名字 + 父目录 id（拼「所在文件夹」路径用）。
     pub(crate) fn into_name_and_parent(self) -> (String, String) {
-        (self.name, self.parent_id.trim().to_owned())
+        (
+            self.name,
+            self.parent_id.as_deref().unwrap_or("").trim().to_owned(),
+        )
     }
 }
 

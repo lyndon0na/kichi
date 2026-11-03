@@ -242,6 +242,11 @@ pub mod qobject {
         #[cxx_name = "taskLocationReady"]
         fn task_location_ready(self: Pin<&mut Self>, target_id: QString);
 
+        /// 离线任务完成并写入某个目录：文件页若正显示该目录，可静默刷新。
+        #[qsignal]
+        #[cxx_name = "offlineTaskFolderChanged"]
+        fn offline_task_folder_changed(self: Pin<&mut Self>, folder_id: QString);
+
         /// 资料库里的文件夹与内容已就绪，界面现在可以切到文件页。
         #[qsignal]
         #[cxx_name = "libraryFolderReady"]
@@ -290,6 +295,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "ensureFilesFresh"]
         fn ensure_files_fresh(self: Pin<&mut Self>);
+
+        /// 离线任务完成后的静默目录校准：不显示手动刷新反馈。
+        #[qinvokable]
+        #[cxx_name = "refreshFilesBackground"]
+        fn refresh_files_background(self: Pin<&mut Self>);
 
         /// 请求某条文件的缩略图。QML 只传 id，远程地址和缓存路径都留在 Rust 侧。
         #[qinvokable]
@@ -966,6 +976,8 @@ pub struct KichiRust {
     pub(crate) known_running: std::collections::HashMap<String, bool>,
     /// 已经通知过的任务 id
     pub(crate) notified: std::collections::HashSet<String>,
+    /// 本次会话提交的离线任务 → 目标目录 id；空串表示根目录
+    pub(crate) task_destinations: std::collections::HashMap<String, String>,
     /// 播放菜单（QML 当 model 用：label / original）。固定四项，不随网络变化
     pub(crate) play_menu: QVariantList,
     /// 菜单标题（文件名）
@@ -1211,6 +1223,7 @@ impl Default for KichiRust {
             share_created_expiration: QString::default(),
             known_running: std::collections::HashMap::new(),
             notified: std::collections::HashSet::new(),
+            task_destinations: std::collections::HashMap::new(),
             play_menu: QVariantList::default(),
             play_title: QString::default(),
             play_id: String::new(),

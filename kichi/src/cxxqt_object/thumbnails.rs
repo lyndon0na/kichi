@@ -167,6 +167,7 @@ mod tests {
             message: None,
             created_at: None,
             file_id: Some("file".to_owned()),
+            output_parent_id: None,
             file_size: 1,
             kind: Some(EntryKind::File),
             thumbnail_url: " https://thumb.example/task ".to_owned(),

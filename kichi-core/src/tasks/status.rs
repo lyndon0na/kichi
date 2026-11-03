@@ -67,6 +67,7 @@ mod tests {
             message: message.map(str::to_owned),
             created_at: None,
             file_id: None,
+            output_parent_id: None,
             file_size: 0,
             kind: None,
             thumbnail_url: String::new(),

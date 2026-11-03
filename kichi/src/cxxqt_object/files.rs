@@ -44,7 +44,7 @@ impl qobject::Kichi {
     }
 
     /// 登录、写操作收尾等内部强制校准：不显示加载态。
-    pub(crate) fn refresh_files_background(self: Pin<&mut Self>) {
+    pub fn refresh_files_background(self: Pin<&mut Self>) {
         self.refresh_files_inner(true, false);
     }
 

@@ -73,6 +73,7 @@ TestCase {
         property string newTaskDialogFolderPath: ""
         property var newTaskDialogStartPath: []
         property int refreshCalls: 0
+        property int backgroundRefreshCalls: 0
         property int openDirCalls: 0
         property int searchOpenCalls: 0
         property int searchRevealCalls: 0
@@ -81,6 +82,7 @@ TestCase {
         signal fileActionDone(string action, bool ok, string message, var ids)
         signal folderCreateStarted(string id)
         signal folderCreated(string id)
+        signal offlineTaskFolderChanged(string folderId)
         signal shareActionDone(string action, bool ok, string message)
         signal thumbnailReady(string id, string path)
 
@@ -110,6 +112,9 @@ TestCase {
         function clearStatusMessage() {}
         function refreshFiles() {
             refreshCalls += 1
+        }
+        function refreshFilesBackground() {
+            backgroundRefreshCalls += 1
         }
         function beginNewFolder() {
             newFolderCalls += 1
@@ -309,6 +314,7 @@ TestCase {
         fakeBackend.droppedUploadFolderName = ""
         fakeBackend.droppedUploadUrls = []
         fakeBackend.refreshCalls = 0
+        fakeBackend.backgroundRefreshCalls = 0
         fakeBackend.openDirCalls = 0
         fakeBackend.searchOpenCalls = 0
         fakeBackend.searchRevealCalls = 0
@@ -1444,6 +1450,61 @@ TestCase {
         verify(folderUpload !== null && !folderUpload.enabled)
         verify(newFolder !== null && !newFolder.enabled)
         verify(newTask !== null && newTask.enabled)
+    }
+
+    function test_offline_task_completion_refreshes_only_visible_current_folder() {
+        fakeBackend.currentDirId = "folder-current"
+        fakeBackend.breadcrumb = ["全部文件", "当前目录"]
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(40)
+
+        fakeBackend.offlineTaskFolderChanged("folder-other")
+        wait(20)
+        compare(fakeBackend.backgroundRefreshCalls, 0,
+                "别的目录完成离线任务不能刷新当前目录")
+
+        fakeBackend.offlineTaskFolderChanged("folder-current")
+        tryCompare(fakeBackend, "backgroundRefreshCalls", 1)
+
+        fakeBackend.searchActive = true
+        wait(20)
+        fakeBackend.offlineTaskFolderChanged("folder-current")
+        wait(20)
+        compare(fakeBackend.backgroundRefreshCalls, 1,
+                "搜索结果里不能刷新背后的旧目录")
+
+        fakeBackend.searchActive = false
+        tryCompare(fakeBackend, "backgroundRefreshCalls", 2)
+
+        page.holdingSearchEntries = true
+        wait(20)
+        fakeBackend.offlineTaskFolderChanged("folder-current")
+        wait(20)
+        compare(fakeBackend.backgroundRefreshCalls, 2,
+                "搜索结果过渡期间不能刷新背后的旧目录")
+        page.holdingSearchEntries = false
+        tryCompare(fakeBackend, "backgroundRefreshCalls", 3)
+
+        page.visible = false
+        wait(20)
+        fakeBackend.offlineTaskFolderChanged("folder-current")
+        wait(20)
+        compare(fakeBackend.backgroundRefreshCalls, 3,
+                "文件页不可见时不能立即刷新")
+
+        page.visible = true
+        tryCompare(fakeBackend, "backgroundRefreshCalls", 4)
+
+        page.windowVisible = false
+        wait(20)
+        fakeBackend.offlineTaskFolderChanged("folder-current")
+        wait(20)
+        compare(fakeBackend.backgroundRefreshCalls, 4,
+                "窗口收进托盘时不能立即刷新")
+
+        page.windowVisible = true
+        tryCompare(fakeBackend, "backgroundRefreshCalls", 5)
     }
 
     function test_refresh_button_feedback_is_manual_only() {

@@ -7,6 +7,7 @@
 //! 定时循环跑在一条常驻后台线程里；每轮结果照旧经主线程队列由 `pump()` 取回，
 //! 不在后台线程碰任何 Qt 对象。退出登录时 `task_epoch` 自增，在途结果作废。
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -186,6 +187,7 @@ impl qobject::Kichi {
         }
         let count = urls.len();
         let session = self.backend.session.clone();
+        let destination = parent_id.clone();
         let my_epoch = self.tasks_epoch;
         self.as_mut()
             .set_message(&format!("正在提交 {count} 条离线任务……"));
@@ -212,10 +214,32 @@ impl qobject::Kichi {
                 } else {
                     qichi.as_mut().set_message(&text);
                 }
+                qichi
+                    .as_mut()
+                    .remember_task_destinations(&outcome.created, destination.as_deref());
                 qichi.as_mut().show_submitted_tasks(outcome.created);
                 qichi.as_mut().refresh_tasks_force();
             },
         );
+    }
+
+    fn remember_task_destinations(
+        mut self: Pin<&mut Self>,
+        tasks: &[OfflineTask],
+        destination: Option<&str>,
+    ) {
+        let Some(destination) = destination else {
+            return;
+        };
+        let destination = destination.trim().to_owned();
+        let mut rust = self.as_mut().rust_mut();
+        for task in tasks {
+            let id = task.id.trim();
+            if !id.is_empty() {
+                rust.task_destinations
+                    .insert(id.to_owned(), destination.clone());
+            }
+        }
     }
 
     /// 删除任务记录（云端文件保留）。界面侧负责二次确认。
@@ -230,15 +254,17 @@ impl qobject::Kichi {
         }
         let session = self.backend.session.clone();
         let my_epoch = self.tasks_epoch;
+        let id_for_request = id.clone();
         self.as_mut().set_message("正在删除任务……");
         run_in_background(
-            move || session.delete_offline_task(&id),
+            move || session.delete_offline_task(&id_for_request),
             move |mut qichi, result| {
                 if qichi.as_ref().rust().tasks_epoch != my_epoch {
                     return;
                 }
                 match result {
                     Ok(()) => {
+                        qichi.as_mut().rust_mut().task_destinations.remove(&id);
                         qichi.as_mut().set_message("任务已删除（云端文件保留）");
                         qichi.as_mut().refresh_tasks_force();
                     }
@@ -378,6 +404,7 @@ impl qobject::Kichi {
             rust.tasks = QVariantList::default();
             rust.task_list.clear();
             rust.notified.clear();
+            rust.task_destinations.clear();
         }
         self.as_mut().notify();
     }
@@ -409,27 +436,33 @@ impl qobject::Kichi {
     ) {
         sort_tasks_newest_first(&mut tasks);
 
-        let finished_now = if announce {
+        let (finished_now, completed_folders) = {
             // 先在 rust_mut 里完成「谁刚结束」的判定，再统一写属性
             let mut rust = self.as_mut().rust_mut();
             let mut fresh = Vec::new();
             for task in &tasks {
+                let status = task.status();
                 let was_running = rust.known_running.contains_key(task.id.as_str());
                 if was_running
-                    && task.status().is_settled()
+                    && announce
+                    && status.is_settled()
                     && rust.notified.insert(task.id.clone())
                 {
                     fresh.push(task.clone());
                 }
-                if task.status().is_settled() {
+                if status.is_settled() {
                     rust.known_running.remove(task.id.as_str());
                 } else {
                     rust.known_running.insert(task.id.clone(), true);
                 }
             }
-            fresh
-        } else {
-            Vec::new()
+            let completed_folders = completed_task_folders(&fresh, &rust.task_destinations);
+            for task in &tasks {
+                if task.status().is_settled() {
+                    rust.task_destinations.remove(&task.id);
+                }
+            }
+            (fresh, completed_folders)
         };
 
         let mut list = QVariantList::default();
@@ -457,6 +490,12 @@ impl qobject::Kichi {
             self.as_mut().notify();
         }
 
+        for folder_id in completed_folders {
+            self.as_mut().mark_file_dir_stale(&folder_id);
+            self.as_mut()
+                .offline_task_folder_changed(QString::from(folder_id.as_str()));
+        }
+
         let notify_enabled = self.notify_enabled;
         for task in finished_now {
             notify_finished(&task, notify_enabled);
@@ -470,6 +509,23 @@ impl qobject::Kichi {
 /// 状态分组压到几十天前的「产物已删除」任务下面，和表头「创建时间」不一致。
 fn sort_tasks_newest_first(tasks: &mut [OfflineTask]) {
     tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+}
+
+/// 任务完成后应校准的目录；优先用提交时记下的目标，重启后回退到资源父目录。
+fn completed_task_folders(
+    tasks: &[OfflineTask],
+    destinations: &HashMap<String, String>,
+) -> HashSet<String> {
+    tasks
+        .iter()
+        .filter(|task| task.status() == TaskStatus::Completed)
+        .filter_map(|task| {
+            destinations
+                .get(&task.id)
+                .cloned()
+                .or_else(|| task.output_parent_id.clone())
+        })
+        .collect()
 }
 
 /// 批量清理只接受已结束状态，进行中、排队、暂停和未知状态一律不动。
@@ -695,6 +751,7 @@ mod tests {
             message: None,
             created_at: None,
             file_id: None,
+            output_parent_id: None,
             file_size: 0,
             kind: None,
             thumbnail_url: String::new(),
@@ -743,6 +800,37 @@ mod tests {
         assert_eq!(next_interval(&[task("c", TaskPhase::Running)]), POLL_ACTIVE);
         assert_eq!(next_interval(&[task("d", TaskPhase::Pending)]), POLL_ACTIVE);
         assert_eq!(next_interval(&[task("e", TaskPhase::Paused)]), POLL_ACTIVE);
+    }
+
+    #[test]
+    fn completed_batch_dedupes_folders_and_ignores_failures() {
+        let first = task("first", TaskPhase::Completed);
+        let second = task("second", TaskPhase::Completed);
+        let failed = task("failed", TaskPhase::Error);
+        let destinations = HashMap::from([
+            ("first".to_owned(), "folder-current".to_owned()),
+            ("second".to_owned(), "folder-current".to_owned()),
+        ]);
+
+        let folders = completed_task_folders(&[first, second, failed], &destinations);
+        assert_eq!(folders.len(), 1, "同一批任务完成只校准一次目录");
+        assert!(folders.contains("folder-current"));
+    }
+
+    #[test]
+    fn completed_task_falls_back_to_resource_parent_and_keeps_root() {
+        let mut submitted = task("submitted", TaskPhase::Completed);
+        submitted.output_parent_id = Some("folder-moved".into());
+        let mut restarted = task("restarted", TaskPhase::Completed);
+        restarted.output_parent_id = Some("folder-resource".into());
+        let mut root = task("root", TaskPhase::Completed);
+        root.output_parent_id = Some(String::new());
+        let destinations = HashMap::from([("submitted".to_owned(), "folder-submitted".to_owned())]);
+
+        let folders = completed_task_folders(&[submitted, restarted, root], &destinations);
+        assert!(folders.contains("folder-submitted"), "会话内目标优先");
+        assert!(folders.contains("folder-resource"), "重启后回退资源父目录");
+        assert!(folders.contains(""), "根目录用空串表示");
     }
 
     #[test]

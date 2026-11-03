@@ -98,6 +98,7 @@ impl TaskDto {
             reference_resource,
             created_time,
         } = self;
+        let output_parent_id = reference_resource.as_ref().and_then(FileDto::parent_id);
         let resource = reference_resource.map(FileDto::into_entry);
         let name = if name.trim().is_empty() {
             resource
@@ -144,6 +145,7 @@ impl TaskDto {
             message: message.filter(|msg| !msg.is_empty()),
             created_at: created_time,
             file_id,
+            output_parent_id,
             file_size,
             kind,
             thumbnail_url,
@@ -325,7 +327,8 @@ mod tests {
             "tasks": [
                 {"id":"T1","name":"电影","phase":"PHASE_TYPE_RUNNING","progress":42,
                  "file_size":"123456","file_id":"F1","message":"downloading",
-                 "reference_resource":{"id":"D1","name":"电影","kind":"drive#folder"},
+                 "reference_resource":{"id":"D1","name":"电影","kind":"drive#folder",
+                 "parent_id":"folder-9"},
                  "created_time":"2026-10-20T12:34:56.789+08:00"},
                 {"id":"T2","name":"done.zip","phase":"PHASE_TYPE_COMPLETE",
                  "progress":100,"file_size":null,"message":"",
@@ -347,6 +350,7 @@ mod tests {
         assert_eq!(tasks[0].progress, 42);
         assert_eq!(tasks[0].file_size, 123_456, "字符串 file_size 应可解析");
         assert_eq!(tasks[0].file_id.as_deref(), Some("F1"));
+        assert_eq!(tasks[0].output_parent_id.as_deref(), Some("folder-9"));
         assert_eq!(tasks[0].message.as_deref(), Some("downloading"));
         assert_eq!(tasks[0].kind, Some(EntryKind::Folder));
         assert!(!tasks[0].media);
@@ -357,6 +361,10 @@ mod tests {
         );
 
         assert_eq!(tasks[1].phase, TaskPhase::Completed);
+        assert_eq!(
+            tasks[1].output_parent_id, None,
+            "资源缺少 parent_id 时不能冒充根目录"
+        );
         assert_eq!(tasks[1].file_size, 42, "顶层无大小时回退产物大小");
         assert_eq!(tasks[1].message, None, "空说明应为 None");
         assert_eq!(tasks[1].created_at, None);

@@ -567,6 +567,7 @@ ApplicationWindow {
                     FilesPage {
                         id: filesPage
                         backend: backend
+                        windowVisible: root.visible
                         playMenuEnabled: root.currentPage === pageIds.files
                                          || root.currentPage === pageIds.tasks
                     }

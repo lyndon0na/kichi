@@ -43,6 +43,10 @@ Item {
     property string heldSearchStatus: ""
     property bool heldSearchTruncated: false
     property bool holdingSearchEntries: false
+    /// 主窗口是否显示；缩到托盘时页面本身仍可见，但不能为后台任务刷新。
+    property bool windowVisible: true
+    /// 离线任务完成后暂不能立即刷新的目录；null 表示没有待处理目录。
+    property var pendingOfflineTaskFolder: null
     readonly property bool showingSearchEntries: page.searching
                                                   || page.holdingSearchEntries
     readonly property var displayEntries: {
@@ -224,6 +228,21 @@ Item {
         page.heldSearchTruncated = false
     }
 
+    function refreshPendingOfflineTaskFolder() {
+        if (page.pendingOfflineTaskFolder === null || !page.backend)
+            return
+        if (!page.visible || !page.windowVisible || page.showingSearchEntries)
+            return
+        const folderId = String(page.pendingOfflineTaskFolder)
+        if (String(page.backend.currentDirId) !== folderId) {
+            page.pendingOfflineTaskFolder = null
+            return
+        }
+        page.pendingOfflineTaskFolder = null
+        if (typeof page.backend.refreshFilesBackground === "function")
+            page.backend.refreshFilesBackground()
+    }
+
     function holdSearchEntriesUntilLoaded(entries, statusText, truncated) {
         if (!page.backend || !page.backend.filesLoading)
             return
@@ -273,6 +292,7 @@ Item {
             return
         }
         if (page.backend) {
+            page.refreshPendingOfflineTaskFolder()
             if (typeof page.backend.ensureFilesFresh === "function")
                 page.backend.ensureFilesFresh()
             else if (page.backend.filesStale)
@@ -298,6 +318,16 @@ Item {
         selection.clear()
         if (page.searching)
             page.clearHeldSearchEntries()
+        else
+            Qt.callLater(page.refreshPendingOfflineTaskFolder)
+    }
+    onHoldingSearchEntriesChanged: {
+        if (!page.holdingSearchEntries)
+            Qt.callLater(page.refreshPendingOfflineTaskFolder)
+    }
+    onWindowVisibleChanged: {
+        if (page.windowVisible)
+            page.refreshPendingOfflineTaskFolder()
     }
     onDisplayEntriesChanged: {
         // 乐观移除 / 回滚期间保留选择，失败恢复后才能仍然指向原来的条目；
@@ -681,6 +711,15 @@ Item {
         function onFolderCreated(id) {
             if (page.visible && !page.showingSearchEntries)
                 interaction.resolveCreatedEntry(id)
+        }
+
+        function onOfflineTaskFolderChanged(folderId) {
+            if (!page.backend)
+                return
+            if (String(page.backend.currentDirId) !== String(folderId))
+                return
+            page.pendingOfflineTaskFolder = String(folderId)
+            page.refreshPendingOfflineTaskFolder()
         }
     }
 

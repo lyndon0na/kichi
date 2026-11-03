@@ -116,6 +116,8 @@ pub struct OfflineTask {
     pub created_at: Option<DateTime<Utc>>,
     /// 完成后产物对应的文件 id
     pub file_id: Option<String>,
+    /// 完成产物所在目录；资源未下发父目录时为 `None`，根目录为 `Some("")`。
+    pub output_parent_id: Option<String>,
     /// 产物大小（字节）；官方给字符串，缺失按 0 处理
     pub file_size: u64,
     /// 产物类别；列表未带 `reference_resource` 时为 `None`
