@@ -2,7 +2,7 @@ import QtQuick
 import QtTest
 import ".."
 
-// 首次加载骨架的共享状态与视觉布局。
+// 空内容加载骨架的共享状态与视觉布局。
 TestCase {
     name: "LoadingSkeleton"
     when: windowShown
@@ -11,7 +11,7 @@ TestCase {
 
     Component {
         id: gateComponent
-        FirstLoadGate {}
+        LoadingSkeletonGate {}
     }
 
     Component {
@@ -61,47 +61,41 @@ TestCase {
         gate = null
     }
 
-    function test_gate_shows_skeleton_only_for_first_load() {
+    function test_gate_shows_skeleton_for_every_empty_load() {
         gate = gateComponent.createObject(parent)
         verify(gate !== null)
 
         gate.active = true
         gate.loading = true
-        gate.start()
-        compare(gate.showSkeleton, true, "首次读取显示骨架")
+        compare(gate.showSkeleton, true, "空内容读取显示骨架")
 
         gate.loading = false
-        compare(gate.showSkeleton, false, "首次读取结束收起骨架")
-        compare(gate.pending, false, "首次读取已经消费")
+        compare(gate.showSkeleton, false, "读取结束收起骨架")
 
         gate.loading = true
-        compare(gate.showSkeleton, false, "后续读取不再显示骨架")
+        compare(gate.showSkeleton, true, "再次空内容读取仍显示骨架")
 
-        gate.loading = false
-        gate.sessionActive = false
-        gate.sessionActive = true
-        compare(gate.pending, true, "重新登录后允许下一次首次骨架")
-    }
-
-    function test_gate_does_not_survive_a_cached_first_visit() {
-        gate = gateComponent.createObject(parent)
-        gate.active = true
-        gate.start()
-        compare(gate.pending, false, "命中缓存即视为已经使用过页面")
-
-        gate.loading = true
-        compare(gate.showSkeleton, false, "之后发起的加载仍走原动画")
+        gate.count = 2
+        compare(gate.showSkeleton, false, "已有内容时刷新不覆盖旧内容")
     }
 
     function test_gate_requires_an_active_page() {
         gate = gateComponent.createObject(parent)
         gate.loading = true
-        gate.start()
         compare(gate.showSkeleton, false, "页面不在前台时不画骨架")
 
         gate.active = true
-        gate.start()
-        compare(gate.showSkeleton, true, "回到前台后接着完成首次加载")
+        compare(gate.showSkeleton, true, "回到前台后对当前读取显示骨架")
+    }
+
+    function test_gate_hides_skeleton_while_signed_out() {
+        gate = gateComponent.createObject(parent)
+        gate.active = true
+        gate.loading = true
+        compare(gate.showSkeleton, true)
+
+        gate.sessionActive = false
+        compare(gate.showSkeleton, false, "退出登录期间不画内容骨架")
     }
 
     function test_skeleton_switches_between_list_and_grid_layouts() {
@@ -123,7 +117,9 @@ TestCase {
 
         const list = findChild(skeleton, "listLoadingSkeleton")
         const grid = findChild(skeleton, "gridLoadingSkeleton")
-        verify(list !== null && grid !== null)
+        const backdrop = findChild(skeleton, "loadingSkeletonBackdrop")
+        verify(list !== null && grid !== null && backdrop !== null)
+        compare(backdrop.color, skeleton.theme.surface)
         compare(list.visible, true)
         compare(grid.visible, false)
         compare(list.y, 38, "列表骨架从表头下方开始")

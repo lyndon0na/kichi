@@ -376,7 +376,7 @@ TestCase {
         compare(fakeBackend.thumbnailRequests, 0, "文件夹不应请求缩略图")
     }
 
-    function test_files_first_loading_uses_skeleton_then_keeps_old_loading_state() {
+    function test_files_loading_uses_skeleton_for_each_empty_read() {
         fakeBackend.files = []
         fakeBackend.filesLoading = true
         page = pageComponent.createObject(parent, {
@@ -388,26 +388,33 @@ TestCase {
         page.visible = true
         wait(30)
         const skeleton = findChild(page, "pageLoadingSkeleton")
-        const gate = findChild(page, "filesFirstLoadGate")
+        const gate = findChild(page, "filesLoadingSkeletonGate")
         verify(skeleton !== null)
         verify(gate !== null)
         compare(skeleton.visible, true,
-                "首次目录读取显示骨架（page=" + page.showInitialSkeleton
-                + ", pending=" + gate.pending + ", observed=" + gate.observedLoading
+                "空内容目录读取显示骨架（page=" + page.showLoadingSkeleton
                 + ", active=" + gate.active + ", loading=" + gate.loading
-                + ", session=" + gate.sessionActive + ", count=" + gate.count + "）")
+                + ", count=" + gate.count + "）")
 
         fakeBackend.filesLoading = false
         fakeBackend.files = manyEntries(2)
         fakeBackend.filesRevision += 1
         fakeBackend.changed()
         wait(30)
-        compare(skeleton.visible, false, "首次读取结束收起骨架")
+        compare(skeleton.visible, false, "读取结束收起骨架")
 
         fakeBackend.filesLoading = true
         fakeBackend.changed()
         wait(30)
-        compare(skeleton.visible, false, "后续进目录 / 刷新不再显示骨架")
+        compare(skeleton.visible, true,
+                "切到无缓存目录时，上一目录内容不挡住骨架")
+
+        fakeBackend.files = []
+        fakeBackend.filesLoading = false
+        fakeBackend.filesRevision += 1
+        fakeBackend.changed()
+        wait(30)
+        compare(skeleton.visible, false, "目录读取结束后收起骨架")
     }
 
     function test_grid_thumbnail_decode_size_does_not_follow_card_width() {

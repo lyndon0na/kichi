@@ -59,7 +59,7 @@ Item {
     readonly property bool backendSessionActive: page.backend === null
                                                  || typeof page.backend.authState === "undefined"
                                                  || page.backend.authState === "signedIn"
-    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
+    readonly property bool showLoadingSkeleton: loadingSkeletonGate.showSkeleton
     readonly property var fileRows: entryRows.model
     readonly property var activeFileView: page.gridMode ? fileGrid : fileList
     readonly property string playLoadingId: {
@@ -150,14 +150,17 @@ Item {
         source: page.displayEntries
     }
 
-    FirstLoadGate {
-        id: initialLoadGate
+    LoadingSkeletonGate {
+        id: loadingSkeletonGate
 
-        objectName: "filesFirstLoadGate"
+        objectName: "filesLoadingSkeletonGate"
         active: page.visible && !page.showingSearchEntries
         sessionActive: page.backendSessionActive
         loading: page.backend !== null && page.backend.filesLoading
-        count: page.displayEntries.length
+        // filesLoading 只在新目录没有快照时置位；上一目录的条目仍留在
+        // 模型里，但不算目标目录已有内容，必须让骨架盖住它。
+        count: page.backend !== null && page.backend.filesLoading
+               ? 0 : page.displayEntries.length
     }
 
     // 页面尺寸常量（滚动条车道 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -306,7 +309,6 @@ Item {
                 page.backend.ensureFilesFresh()
             else if (page.backend.filesStale)
                 page.backend.refreshFiles()
-            Qt.callLater(initialLoadGate.start)
         }
         // 从登录页 / 其它页切回来：主动把焦点交还给列表，否则快捷键收不到。
         // fileList 可能还没构造（初次可见时），判空避免无谓的 TypeError。
@@ -621,7 +623,7 @@ Item {
 
             LoadingSkeleton {
                 anchors.fill: parent
-                visible: page.showInitialSkeleton
+                visible: page.showLoadingSkeleton
                 gridMode: page.gridMode
                 density: density
                 metrics: metrics
@@ -638,7 +640,7 @@ Item {
                 color: palette.placeholderText
                 visible: !page.showingSearchEntries && page.backend !== null
                          && !page.backend.filesLoading
-                         && !page.showInitialSkeleton
+                         && !page.showLoadingSkeleton
                          && page.backend.files.length === 0
             }
 

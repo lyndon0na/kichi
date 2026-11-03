@@ -159,7 +159,7 @@ TestCase {
         tryCompare(backend, "refreshCalls", 3)
     }
 
-    function test_first_loading_uses_skeleton_then_restores_spinner() {
+    function test_empty_loads_use_skeleton_each_time() {
         backend.shares = []
         backend.sharesLoading = true
         page.active = true
@@ -168,20 +168,23 @@ TestCase {
         const skeleton = findChild(page, "pageLoadingSkeleton")
         const loadingState = findChild(page, "sharesLoadingState")
         verify(skeleton !== null && loadingState !== null)
-        compare(skeleton.visible, true, "首次读取显示骨架")
-        compare(loadingState.visible, false, "首次读取不叠原来的转圈")
+        compare(skeleton.visible, true, "空内容读取显示骨架")
+        compare(loadingState.visible, false, "空内容读取不叠原来的转圈")
 
         backend.sharesLoading = false
         push([share("a")])
         wait(30)
         compare(skeleton.visible, false, "数据到达后收起骨架")
 
-        push([])
         backend.sharesLoading = true
         backend.changed()
         wait(30)
-        compare(skeleton.visible, false, "第二次读取不再显示骨架")
-        compare(loadingState.visible, true, "第二次读取恢复原加载态")
+        compare(skeleton.visible, false, "有旧内容时刷新保留内容，不闪骨架")
+
+        push([])
+        wait(30)
+        compare(skeleton.visible, true, "再次空内容读取仍显示骨架")
+        compare(loadingState.visible, false, "再次空内容读取不叠原来的转圈")
     }
 
     function test_header_refresh_feedback_hides_idle_count() {

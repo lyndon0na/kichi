@@ -31,7 +31,7 @@ Item {
     readonly property bool backendSessionActive: page.backend === null
                                                  || typeof page.backend.authState === "undefined"
                                                  || page.backend.authState === "signedIn"
-    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
+    readonly property bool showLoadingSkeleton: loadingSkeletonGate.showSkeleton
     readonly property bool gridMode: backend !== null
                                      && backend.contentView === "grid"
     readonly property var activeView: gridMode ? trashGrid : trashList
@@ -50,8 +50,8 @@ Item {
         backend: page.backend
     }
 
-    FirstLoadGate {
-        id: initialLoadGate
+    LoadingSkeletonGate {
+        id: loadingSkeletonGate
 
         active: page.visible
         sessionActive: page.backendSessionActive
@@ -168,7 +168,6 @@ Item {
                 backend.ensureTrashFresh()
             else
                 backend.refreshTrash()
-            Qt.callLater(initialLoadGate.start)
         }
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
@@ -358,7 +357,7 @@ Item {
 
             LoadingSkeleton {
                 anchors.fill: parent
-                visible: page.showInitialSkeleton
+                visible: page.showLoadingSkeleton
                 gridMode: page.gridMode
                 density: density
                 metrics: metrics
@@ -372,7 +371,7 @@ Item {
                 objectName: "trashLoadingIndicator"
                 anchors.centerIn: parent
                 visible: page.backend && page.backend.trashLoading
-                         && !page.showInitialSkeleton
+                         && !page.showLoadingSkeleton
                 running: visible
                 width: 28
                 height: 28

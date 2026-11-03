@@ -359,7 +359,7 @@ TestCase {
         compare(findChild(page, "libraryFailureHint").visible, true)
     }
 
-    function test_first_loading_uses_skeleton_then_restores_spinner() {
+    function test_empty_loads_use_skeleton_each_time() {
         const freshPage = pageComponent.createObject(parent, {
             visible: false,
             active: false,
@@ -380,13 +380,19 @@ TestCase {
         const skeleton = findChild(freshPage, "pageLoadingSkeleton")
         const spinner = findChild(freshPage, "libraryLoadingIndicator")
         verify(skeleton !== null && spinner !== null)
-        compare(skeleton.visible, true, "首次读取显示骨架")
-        compare(spinner.visible, false, "首次读取不叠原来的转圈")
+        compare(skeleton.visible, true, "空内容读取显示骨架")
+        compare(spinner.visible, false, "空内容读取不叠原来的转圈")
 
         backend.libraryLoading = false
         publish([row("first", false)], true)
         wait(30)
         compare(skeleton.visible, false, "数据到达后收起骨架")
+
+        backend.libraryLoading = true
+        backend.libraryRevision += 1
+        backend.changed()
+        wait(30)
+        compare(skeleton.visible, false, "有旧内容时刷新保留内容，不闪骨架")
 
         backend.libraryRows = []
         backend.libraryLoaded = false
@@ -395,8 +401,8 @@ TestCase {
         backend.libraryDataRevision += 1
         backend.changed()
         wait(30)
-        compare(skeleton.visible, false, "第二次读取不再显示骨架")
-        compare(spinner.visible, true, "第二次读取恢复原加载态")
+        compare(skeleton.visible, true, "再次空内容读取仍显示骨架")
+        compare(spinner.visible, false, "再次空内容读取不叠原来的转圈")
 
         freshPage.destroy()
     }

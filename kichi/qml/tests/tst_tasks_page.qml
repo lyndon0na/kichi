@@ -136,7 +136,7 @@ TestCase {
     // 任务列表（TasksPage 里只有一个 ListView，按 objectName 取更稳）
     property var list: findChild(page, "tasksList")
     property var model: list ? list.model : null
-    property var firstLoadPage: null
+    property var loadingPage: null
 
     function init() {
         page.active = false
@@ -173,9 +173,9 @@ TestCase {
     }
 
     function cleanup() {
-        if (firstLoadPage)
-            firstLoadPage.destroy()
-        firstLoadPage = null
+        if (loadingPage)
+            loadingPage.destroy()
+        loadingPage = null
     }
 
     /// 造一条与 Rust `task_map` 同形状的任务
@@ -206,37 +206,40 @@ TestCase {
         backend.changed()
     }
 
-    function test_first_loading_uses_skeleton_then_restores_spinner() {
+    function test_empty_loads_use_skeleton_each_time() {
         backend.tasks = []
         backend.tasksLoading = true
-        firstLoadPage = interactivePageComponent.createObject(parent, {
+        loadingPage = interactivePageComponent.createObject(parent, {
             width: 800,
             height: 600,
             visible: true,
             active: false,
             backend: backend
         })
-        verify(firstLoadPage !== null)
+        verify(loadingPage !== null)
 
-        firstLoadPage.active = true
+        loadingPage.active = true
         wait(30)
-        const skeleton = findChild(firstLoadPage, "pageLoadingSkeleton")
-        const loadingState = findChild(firstLoadPage, "tasksLoadingState")
+        const skeleton = findChild(loadingPage, "pageLoadingSkeleton")
+        const loadingState = findChild(loadingPage, "tasksLoadingState")
         verify(skeleton !== null && loadingState !== null)
-        compare(skeleton.visible, true, "首次读取显示骨架")
-        compare(loadingState.visible, false, "首次读取不叠原来的转圈")
+        compare(skeleton.visible, true, "空内容读取显示骨架")
+        compare(loadingState.visible, false, "空内容读取不叠原来的转圈")
 
         backend.tasksLoading = false
         push([task("first", "completed", 100)])
         wait(30)
         compare(skeleton.visible, false, "数据到达后收起骨架")
 
-        push([])
         backend.tasksLoading = true
         backend.changed()
         wait(30)
-        compare(skeleton.visible, false, "第二次读取不再显示骨架")
-        compare(loadingState.visible, true, "第二次读取恢复原加载态")
+        compare(skeleton.visible, false, "有旧内容时刷新保留内容，不闪骨架")
+
+        push([])
+        wait(30)
+        compare(skeleton.visible, true, "再次空内容读取仍显示骨架")
+        compare(loadingState.visible, false, "再次空内容读取不叠原来的转圈")
     }
 
     function visibleRow(id) {
@@ -1210,18 +1213,20 @@ TestCase {
         compare(dialog.opened, false)
     }
 
-    function test_loading_state_replaces_empty_message() {
+    function test_empty_loading_uses_skeleton_instead_of_message() {
         compare(list.count, 0)
         compare(backend.tasksLoading, false)
         compare(page.tasksLoading, false)
         compare(page.showEmptyState, true)
-        compare(page.showLoadingState, false)
+        compare(page.showLoadingSkeleton, false)
 
         backend.tasksLoading = true
-        compare(page.showLoadingState, true)
+        compare(page.showLoadingSkeleton, true)
+        compare(page.showLoadingState, false)
         compare(page.showEmptyState, false)
 
         backend.tasksLoading = false
+        compare(page.showLoadingSkeleton, false)
         compare(page.showLoadingState, false)
         compare(page.showEmptyState, true)
     }

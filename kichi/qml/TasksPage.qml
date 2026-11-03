@@ -25,10 +25,10 @@ Item {
     readonly property bool backendSessionActive: page.backend === null
                                                  || typeof page.backend.authState === "undefined"
                                                  || page.backend.authState === "signedIn"
-    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
+    readonly property bool showLoadingSkeleton: loadingSkeletonGate.showSkeleton
     readonly property bool showEmptyState: taskRows.count === 0 && !tasksLoading
     readonly property bool showLoadingState: taskRows.count === 0 && tasksLoading
-                                             && !showInitialSkeleton
+                                             && !showLoadingSkeleton
     readonly property int taskCount: taskRows.count
     readonly property int finishedCount: {
         var tasks = page.backend ? page.backend.tasks : []
@@ -75,7 +75,6 @@ Item {
             page.backend.ensureTasksFresh()
         else
             page.refresh()
-        Qt.callLater(initialLoadGate.start)
     }
 
     // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
@@ -85,8 +84,8 @@ Item {
 
     KTheme { id: theme }
 
-    FirstLoadGate {
-        id: initialLoadGate
+    LoadingSkeletonGate {
+        id: loadingSkeletonGate
 
         active: page.active
         sessionActive: page.backendSessionActive
@@ -254,7 +253,7 @@ Item {
 
             LoadingSkeleton {
                 anchors.fill: parent
-                visible: page.showInitialSkeleton
+                visible: page.showLoadingSkeleton
                 columnSpacing: page.tableColumnSpacing
                 trailingColumnWidths: {
                     const widths = [page.statusColumnWidth,

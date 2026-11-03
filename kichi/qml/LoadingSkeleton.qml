@@ -1,6 +1,6 @@
 import QtQuick
 
-// 数据页第一次读取时的内容骨架。
+// 数据页空内容加载时的内容骨架。
 //
 // 页面本身保留页头、表头和滚动条车道，只在内容区盖一层与当前列表 / 网格
 // 同尺寸的占位块。颜色和动画都从 KTheme 取，避免维护第二套视觉变量。
@@ -46,6 +46,12 @@ Item {
         if (widths.length > 1)
             total += skeleton.columnSpacing * (widths.length - 1)
         return total
+    }
+
+    Rectangle {
+        objectName: "loadingSkeletonBackdrop"
+        anchors.fill: parent
+        color: skeleton.theme.surface
     }
 
     // —— 列表骨架：沿用真实表格的 48px 行高与列分区 ——

@@ -30,7 +30,7 @@ Item {
     readonly property bool backendSessionActive: page.backend === null
                                                  || typeof page.backend.authState === "undefined"
                                                  || page.backend.authState === "signedIn"
-    readonly property bool showInitialSkeleton: initialLoadGate.showSkeleton
+    readonly property bool showLoadingSkeleton: loadingSkeletonGate.showSkeleton
     property int lastRevision: -1
     property string currentEntryId: ""
     readonly property bool gridMode: page.backend !== null
@@ -58,8 +58,8 @@ Item {
     UiMetrics { id: metrics }
     KTheme { id: theme }
 
-    FirstLoadGate {
-        id: initialLoadGate
+    LoadingSkeletonGate {
+        id: loadingSkeletonGate
 
         active: page.active
         sessionActive: page.backendSessionActive
@@ -293,7 +293,6 @@ Item {
             return
         }
         page.ensureFresh()
-        Qt.callLater(initialLoadGate.start)
         page.acceptBackendEntries()
         if (!page.pendingScrollRestore) {
             page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
@@ -543,7 +542,7 @@ Item {
 
             LoadingSkeleton {
                 anchors.fill: parent
-                visible: page.showInitialSkeleton
+                visible: page.showLoadingSkeleton
                 gridMode: page.gridMode
                 density: density
                 metrics: metrics
@@ -558,7 +557,7 @@ Item {
                 objectName: "libraryLoadingIndicator"
                 anchors.centerIn: parent
                 visible: page.loading && page.entries.length === 0
-                         && !page.showInitialSkeleton
+                         && !page.showLoadingSkeleton
                 running: visible
                 width: 28
                 height: 28
