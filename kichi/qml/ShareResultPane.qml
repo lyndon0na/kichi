@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 分享创建成功后的结果区：链接和密码放在同一个内容块里。
+// 分享创建成功后的结果区：名称、链接和密码放在同一个内容块里。
 // 操作按钮和复制提示统一放在弹窗页脚，剪贴板文本由外层生成。
 ColumnLayout {
     id: pane
@@ -34,14 +34,16 @@ ColumnLayout {
     }
 
     Rectangle {
+        id: contentBox
         Layout.fillWidth: true
-        Layout.preferredHeight: 76
+        Layout.preferredHeight: Math.max(76, contentEdit.contentHeight + theme.gapMd * 2)
         radius: theme.radiusControl
         color: theme.surfaceRaised
         border.width: 1
         border.color: theme.hairline
 
         TextEdit {
+            id: contentEdit
             objectName: "shareCreatedContent"
             anchors.fill: parent
             anchors.margins: theme.gapMd

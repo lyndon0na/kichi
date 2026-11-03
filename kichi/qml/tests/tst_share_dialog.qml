@@ -74,8 +74,8 @@ TestCase {
             createDialog.close()
     }
 
-    function openFor(ids, name) {
-        dialog.openFor({ id: ids[0], name: name || "a.mkv" }, ids)
+    function openFor(ids, name, names) {
+        dialog.openFor({ id: ids[0], name: name || "a.mkv" }, ids, names || [])
         tryCompare(createDialog, "visible", true)
     }
 
@@ -110,7 +110,8 @@ TestCase {
 
         tryCompare(createDialog, "stage", "success")
         compare(contentType.text,
-                "https://mypikpak.com/s/abc\n访问密码：" + backend.shareCreatedPassCode)
+                "a.mkv\nhttps://mypikpak.com/s/abc\n访问密码："
+                + backend.shareCreatedPassCode)
         compare(createDialog.copyNotice, "", "结果出现时不能假装已经复制")
         compare(findChild(dialog, "shareCreatedPassword"), null)
         compare(findChild(dialog, "shareCopyPassword"), null)
@@ -133,9 +134,39 @@ TestCase {
 
         mouseClick(copyButton)
         compare(clipboardEditor.text,
-                "https://mypikpak.com/s/abc\n访问密码：" + backend.shareCreatedPassCode)
+                "a.mkv\nhttps://mypikpak.com/s/abc\n访问密码："
+                + backend.shareCreatedPassCode)
         compare(createDialog.copyNotice, "链接和密码已复制")
         compare(footerStatus.text, "链接和密码已复制")
+    }
+
+    function test_result_uses_all_selected_names() {
+        openFor(["a", "b"], "a.mkv", ["a.mkv", "b.mp4"])
+        dialog.submit()
+        backend.shareCreatedUrl = "https://mypikpak.com/s/abc"
+        backend.shareCreatedPassCode = "p9k2"
+        backend.shareCreatedExpiration = "7 天"
+        backend.finishCreate(true, "created")
+        tryCompare(createDialog, "stage", "success")
+
+        compare(contentType.text,
+                "a.mkv、b.mp4\nhttps://mypikpak.com/s/abc\n访问密码："
+                + backend.shareCreatedPassCode)
+    }
+
+    function test_copy_without_password_reports_link_only() {
+        openFor(["a"])
+        dialog.submit()
+        backend.shareCreatedUrl = "https://mypikpak.com/s/public"
+        backend.shareCreatedPassCode = ""
+        backend.shareCreatedExpiration = "7 天"
+        backend.finishCreate(true, "created")
+        tryCompare(createDialog, "stage", "success")
+
+        compare(contentType.text, "a.mkv\nhttps://mypikpak.com/s/public")
+        mouseClick(copyButton)
+        compare(clipboardEditor.text, "a.mkv\nhttps://mypikpak.com/s/public")
+        compare(createDialog.copyNotice, "链接已复制")
     }
 
     function test_long_item_name_does_not_overlap_result_and_footer() {
@@ -155,6 +186,8 @@ TestCase {
         compare(createDialog.contentItem.implicitHeight,
                 createDialog.contentItem.childrenRect.height,
                 "正文高度必须参与弹窗尺寸计算")
+        verify(contentType.contentHeight <= contentType.height,
+               "分享文本不能被结果框裁掉")
         verify(contentBottom <= footerTop,
                "正文不能压住页脚（正文底 " + contentBottom
                + "，页脚顶 " + footerTop + "）")

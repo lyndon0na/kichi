@@ -88,6 +88,15 @@ Item {
         return false
     }
 
+    function shareNamesFor(ids) {
+        const names = []
+        for (let i = 0; i < (ids ? ids.length : 0); i++) {
+            const entry = interaction.entryForId(ids[i])
+            names.push(entry && entry.name ? String(entry.name) : "")
+        }
+        return names
+    }
+
     function gridDetailText(entry) {
         if (!entry)
             return ""
@@ -671,7 +680,7 @@ Item {
             movePicker.openForCopy(entry, ids, interaction.folderIdsFor(ids))
         }
         onShareRequested: function (entry, ids) {
-            shareDialog.openFor(entry, ids)
+            shareDialog.openFor(entry, ids, page.shareNamesFor(ids))
         }
         onRefreshRequested: interaction.refreshFiles()
     }

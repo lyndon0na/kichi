@@ -620,7 +620,7 @@ Item {
         }
         onShareRequested: function (entry) {
             if (entry)
-                shareDialog.openFor(entry, [entry.id])
+                shareDialog.openFor(entry, [entry.id], [entry.name])
         }
         onRefreshRequested: page.refresh()
     }

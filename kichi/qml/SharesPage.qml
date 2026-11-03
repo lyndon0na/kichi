@@ -153,10 +153,10 @@ Item {
                     onContextMenu: function (point) {
                         page.openRowMenu(key, row.mapToItem(null, point.x, point.y))
                     }
-                    onCopyRequested: function (text) {
+                    onCopyRequested: function (text, hasPassword) {
                         if (!clipboard.copyText(text))
                             return
-                        page.copyNotice = text.indexOf("\n") >= 0
+                        page.copyNotice = hasPassword
                                 ? qsTr("链接和密码已复制")
                                 : qsTr("链接已复制")
                         copyNoticeTimer.restart()
@@ -311,11 +311,11 @@ Item {
             const share = shares[i]
             if (!wanted[share.id])
                 continue
-            const text = clipboard.shareText(share.url, share.passCode)
+            const text = clipboard.shareText(share.url, share.passCode, share.title)
             if (text.length === 0)
                 continue
             parts.push(text)
-            if (share.passCode && String(share.passCode).length > 0)
+            if (String(share.passCode || "").trim().length > 0)
                 hasPassword = true
         }
         if (parts.length === 0 || !clipboard.copyText(parts.join("\n\n")))
@@ -376,7 +376,8 @@ Item {
             title: share.title,
             kind: share.kind,
             url: share.url,
-            copyText: clipboard.shareText(share.url, share.passCode),
+            copyText: clipboard.shareText(share.url, share.passCode, share.title),
+            copyHasPassword: String(share.passCode || "").trim().length > 0,
             passCode: share.passCode,
             hasPassword: share.hasPassword,
             accessText: share.accessText,

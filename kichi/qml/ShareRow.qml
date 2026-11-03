@@ -12,6 +12,7 @@ ItemDelegate {
     required property string kind
     required property string url
     required property string copyText
+    required property bool copyHasPassword
     required property string expirationText
     required property string createdText
     required property string statsText
@@ -32,7 +33,7 @@ ItemDelegate {
     /// 在列表里的下标（Shift 区间选择用）
     property int rowIndex: index
 
-    signal copyRequested(string text)
+    signal copyRequested(string text, bool hasPassword)
     signal selectRequested(int modifiers, int index)
     signal contextMenu(point position)
 
@@ -47,7 +48,7 @@ ItemDelegate {
             return
         const local = row.listView.mapToItem(row, x, y)
         if (copyButton.enabled && row.pointerOver(copyButton, local.x, local.y)) {
-            row.copyRequested(row.copyText)
+            row.copyRequested(row.copyText, row.copyHasPassword)
             return
         }
         row.selectRequested(modifiers, row.rowIndex)
@@ -220,8 +221,10 @@ ItemDelegate {
                 text: qsTr("复制链接")
                 variant: "ghost"
                 enabled: row.url.length > 0
-                Accessible.name: qsTr("复制分享「%1」的链接和密码").arg(row.title)
-                onClicked: row.copyRequested(row.copyText)
+                Accessible.name: row.copyHasPassword
+                                 ? qsTr("复制分享「%1」的链接和密码").arg(row.title)
+                                 : qsTr("复制分享「%1」的链接").arg(row.title)
+                onClicked: row.copyRequested(row.copyText, row.copyHasPassword)
             }
         }
     }

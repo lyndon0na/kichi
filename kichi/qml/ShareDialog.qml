@@ -11,8 +11,22 @@ Item {
     property var backend: null
     property var target: null
     property var targetIds: []
+    property var targetNames: []
 
     readonly property int itemCount: targetIds ? targetIds.length : 0
+    readonly property string shareTitle: {
+        const names = []
+        for (let i = 0; i < (root.targetNames ? root.targetNames.length : 0); i++) {
+            const name = String(root.targetNames[i] || "").trim()
+            if (name.length > 0)
+                names.push(name)
+        }
+        if (names.length === root.itemCount && names.length > 0)
+            return names.join("、")
+        if (root.itemCount === 1 && root.target && root.target.name)
+            return String(root.target.name).trim()
+        return root.itemCount > 1 ? qsTr("选中的 %1 项").arg(root.itemCount) : ""
+    }
     readonly property bool running: backend ? backend.shareActionRunning : false
     readonly property string itemLabel: {
         if (itemCount !== 1)
@@ -22,10 +36,12 @@ Item {
             : qsTr("选中的条目")
     }
     readonly property string shareCreatedText: backend
-        ? clipboard.shareText(backend.shareCreatedUrl, backend.shareCreatedPassCode)
+        ? clipboard.shareText(backend.shareCreatedUrl,
+                              backend.shareCreatedPassCode,
+                              root.shareTitle)
         : ""
     readonly property bool shareHasPassword: backend
-        && backend.shareCreatedPassCode.length > 0
+        && String(backend.shareCreatedPassCode || "").trim().length > 0
 
     KTheme { id: theme }
     ClipboardHelper { id: clipboard }
@@ -216,11 +232,12 @@ Item {
         }
     }
 
-    function openFor(entry, ids) {
+    function openFor(entry, ids, names) {
         if (!backend || !ids || ids.length === 0)
             return
         target = entry
         targetIds = ids.slice()
+        targetNames = names && names.length > 0 ? names.slice() : []
         shareDialog.open()
     }
 
