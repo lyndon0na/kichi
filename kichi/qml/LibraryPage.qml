@@ -52,7 +52,8 @@ Item {
     }
     EntryRows {
         id: entryRows
-        source: page.entries
+        // 页面离开前台后释放行模型和委托；cachedEntries 仍保留，回来可立即恢复。
+        source: page.active ? page.entries : []
     }
     UiMetrics { id: metrics }
     KTheme { id: theme }
@@ -634,7 +635,7 @@ Item {
         target: page.backend
 
         function onChanged() {
-            if (!page.backend || page.backend.libraryKind !== page.kind)
+            if (!page.active || !page.backend || page.backend.libraryKind !== page.kind)
                 return
             page.acceptBackendEntries()
             if (page.lastRevision === page.backend.libraryRevision)
@@ -660,7 +661,7 @@ Item {
         }
 
         function onFileActionDone(action, ok, message, ids) {
-            if (page.visible && ok)
+            if (page.active && ok)
                 page.ensureFresh()
         }
     }

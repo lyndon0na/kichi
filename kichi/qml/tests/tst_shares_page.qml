@@ -66,9 +66,9 @@ TestCase {
         verify(header !== null, "ShareHeaderControls 创建失败")
         list = findChild(page, "sharesList")
         model = list ? list.model : null
-        page.active = false
         backend.sharesLoading = false
         backend.shareActionRunning = false
+        page.active = true
         backend.refreshCalls = 0
         backend.revokeCalls = 0
         backend.lastRevokeIds = []
@@ -148,6 +148,8 @@ TestCase {
     }
 
     function test_activation_refreshes_share_list() {
+        page.active = false
+        backend.refreshCalls = 0
         page.active = true
         tryCompare(backend, "refreshCalls", 1)
         page.active = false
@@ -416,5 +418,21 @@ TestCase {
         compare(findChild(page.revokeDialog.dialog, "shareRevokeError").text,
                 "取消分享失败")
         page.revokeDialog.dialog.close()
+    }
+
+    function test_inactive_page_releases_rows_and_restores_selection() {
+        push([share("a"), share("b"), share("c")])
+        compare(model.count, 3)
+        page.selectRow("b", 1, Qt.NoModifier)
+        compare(page.selectedCount, 1)
+
+        page.active = false
+        tryCompare(model, "count", 0)
+        push([share("d")])
+        compare(model.count, 0, "隐藏页收到后端更新时不能重新建行")
+
+        page.active = true
+        tryCompare(model, "count", 1)
+        compare(page.selectedCount, 0, "刷新后已不存在的选中项应被清理")
     }
 }

@@ -9,7 +9,8 @@ Item {
     property var density: null
     property var metrics: null
     property int currentIndex: -1
-    readonly property var entries: libraryPage ? libraryPage.entries : []
+    readonly property var entries: libraryPage && libraryPage.active
+                                     ? libraryPage.entries : []
     readonly property int count: entries.length
     readonly property var rows: {
         const result = []

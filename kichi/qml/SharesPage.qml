@@ -9,6 +9,9 @@ Item {
     property var backend: null
     property bool active: false
     property string copyNotice: ""
+    property real savedContentY: 0
+    property bool pendingScrollRestore: false
+    property int scrollRestoreAttempts: 0
 
     readonly property bool loading: backend ? backend.sharesLoading : false
     readonly property bool actionRunning: backend ? backend.shareActionRunning : false
@@ -33,8 +36,24 @@ Item {
     readonly property int rowHeight: 48
 
     onActiveChanged: {
-        if (!active)
+        if (!active) {
+            if (list)
+                page.savedContentY = list.contentY
+            page.pendingScrollRestore = false
+            page.scrollRestoreAttempts = 0
+            shareRows.clear()
+            if (list) {
+                list.positionViewAtBeginning()
+                list.contentY = 0
+            }
             return
+        }
+        if (list)
+            list.positionViewAtBeginning()
+        page.syncRows()
+        page.pendingScrollRestore = true
+        page.scrollRestoreAttempts = 0
+        Qt.callLater(page.restoreScroll)
         if (page.backend && typeof page.backend.ensureSharesFresh === "function")
             page.backend.ensureSharesFresh()
         else
@@ -89,11 +108,28 @@ Item {
         target: page.backend
 
         function onChanged() {
+            if (!page.active)
+                return
             page.syncRows()
         }
     }
 
     Component.onCompleted: syncRows()
+
+    function restoreScroll() {
+        if (!page.pendingScrollRestore || !list || list.contentHeight <= 0)
+            return
+        var maxY = Math.max(0, list.contentHeight - list.height)
+        var target = Math.max(0, Math.min(page.savedContentY, maxY))
+        list.contentY = target
+        if (target >= page.savedContentY || page.scrollRestoreAttempts >= 4) {
+            page.pendingScrollRestore = false
+            page.scrollRestoreAttempts = 0
+            return
+        }
+        page.scrollRestoreAttempts += 1
+        Qt.callLater(page.restoreScroll)
+    }
 
     ColumnLayout {
         objectName: "sharesTableLayout"
@@ -128,6 +164,7 @@ Item {
                 spacing: 0
                 model: shareRows
                 boundsBehavior: Flickable.StopAtBounds
+                onContentHeightChanged: page.restoreScroll()
                 ScrollBar.vertical: KScrollBar {}
                 focus: page.active
                 Keys.onPressed: function (event) {
@@ -226,6 +263,10 @@ Item {
     }
 
     function syncRows() {
+        if (!page.active) {
+            shareRows.clear()
+            return
+        }
         const wanted = page.backend && page.backend.shares ? page.backend.shares : []
         const wantedIds = ({})
         for (let i = 0; i < wanted.length; i++)

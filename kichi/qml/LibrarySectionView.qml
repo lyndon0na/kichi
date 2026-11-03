@@ -145,6 +145,13 @@ Flickable {
 
     onContentYChanged: updateRows(false)
     onOffsetsChanged: Qt.callLater(view.forceLayout)
+    onRowsChanged: {
+        if (!rows || rows.length === 0) {
+            activeRows.clear()
+            firstRow = -1
+            lastRow = -1
+        }
+    }
     onHeightChanged: Qt.callLater(view.forceLayout)
     onVisibleChanged: {
         if (visible)

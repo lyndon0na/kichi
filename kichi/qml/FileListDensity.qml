@@ -58,9 +58,9 @@ Item {
     readonly property int gridMinItemWidth: Math.round(160 * densityScale)
     readonly property int gridColumnGap: 14
     readonly property int gridRowGap: 18
-    // 网格卡片会随窗口宽度连续变化，但缩略图只按一个固定预算解码；
-    // 当前单列卡片最宽约 320 × densityScale，按 2x 屏留出 640 × 427。
-    readonly property int gridThumbnailDecodeWidth: Math.round(640 * densityScale)
+    // 网格卡片会随窗口宽度连续变化，但缩略图只按一个固定预算解码。
+    // 512 × 341 覆盖常见卡片宽度；窗口缩放只缩放纹理，不重新解码。
+    readonly property int gridThumbnailDecodeWidth: Math.round(512 * densityScale)
     readonly property int gridThumbnailDecodeHeight: Math.round(
         gridThumbnailDecodeWidth * 2 / 3)
     readonly property int gridCardPadding: 5

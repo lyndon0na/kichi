@@ -150,7 +150,11 @@ TestCase {
         backend.cancelMoveTargetsCalls = 0
         backend.clearFinishedCalls = 0
         page.width = 800
+        page.active = true
+        backend.refreshCalls = 0
         push([])
+        page.pendingScrollRestore = false
+        page.savedContentY = 0
     }
 
     function cleanup() {
@@ -494,6 +498,7 @@ TestCase {
             width: 800,
             height: 600,
             visible: true,
+            active: true,
             backend: backend
         })
         verify(interactivePage !== null)
@@ -1006,6 +1011,8 @@ TestCase {
     }
 
     function test_activation_refreshes_tasks() {
+        page.active = false
+        backend.refreshCalls = 0
         compare(backend.refreshCalls, 0)
 
         page.active = true
@@ -1196,5 +1203,25 @@ TestCase {
 
         push([])
         compare(model.count, 0, "登出 / 清空后列表要空，不能留下上一批的行")
+    }
+
+    function test_inactive_page_releases_rows_and_restores_scroll() {
+        var many = []
+        for (var i = 0; i < 30; ++i)
+            many.push(task("release-" + i, i === 0 ? "running" : "completed", 0))
+        push(many)
+        compare(model.count, 30)
+        list.contentY = 240
+        tryVerify(function () { return list.contentY === 240 })
+
+        page.active = false
+        tryCompare(model, "count", 0)
+        push(many.slice())
+        compare(model.count, 0, "隐藏页收到轮询更新时不能重新建行")
+
+        page.active = true
+        tryCompare(model, "count", 30)
+        tryVerify(function () { return list.contentY > 0 },
+                  2000, "回到离线任务页后应恢复原滚动位置")
     }
 }

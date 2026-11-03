@@ -581,6 +581,7 @@ ApplicationWindow {
                     TransfersPage {
                         id: transfersPage
                         backend: backend
+                        active: root.currentPage === pageIds.transfers
                         viewportWidth: root.width
                     }
 

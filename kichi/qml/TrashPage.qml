@@ -41,7 +41,8 @@ Item {
 
     EntryRows {
         id: entryRows
-        source: page.entries
+        // StackLayout 只显示当前页；离开回收站时释放缩略图委托，数据仍由后端缓存。
+        source: page.visible ? page.entries : []
     }
 
     FileActionLocks {

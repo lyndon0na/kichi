@@ -582,4 +582,19 @@ TestCase {
         compare(spinner.running, false)
         compare(refresh.width, idleWidth)
     }
+
+    function test_hidden_page_releases_rows_and_restores_them() {
+        publish([entry("a", false), entry("b", false)])
+        tryCompare(list, "count", 2)
+
+        page.visible = false
+        tryCompare(list, "count", 0)
+        publish([entry("c", false)])
+        compare(list.count, 0, "隐藏回收站收到更新时不能重新建行")
+
+        page.visible = true
+        tryCompare(list, "count", 1)
+        tryVerify(function () { return list.itemAtIndex(0) !== null })
+        compare(list.itemAtIndex(0).entry.id, "c")
+    }
 }

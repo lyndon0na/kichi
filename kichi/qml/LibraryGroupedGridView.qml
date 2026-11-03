@@ -7,7 +7,8 @@ Item {
     id: root
 
     property var libraryPage: null
-    property var entries: libraryPage ? libraryPage.entries : []
+    property var entries: libraryPage && libraryPage.active
+                            ? libraryPage.entries : []
     property var density: null
     property var metrics: null
     property int currentIndex: -1
@@ -181,10 +182,14 @@ Item {
     }
 
     onEntriesChanged: {
-        if (visible)
-            rebuildRows()
-        else
+        if (!libraryPage || !libraryPage.active) {
+            rows = []
             rowsDirty = true
+        } else if (visible) {
+            rebuildRows()
+        } else {
+            rowsDirty = true
+        }
     }
     onColumnsChanged: {
         if (visible)

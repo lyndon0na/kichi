@@ -44,8 +44,8 @@ ItemDelegate {
     property int nameBlockHeight: 38
     property int thumbnailRadius: 8
     // 由 FileListDensity 下发；窗口 resize 不改变这两个解码尺寸。
-    property int thumbnailDecodeWidth: 640
-    property int thumbnailDecodeHeight: 427
+    property int thumbnailDecodeWidth: 512
+    property int thumbnailDecodeHeight: 341
     property int textPixelSize: 14
     property int detailPixelSize: 12
     property int detailLineHeight: 17

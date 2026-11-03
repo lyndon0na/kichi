@@ -1210,4 +1210,25 @@ TestCase {
         wait(20)
         compare(backend.retryFailedCount, 1)
     }
+
+    function test_inactive_page_releases_rows_and_restores_scroll() {
+        var items = []
+        for (var i = 0; i < 30; ++i)
+            items.push(makeRow("release-" + i, "release-" + i + ".mkv",
+                               i === 0 ? "running" : "done"))
+        backend.publish(items, 1, 0)
+        waitRows(30)
+        list.contentY = 240
+        tryVerify(function () { return list.contentY === 240 })
+
+        page.active = false
+        tryCompare(list, "count", 0)
+        backend.publish(items, 1, 0)
+        compare(list.count, 0, "隐藏页收到后端更新时不能重新建行")
+
+        page.active = true
+        waitRows(30)
+        tryVerify(function () { return list.contentY > 0 },
+                  2000, "回到传输页后应恢复原滚动位置")
+    }
 }

@@ -210,7 +210,7 @@ TestCase {
         backend.libraryDataRevision += 1
         backend.changed()
         wait(20)
-        compare(list.count, 2, "切到别的资料库集合不能清空本页缓存")
+        compare(list.count, 0, "离开前台后释放行模型")
 
         backend.libraryKind = "recent-saved"
         backend.libraryRows = recentRows
@@ -229,6 +229,27 @@ TestCase {
         tryCompare(list, "count", 2)
         compare(list.itemAtIndex(0).entry.id, "recent-c")
         compare(list.itemAtIndex(1).entry.id, "recent-d")
+    }
+
+    function test_inactive_page_releases_grouped_models_and_restores_them() {
+        backend.libraryKind = "playback-history"
+        page.kind = "playback-history"
+        page.dateSectionsEnabled = true
+        publish(playbackRowsPerGroup(), true)
+        page.setContentView("grid")
+
+        var grouped = findChild(page, "libraryGroupedGrid")
+        verify(grouped !== null)
+        tryCompare(grouped, "visible", true)
+        tryVerify(function () { return grouped.rows.length > 0 })
+
+        page.active = false
+        tryVerify(function () { return grouped.rows.length === 0 },
+                  2000, "隐藏资料库页应释放分区网格行")
+
+        page.active = true
+        tryVerify(function () { return grouped.rows.length > 0 },
+                  2000, "回到资料库页后应恢复分区网格行")
     }
 
     function test_entering_page_refreshes_and_empty_state_is_shown() {

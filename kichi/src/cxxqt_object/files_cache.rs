@@ -10,7 +10,9 @@ use kichi_core::FileEntry;
 
 /// 目录快照的默认有效期。
 pub(crate) const FILES_REFRESH_TTL: Duration = Duration::from_secs(30);
-const MAX_CACHED_DIRS: usize = 32;
+const MAX_CACHED_DIRS: usize = 12;
+/// 条目数是软上限：刚读取的当前目录始终保留，即使它单独超过预算。
+const MAX_CACHED_ENTRIES: usize = 10_000;
 
 #[derive(Clone)]
 struct CachedDirectory {
@@ -45,23 +47,14 @@ impl FilesCache {
 
     /// 保存一次成功读取的完整快照。
     pub(crate) fn store(&mut self, dir_id: String, entries: &[FileEntry], now: Instant) {
-        if !self.directories.contains_key(&dir_id) && self.directories.len() >= MAX_CACHED_DIRS {
-            let oldest = self
-                .directories
-                .iter()
-                .min_by_key(|(_, cache)| cache.fetched_at)
-                .map(|(id, _)| id.clone());
-            if let Some(id) = oldest {
-                self.directories.remove(&id);
-            }
-        }
         self.directories.insert(
-            dir_id,
+            dir_id.clone(),
             CachedDirectory {
                 entries: entries.to_vec(),
                 fetched_at: Some(now),
             },
         );
+        self.trim(&dir_id);
     }
 
     /// 本地乐观修改后更新快照内容，并保留原来的 TTL 时刻。
@@ -69,8 +62,15 @@ impl FilesCache {
         if let Some(cache) = self.directories.get_mut(&dir_id) {
             cache.entries = entries.to_vec();
         } else {
-            self.store(dir_id, entries, Instant::now());
+            self.directories.insert(
+                dir_id.clone(),
+                CachedDirectory {
+                    entries: entries.to_vec(),
+                    fetched_at: Some(Instant::now()),
+                },
+            );
         }
+        self.trim(&dir_id);
     }
 
     /// 星标写入失败时恢复目录快照里的对应字段。
@@ -115,6 +115,7 @@ impl FilesCache {
             let at = (*index).min(cache.entries.len());
             cache.entries.insert(at, entry.clone());
         }
+        self.trim(dir_id);
     }
 
     /// 请求失败后短暂退避，避免每次切回页面都立刻重试同一个失败目录。
@@ -139,6 +140,30 @@ impl FilesCache {
 
     pub(crate) fn clear(&mut self) {
         self.directories.clear();
+    }
+
+    fn total_entries(&self) -> usize {
+        self.directories
+            .values()
+            .map(|cache| cache.entries.len())
+            .sum()
+    }
+
+    /// 淘汰除当前目录外最旧的快照，直到目录数和条目数都回到预算内。
+    fn trim(&mut self, protected: &str) {
+        while self.directories.len() > MAX_CACHED_DIRS || self.total_entries() > MAX_CACHED_ENTRIES
+        {
+            let oldest = self
+                .directories
+                .iter()
+                .filter(|(id, _)| id.as_str() != protected)
+                .min_by_key(|(_, cache)| cache.fetched_at)
+                .map(|(id, _)| id.clone());
+            let Some(id) = oldest else {
+                break;
+            };
+            self.directories.remove(&id);
+        }
     }
 
     #[cfg(test)]
@@ -225,5 +250,63 @@ mod tests {
         assert_eq!(cache.len(), MAX_CACHED_DIRS);
         assert!(!cache.contains("dir-0"));
         assert!(cache.contains(&format!("dir-{MAX_CACHED_DIRS}")));
+    }
+
+    fn entries(prefix: &str, count: usize) -> Vec<FileEntry> {
+        (0..count)
+            .map(|index| entry(&format!("{prefix}-{index}")))
+            .collect()
+    }
+
+    #[test]
+    fn entry_budget_evicts_older_directories() {
+        let mut cache = FilesCache::default();
+        let now = Instant::now();
+        let half_budget = MAX_CACHED_ENTRIES / 2 + 1;
+        cache.store("older".to_owned(), &entries("older", half_budget), now);
+        cache.store(
+            "newer".to_owned(),
+            &entries("newer", half_budget),
+            now + Duration::from_secs(1),
+        );
+
+        assert!(cache.contains("newer"));
+        assert!(!cache.contains("older"));
+        assert!(cache.total_entries() <= MAX_CACHED_ENTRIES);
+    }
+
+    #[test]
+    fn current_directory_is_kept_when_it_alone_exceeds_entry_budget() {
+        let mut cache = FilesCache::default();
+        cache.store(
+            "huge".to_owned(),
+            &entries("huge", MAX_CACHED_ENTRIES + 1),
+            Instant::now(),
+        );
+
+        assert!(cache.contains("huge"));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.total_entries() > MAX_CACHED_ENTRIES);
+    }
+
+    #[test]
+    fn replacing_entries_trims_other_directories() {
+        let mut cache = FilesCache::default();
+        let now = Instant::now();
+        cache.store("older".to_owned(), &entries("older", 100), now);
+        cache.store(
+            "current".to_owned(),
+            &entries("current", MAX_CACHED_ENTRIES - 100),
+            now + Duration::from_secs(1),
+        );
+
+        cache.replace_entries(
+            "current".to_owned(),
+            &entries("current", MAX_CACHED_ENTRIES + 1),
+        );
+
+        assert!(cache.contains("current"));
+        assert!(!cache.contains("older"));
+        assert!(cache.total_entries() > MAX_CACHED_ENTRIES);
     }
 }

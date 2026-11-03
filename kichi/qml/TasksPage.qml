@@ -10,6 +10,9 @@ Item {
     property var backend: null
     /// 页面被侧栏切到前台：首次进入立即刷新，之后由 Rust 冷却与轮询合并请求。
     property bool active: false
+    property real savedContentY: 0
+    property bool pendingScrollRestore: false
+    property int scrollRestoreAttempts: 0
     property string pendingDeleteId: ""
     property string pendingDeleteName: ""
 
@@ -50,8 +53,24 @@ Item {
     readonly property bool showCreatedColumn: width >= 680
 
     onActiveChanged: {
-        if (!active)
+        if (!active) {
+            if (list)
+                page.savedContentY = list.contentY
+            page.pendingScrollRestore = false
+            page.scrollRestoreAttempts = 0
+            taskRows.clear()
+            if (list) {
+                list.positionViewAtBeginning()
+                list.contentY = 0
+            }
             return
+        }
+        if (list)
+            list.positionViewAtBeginning()
+        page.syncRows()
+        page.pendingScrollRestore = true
+        page.scrollRestoreAttempts = 0
+        Qt.callLater(page.restoreScroll)
         if (page.backend && typeof page.backend.ensureTasksFresh === "function")
             page.backend.ensureTasksFresh()
         else
@@ -87,11 +106,28 @@ Item {
         target: page.backend
 
         function onChanged() {
+            if (!page.active)
+                return
             page.syncRows()
         }
     }
 
     Component.onCompleted: syncRows()
+
+    function restoreScroll() {
+        if (!page.pendingScrollRestore || !list || list.contentHeight <= 0)
+            return
+        var maxY = Math.max(0, list.contentHeight - list.height)
+        var target = Math.max(0, Math.min(page.savedContentY, maxY))
+        list.contentY = target
+        if (target >= page.savedContentY || page.scrollRestoreAttempts >= 4) {
+            page.pendingScrollRestore = false
+            page.scrollRestoreAttempts = 0
+            return
+        }
+        page.scrollRestoreAttempts += 1
+        Qt.callLater(page.restoreScroll)
+    }
 
     readonly property int activeCount: {
         var tasks = page.backend ? page.backend.tasks : []
@@ -140,6 +176,7 @@ Item {
                 spacing: 0
                 model: taskRows
                 boundsBehavior: Flickable.StopAtBounds
+                onContentHeightChanged: page.restoreScroll()
 
                 // 列表铺到窗口右缘，条画在右侧 10px 车道里
                 ScrollBar.vertical: KScrollBar {}
@@ -299,6 +336,10 @@ Item {
     /// 把 Rust 推来的任务列表同步进 ListModel：增删 / 移位 / 改字段都就地做，
     /// 列表本身不重建（重建会把滚动位置冲回顶部）。
     function syncRows() {
+        if (!page.active) {
+            taskRows.clear()
+            return
+        }
         var wanted = page.backend && page.backend.tasks ? page.backend.tasks : []
         var wantedIds = {}
         for (var i = 0; i < wanted.length; i++)

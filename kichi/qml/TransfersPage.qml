@@ -12,9 +12,14 @@ Item {
     property var backend: null
     /// 主窗口宽度。响应式阈值按用户实际看到的窗口判断，不按内容区宽度判断。
     property int viewportWidth: 0
+    /// 页面在前台时保留行模型；离开后释放委托和缩略图纹理，回来再按快照重建。
+    property bool active: true
 
     /// 记录结构版本：只有增删 / 状态变化才重新对齐 ListModel。
     property int revision: -1
+    property real savedContentY: 0
+    property bool pendingScrollRestore: false
+    property int scrollRestoreAttempts: 0
 
     /// 来源条目 id（文件页重复点已占用条目时定位到这里）。
     property string focusSourceId: ""
@@ -85,7 +90,7 @@ Item {
         target: page.backend
 
         function onChanged() {
-            if (!page.backend)
+            if (!page.active || !page.backend)
                 return
             if (page.backend.transferRevision !== page.revision) {
                 page.revision = page.backend.transferRevision
@@ -99,6 +104,30 @@ Item {
         page.syncRows()
     }
 
+    onActiveChanged: {
+        if (!page.active) {
+            page.rememberScroll()
+            page.pendingScrollRestore = false
+            page.scrollRestoreAttempts = 0
+            page.expandedIndex = -1
+            page.expandedChildCount = 0
+            page.expandedRowData = null
+            rows.clear()
+            if (list) {
+                list.positionViewAtBeginning()
+                list.contentY = 0
+            }
+            return
+        }
+        if (list)
+            list.positionViewAtBeginning()
+        page.revision = page.backend ? page.backend.transferRevision : -1
+        page.syncRows()
+        page.pendingScrollRestore = true
+        page.scrollRestoreAttempts = 0
+        Qt.callLater(page.restoreScroll)
+    }
+
     Timer {
         id: highlightTimer
         interval: 1200
@@ -108,10 +137,32 @@ Item {
 
     readonly property var liveByKey: {
         var map = {}
-        var list = page.backend ? page.backend.transferLive : []
+        var list = page.active && page.backend ? page.backend.transferLive : []
         for (var i = 0; i < list.length; i++)
             map[list[i].key] = list[i]
         return map
+    }
+
+    function rememberScroll() {
+        if (list)
+            page.savedContentY = list.contentY
+    }
+
+    function restoreScroll() {
+        if (!page.pendingScrollRestore || !list || list.contentHeight <= 0)
+            return
+        var maxY = Math.max(0, list.contentHeight - list.height)
+        var target = Math.max(0, Math.min(page.savedContentY, maxY))
+        list.contentY = target
+        // ListModel 追加行后 contentHeight 可能先给出中间值；多等一帧再判断，
+        // 否则会在列表还没长到原滚动位置时就把恢复标记清掉。
+        if (target >= page.savedContentY || page.scrollRestoreAttempts >= 4) {
+            page.pendingScrollRestore = false
+            page.scrollRestoreAttempts = 0
+            return
+        }
+        page.scrollRestoreAttempts += 1
+        Qt.callLater(page.restoreScroll)
     }
 
     function isActivePhase(phase) {
@@ -287,6 +338,10 @@ Item {
 
     /// 按 modelKey 就地增删 / 搬移 / 补字段，避免整表重灌冲回顶部。
     function syncRows() {
+        if (!page.active) {
+            rows.clear()
+            return
+        }
         var wanted = page.wantedRows()
         var wantedKeys = {}
         for (var i = 0; i < wanted.length; i++)
@@ -360,7 +415,7 @@ Item {
     }
 
     function locate() {
-        if (page.focusSourceId.length === 0)
+        if (!page.active || page.focusSourceId.length === 0)
             return
         page.syncRows()
 
@@ -475,6 +530,7 @@ Item {
                 spacing: 0
                 model: rows
                 boundsBehavior: Flickable.StopAtBounds
+                onContentHeightChanged: page.restoreScroll()
                 // 切换展开项会重挂模型强制重排；缓存中的旧委托在 reset 时
                 // 会刷 `DelegateModel::cancel: index out range`（QTBUG-66749
                 // 同类）。只在展开期间关闭预加载，收起后恢复。

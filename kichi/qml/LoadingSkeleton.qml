@@ -58,7 +58,9 @@ Item {
         visible: !skeleton.gridMode
 
         Repeater {
-            model: Math.max(1, Math.ceil(skeleton.height / skeleton.rowHeight) + 1)
+            model: skeleton.visible
+                   ? Math.max(1, Math.ceil(skeleton.height / skeleton.rowHeight) + 1)
+                   : 0
 
             delegate: Item {
                 width: listSkeleton.width
@@ -186,7 +188,9 @@ Item {
                          / Math.max(1, gridSkeleton.itemHeight + gridSkeleton.rowGap)))
 
         Repeater {
-            model: Math.min(60, gridSkeleton.columns * (gridSkeleton.visibleRows + 1))
+            model: skeleton.visible
+                   ? Math.min(60, gridSkeleton.columns * (gridSkeleton.visibleRows + 1))
+                   : 0
 
             delegate: Item {
                 readonly property int column: index % gridSkeleton.columns
