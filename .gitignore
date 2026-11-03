@@ -2,6 +2,7 @@
 /target
 /kichi/target
 /off
+/dist
 
 # 编辑器 / 系统
 .idea/
