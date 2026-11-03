@@ -4,13 +4,13 @@ import QtQuick
 QtObject {
     readonly property int files: 0
     readonly property int shares: 1
+    // 传输任务页同时也是任务中心：离线任务作为页内标签，不再单独占页面索引。
     readonly property int transfers: 2
-    readonly property int tasks: 3
-    readonly property int trash: 4
-    readonly property int settings: 5
-    readonly property int recentSaved: 6
-    readonly property int playbackHistory: 7
-    readonly property int starred: 8
+    readonly property int trash: 3
+    readonly property int settings: 4
+    readonly property int recentSaved: 5
+    readonly property int playbackHistory: 6
+    readonly property int starred: 7
 
     readonly property var libraryPages: [recentSaved, playbackHistory, starred]
 }

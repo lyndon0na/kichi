@@ -125,7 +125,7 @@ ApplicationWindow {
         function onLocateTransfer(sourceId) {
             backend.clearStatusMessage()
             root.currentPage = pageIds.transfers
-            transfersPage.focusSource(sourceId)
+            taskCenterPage.focusTransfer(sourceId)
         }
 
         // 离线任务文件夹的路径与内容已在后台准备好，这时才切页。
@@ -246,20 +246,22 @@ ApplicationWindow {
 
                     TransferHeaderControls {
                         visible: root.currentPage === pageIds.transfers
+                                 && taskCenterPage.currentTab === "transfers"
                         anchors.left: pageTitleLabel.right
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        target: transfersPage
+                        target: taskCenterPage.transfersView
                     }
 
                     TaskHeaderControls {
-                        visible: root.currentPage === pageIds.tasks
+                        visible: root.currentPage === pageIds.transfers
+                                 && taskCenterPage.currentTab === "offline"
                         anchors.left: pageTitleLabel.right
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        target: tasksPage
+                        target: taskCenterPage.tasksView
                     }
 
                     TrashHeaderControls {
@@ -334,7 +336,7 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                         backend: backend
                         target: filesPage
-                        newTaskTarget: tasksPage
+                        newTaskTarget: taskCenterPage
                     }
                 }
 
@@ -569,7 +571,7 @@ ApplicationWindow {
                         backend: backend
                         windowVisible: root.visible
                         playMenuEnabled: root.currentPage === pageIds.files
-                                         || root.currentPage === pageIds.tasks
+                                         || root.currentPage === pageIds.transfers
                     }
 
                     SharesPage {
@@ -578,17 +580,11 @@ ApplicationWindow {
                         active: root.currentPage === pageIds.shares
                     }
 
-                    TransfersPage {
-                        id: transfersPage
+                    TaskCenterPage {
+                        id: taskCenterPage
                         backend: backend
                         active: root.currentPage === pageIds.transfers
                         viewportWidth: root.width
-                    }
-
-                    TasksPage {
-                        id: tasksPage
-                        backend: backend
-                        active: root.currentPage === pageIds.tasks
                         onOpenFolderRequested: function (fileId) {
                             backend.openTaskFolder(fileId)
                         }
@@ -641,7 +637,7 @@ ApplicationWindow {
         id: playToast
         backend: backend
         inlineLoading: root.currentPage === pageIds.files
-                       || root.currentPage === pageIds.tasks
+                       || root.currentPage === pageIds.transfers
                        || pageIds.libraryPages.indexOf(root.currentPage) >= 0
     }
 
@@ -715,8 +711,13 @@ ApplicationWindow {
 
                 visible: root.signedIn
                 activeCount: backend.downloadActive + backend.uploadActive
+                offlineCount: taskCenterPage.offlineActiveCount
                 pageActive: root.currentPage === pageIds.transfers
-                onRequested: root.navigateTo(pageIds.transfers)
+                onRequested: {
+                    if (root.currentPage !== pageIds.transfers)
+                        taskCenterPage.showTaskEntry()
+                    root.navigateTo(pageIds.transfers)
+                }
             }
         }
     }
@@ -803,9 +804,7 @@ ApplicationWindow {
         if (root.currentPage === pageIds.shares)
             return qsTr("分享")
         if (root.currentPage === pageIds.transfers)
-            return qsTr("传输任务")
-        if (root.currentPage === pageIds.tasks)
-            return qsTr("离线任务")
+            return qsTr("任务")
         if (root.currentPage === pageIds.trash)
             return qsTr("回收站")
         if (root.currentPage === pageIds.settings)
@@ -856,24 +855,24 @@ ApplicationWindow {
             return qsTr("分享 · 共 %1 条").arg(backend.shares.length)
         }
         if (root.currentPage === pageIds.transfers) {
-            const active = transfersPage.activeCount
-            const queued = transfersPage.queuedCount
-            const paused = transfersPage.pausedCount
-            if (active + queued + paused === 0)
-                return qsTr("传输任务 · 暂无进行中的任务")
-            return qsTr("传输任务 · %1").arg(transfersPage.statusText)
-        }
-        if (root.currentPage === pageIds.tasks) {
-            if (backend.tasksLoading)
-                return qsTr("离线任务 · 正在读取…")
-            const count = backend.tasks.length
-            const active = tasksPage.activeCount
-            if (active > 0) {
-                return qsTr("离线任务 · 共 %1 条，%2 条进行中")
-                        .arg(count)
-                        .arg(active)
+            if (taskCenterPage.currentTab === "offline") {
+                if (taskCenterPage.tasksView.tasksLoading)
+                    return qsTr("离线任务 · 正在读取…")
+                const count = backend.tasks.length
+                const active = taskCenterPage.tasksView.activeCount
+                if (active > 0) {
+                    return qsTr("离线任务 · 共 %1 条，%2 条进行中")
+                            .arg(count)
+                            .arg(active)
+                }
+                return qsTr("离线任务 · 共 %1 条").arg(count)
             }
-            return qsTr("离线任务 · 共 %1 条").arg(count)
+            const active = taskCenterPage.transfersView.activeCount
+            const queued = taskCenterPage.transfersView.queuedCount
+            const paused = taskCenterPage.transfersView.pausedCount
+            if (active + queued + paused === 0)
+                return qsTr("本机传输 · 暂无进行中的任务")
+            return qsTr("本机传输 · %1").arg(taskCenterPage.transfersView.statusText)
         }
         if (root.currentPage === pageIds.trash) {
             if (backend.trashLoading

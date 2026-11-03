@@ -85,6 +85,8 @@ const QML_FILES: &[&str] = &[
     "qml/TaskTableHeader.qml",
     "qml/TaskRow.qml",
     "qml/TaskContextMenu.qml",
+    "qml/TaskCenterPage.qml",
+    "qml/TaskCenterTabs.qml",
     "qml/TrashPage.qml",
     "qml/TrashRow.qml",
     "qml/TrashTableHeader.qml",

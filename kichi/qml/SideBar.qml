@@ -21,18 +21,6 @@ Rectangle {
     KTheme { id: theme }
     PageIndex { id: pages }
 
-    readonly property int unfinishedTaskCount: {
-        if (!bar.backend)
-            return 0
-        const tasks = bar.backend.tasks || []
-        let count = 0
-        for (let i = 0; i < tasks.length; ++i) {
-            if (tasks[i].settled !== true)
-                ++count
-        }
-        return count
-    }
-
     color: theme.surfaceSheet
 
     ColumnLayout {
@@ -47,7 +35,6 @@ Rectangle {
                 { "page": pages.recentSaved, "label": qsTr("最近保存"), "icon": "clock" },
                 { "page": pages.playbackHistory, "label": qsTr("播放历史"), "icon": "history" },
                 { "page": pages.starred, "label": qsTr("已加星标"), "icon": "star" },
-                { "page": pages.tasks, "label": qsTr("离线任务"), "icon": "download" },
                 { "page": pages.shares, "label": qsTr("分享"), "icon": "share" },
                 { "page": pages.trash, "label": qsTr("回收站"), "icon": "trash" }
             ]
@@ -108,19 +95,6 @@ Rectangle {
                         font.weight: navButton.navSelected ? Font.DemiBold : Font.Normal
                         color: navButton.navSelected ? theme.textPrimary : theme.textSecondary
                         elide: Text.ElideRight
-                    }
-
-                    // 离线任务：未结束条数徽标（0 时隐藏）。
-                    KStatusBadge {
-                        objectName: navButton.modelData.page === pages.tasks
-                                    ? "sidebarTaskBadge" : ""
-                        readonly property int count: navButton.modelData.page === pages.tasks
-                                                    ? bar.unfinishedTaskCount : 0
-                        readonly property bool countVisible: count > 0
-                        Layout.alignment: Qt.AlignVCenter
-                        visible: countVisible
-                        text: count > 99 ? "99+" : String(count)
-                        tone: "accent"
                     }
                 }
             }

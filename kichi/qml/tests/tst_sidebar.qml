@@ -22,7 +22,6 @@ TestCase {
     QtObject {
         id: testBackend
 
-        property var tasks: []
         property string account: "tester"
         property string displayName: "Tester"
         property string avatarPath: ""
@@ -77,7 +76,7 @@ TestCase {
     }
 
     function test_order_and_page_mapping() {
-        const expectedPages = [0, 6, 7, 8, 3, 1, 4]
+        const expectedPages = [0, 5, 6, 7, 1, 3]
         let previousY = -1
 
         for (let i = 0; i < expectedPages.length; ++i) {
@@ -97,7 +96,9 @@ TestCase {
         }
 
         compare(navItem(2), null, "传输任务不再占主导航")
-        compare(navItem(5), null, "设置不再占主导航")
+        compare(navItem(4), null, "设置不再占主导航")
+        compare(findChild(sidebar, "sidebarTaskBadge"), null,
+                "离线任务数量不再放在侧栏")
     }
 
     function test_repeated_click_keeps_current_page_selected() {
@@ -155,37 +156,10 @@ TestCase {
             sidebar, 0, (target.height - selectionBar.height) / 2).y
         tryCompare(selectionBar, "y", expectedY, 1000)
 
-        sidebar.currentIndex = 5
+        sidebar.currentIndex = 2
+        compare(selectionBar.visible, false, "任务中心没有侧栏入口，竖条应隐藏")
+
+        sidebar.currentIndex = 4
         compare(selectionBar.visible, false, "设置页没有侧栏入口，竖条应隐藏")
-    }
-
-    function test_offline_task_badge_counts_only_unfinished_tasks() {
-        const badge = findChild(sidebar, "sidebarTaskBadge")
-        verify(badge !== null, "侧栏缺少离线任务数量徽标")
-
-        testBackend.tasks = [
-            { settled: false },
-            { settled: true },
-            { settled: false }
-        ]
-        compare(sidebar.unfinishedTaskCount, 2)
-        compare(badge.count, 2)
-        compare(badge.countVisible, true)
-        compare(badge.text, "2")
-
-        testBackend.tasks = [
-            { settled: true },
-            { settled: true }
-        ]
-        compare(badge.count, 0)
-        compare(badge.countVisible, false)
-
-        const many = []
-        for (let i = 0; i < 105; ++i)
-            many.push({ settled: false })
-        testBackend.tasks = many
-        compare(badge.count, 105)
-        compare(badge.countVisible, true)
-        compare(badge.text, "99+")
     }
 }

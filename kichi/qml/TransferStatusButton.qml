@@ -2,21 +2,33 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 全局底栏右侧的传输入口：空闲时安静显示，有任务时用数量标出进度。
+// 全局底栏右侧的任务入口：本机传输 + 离线任务，空闲时安静显示。
 Button {
     id: control
 
     property int activeCount: 0
+    property int offlineCount: 0
     property bool pageActive: false
 
     signal requested()
 
     KTheme { id: theme }
 
-    readonly property string countText: control.activeCount > 99
-                                        ? "99+" : String(control.activeCount)
+    readonly property int totalCount: control.activeCount + control.offlineCount
+    readonly property string countText: control.totalCount > 99
+                                        ? "99+" : String(control.totalCount)
+    readonly property string tooltipText: {
+        if (control.totalCount === 0)
+            return qsTr("打开任务")
+        const parts = []
+        if (control.activeCount > 0)
+            parts.push(qsTr("本机传输 %1 个进行中").arg(control.activeCount))
+        if (control.offlineCount > 0)
+            parts.push(qsTr("离线任务 %1 条未结束").arg(control.offlineCount))
+        return qsTr("任务 · %1").arg(parts.join(" · "))
+    }
 
-    text: qsTr("传输任务")
+    text: qsTr("任务")
     implicitWidth: contentRow.implicitWidth + leftPadding + rightPadding
     implicitHeight: 24
     leftPadding: theme.gapSm
@@ -27,14 +39,12 @@ Button {
     focusPolicy: Qt.StrongFocus
 
     Accessible.name: control.text
-    Accessible.description: control.activeCount > 0
-                            ? qsTr("%1 个传输进行中").arg(control.activeCount)
-                            : qsTr("打开传输任务")
+    Accessible.description: control.totalCount > 0
+                            ? qsTr("当前有 %1 个任务进行中或未结束").arg(control.totalCount)
+                            : qsTr("打开任务")
 
     ToolTip.visible: control.hovered
-    ToolTip.text: control.activeCount > 0
-                  ? qsTr("传输任务 · %1 个进行中").arg(control.activeCount)
-                  : qsTr("打开传输任务")
+    ToolTip.text: control.tooltipText
 
     onClicked: control.requested()
 
@@ -56,24 +66,24 @@ Button {
             implicitHeight: 14
             Layout.alignment: Qt.AlignVCenter
             name: "transfer"
-            color: control.pageActive || control.activeCount > 0
+            color: control.pageActive || control.totalCount > 0
                    ? theme.accent : theme.textMuted
-            opacity: control.pageActive || control.activeCount > 0 ? 1 : 0.8
+            opacity: control.pageActive || control.totalCount > 0 ? 1 : 0.8
         }
 
         Label {
             Layout.alignment: Qt.AlignVCenter
             text: control.text
-            color: control.pageActive || control.activeCount > 0
+            color: control.pageActive || control.totalCount > 0
                    ? theme.textPrimary : theme.textMuted
             font.pixelSize: theme.fontMeta
-            font.weight: control.pageActive || control.activeCount > 0
+            font.weight: control.pageActive || control.totalCount > 0
                          ? Font.DemiBold : Font.Normal
         }
 
         KStatusBadge {
             objectName: "transferStatusCount"
-            visible: control.activeCount > 0
+            visible: control.totalCount > 0
             Layout.alignment: Qt.AlignVCenter
             text: control.countText
             tone: "accent"

@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 文件页标题行右侧的目录操作。添加菜单收纳目录内的创建动作，
-// 侧栏「离线任务」页仍负责任务查看与管理。刷新固定在最后。
+// 任务页的离线标签仍负责任务查看与管理。刷新固定在最后。
 RowLayout {
     id: root
 
