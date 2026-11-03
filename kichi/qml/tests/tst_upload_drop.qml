@@ -109,6 +109,6 @@ TestCase {
         verify(overlay !== null && card !== null && title !== null)
         verify(overlay.color.a > 0.8, "遮罩必须压住底下的文件卡片")
         compare(card.color.a, 1.0, "提示卡必须是不透明的")
-        compare(title.text, "松开以上传到 当前文件夹")
+        compare(title.text, "松开以上传或添加离线任务到 当前文件夹")
     }
 }

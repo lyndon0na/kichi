@@ -247,6 +247,16 @@ pub mod qobject {
         #[cxx_name = "offlineTaskFolderChanged"]
         fn offline_task_folder_changed(self: Pin<&mut Self>, folder_id: QString);
 
+        /// 本地 `.torrent` 解析成功：名称、磁力链接与「文件数 · 大小」摘要。
+        #[qsignal]
+        #[cxx_name = "torrentParsed"]
+        fn torrent_parsed(self: Pin<&mut Self>, name: QString, magnet: QString, detail: QString);
+
+        /// 本地 `.torrent` 解析失败；界面在添加任务弹窗里显示原因。
+        #[qsignal]
+        #[cxx_name = "torrentParseFailed"]
+        fn torrent_parse_failed(self: Pin<&mut Self>, message: QString);
+
         /// 资料库里的文件夹与内容已就绪，界面现在可以切到文件页。
         #[qsignal]
         #[cxx_name = "libraryFolderReady"]
@@ -364,6 +374,16 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "addTaskToFolder"]
         fn add_task_to_folder(self: Pin<&mut Self>, url: QString, folder_id: QString);
+
+        /// 解析拖入添加任务弹窗的 `.torrent`，结果通过 `torrentParsed` 回投。
+        #[qinvokable]
+        #[cxx_name = "previewTorrentFiles"]
+        fn preview_torrent_files(self: Pin<&mut Self>, uris: QStringList);
+
+        /// 通过 XDG Portal 选择 `.torrent` 文件，结果通过 `torrentParsed` 回投。
+        #[qinvokable]
+        #[cxx_name = "chooseTorrentFiles"]
+        fn choose_torrent_files(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "deleteTask"]
@@ -814,6 +834,7 @@ mod shares;
 mod tasks;
 mod tasks_submit;
 mod thumbnails;
+mod torrents;
 mod transfers;
 mod transfers_actions;
 mod transfers_detail;

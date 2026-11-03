@@ -8,6 +8,7 @@
 //! 不在后台线程碰任何 Qt 对象。退出登录时 `task_epoch` 自增，在途结果作废。
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -19,7 +20,7 @@ use kichi_core::{EntryKind, OfflineTask, TaskPhase, TaskStatus};
 
 use super::actions::{format_size, run_in_background};
 use super::qobject;
-use super::tasks_submit::{parse_urls, submit, summary};
+use super::tasks_submit::{parse_urls, submit, submit_torrents, summary, torrent_summary};
 use super::QVariantList;
 use crate::session::{has_active, Failure};
 
@@ -213,6 +214,52 @@ impl qobject::Kichi {
                     qichi.as_mut().clear_status_message();
                 } else {
                     qichi.as_mut().set_message(&text);
+                }
+                qichi
+                    .as_mut()
+                    .remember_task_destinations(&outcome.created, destination.as_deref());
+                qichi.as_mut().show_submitted_tasks(outcome.created);
+                qichi.as_mut().refresh_tasks_force();
+            },
+        );
+    }
+
+    /// 文件页拖入 `.torrent`：本地解析后按拖入时目录提交离线任务。
+    pub(crate) fn submit_torrent_files(
+        mut self: Pin<&mut Self>,
+        paths: Vec<PathBuf>,
+        parent_id: Option<String>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        let count = paths.len();
+        let session = self.backend.session.clone();
+        let destination = parent_id.clone();
+        let my_epoch = self.tasks_epoch;
+        self.as_mut()
+            .set_message(&format!("正在解析并提交 {count} 个 .torrent 文件……"));
+        run_in_background(
+            move || Ok::<_, Failure>(submit_torrents(&session, &paths, parent_id.as_deref())),
+            move |mut qichi, result| {
+                if qichi.as_ref().rust().tasks_epoch != my_epoch {
+                    return;
+                }
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        qichi.as_mut().on_tasks_failure(err);
+                        return;
+                    }
+                };
+                if let Some(failure) = outcome.auth_failure {
+                    qichi.as_mut().on_tasks_failure(failure);
+                    return;
+                }
+                if outcome.errors.is_empty() && !outcome.stopped_early {
+                    qichi.as_mut().clear_status_message();
+                } else {
+                    qichi.as_mut().set_message(&torrent_summary(&outcome));
                 }
                 qichi
                     .as_mut()

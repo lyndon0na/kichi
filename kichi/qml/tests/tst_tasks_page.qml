@@ -39,6 +39,8 @@ TestCase {
 
         signal changed()
         signal thumbnailReady(string id, string path)
+        signal torrentParsed(string name, string magnet, string detail)
+        signal torrentParseFailed(string message)
 
         property int submitted: 0
         property string submittedText: ""
@@ -50,6 +52,9 @@ TestCase {
         property int cancelPlayLoadingCalls: 0
         property int cancelMoveTargetsCalls: 0
         property int clearFinishedCalls: 0
+        property int torrentPickerCalls: 0
+        property int torrentPreviewCalls: 0
+        property var torrentPreviewUrls: []
 
         function addTask(url) {
             submitted += 1
@@ -70,6 +75,13 @@ TestCase {
         }
         function clearFinishedTasks() {
             clearFinishedCalls += 1
+        }
+        function chooseTorrentFiles() {
+            torrentPickerCalls += 1
+        }
+        function previewTorrentFiles(urls) {
+            torrentPreviewCalls += 1
+            torrentPreviewUrls = urls.slice()
         }
         function thumbnailPath(id) {
             return ""
@@ -149,6 +161,9 @@ TestCase {
         backend.cancelPlayLoadingCalls = 0
         backend.cancelMoveTargetsCalls = 0
         backend.clearFinishedCalls = 0
+        backend.torrentPickerCalls = 0
+        backend.torrentPreviewCalls = 0
+        backend.torrentPreviewUrls = []
         page.width = 800
         page.active = true
         backend.refreshCalls = 0
@@ -837,7 +852,7 @@ TestCase {
         var footerStatus = findChild(dialog, "dialogFooterStatus")
         verify(footerStatus.visible)
         compare(footerStatus.text,
-                "支持磁力 / ed2k / HTTP；空行忽略。")
+                "支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
 
         var input = findChild(dialog, "newTaskInput")
         verify(input)
@@ -877,6 +892,73 @@ TestCase {
         compare(backend.submittedFolderId, "")
         compare(backend.submittedToFolder, false)
         compare(dialog.opened, false)
+    }
+
+    function test_new_task_dialog_can_choose_and_preview_torrent() {
+        page.openNewTaskDialog("folder-current", "全部文件 / 动画")
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+
+        var choose = findChild(dialog, "newTaskChooseTorrent")
+        verify(choose)
+        verify(choose.enabled)
+
+        var drop = findChild(dialog, "newTaskTorrentDropArea")
+        verify(drop)
+
+        backend.torrentParseFailed("旧错误")
+        tryCompare(findChild(dialog, "dialogFooterStatus"), "text", "旧错误")
+        mouseClick(choose)
+        compare(backend.torrentPickerCalls, 1)
+        compare(findChild(dialog, "dialogFooterStatus").text,
+                "支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+
+        backend.torrentParsed("示例合集", "magnet:?xt=urn:btih:abc", "3 个文件 · 2 MiB")
+        tryCompare(findChild(dialog, "newTaskInput"), "text",
+                   "magnet:?xt=urn:btih:abc")
+        compare(findChild(dialog, "dialogFooterStatus").text,
+                "已解析「示例合集」：3 个文件 · 2 MiB，已加入输入框。")
+
+        backend.torrentParsed("第二个", "magnet:?xt=urn:btih:def", "单文件 · 1 KiB")
+        tryCompare(findChild(dialog, "newTaskInput"), "text",
+                   "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")
+
+        dialog.submit()
+        compare(backend.submitted, 1)
+        compare(backend.submittedText,
+                "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")
+        compare(backend.submittedFolderId, "folder-current")
+        compare(backend.submittedToFolder, true)
+        compare(dialog.opened, false)
+    }
+
+    function test_new_task_dialog_forwards_dropped_torrent_urls_and_errors() {
+        page.openNewTaskDialog()
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+
+        dialog.previewTorrentUrls([
+            "file:///tmp/a.torrent",
+            "file:///tmp/b.torrent"
+        ])
+        compare(backend.torrentPreviewCalls, 1)
+        compare(backend.torrentPreviewUrls.length, 2)
+        compare(backend.torrentPreviewUrls[0], "file:///tmp/a.torrent")
+        compare(backend.torrentPreviewUrls[1], "file:///tmp/b.torrent")
+
+        backend.torrentParseFailed("坏种子.torrent：缺少 info 字典")
+        tryCompare(findChild(dialog, "dialogFooterStatus"), "text",
+                   "坏种子.torrent：缺少 info 字典")
+        verify(findChild(dialog, "dialogFooterStatus").color ===
+               dialog.theme.danger)
     }
 
     function test_new_task_dialog_can_target_current_folder() {

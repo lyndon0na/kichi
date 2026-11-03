@@ -297,6 +297,7 @@ Item {
             newTaskDialog.targetFolderPath = ""
             newTaskDialog.pickerStartPath = []
         }
+        newTaskDialog.resetForOpen()
         newTaskDialog.open()
     }
 

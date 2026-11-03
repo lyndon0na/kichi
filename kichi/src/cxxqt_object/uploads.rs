@@ -47,6 +47,7 @@ impl UploadAddSummary {
 struct DroppedUploads {
     files: Vec<PathBuf>,
     folders: Vec<PathBuf>,
+    torrents: Vec<PathBuf>,
     invalid: u32,
     first_error: String,
 }
@@ -143,23 +144,31 @@ impl qobject::Kichi {
         uris: QStringList,
     ) {
         if self.backend.session.state() != State::SignedIn {
-            self.as_mut().set_message("请先登录再上传文件或文件夹");
+            self.as_mut()
+                .set_message("请先登录再上传文件或提交离线任务");
             return;
         }
         let parent_id = parent_id.to_string();
         let parent_name = parent_name.to_string();
         let dropped = classify_dropped_uris(uris.iter().map(ToString::to_string));
-        let mut summary = enqueue_upload_files(dropped.files, &parent_id, &parent_name);
-        summary.merge(enqueue_upload_folders(
-            dropped.folders,
-            &parent_id,
-            &parent_name,
-        ));
-        summary.invalid = summary.invalid.saturating_add(dropped.invalid);
+        let DroppedUploads {
+            files,
+            folders,
+            torrents,
+            invalid,
+            first_error,
+        } = dropped;
+        let mut summary = enqueue_upload_files(files, &parent_id, &parent_name);
+        summary.merge(enqueue_upload_folders(folders, &parent_id, &parent_name));
+        summary.invalid = summary.invalid.saturating_add(invalid);
         if summary.first_error.is_empty() {
-            summary.first_error = dropped.first_error;
+            summary.first_error = first_error;
         }
         self.as_mut().finish_upload_add(summary);
+        if !torrents.is_empty() {
+            self.as_mut()
+                .submit_torrent_files(torrents, Some(parent_id));
+        }
     }
 
     /// 文件夹扫描完成（后台线程回投到主线程）。
@@ -440,7 +449,15 @@ fn classify_dropped_uris(uris: impl IntoIterator<Item = String>) -> DroppedUploa
         if file_type.is_symlink() {
             record_drop_error(&mut dropped, "不跟随符号链接".to_owned());
         } else if file_type.is_file() {
-            dropped.files.push(path);
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("torrent"))
+            {
+                dropped.torrents.push(path);
+            } else {
+                dropped.files.push(path);
+            }
         } else if file_type.is_dir() {
             dropped.folders.push(path);
         } else {
@@ -520,21 +537,26 @@ mod tests {
         let second = dir.join("电影.mp4");
         std::fs::write(&first, b"first").expect("写测试文件");
         std::fs::write(&second, b"second").expect("写测试文件");
+        let torrent = dir.join("sample.TORRENT");
+        std::fs::write(&torrent, b"d4:infod4:name4:test6:lengthi1e6:pieces3:abcee")
+            .expect("写种子文件");
         let first_uri = ashpd::url::Url::from_file_path(&first)
             .expect("文件路径转 URI")
             .to_string();
         let second_uri = ashpd::url::Url::from_file_path(&second)
             .expect("文件路径转 URI")
             .to_string();
-        let dropped = classify_dropped_uris(
-            [
-                first_uri,
-                "https://example.com/c.mkv".to_owned(),
-                second_uri,
-            ]
-            .into_iter(),
-        );
+        let torrent_uri = ashpd::url::Url::from_file_path(&torrent)
+            .expect("文件路径转 URI")
+            .to_string();
+        let dropped = classify_dropped_uris([
+            first_uri,
+            "https://example.com/c.mkv".to_owned(),
+            second_uri,
+            torrent_uri,
+        ]);
         assert_eq!(dropped.files, vec![first.clone(), second.clone()]);
+        assert_eq!(dropped.torrents, vec![torrent.clone()]);
         assert_eq!(dropped.invalid, 1);
         assert_eq!(dropped.first_error, "只能拖入本地文件或文件夹");
         let _ = std::fs::remove_dir_all(dir);

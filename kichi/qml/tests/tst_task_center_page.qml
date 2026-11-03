@@ -43,6 +43,8 @@ TestCase {
 
         signal changed()
         signal thumbnailReady(string id, string path)
+        signal torrentParsed(string name, string magnet, string detail)
+        signal torrentParseFailed(string message)
 
         function ensureTasksFresh() {
             ensureCalls += 1

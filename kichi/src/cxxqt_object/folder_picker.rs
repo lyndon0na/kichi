@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ashpd::desktop::file_chooser::SelectedFiles;
+use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
 use ashpd::url::Url;
 
 /// 打开系统目录选择器。
@@ -49,6 +49,36 @@ pub(crate) fn choose_files(start: &Path) -> Result<Vec<PathBuf>, String> {
         .modal(true)
         .current_folder(start)
         .map_err(|err| format!("无法设置文件选择器的起始位置：{err}"))?;
+
+    let result = ashpd::zbus::block_on(async { request.send().await?.response() });
+    match result {
+        Ok(files) => files.uris().iter().map(path_from_uri).collect(),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Ok(Vec::new()),
+        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Other)) => {
+            Err("系统文件选择器没有返回结果".to_owned())
+        }
+        Err(ashpd::Error::PortalNotFound(_)) => Err(
+            "系统未提供文件选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+        ),
+        Err(err) => Err(format!("无法打开系统文件选择器：{err}")),
+    }
+}
+
+/// 打开系统文件选择器，只选择 `.torrent` 文件（可多选）。
+pub(crate) fn choose_torrent_files(start: &Path) -> Result<Vec<PathBuf>, String> {
+    let request = SelectedFiles::open_file()
+        .title("选择 BitTorrent 种子文件")
+        .accept_label("解析这些文件")
+        .multiple(true)
+        .directory(false)
+        .modal(true)
+        .current_folder(start)
+        .map_err(|err| format!("无法设置文件选择器的起始位置：{err}"))?
+        .filter(
+            FileFilter::new("BitTorrent 种子")
+                .glob("*.torrent")
+                .glob("*.TORRENT"),
+        );
 
     let result = ashpd::zbus::block_on(async { request.send().await?.response() });
     match result {

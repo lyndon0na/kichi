@@ -4,6 +4,9 @@
 //! 同时打出一串请求；某个链接失败后继续尝试后面的行，登录失效 / 官方限流则
 //! 停止剩余请求。
 
+use std::path::{Path, PathBuf};
+
+use kichi_core::torrent::parse_torrent_file;
 use kichi_core::OfflineTask;
 
 use crate::session::{Failure, Session};
@@ -61,6 +64,57 @@ pub(super) fn submit(session: &Session, urls: &[String], parent_id: Option<&str>
     outcome
 }
 
+/// 按输入顺序解析并提交一批本地 `.torrent` 文件。每个文件提交一条磁力任务。
+pub(super) fn submit_torrents(
+    session: &Session,
+    paths: &[PathBuf],
+    parent_id: Option<&str>,
+) -> SubmitOutcome {
+    let mut outcome = SubmitOutcome {
+        requested: paths.len(),
+        submitted: 0,
+        created: Vec::new(),
+        errors: Vec::new(),
+        stopped_early: false,
+        auth_failure: None,
+    };
+
+    for path in paths {
+        let info = match parse_torrent_file(path) {
+            Ok(info) => info,
+            Err(err) => {
+                outcome
+                    .errors
+                    .push(format!("{}：{err}", torrent_file_label(path)));
+                continue;
+            }
+        };
+        match session.add_offline_task(&info.magnet(), parent_id) {
+            Ok(task) => {
+                outcome.submitted += 1;
+                outcome.created.push(task);
+            }
+            Err(Failure::Auth(reason)) => {
+                outcome.auth_failure = Some(Failure::Auth(reason));
+                outcome.stopped_early = true;
+                break;
+            }
+            Err(err) => {
+                let stop = err.is_rate_limited();
+                outcome
+                    .errors
+                    .push(format!("{}：{err}", torrent_file_label(path)));
+                if stop {
+                    outcome.stopped_early = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    outcome
+}
+
 pub(super) fn summary(outcome: &SubmitOutcome) -> String {
     if outcome.errors.is_empty() {
         return format!("已提交 {} 条离线任务", outcome.submitted);
@@ -94,6 +148,21 @@ pub(super) fn summary(outcome: &SubmitOutcome) -> String {
         text.push_str(&format!("：{first_error}"));
     }
     text
+}
+
+pub(super) fn torrent_summary(outcome: &SubmitOutcome) -> String {
+    if outcome.errors.is_empty() && !outcome.stopped_early {
+        return format!("已解析并提交 {} 个 .torrent 文件", outcome.submitted);
+    }
+    summary(outcome)
+}
+
+fn torrent_file_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(".torrent 文件")
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -155,6 +224,22 @@ mod tests {
         assert_eq!(
             summary(&outcome),
             "已提交 1 条，1 条失败，3 条未提交：触发官方配额限制"
+        );
+    }
+
+    #[test]
+    fn torrent_summary_names_the_source_files() {
+        let outcome = SubmitOutcome {
+            requested: 2,
+            submitted: 1,
+            created: Vec::new(),
+            errors: vec!["坏种子.torrent：无法解析 .torrent：缺少 info 字典".to_owned()],
+            stopped_early: false,
+            auth_failure: None,
+        };
+        assert_eq!(
+            torrent_summary(&outcome),
+            "已提交 1 条，1 条失败：坏种子.torrent：无法解析 .torrent：缺少 info 字典"
         );
     }
 }

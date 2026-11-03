@@ -19,6 +19,7 @@ pub mod search;
 pub mod share;
 pub mod subtitles;
 pub mod tasks;
+pub mod torrent;
 pub mod types;
 pub mod upload;
 mod upload_progress;

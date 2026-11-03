@@ -100,8 +100,8 @@ Item {
                 Label {
                     objectName: "uploadDropTitle"
                     Layout.fillWidth: true
-                    text: qsTr("松开以上传到 %1").arg(root.destinationName
-                                                      || qsTr("当前文件夹"))
+                    text: qsTr("松开以上传或添加离线任务到 %1").arg(
+                              root.destinationName || qsTr("当前文件夹"))
                     color: theme.textPrimary
                     font.pixelSize: theme.fontSection
                     font.weight: Font.DemiBold
@@ -111,7 +111,7 @@ Item {
 
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("可一次拖入多个普通文件或文件夹；符号链接和特殊文件会跳过")
+                    text: qsTr("普通文件 / 文件夹会上传；.torrent 会解析并加入离线任务。符号链接和特殊文件会跳过")
                     color: theme.textSecondary
                     font.pixelSize: theme.fontMeta
                     horizontalAlignment: Text.AlignHCenter
