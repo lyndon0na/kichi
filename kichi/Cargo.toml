@@ -3,6 +3,7 @@ name = "kichi"
 description = "PikPak 第三方 Linux 客户端（KDE Plasma）"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ashpd = "0.11"

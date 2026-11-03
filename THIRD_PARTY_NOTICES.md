@@ -1,0 +1,69 @@
+# 第三方代码与运行时组件声明
+
+kichi 自身以 `GPL-3.0-or-later` 发布，完整文本见 `LICENSE`。本文件记录 kichi
+直接借用或随分发包提供的第三方内容；这些内容仍归各自版权持有人所有。
+
+## 直接借用的代码与数据
+
+| 来源 | 许可证 | 使用范围 |
+| --- | --- | --- |
+| [rclone](https://github.com/rclone/rclone) 的 PikPak 后端 | MIT | `kichi-core` 的端点常量、设备 ID / captcha 签名算法及部分请求形状；相关文件已标注来源 |
+| pikpaktui 0.0.58 | Apache-2.0 | 分享、任务和选链等请求形状的行为参考；未复制的部分不产生额外义务 |
+| pikpak-kotlin | MIT | 部分接口字段与请求形状的行为参考 |
+| [Tabler Icons](https://github.com/tabler/tabler-icons) | MIT | `kichi/qml/NavIcon.qml` 中使用的路径数据 |
+
+上述 MIT 内容使用以下许可文本：
+
+```text
+MIT License
+
+Copyright (c) Nick Craig-Wood and rclone contributors
+Copyright (c) Paweł Kuna and Tabler Icons contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+`pikpaktui` 的 Apache-2.0 文本见
+<https://www.apache.org/licenses/LICENSE-2.0>；若后续直接复制其代码，发布包中
+还必须保留其版权声明和 NOTICE（如有）。
+
+## Rust 依赖
+
+构建使用的 crate 及其许可证以 `Cargo.lock` 和各 crate 的元数据为准。发布
+AppImage 或二进制包时，使用 `cargo-about` 或等价的许可证扫描工具生成完整的
+第三方许可证清单，并放入 `usr/share/licenses/kichi/`。
+
+## AppImage 中的 Qt / KDE 组件
+
+AppImage 会动态打包 Qt 6 和 KDE 运行时组件。按当前 Fedora 构建环境，主要包括：
+
+| 组件 | 许可证 |
+| --- | --- |
+| Qt 6 Core / Gui / Qml / Quick / Wayland 等 | `LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0` |
+| KDE Kirigami | BSD-3-Clause、CC0-1.0、FSFAP、GPL-2.0-or-later、LGPL-2.x、LGPL-3.0-only、MIT 等（按文件） |
+| `kf6-qqc2-desktop-style` | CC0-1.0、GPL-2.0-only、GPL-2.0-or-later、GPL-3.0-only、LGPL-2.x、LGPL-3.0-only 及 KFQF GPL 文本（按文件） |
+| Breeze 图标主题 | LGPL-2.1-or-later、LGPL-3.0-or-later、CC-BY-SA-4.0（按文件） |
+
+这些组件的完整许可证文本由发行版包提供。发布 AppImage 时必须随包收集对应文本，
+并保证接收者能够取得 AppImage 所对应源码；不能只依赖系统里已有的许可证文件。
+
+## 系统服务与外部程序
+
+KWallet / Secret Service、XDG Desktop Portal、系统通知、系统托盘、mpv、VLC 和
+图形驱动不由本项目打包，仍由用户系统提供，并受其各自许可证约束。
