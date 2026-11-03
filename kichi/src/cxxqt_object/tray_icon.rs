@@ -1,131 +1,64 @@
-//! 托盘图标：breeze 风格的**线条**图标——圆角方框里一个 k。
+//! 托盘图标：渲染仓库里的 `assets/icons/hicolor/scalable/apps/kichi.svg`，
+//! 直接用 SVG 原色（白盒面 + 黑线条），不做任何染色。
 //!
-//! 设计约定（对齐 breeze 图标风格）：
-//! - **不填充**：只有描边，背景完全透明，浮在面板上不显突兀；
-//! - 单色：breeze 的符号图标用中性灰，深浅两套面板都能看清；
-//! - 小尺寸（≤24px）用**手绘点阵**，大尺寸用几何描边。
-//!   22px 只有 22 个像素，几何曲线加抗锯齿会把 k 的斜笔糊成一团；
-//!   点阵逐像素定义，缩到面板上依然清楚（2026-10-26 实测对比过两种做法）。
+//! 已知取舍：SNI 只能传一张图，**做不到随面板主题自适应**。原色版在深色面板上
+//! 和应用图标一致；浅色面板上白色盒面会糊进背景，只剩黑色线条可辨
+//! （2026-11-03 用户看过深浅面板对比图后选定这个效果）。
 //!
-//! 为什么用代码画而不是 SVG 文件：托盘图标经 D-Bus 直接传像素
-//! （SNI 的 `IconPixmap`），内嵌比「装进系统图标主题」可靠——换机器、
-//! 换主题、清空 `~/.local/share/icons` 都不受影响，也不用引 SVG 渲染依赖。
-
-/// 描边颜色：偏亮的中性灰。
-///
-/// Breeze 深色面板底色约 #1b1e20、浅色约 #eff0f1。取 0xA0 这一档：
-/// 深色面板上对比度足够，浅色面板上也不刺眼。
-const STROKE: (u8, u8, u8) = (0xA0, 0xA0, 0xA0);
+//! 为什么用 `resvg` 而不是 Qt：托盘图标经 D-Bus 传像素（SNI 的 `IconPixmap`），
+//! 渲染发生在 ksni 的后台线程里；引 Qt 的 SVG 模块会把 QtWidgets 路径拽进来
+//! （见 `docs/pitfalls.md` 第 1 条），还要多装一个系统开发包。
+//! `resvg` 是纯 Rust，SVG 编译期内嵌，换机器、换图标主题、清空
+//! `~/.local/share/icons` 都不受影响。
 
 /// 托盘可能用到的尺寸（面板 / 高分屏 / 右键菜单各取所需）。
 const SIZES: [i32; 4] = [22, 24, 32, 48];
 
+/// 应用图标源文件，与 AppImage 打包用的是同一份。
+const SVG: &str = include_str!("../../assets/icons/hicolor/scalable/apps/kichi.svg");
+
 /// 生成托盘图标的多档位图。
 pub(crate) fn icon_pixmaps() -> Vec<ksni::Icon> {
-    SIZES.iter().map(|&size| render(size)).collect()
+    let Some(tree) = parse() else {
+        // 内嵌资源解析失败属于代码问题，每台机器表现一致；
+        // 这里不 panic，退化成「没有像素」，托盘仍能注册。
+        eprintln!("[kichi] 托盘图标渲染失败，面板可能没有图标");
+        return Vec::new();
+    };
+    SIZES
+        .iter()
+        .filter_map(|&size| render(&tree, size))
+        .collect()
+}
+
+/// 解析内嵌 SVG。
+fn parse() -> Option<resvg::usvg::Tree> {
+    resvg::usvg::Tree::from_str(SVG, &resvg::usvg::Options::default()).ok()
 }
 
 /// 画一张 `size × size` 的图标。
-fn render(size: i32) -> ksni::Icon {
-    render_geometric(size)
-}
+fn render(tree: &resvg::usvg::Tree, size: i32) -> Option<ksni::Icon> {
+    let svg_size = tree.size();
+    let scale = size as f32 / svg_size.width().max(svg_size.height());
+    let mut canvas = resvg::tiny_skia::Pixmap::new(size as u32, size as u32)?;
+    resvg::render(
+        tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut canvas.as_mut(),
+    );
 
-/// 大尺寸用几何描边（清晰、可任意缩放）。
-fn render_geometric(size: i32) -> ksni::Icon {
-    let n = size as f32;
-    let pad = n * 5.0 / 64.0;
-    let (left, top) = (pad, pad);
-    let (right, bottom) = (n - pad, n - pad);
-    let radius = n * 12.0 / 64.0;
-    // 小尺寸外框几乎占满可用像素，容易和字母抢地方：按尺寸给不同线宽
-    let frame_half = if n <= 24.0 {
-        n * 0.9 / 64.0
-    } else {
-        n * 1.2 / 64.0
-    };
+    // SNI 要 ARGB32 网络字节序（A,R,G,B），tiny_skia 给的是 RGBA
+    let data: Vec<u8> = canvas
+        .pixels()
+        .iter()
+        .flat_map(|px| [px.alpha(), px.red(), px.green(), px.blue()])
+        .collect();
 
-    // 字母几何：小尺寸时整体放大并加粗，否则 22px 下几乎看不见
-    let small = n <= 24.0;
-    let stem_x = n * if small { 0.37 } else { 0.39 };
-    let stem_top = n * if small { 0.29 } else { 0.31 };
-    let stem_bottom = n * if small { 0.71 } else { 0.69 };
-    let joint_y = n * 0.5;
-    let arm_x = n * if small { 0.65 } else { 0.62 };
-    let upper_y = n * if small { 0.29 } else { 0.31 };
-    let lower_y = n * if small { 0.71 } else { 0.69 };
-    let letter_half = n * if small { 0.065 } else { 0.0375 };
-
-    let segments = [
-        (stem_x, stem_top, stem_x, stem_bottom),
-        (stem_x, joint_y, arm_x, upper_y),
-        (stem_x, joint_y, arm_x, lower_y),
-    ];
-
-    let mut data = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-
-            let border = rounded_rect_distance(px, py, left, top, right, bottom, radius).abs();
-            let frame_alpha = (frame_half + 0.5 - border).clamp(0.0, 1.0);
-
-            let letter = segments
-                .iter()
-                .map(|&(x1, y1, x2, y2)| distance_to_segment(px, py, x1, y1, x2, y2))
-                .fold(f32::MAX, f32::min);
-            let letter_alpha = (letter_half + 0.5 - letter).clamp(0.0, 1.0);
-
-            let alpha = frame_alpha.max(letter_alpha);
-            if alpha <= 0.0 {
-                data.extend_from_slice(&[0, 0, 0, 0]);
-                continue;
-            }
-            let a = (alpha * 255.0) as u8;
-            data.extend_from_slice(&[a, STROKE.0, STROKE.1, STROKE.2]);
-        }
-    }
-
-    ksni::Icon {
+    Some(ksni::Icon {
         width: size,
         height: size,
         data,
-    }
-}
-
-/// 圆角矩形的有符号距离：小于 0 在内部，大于 0 在外部。
-fn rounded_rect_distance(
-    x: f32,
-    y: f32,
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-    radius: f32,
-) -> f32 {
-    let cx = (left + right) * 0.5;
-    let cy = (top + bottom) * 0.5;
-    let half_w = (right - left) * 0.5;
-    let half_h = (bottom - top) * 0.5;
-    let dx = (x - cx).abs() - (half_w - radius);
-    let dy = (y - cy).abs() - (half_h - radius);
-    let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
-    let inside = dx.max(dy).min(0.0);
-    outside + inside - radius
-}
-
-/// 点到线段的距离。
-fn distance_to_segment(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let len_sq = dx * dx + dy * dy;
-    if len_sq <= f32::EPSILON {
-        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
-    }
-    let t = (((px - x1) * dx + (py - y1) * dy) / len_sq).clamp(0.0, 1.0);
-    let cx = x1 + t * dx;
-    let cy = y1 + t * dy;
-    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+    })
 }
 
 #[cfg(test)]
@@ -134,7 +67,9 @@ mod tests {
 
     #[test]
     fn every_size_has_the_expected_byte_count() {
-        for icon in icon_pixmaps() {
+        let icons = icon_pixmaps();
+        assert_eq!(icons.len(), SIZES.len(), "四档图标应全部渲染成功");
+        for icon in icons {
             let expected = (icon.width * icon.height * 4) as usize;
             assert_eq!(
                 icon.data.len(),
@@ -148,57 +83,47 @@ mod tests {
     }
 
     #[test]
-    fn background_is_transparent_not_filled() {
+    fn outside_the_box_is_transparent() {
+        let tree = parse().expect("内嵌 SVG 应能解析");
         for size in [22, 48] {
-            let icon = render(size);
+            let icon = render(&tree, size).expect("渲染失败");
             let w = icon.width;
             let alpha_at = |x: i32, y: i32| icon.data[((y * w + x) * 4) as usize];
             assert_eq!(alpha_at(0, 0), 0, "{size}px 左上角应透明");
             assert_eq!(alpha_at(w - 1, w - 1), 0, "{size}px 右下角应透明");
-            // 框内空白处也必须透明：线条图不填充
-            assert_eq!(alpha_at(w / 2, w * 3 / 4), 0, "{size}px 框内空白应透明");
         }
     }
 
     #[test]
-    fn frame_and_letter_are_drawn_at_every_size() {
-        for size in [22, 24, 32, 48] {
-            let icon = render(size);
-            let w = icon.width;
-            let alpha_at = |x: i32, y: i32| icon.data[((y * w + x) * 4) as usize];
-            let drawn = icon.data.chunks(4).filter(|px| px[0] > 100).count();
+    fn keeps_the_svg_original_colors() {
+        let tree = parse().expect("内嵌 SVG 应能解析");
+        for size in SIZES {
+            let icon = render(&tree, size).expect("渲染失败");
+            let lums: Vec<u32> = icon
+                .data
+                .chunks(4)
+                .filter(|px| px[0] > 200)
+                .map(|px| (px[1] as u32 + px[2] as u32 + px[3] as u32) / 3)
+                .collect();
+            let total = lums.len();
+            // 白盒面是不透明像素的多数：不能被染色或抠空
+            let light = lums.iter().filter(|&&l| l > 200).count();
+            let darkest = lums.iter().min().copied().unwrap_or(255);
             assert!(
-                drawn > (size * size / 20) as usize,
-                "{size}px 描边像素太少（{drawn}），图标可能没画出来"
+                total > (size * size / 8) as usize,
+                "{size}px 不透明像素太少（{total}），图标几乎是空的"
             );
-            // 竖干位置应有描边
-            let stem_x = (w as f32 * 0.36) as i32;
             assert!(
-                alpha_at(stem_x, w / 2) > 0 || alpha_at(stem_x + 1, w / 2) > 0,
-                "{size}px 找不到字母竖干"
+                light * 2 > total,
+                "{size}px 白盒面丢了（{light}/{total}），原色没保住"
+            );
+            // 黑线条还在：实测 22px 最暗的不透明像素亮度约 127、48px 约 31
+            // （线宽不到一个像素时被抗锯齿抬高，所以阈值按「明显暗于白面」取）
+            assert!(
+                darkest < 200,
+                "{size}px 线条和白面糊在一起了（最暗 {darkest}/{total} 个不透明像素）"
             );
         }
-    }
-
-    #[test]
-    fn stroke_is_neutral_gray_for_both_light_and_dark_panels() {
-        let icon = render(48);
-        let idx = ((4 * icon.width + icon.width / 2) * 4) as usize;
-        let (r, g, b) = (icon.data[idx + 1], icon.data[idx + 2], icon.data[idx + 3]);
-        assert_eq!((r, g, b), STROKE, "描边应是固定中性色");
-        let level = r as i32;
-        assert!(
-            (60..=160).contains(&level),
-            "中性灰必须在深浅面板上都可辨，实际 {level}"
-        );
-    }
-
-    #[test]
-    fn distance_helper_matches_known_points() {
-        let d = distance_to_segment(5.0, 3.0, 0.0, 0.0, 10.0, 0.0);
-        assert!((d - 3.0).abs() < 1e-3);
-        let d = distance_to_segment(-3.0, 0.0, 0.0, 0.0, 10.0, 0.0);
-        assert!((d - 3.0).abs() < 1e-3);
     }
 }
 
@@ -208,13 +133,14 @@ mod preview {
     #[test]
     #[ignore = "人工预览用"]
     fn dump_preview() {
-        for size in [22, 24, 32, 48] {
-            let icon = super::render(size);
+        let dir = std::env::temp_dir().join("kichi-tray-preview");
+        std::fs::create_dir_all(&dir).expect("创建预览目录失败");
+        for icon in super::icon_pixmaps() {
             let w = icon.width as usize;
-            // 左右两栏：左浅色面板、右深色面板
+            // 左右两栏：左浅色面板（Breeze #eff0f1）、右深色面板（#1b1e20）
             let mut out = format!("P6\n{} {}\n255\n", w * 2, w).into_bytes();
             for y in 0..w {
-                for panel in [220u8, 40u8] {
+                for panel in [239u8, 27u8] {
                     for x in 0..w {
                         let idx = (y * w + x) * 4;
                         let a = icon.data[idx] as f32 / 255.0;
@@ -224,7 +150,18 @@ mod preview {
                     }
                 }
             }
-            std::fs::write(format!("/tmp/opencode/icon/line-{size}.ppm"), out).expect("写预览失败");
+            std::fs::write(dir.join(format!("svg-{}.ppm", icon.width)), out).expect("写预览失败");
+
+            // 顺带导出真实像素（ARGB → RGBA 的 PAM），便于核对颜色与 alpha
+            let mut pam = format!(
+                "P7\nWIDTH {}\nHEIGHT {}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+                icon.width, icon.height
+            )
+            .into_bytes();
+            for px in icon.data.chunks(4) {
+                pam.extend_from_slice(&[px[1], px[2], px[3], px[0]]);
+            }
+            std::fs::write(dir.join(format!("rgba-{}.pam", icon.width)), pam).expect("写预览失败");
         }
     }
 }

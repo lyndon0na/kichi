@@ -39,11 +39,15 @@ impl ksni::Tray for TrayIcon {
         "kichi".to_owned()
     }
 
-    /// 图标走内嵌位图，不依赖系统图标主题（换机器/换主题都不受影响）。
+    /// 图标走内嵌 SVG 现渲染的位图，不依赖系统图标主题（换机器/换主题都不受影响）。
     ///
-    /// 同时给出 `icon_name` 作为兜底：某些实现只认名字。
+    /// 不上报图标名：Plasma 只要能用名字在主题里找到图标，就完全忽略我们传的像素。
+    ///
+    /// 2026-11-03 实测：主题目录里留着旧版「方框 k」的 `kichi.svg`，
+    /// 托盘一直显示旧图，而 D-Bus 上的 `IconPixmap` 已经是新渲染的结果。
+    /// 留空名，宿主只剩像素可用，托盘显示就与本机图标主题彻底解耦。
     fn icon_name(&self) -> String {
-        "kichi".to_owned()
+        String::new()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
