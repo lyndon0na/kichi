@@ -172,17 +172,16 @@ fn one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::{split_words, DEFAULT_ARGS, DEFAULT_PLAYER};
+    use crate::player::{split_words, DEFAULT_ARGS};
 
     fn test_config() -> PlayerConfig {
         let mut config = PlayerConfig {
-            program: "flatpak".to_owned(),
-            pre_args: vec!["run".to_owned(), "io.mpv.Mpv".to_owned()],
+            program: "mpv".to_owned(),
+            pre_args: Vec::new(),
             access_args: Vec::new(),
         };
         config.access_args = split_words(DEFAULT_ARGS);
         assert_eq!(PlayerConfig::default().program, config.program);
-        assert!(DEFAULT_PLAYER.contains("io.mpv.Mpv"));
         config
     }
 
@@ -204,8 +203,6 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "run".to_owned(),
-                "io.mpv.Mpv".to_owned(),
                 format!("--force-media-title={name}"),
                 "--ytdl=no".to_owned(),
                 "/tmp/kichi-play/test.m3u".to_owned(),
@@ -213,7 +210,7 @@ mod tests {
         );
         assert_eq!(
             command.get_program().to_string_lossy(),
-            "flatpak",
+            "mpv",
             "程序名不受文件名影响"
         );
     }

@@ -19,7 +19,7 @@ ColumnLayout {
 
         KSettingsRow {
             title: qsTr("播放器")
-            description: qsTr("mpv 功能最完整；VLC 支持播放控制、续播和进度同步。")
+            description: qsTr("需系统已安装；mpv 功能最完整，VLC 支持播放控制、续播和进度同步。缺少所选播放器时会自动改用另一个，两个都没有则提示安装。")
 
             KComboBox {
                 id: playerBackendBox
@@ -185,7 +185,7 @@ ColumnLayout {
             Label {
                 objectName: "settingsPlayerArgsHint"
                 Layout.fillWidth: true
-                text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。")
+                text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。Flatpak 版 mpv 可填 flatpak run --die-with-parent io.mpv.Mpv。")
                 font.pixelSize: theme.fontCaption
                 color: theme.textMuted
                 wrapMode: Text.WordWrap

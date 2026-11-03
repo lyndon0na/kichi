@@ -158,11 +158,16 @@ impl qobject::Kichi {
         let epoch = self.as_ref().rust().play_epoch;
         // 开关关闭 / 非 mpv（含 VLC）：本次不准备字幕（计划取出来丢掉，别留给下一次）
         let settings = self.settings.clone();
-        let config = PlayerConfig::resolve(
+        let (config, _) = PlayerConfig::resolve_playable(
             settings.player_backend,
             settings.player_command_override(),
             settings.player_args_override(),
         );
+        // 先确认播放器存在，比取完直链再 spawn 失败省一次网络请求
+        if let Err(message) = config.check_available() {
+            self.as_mut().fail_play_loading(&message);
+            return;
+        }
         let wants_history = config.supports_history();
         let plan = {
             let mut rust = self.as_mut().rust_mut();
@@ -299,7 +304,7 @@ impl qobject::Kichi {
             return;
         }
         let settings = self.settings.clone();
-        let config = PlayerConfig::resolve(
+        let (config, player_notice) = PlayerConfig::resolve_playable(
             settings.player_backend,
             settings.player_command_override(),
             settings.player_args_override(),
@@ -319,7 +324,7 @@ impl qobject::Kichi {
             eprintln!("[kichi] 字幕：把 {track_count} 条字幕交给播放器");
         }
         let playback_id = id.to_owned();
-        let event_notice = notice;
+        let event_notice = super::play_prepare::combine_notes(notice, player_notice);
         let started = player::start(
             &config,
             &option.url,

@@ -123,7 +123,9 @@ TestCase {
 
         const buttonY = btn.mapToItem(scroller.contentItem, 0, 0).y
         const maxY = scroller.contentHeight - scroller.height
-        scroller.contentY = Math.max(0, Math.min(maxY - 140, buttonY - 320))
+        // 居中而不是固定留 320px：文案变长时按钮位置会往下移，固定偏移会让按钮
+        // 落在可视区外，测试就测不到「惯性中的第一次点击」。
+        scroller.contentY = Math.max(0, Math.min(maxY, buttonY - scroller.height / 2))
         wait(30)
         scroller.flick(0, -100)
         wait(30)
