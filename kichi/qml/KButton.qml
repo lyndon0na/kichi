@@ -33,9 +33,9 @@ Button {
 
     readonly property color foregroundColor: {
         if (variant === "primary")
-            return theme.onAccent
+            return theme.accentForeground
         if (variant === "danger")
-            return theme.onDanger
+            return theme.dangerForeground
         if (variant === "dangerOutline")
             return theme.danger
         return variant === "ghost" ? theme.textSecondary : theme.textPrimary

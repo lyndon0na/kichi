@@ -55,7 +55,7 @@ ColumnLayout {
             color: theme.textPrimary
             font.pixelSize: theme.fontBody
             selectionColor: theme.accent
-            selectedTextColor: theme.onAccent
+            selectedTextColor: theme.accentForeground
         }
     }
 }

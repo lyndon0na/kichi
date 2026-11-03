@@ -54,6 +54,31 @@ TestCase {
             id: dialog
             parent: host
         }
+
+        KButton {
+            id: dangerButton
+            objectName: "themeDangerButton"
+            width: 140
+            text: "危险操作"
+            variant: "danger"
+        }
+
+        KButton {
+            id: primaryButton
+            objectName: "themePrimaryButton"
+            width: 140
+            text: "主操作"
+            variant: "primary"
+        }
+    }
+
+    function useLightPalette() {
+        host.palette.base = "#ffffff"
+        host.palette.window = "#f7f7f7"
+        host.palette.text = "#000000"
+        host.palette.highlight = "#3daee9"
+        host.palette.highlightedText = "#ffffff"
+        wait(0)
     }
 
     function test_group_theme_follows_live_palette() {
@@ -86,5 +111,16 @@ TestCase {
         var after = String(host.dialogSurface)
         verify(after !== before, "弹窗表面色必须随宿主窗口 palette 实时更新（"
                + before + " -> " + after + "）")
+    }
+
+    function test_solid_button_foreground_uses_theme_tokens() {
+        useLightPalette()
+        compare(String(dangerButton.background.color), "#c0392b")
+        compare(String(dangerButton.foregroundColor), "#ffffff")
+        compare(String(primaryButton.foregroundColor), "#ffffff")
+
+        var dangerLabel = findChild(dangerButton, "buttonText")
+        verify(dangerLabel !== null)
+        compare(String(dangerLabel.color), "#ffffff")
     }
 }

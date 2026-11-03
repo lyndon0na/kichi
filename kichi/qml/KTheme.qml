@@ -62,7 +62,9 @@ Item {
 
     // —— 强调色（= Plasma 系统强调色，Primary 按钮 / 选中态 / 关键高亮） ——
     readonly property color accent: palette.highlight
-    readonly property color onAccent: palette.highlightedText
+    // ⚠ 不要命名为 onAccent / onDanger：QML 会把 on* 解析成信号处理器，
+    // 这两个属性会静默回落成无效颜色（文字变黑），见 docs/pitfalls.md 第 55 条。
+    readonly property color accentForeground: palette.highlightedText
     /// 选中态底色：一层很淡的强调色，不铺满饱和色块
     readonly property color accentSoft: Qt.rgba(accent.r, accent.g, accent.b,
                                                 theme.darkMode ? 0.22 : 0.12)
@@ -139,7 +141,7 @@ Item {
 
     // —— 状态色（全应用仅存的字面量颜色，深色主题用浅一档的变体保证对比度） ——
     readonly property color danger: theme.darkMode ? "#f08c84" : "#c0392b"
-    readonly property color onDanger: theme.darkMode ? "#221512" : "#ffffff"
+    readonly property color dangerForeground: theme.darkMode ? "#221512" : "#ffffff"
     readonly property color warning: theme.darkMode ? "#e0b15a" : "#b9770e"
     readonly property color success: theme.darkMode ? "#7fd39a" : "#3c9d5a"
 
