@@ -153,6 +153,22 @@ TestCase {
         verify(body.visible, "点高级播放器设置后展开")
     }
 
+    function test_custom_player_placeholder_hint_is_visible() {
+        var row = findChild(page, "settingsAdvancedPlayer")
+        var hint = findChild(page, "settingsPlayerArgsHint")
+        verify(row !== null, "有高级播放器设置行")
+        verify(hint !== null, "有自定义播放器参数提示")
+
+        mouseClick(row)
+        wait(40)
+
+        verify(hint.visible, "展开后提示可见")
+        verify(hint.text.indexOf("{title}") >= 0, "提示文件名占位符")
+        verify(hint.text.indexOf("{playlist}") >= 0, "提示清单占位符")
+        verify(hint.text.indexOf("{url}") >= 0, "提示直链占位符")
+        verify(hint.text.indexOf("默认附加参数是 {playlist}") >= 0, "提示通用播放器默认值")
+    }
+
     function test_player_picker_applies_vlc() {
         var box = findChild(page, "settingsPlayerBackend")
         verify(box !== null, "有播放器选择下拉框")

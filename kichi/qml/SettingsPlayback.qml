@@ -151,6 +151,7 @@ ColumnLayout {
 
                 KTextField {
                     id: commandField
+                    objectName: "settingsPlayerCommand"
                     Layout.fillWidth: true
                     selectByMouse: true
                     placeholderText: playback.backend ? playback.backend.playerDefaultCommand : ""
@@ -172,12 +173,22 @@ ColumnLayout {
 
                 KTextField {
                     id: argsField
+                    objectName: "settingsPlayerArgs"
                     Layout.fillWidth: true
                     selectByMouse: true
                     placeholderText: playback.backend ? playback.backend.playerDefaultArgs : ""
                     text: playback.backend ? playback.backend.playerArgs : ""
                     onEditingFinished: playback.applyPlayer()
                 }
+            }
+
+            Label {
+                objectName: "settingsPlayerArgsHint"
+                Layout.fillWidth: true
+                text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。")
+                font.pixelSize: theme.fontCaption
+                color: theme.textMuted
+                wrapMode: Text.WordWrap
             }
 
             RowLayout {

@@ -3,20 +3,24 @@
 //! 设置页可选 mpv / VLC / 自定义，内置默认是 flatpak 版 mpv（`io.mpv.Mpv`），
 //! 可用环境变量覆盖：
 //! - `KICHI_PLAYER`：整条命令（按空格切分，如 `mpv`、`vlc` 或 `flatpak run io.mpv.Mpv`）
-//! - `KICHI_PLAYER_ARGS`：追加参数，同样按空格切分（如 `--fs --vo=gpu`）
+//! - `KICHI_PLAYER_ARGS`：附加参数，同样按空格切分（如 `--fs --vo=gpu`）；
+//!   自定义播放器默认 `{playlist}`，也可用 `{title}` / `{url}`
 //!
 //! 安全约定：
 //! - 不经 shell；需要进 argv 的文件名 / 标题作为独立参数传递，并避免被当成选项；
-//! - mpv 的直链只经 IPC（`loadfile`）下发；VLC 与其它播放器使用 0600 临时清单；
+//! - mpv 的直链只经 IPC（`loadfile`）下发；VLC 与其它播放器默认使用 0600
+//!   临时清单；自定义参数显式使用 `{url}` 时直链会进入 argv；
 //! - 直链是带签名的临时 URL，日志里只打主机名。
 //!
 //! 模块分工（见 `docs/adr/0008-mpv-idle-ipc.md`）：
 //! - 本文件：配置解析、命令切分、标题 / 脱敏工具；
+//! - [`input`]：自定义播放器输入占位符：`{title}` / `{playlist}` / `{url}`；
 //! - [`launch`]：其它播放器：清单 + spawn + 收尾线程；
 //! - [`ipc`]：mpv 专用：socket、`loadfile`、窗口观测、`quit`；
 //! - [`vlc`]：VLC 专用：oldrc socket、状态 / 进度查询、seek、quit；
 //! - [`session`]：播放会话登记表 + 监控线程 + 退出收尾。
 
+mod input;
 pub mod ipc;
 mod launch;
 mod progress;
@@ -27,6 +31,7 @@ pub mod vlc;
 use kichi_core::PlayOption;
 
 use crate::settings::PlayerBackend;
+pub(crate) use input::expand_play_arg;
 pub use session::{shutdown_all, start, PlaybackExtras, StartEvent};
 
 /// 默认播放器命令（flatpak 包名，2026-10-26 实测可用）。
@@ -40,6 +45,11 @@ pub const DEFAULT_ARGS: &str = "--force-media-title={title} --ytdl=no";
 pub const DEFAULT_VLC_PLAYER: &str = "vlc";
 /// VLC 的附加参数默认留空；RC 控制参数由播放器模块在启动时追加。
 pub const DEFAULT_VLC_ARGS: &str = "";
+/// 通用播放器的默认附加参数：把临时清单路径作为位置参数传入。
+///
+/// 大多数播放器接受「打开这个文件」的位置参数；需要 `--playlist=` 这类
+/// 特定选项时，用户自己写 `--playlist={playlist}`。
+pub const DEFAULT_GENERIC_ARGS: &str = "{playlist}";
 
 /// 播放器控制能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,12 +98,18 @@ impl PlayerConfig {
                 .then(|| settings_args.map(str::to_owned))
                 .flatten()
         });
-        let default_args = if config.is_vlc() {
+        let default_args = if config.is_mpv() {
+            DEFAULT_ARGS
+        } else if config.is_vlc() {
             DEFAULT_VLC_ARGS
         } else {
-            DEFAULT_ARGS
+            DEFAULT_GENERIC_ARGS
         };
-        config.access_args = split_words(args.as_deref().unwrap_or(default_args));
+        config.access_args = match args.as_deref() {
+            Some(args) => split_words(args),
+            None if config.uses_input_placeholder() => Vec::new(),
+            None => split_words(default_args),
+        };
         config
     }
 
@@ -255,6 +271,30 @@ mod tests {
         let config = PlayerConfig::resolve(PlayerBackend::Mpv, None, None);
         assert_eq!(config.program, "flatpak");
         assert!(config.access_args.contains(&"--ytdl=no".to_owned()));
+    }
+
+    #[test]
+    fn arbitrary_custom_players_default_to_the_playlist_path() {
+        let config = PlayerConfig::resolve(PlayerBackend::Custom, Some("haruna"), None);
+        assert_eq!(config.program, "haruna");
+        assert_eq!(config.access_args, vec!["{playlist}"]);
+        assert!(config.uses_playlist_placeholder());
+    }
+
+    #[test]
+    fn command_field_input_placeholders_suppress_default_generic_args() {
+        let config = PlayerConfig::resolve(PlayerBackend::Custom, Some("haruna {url}"), None);
+        assert_eq!(config.program, "haruna");
+        assert!(config.access_args.is_empty());
+        assert!(config.uses_url_placeholder());
+
+        let config = PlayerConfig::resolve(PlayerBackend::Custom, Some("haruna {playlist}"), None);
+        assert!(config.access_args.is_empty());
+        assert!(config.uses_playlist_placeholder());
+
+        let config =
+            PlayerConfig::resolve(PlayerBackend::Custom, Some("haruna --title={title}"), None);
+        assert_eq!(config.access_args, vec!["{playlist}"]);
     }
 
     #[test]

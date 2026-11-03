@@ -106,6 +106,11 @@ pub fn start(
     if url.trim().is_empty() {
         return Err("播放链接为空".to_owned());
     }
+    if config.protocol() != PlayerProtocol::Generic && config.uses_input_placeholder() {
+        return Err(
+            "mpv / VLC 的播放链接由控制接口传入，参数里不能使用 {url} 或 {playlist}".to_owned(),
+        );
+    }
     if !config.is_mpv() {
         if config.protocol() == PlayerProtocol::Vlc {
             return start_vlc(config, url, title, cancel, extras, notify);
@@ -1013,6 +1018,32 @@ mod tests {
         );
         assert!(result.is_err(), "spawn 失败必须冒泡给提示条");
         assert_eq!(active_count(), 0, "失败不能留下登记项");
+    }
+
+    #[test]
+    fn mpv_input_placeholders_are_rejected() {
+        let _guard = serial();
+        shutdown_all();
+        let config = PlayerConfig {
+            program: "mpv".to_owned(),
+            pre_args: Vec::new(),
+            access_args: vec!["{url}".to_owned()],
+        };
+        let result = start(
+            &config,
+            "https://cdn.invalid/v?sign=S",
+            "t",
+            Arc::new(Cancel::default()),
+            PlaybackExtras::default(),
+            |_| {},
+        );
+        assert!(
+            result
+                .err()
+                .is_some_and(|reason| reason.contains("不能使用 {url}")),
+            "mpv 的输入必须由 IPC 下发"
+        );
+        assert_eq!(active_count(), 0);
     }
 
     #[test]
