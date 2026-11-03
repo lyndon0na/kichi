@@ -111,12 +111,20 @@ QtObject {
 
     /// 列表刷新后丢掉已经不存在的 id（例如在别处被删除）。
     function prune(entries) {
+        pruneExcept(entries, [])
+    }
+
+    /// 列表刷新后丢掉已经不存在的 id，但保留仍被写操作占用的行：
+    /// 乐观移除 / 回滚期间它们暂时不在列表里，失败后还要恢复选择。
+    function pruneExcept(entries, keepIds) {
         const present = ({})
         for (let i = 0; i < (entries ? entries.length : 0); i++) {
             const id = entries[i] ? entries[i].id : ""
             if (id)
                 present[id] = true
         }
+        for (let k = 0; k < (keepIds ? keepIds.length : 0); k++)
+            present[String(keepIds[k])] = true
         const next = ({})
         let changed = false
         const ids = Object.keys(selectedIds)
@@ -125,6 +133,21 @@ QtObject {
                 next[ids[i]] = true
             else
                 changed = true
+        }
+        if (changed)
+            selectedIds = next
+    }
+
+    function removeIds(ids) {
+        if (!ids || ids.length === 0)
+            return
+        const next = copy(selectedIds)
+        let changed = false
+        for (let i = 0; i < ids.length; i++) {
+            if (next[ids[i]]) {
+                delete next[ids[i]]
+                changed = true
+            }
         }
         if (changed)
             selectedIds = next

@@ -56,10 +56,11 @@ impl qobject::Kichi {
     /// 从乐观快照里取出本批失败及尚未发送的条目，已完成项保持删除。
     pub(super) fn take_entries_to_restore(
         mut self: Pin<&mut Self>,
+        action_id: u64,
         failed_ids: &[String],
     ) -> Vec<TrashEntry> {
         let mut rust = self.as_mut().rust_mut();
-        let Some(state) = rust.trash_action.as_mut() else {
+        let Some(state) = rust.trash_actions.get_mut(&action_id) else {
             return Vec::new();
         };
         entries_to_restore(state.kind, &mut state.removed, &state.remaining, failed_ids)

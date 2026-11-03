@@ -42,17 +42,21 @@ impl PendingCreate {
     }
 }
 
-enum MutationKind {
-    Rename,
-    Create(Box<PendingCreate>),
-    Remove,
-}
-
-pub(crate) struct FileMutation {
-    dir_id: String,
-    before_entries: Vec<FileEntry>,
-    search_before: Vec<SearchHit>,
-    kind: MutationKind,
+pub(crate) enum FileMutation {
+    Rename {
+        dir_id: String,
+        id: String,
+        before_name: String,
+    },
+    Create {
+        dir_id: String,
+        pending: Box<PendingCreate>,
+    },
+    Remove {
+        dir_id: String,
+        removed: Vec<(usize, FileEntry)>,
+        search_before: Vec<SearchHit>,
+    },
 }
 
 pub(crate) struct StarredSnapshot {
@@ -60,54 +64,71 @@ pub(crate) struct StarredSnapshot {
     changes: Vec<(String, bool)>,
 }
 
+pub(crate) fn pending_folder_id(action_id: u64) -> String {
+    format!("{TEMP_FOLDER_PREFIX}{action_id}")
+}
+
 impl qobject::Kichi {
-    pub(crate) fn optimistic_rename(mut self: Pin<&mut Self>, id: &str, name: &str) -> bool {
+    pub(crate) fn optimistic_rename(
+        mut self: Pin<&mut Self>,
+        action_id: u64,
+        id: &str,
+        name: &str,
+    ) -> bool {
         let id = id.trim();
         if id.is_empty() {
             return false;
         }
-        let before_entries = self.entries.clone();
-        let index = before_entries.iter().position(|entry| entry.id == id);
+        let before_name = self
+            .entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.name.clone())
+            .or_else(|| self.search_index.get(id).map(|hit| hit.entry.name.clone()));
+        let Some(before_name) = before_name else {
+            return false;
+        };
+        let index = self.entries.iter().position(|entry| entry.id == id);
         let has_search_hit = self.search_active && self.search_index.contains_key(id);
         if index.is_none() && !has_search_hit {
             return false;
         }
         self.as_mut().cancel_files_refresh_for_mutation();
-        let mut next = before_entries.clone();
+        let mut next = self.entries.clone();
         if let Some(index) = index {
             next[index].name = name.to_owned();
         }
-        let related_ids = HashSet::from([id.to_owned()]);
-        let search_before = self.search_hits_for(&related_ids);
         {
             let mut rust = self.as_mut().rust_mut();
             if let Some(hit) = rust.search_index.get_mut(id) {
                 hit.entry.name = name.to_owned();
             }
-            rust.file_mutation = Some(FileMutation {
-                dir_id: rust.current_dir_id.to_string(),
-                before_entries,
-                search_before,
-                kind: MutationKind::Rename,
-            });
+            let dir_id = rust.current_dir_id.to_string();
+            rust.file_mutations.insert(
+                action_id,
+                FileMutation::Rename {
+                    dir_id,
+                    id: id.to_owned(),
+                    before_name,
+                },
+            );
         }
         self.as_mut().publish_optimistic_entries(next);
         true
     }
 
-    pub(crate) fn optimistic_create_folder(mut self: Pin<&mut Self>, name: &str) -> Option<String> {
+    pub(crate) fn optimistic_create_folder(
+        mut self: Pin<&mut Self>,
+        action_id: u64,
+        name: &str,
+        temp_id: &str,
+    ) -> bool {
         self.as_mut().cancel_files_refresh_for_mutation();
         let before_entries = self.entries.clone();
         let parent_id = self.current_dir_id.to_string();
-        let seq = {
-            let mut rust = self.as_mut().rust_mut();
-            rust.file_mutation_seq = rust.file_mutation_seq.wrapping_add(1);
-            rust.file_mutation_seq
-        };
-        let temp_id = format!("{TEMP_FOLDER_PREFIX}{seq}");
         let now = Utc::now();
         let entry = FileEntry {
-            id: temp_id.clone(),
+            id: temp_id.to_owned(),
             name: name.to_owned(),
             kind: EntryKind::Folder,
             size: 0,
@@ -124,22 +145,27 @@ impl qobject::Kichi {
         let known_ids = before_entries.iter().map(|item| item.id.clone()).collect();
         let mut next = before_entries.clone();
         next.push(entry.clone());
-        let search_before = Vec::new();
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.pending_entry_ids.insert(temp_id.clone());
-            rust.file_mutation = Some(FileMutation {
-                dir_id: rust.current_dir_id.to_string(),
-                before_entries,
-                search_before,
-                kind: MutationKind::Create(Box::new(PendingCreate { entry, known_ids })),
-            });
+            rust.pending_entry_ids.insert(temp_id.to_owned());
+            let dir_id = rust.current_dir_id.to_string();
+            rust.file_mutations.insert(
+                action_id,
+                FileMutation::Create {
+                    dir_id,
+                    pending: Box::new(PendingCreate { entry, known_ids }),
+                },
+            );
         }
         self.as_mut().publish_optimistic_entries(next);
-        Some(temp_id)
+        true
     }
 
-    pub(crate) fn optimistic_remove_entries(mut self: Pin<&mut Self>, ids: &[String]) -> bool {
+    pub(crate) fn optimistic_remove_entries(
+        mut self: Pin<&mut Self>,
+        action_id: u64,
+        ids: &[String],
+    ) -> bool {
         let wanted: HashSet<String> = ids
             .iter()
             .map(|id| id.trim())
@@ -151,77 +177,122 @@ impl qobject::Kichi {
         }
         self.as_mut().cancel_files_refresh_for_mutation();
         let before_entries = self.entries.clone();
+        let removed: Vec<(usize, FileEntry)> = before_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| wanted.contains(&entry.id))
+            .map(|(index, entry)| (index, entry.clone()))
+            .collect();
         let search_before = self.search_hits_for(&wanted);
         let mut next = before_entries.clone();
         next.retain(|entry| !wanted.contains(&entry.id));
-        if next.len() == before_entries.len() && search_before.is_empty() {
+        if removed.is_empty() && search_before.is_empty() {
             return false;
         }
         {
             let mut rust = self.as_mut().rust_mut();
             rust.search_index.retain(|id, _| !wanted.contains(id));
-            rust.file_mutation = Some(FileMutation {
-                dir_id: rust.current_dir_id.to_string(),
-                before_entries,
-                search_before,
-                kind: MutationKind::Remove,
-            });
+            let dir_id = rust.current_dir_id.to_string();
+            rust.file_mutations.insert(
+                action_id,
+                FileMutation::Remove {
+                    dir_id,
+                    removed,
+                    search_before,
+                },
+            );
         }
         self.as_mut().publish_optimistic_entries(next);
         true
     }
 
-    /// 成功：清掉回滚快照。新建文件夹转成“等待真实 id”的临时行。
-    pub(crate) fn commit_file_mutation(mut self: Pin<&mut Self>) {
-        let Some(mutation) = self.as_mut().rust_mut().file_mutation.take() else {
-            return;
-        };
+    /// 成功：清掉这个动作的回滚快照。新建文件夹转成“等待真实 id”的临时行。
+    pub(crate) fn commit_file_mutation(mut self: Pin<&mut Self>, action_id: u64) {
+        let mutation = self.as_mut().rust_mut().file_mutations.remove(&action_id);
         self.as_mut().mark_library_caches_stale(None);
-        if let MutationKind::Create(pending) = mutation.kind {
+        if let Some(FileMutation::Create { pending, .. }) = mutation {
             self.as_mut().rust_mut().unresolved_create.push(*pending);
         }
     }
 
-    /// 失败：当前目录仍停在操作前位置时恢复完整快照；已经导航离开则只修复
-    /// 搜索结果，不把用户新打开的目录覆盖回旧数据。
-    pub(crate) fn rollback_file_mutation(mut self: Pin<&mut Self>) {
-        let Some(mutation) = self.as_mut().rust_mut().file_mutation.take() else {
+    /// 失败：只撤回这个动作碰过的条目，保留同一目录里其它并发动作的结果。
+    pub(crate) fn rollback_file_mutation(mut self: Pin<&mut Self>, action_id: u64) {
+        let Some(mutation) = self.as_mut().rust_mut().file_mutations.remove(&action_id) else {
             return;
         };
-        let same_dir = self.current_dir_id.to_string() == mutation.dir_id;
-        if let MutationKind::Create(pending) = &mutation.kind {
+        let current_dir = self.current_dir_id.to_string();
+        if let FileMutation::Create { pending, .. } = &mutation {
             self.as_mut()
                 .rust_mut()
                 .pending_entry_ids
                 .remove(&pending.entry.id);
         }
-        let mut restored_entries = mutation.before_entries.clone();
-        sort_entries(&mut restored_entries, self.sort_field, self.sort_ascending);
-        if same_dir {
-            {
-                let mut rust = self.as_mut().rust_mut();
-                let files = list_from_with_pending(&restored_entries, &rust.pending_entry_ids);
-                rust.files_cache
-                    .replace_entries(mutation.dir_id.clone(), &restored_entries);
-                rust.entries = restored_entries;
-                rust.files = files;
-                rust.files_revision = rust.files_revision.wrapping_add(1);
-                rust.files_stale = false;
+        match mutation {
+            FileMutation::Rename {
+                dir_id,
+                id,
+                before_name,
+            } => {
+                let same_dir = current_dir == dir_id;
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    if same_dir {
+                        if let Some(entry) = rust.entries.iter_mut().find(|entry| entry.id == id) {
+                            entry.name = before_name.clone();
+                        }
+                    }
+                    if let Some(hit) = rust.search_index.get_mut(&id) {
+                        hit.entry.name = before_name.clone();
+                    }
+                    rust.files_cache.restore_name(&dir_id, &id, &before_name);
+                }
+                if same_dir {
+                    let entries = self.entries.clone();
+                    self.as_mut().publish_optimistic_entries(entries);
+                } else {
+                    self.as_mut().rebuild_search_view_from_state();
+                }
             }
-            self.as_mut().notify();
-        } else {
-            self.as_mut()
-                .rust_mut()
-                .files_cache
-                .replace_entries(mutation.dir_id.clone(), &restored_entries);
-        }
-        {
-            let mut rust = self.as_mut().rust_mut();
-            for hit in mutation.search_before {
-                rust.search_index.insert(hit.id().to_owned(), hit);
+            FileMutation::Create { dir_id, pending } => {
+                let same_dir = current_dir == dir_id;
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    if same_dir {
+                        rust.entries.retain(|entry| entry.id != pending.entry.id);
+                    }
+                    rust.files_cache.remove_entry(&dir_id, &pending.entry.id);
+                }
+                if same_dir {
+                    let entries = self.entries.clone();
+                    self.as_mut().publish_optimistic_entries(entries);
+                } else {
+                    self.as_mut().rebuild_search_view_from_state();
+                }
+            }
+            FileMutation::Remove {
+                dir_id,
+                removed,
+                search_before,
+            } => {
+                let same_dir = current_dir == dir_id;
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    for hit in search_before {
+                        rust.search_index.insert(hit.id().to_owned(), hit);
+                    }
+                    if same_dir {
+                        restore_removed_entries(&mut rust.entries, &removed);
+                    }
+                    rust.files_cache.restore_entries(&dir_id, &removed);
+                }
+                if same_dir {
+                    let entries = self.entries.clone();
+                    self.as_mut().publish_optimistic_entries(entries);
+                } else {
+                    self.as_mut().rebuild_search_view_from_state();
+                }
             }
         }
-        self.as_mut().rebuild_search_view_from_state();
     }
 
     pub(crate) fn optimistic_starred(
@@ -390,6 +461,19 @@ fn merge_pending_creates(
         added_temp_ids,
         resolved_temp_ids,
         resolved_real_ids,
+    }
+}
+
+fn restore_removed_entries(entries: &mut Vec<FileEntry>, removed: &[(usize, FileEntry)]) {
+    let mut restored: Vec<(usize, FileEntry)> = removed
+        .iter()
+        .filter(|(_, removed)| !entries.iter().any(|entry| entry.id == removed.id))
+        .cloned()
+        .collect();
+    restored.sort_by_key(|(index, _)| *index);
+    for (index, entry) in restored {
+        let at = index.min(entries.len());
+        entries.insert(at, entry);
     }
 }
 

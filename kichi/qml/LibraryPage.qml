@@ -659,7 +659,7 @@ Item {
                 Qt.callLater(page.focusActiveView)
         }
 
-        function onFileActionDone(action, ok) {
+        function onFileActionDone(action, ok, message, ids) {
             if (page.visible && ok)
                 page.ensureFresh()
         }

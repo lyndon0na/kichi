@@ -17,6 +17,11 @@ Item {
 
     readonly property int dialogWidth: 400
 
+    FileActionLocks {
+        id: locks
+        backend: root.backend
+    }
+
     KDialog {
         id: deleteDialog
         objectName: "trashDeleteDialog"
@@ -30,7 +35,7 @@ Item {
             outerMargin: deleteDialog.padding
             okText: qsTr("彻底删除")
             okVariant: "danger"
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            okEnabled: root.backend !== null && !locks.any(root.targetIds)
             cancelEnabled: okEnabled
             onOkClicked: root.submitDelete()
             onCancelClicked: deleteDialog.close()
@@ -62,7 +67,7 @@ Item {
             outerMargin: clearDialog.padding
             okText: qsTr("清空回收站")
             okVariant: "danger"
-            okEnabled: root.backend !== null && !root.backend.fileActionRunning
+            okEnabled: root.backend !== null && !root.backend.trashActionRunning
             cancelEnabled: okEnabled
             onOkClicked: root.submitClear()
             onCancelClicked: clearDialog.close()

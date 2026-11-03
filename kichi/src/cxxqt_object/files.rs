@@ -11,6 +11,7 @@ use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant
 use kichi_core::{EntryKind, FileEntry, TaskPhase};
 
 use super::actions::{format_size, run_in_background};
+use super::file_action_lock::{reset_file_action_state, FileActionDomain};
 use super::file_optimistic::{is_unconfirmed_create, merge_unresolved_create};
 use super::qobject;
 use super::QVariantList;
@@ -94,7 +95,11 @@ impl qobject::Kichi {
             }
             return;
         }
-        if self.file_action_running {
+        if self
+            .as_ref()
+            .rust()
+            .has_file_action_domain(FileActionDomain::Files)
+        {
             // 乐观状态还没提交时不能让服务端旧快照覆盖它。
             if force {
                 let show_manual = {
@@ -542,7 +547,6 @@ impl qobject::Kichi {
             rust.files_cache.clear();
             rust.files_request_running = false;
             rust.files_manual_refreshing = false;
-            rust.file_mutation = None;
             rust.unresolved_create.clear();
             rust.pending_entry_ids.clear();
             rust.crumbs = vec![Crumb::root()];
@@ -553,6 +557,7 @@ impl qobject::Kichi {
             rust.move_targets_loading = false;
             rust.move_targets_error = QString::default();
             rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
+            reset_file_action_state(&mut rust);
         }
         self.as_mut().sync_breadcrumb();
     }

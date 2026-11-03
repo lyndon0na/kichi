@@ -112,6 +112,18 @@ TestCase {
         compare(picked(), "a,d", "刷新后只留下仍存在的条目")
     }
 
+    function test_prune_except_keeps_locked_rows_during_optimistic_removal() {
+        selection.selectAll(entries)
+        selection.pruneExcept([{ id: "a" }, { id: "c" }], ["b"])
+        compare(picked(), "a,b,c", "正在处理的乐观移除行不能提前丢掉选择")
+    }
+
+    function test_remove_ids_only_drops_this_action_targets() {
+        selection.selectAll(entries)
+        selection.removeIds(["b", "d"])
+        compare(picked(), "a,c", "并发动作只清理自己那批完成的目标")
+    }
+
     function test_single_id_is_only_for_one_selection() {
         selection.click("a", 0, Qt.NoModifier, entries)
         compare(selection.singleId(), "a")

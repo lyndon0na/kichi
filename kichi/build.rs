@@ -44,6 +44,7 @@ const QML_FILES: &[&str] = &[
     "qml/ShareContextMenu.qml",
     "qml/ShareRevokeDialog.qml",
     "qml/FileSelection.qml",
+    "qml/FileActionLocks.qml",
     "qml/FilePageInteraction.qml",
     "qml/MovePickerDialog.qml",
     "qml/FolderPickerListView.qml",

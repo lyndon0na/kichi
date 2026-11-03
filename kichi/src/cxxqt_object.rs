@@ -168,6 +168,12 @@ pub mod qobject {
         #[qproperty(i32, upload_parallel, cxx_name = "uploadParallel", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_rate_mib, cxx_name = "uploadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
+        /// 正在被写操作占用的条目 id；同一 id 在完成前不能再发起第二个写操作
+        #[qproperty(QStringList, file_action_ids, cxx_name = "fileActionIds", READ, NOTIFY = changed)]
+        /// 有回收站写操作（还原 / 彻底删除 / 清空 / 文件页移入）在途；不影响其它页面
+        #[qproperty(bool, trash_action_running, cxx_name = "trashActionRunning", READ, NOTIFY = changed)]
+        /// 正在等待官方异步任务完成的整库清空
+        #[qproperty(bool, trash_clearing, cxx_name = "trashClearing", READ, NOTIFY = changed)]
         /// 移动 / 复制选择器当前层的文件夹（QML 当 model 用）
         #[qproperty(QVariantList, move_targets, cxx_name = "moveTargets", READ, NOTIFY = changed)]
         #[qproperty(bool, move_targets_loading, cxx_name = "moveTargetsLoading", READ, NOTIFY = changed)]
@@ -194,10 +200,17 @@ pub mod qobject {
         #[cxx_name = "thumbnailReady"]
         fn thumbnail_ready(self: Pin<&mut Self>, id: QString, path: QString);
 
-        /// 一次文件操作（改名 / 新建 / 删除）结束：动作、成功与否、给用户看的提示
+        /// 一次文件操作结束：动作、成功与否、给用户看的提示、涉及的目标 id。
+        /// QML 用最后一项只处理自己那批条目的完成事件，避免并发写串台。
         #[qsignal]
         #[cxx_name = "fileActionDone"]
-        fn file_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
+        fn file_action_done(
+            self: Pin<&mut Self>,
+            action: QString,
+            ok: bool,
+            message: QString,
+            ids: QStringList,
+        );
 
         /// 新建文件夹的临时行已插入：界面立即定位并强调，不等待网络结果。
         #[qsignal]
@@ -767,9 +780,12 @@ impl QVariantList {
 mod actions;
 mod backend;
 mod downloads;
+mod file_action_lock;
 mod file_actions;
 mod file_optimistic;
+mod file_stars;
 mod file_targets;
+mod file_transfers;
 mod files;
 mod files_cache;
 mod folder_picker;
@@ -843,23 +859,23 @@ pub struct KichiRust {
     pub(crate) trash_loaded: bool,
     /// 最近一次回收站请求开始 / 完成的时刻：切页时按 TTL 决定是否校准。
     pub(crate) trash_refresh_at: Option<std::time::Instant>,
+    /// 回收站写操作 / 请求期间收到的刷新，等收尾后再补一次
+    pub(crate) trash_refresh_pending: bool,
     pub(crate) trash_error: QString,
     /// 回收站列表真正替换时才 +1
     pub(crate) trash_revision: i32,
     /// 回收站请求代数：退出登录后旧结果作废
     pub(crate) trash_epoch: u64,
-    /// 分批还原 / 彻底删除 / 清空的进度状态
-    pub(crate) trash_action: Option<trash::TrashActionState>,
+    /// 同时进行的回收站写操作；键是文件动作 id
+    pub(crate) trash_actions: std::collections::HashMap<u64, trash::TrashActionState>,
     /// 文件页有恢复操作完成，下次显示时重新拉取当前目录
     pub(crate) files_stale: bool,
-    /// 当前文件写操作的乐观快照；一次只允许一个写操作。
-    pub(crate) file_mutation: Option<file_optimistic::FileMutation>,
+    /// 每个文件动作各自的乐观回滚快照
+    pub(crate) file_mutations: std::collections::HashMap<u64, file_optimistic::FileMutation>,
     /// 新建成功但还没换到官方 id 的临时文件夹（允许连续新建多个）。
     pub(crate) unresolved_create: Vec<file_optimistic::PendingCreate>,
     /// 临时条目 id：目录校准前不可进入 / 当成真实云端条目使用。
     pub(crate) pending_entry_ids: std::collections::HashSet<String>,
-    /// 临时文件夹 id 的单调序号。
-    pub(crate) file_mutation_seq: u64,
     /// 面包屑显示名（根 → 当前）
     pub(crate) breadcrumb: QStringList,
     /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
@@ -1056,8 +1072,21 @@ pub struct KichiRust {
     pub(crate) upload_rate_mib: i32,
     /// 启动时自动续跑标记是否已经处理过（每进程一次）
     pub(crate) auto_resume_checked: bool,
-    /// 有文件操作（改名 / 新建 / 删除 / 移动 / 复制）在途，界面上禁用相关入口
+    /// 有文件操作在途；具体哪些条目被占用看 `file_action_ids`
     pub(crate) file_action_running: bool,
+    /// 正在被写操作占用的条目 id（QML 按目标条目置灰）
+    pub(crate) file_action_ids: QStringList,
+    /// 文件动作 id 的单调序号
+    pub(crate) file_action_seq: u64,
+    /// 当前被占用的条目 id，入口判重与界面共用这一份真相
+    pub(crate) file_action_locks: std::collections::HashSet<String>,
+    /// 文件动作 id → 目标条目 / 所属页面，收尾时据此释放
+    pub(crate) file_action_records:
+        std::collections::HashMap<u64, file_action_lock::FileActionRecord>,
+    /// 有回收站写操作在途；只阻止回收站自己的刷新与清空
+    pub(crate) trash_action_running: bool,
+    /// 整库清空在等官方后台任务完成
+    pub(crate) trash_clearing: bool,
     /// 移动 / 复制选择器当前层的文件夹
     pub(crate) move_targets: QVariantList,
     pub(crate) move_targets_loading: bool,
@@ -1125,15 +1154,15 @@ impl Default for KichiRust {
             trash_request_running: false,
             trash_loaded: false,
             trash_refresh_at: None,
+            trash_refresh_pending: false,
             trash_error: QString::default(),
             trash_revision: 0,
             trash_epoch: 0,
-            trash_action: None,
+            trash_actions: std::collections::HashMap::new(),
             files_stale: false,
-            file_mutation: None,
+            file_mutations: std::collections::HashMap::new(),
             unresolved_create: Vec::new(),
             pending_entry_ids: std::collections::HashSet::new(),
-            file_mutation_seq: 0,
             breadcrumb,
             entries: Vec::new(),
             thumbnail_requests: std::collections::HashSet::new(),
@@ -1246,6 +1275,12 @@ impl Default for KichiRust {
             upload_rate_mib: 0,
             auto_resume_checked: false,
             file_action_running: false,
+            file_action_ids: QStringList::default(),
+            file_action_seq: 0,
+            file_action_locks: std::collections::HashSet::new(),
+            file_action_records: std::collections::HashMap::new(),
+            trash_action_running: false,
+            trash_clearing: false,
             move_targets: QVariantList::default(),
             move_targets_loading: false,
             move_targets_error: QString::default(),

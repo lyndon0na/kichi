@@ -10,6 +10,9 @@ RowLayout {
 
     readonly property int selectedCount: target ? target.selectedCount : 0
     readonly property bool busy: target ? target.busy : false
+    readonly property bool actionLocked: target ? target.selectedLocked : false
+    readonly property bool actionRunning: target ? target.actionRunning : false
+    readonly property bool clearing: target ? target.clearing : false
     readonly property bool backendReady: target !== null && target.backend !== null
     readonly property bool refreshing: backendReady && target.backend.trashLoading
 
@@ -35,6 +38,7 @@ RowLayout {
         iconName: "restore"
         variant: "primary"
         enabled: root.backendReady && root.selectedCount > 0 && !root.busy
+                 && !root.actionLocked && !root.clearing
         onClicked: root.target.restoreSelected()
     }
 
@@ -46,6 +50,7 @@ RowLayout {
         variant: "dangerOutline"
         enabled: root.backendReady && root.target.backend.trashLoaded
                  && root.target.entries.length > 0 && !root.busy
+                 && !root.actionRunning
         onClicked: root.target.clearAll()
     }
 
@@ -66,7 +71,7 @@ RowLayout {
         iconSize: 14
         busy: root.refreshing
         variant: "ghost"
-        enabled: root.backendReady && !root.busy
+        enabled: root.backendReady && !root.busy && !root.actionRunning
         onClicked: root.target.backend.refreshTrash()
     }
 }

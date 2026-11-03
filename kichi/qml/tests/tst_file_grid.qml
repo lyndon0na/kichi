@@ -43,6 +43,7 @@ TestCase {
         property string sortField: "name"
         property bool sortAscending: true
         property bool fileActionRunning: false
+        property var fileActionIds: []
         property bool shareActionRunning: false
         property var moveTargets: []
         property bool moveTargetsLoading: false
@@ -77,7 +78,7 @@ TestCase {
         property int searchRevealCalls: 0
 
         signal changed()
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
         signal folderCreateStarted(string id)
         signal folderCreated(string id)
         signal shareActionDone(string action, bool ok, string message)
@@ -906,7 +907,7 @@ TestCase {
             return row !== null && row.createdFlash === true
         })
 
-        fakeBackend.fileActionDone("folder", false, "同名文件夹已存在")
+        fakeBackend.fileActionDone("folder", false, "同名文件夹已存在", [])
         tryVerify(function () {
             const row = list.itemAtIndex(25)
             return row !== null && row.createdFlash === false

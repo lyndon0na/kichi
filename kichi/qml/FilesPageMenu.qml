@@ -35,6 +35,11 @@ Item {
     // 搜索结果里的条目没有「源目录」上下文，暂不提供移动 / 复制
     property bool fromSearch: false
 
+    FileActionLocks {
+        id: locks
+        backend: root.backend
+    }
+
     // 菜单里点「播放」：页面把位置交给清晰度菜单，再让后端取档位
     signal playRequested(point anchor)
     signal moveRequested(var entry, var ids)
@@ -118,7 +123,7 @@ Item {
                 return root.targetStarred ? qsTr("取消星标") : qsTr("加星标")
             }
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
+                     && !locks.any(root.targetIds)
             onTriggered: {
                 if (root.backend)
                     root.backend.setStarred(root.targetIds, !root.targetStarred)
@@ -131,7 +136,7 @@ Item {
                   ? qsTr("分享选中的 %1 项…").arg(root.targetCount)
                   : qsTr("分享…")
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
+                     && !locks.any(root.targetIds)
                      && !root.backend.shareActionRunning
             onTriggered: root.shareRequested(root.target, root.targetIds)
         }
@@ -146,7 +151,7 @@ Item {
                   : qsTr("移动到…")
             visible: !root.fromSearch
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
+                     && !locks.any(root.targetIds)
             onTriggered: root.moveRequested(root.target, root.targetIds)
         }
 
@@ -156,7 +161,7 @@ Item {
                   : qsTr("复制到…")
             visible: !root.fromSearch
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
+                     && !locks.any(root.targetIds)
             onTriggered: root.copyRequested(root.target, root.targetIds)
         }
 
@@ -165,17 +170,19 @@ Item {
         MenuItem {
             text: qsTr("重命名…")
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
+                     && !locks.any(root.targetIds)
                      && root.targetCount === 1
             onTriggered: dialogs.openRename(root.target)
         }
 
         MenuItem {
+            objectName: "trashItem"
             text: root.targetCount > 1
                   ? qsTr("移至回收站…（%1 项）").arg(root.targetCount)
                   : qsTr("移至回收站…")
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
+                     && !locks.any(root.targetIds)
+                     && root.backend.trashClearing !== true
             onTriggered: dialogs.openTrash(root.target, root.targetIds)
         }
     }
@@ -190,7 +197,6 @@ Item {
         MenuItem {
             text: qsTr("新建文件夹…")
             enabled: root.backend !== null && !root.backend.filesLoading
-                     && !root.backend.fileActionRunning
             onTriggered: dialogs.openNewFolder()
         }
 
@@ -250,6 +256,8 @@ Item {
     /// 快捷键 Delete：直接打开回收站确认（可多选）
     function openTrashFor(entry, ids) {
         if (!entry)
+            return
+        if (backend && backend.trashClearing === true)
             return
         target = entry
         targetId = entry.id

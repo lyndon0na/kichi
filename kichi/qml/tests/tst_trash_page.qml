@@ -20,6 +20,9 @@ TestCase {
         property int trashRevision: 0
         property bool filesStale: false
         property bool fileActionRunning: false
+        property var fileActionIds: []
+        property bool trashActionRunning: false
+        property bool trashClearing: false
         property string statusMessage: ""
         property string contentView: "list"
 
@@ -30,7 +33,7 @@ TestCase {
         property var deleteSnapshot: []
         property var clearSnapshot: []
         signal changed()
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
 
         function refreshTrash() {
             refreshCount += 1
@@ -43,7 +46,9 @@ TestCase {
 
         function untrashEntries(ids) {
             lastUntrashIds = ids.slice()
-            fileActionRunning = true
+            trashActionRunning = true
+            fileActionIds = ids.slice()
+            changed()
         }
 
         function deleteTrashEntries(ids) {
@@ -59,7 +64,8 @@ TestCase {
             }
             trashFiles = kept
             trashRevision += 1
-            fileActionRunning = true
+            trashActionRunning = true
+            fileActionIds = ids.slice()
             changed()
             return true
         }
@@ -69,13 +75,17 @@ TestCase {
             clearSnapshot = trashFiles.slice()
             trashFiles = []
             trashRevision += 1
-            fileActionRunning = true
+            trashActionRunning = true
+            trashClearing = true
+            fileActionIds = []
             changed()
             return true
         }
 
         function finish(action, ok, message) {
             fileActionRunning = false
+            trashActionRunning = false
+            trashClearing = false
             if (!ok) {
                 if (action === "trashDelete" && deleteSnapshot.length > 0) {
                     trashFiles = deleteSnapshot.slice()
@@ -92,7 +102,12 @@ TestCase {
             }
             deleteSnapshot = []
             clearSnapshot = []
-            fileActionDone(action, ok, message)
+            const ids = action === "trashDelete"
+                        ? lastDeleteIds.slice()
+                        : (action === "untrash" ? lastUntrashIds.slice() : [])
+            fileActionIds = []
+            fileActionDone(action, ok, message, ids)
+            changed()
         }
     }
 
@@ -123,6 +138,9 @@ TestCase {
         backend.trashRevision = 0
         backend.filesStale = false
         backend.fileActionRunning = false
+        backend.fileActionIds = []
+        backend.trashActionRunning = false
+        backend.trashClearing = false
         backend.statusMessage = ""
         backend.contentView = "list"
         backend.refreshCount = 0
@@ -347,6 +365,27 @@ TestCase {
         verify(backend.lastUntrashIds.indexOf("c") >= 0)
     }
 
+    function test_unrelated_action_keeps_other_trash_rows_operable() {
+        publish([entry("a", false), entry("b", false)])
+        selection.selectOnly("b")
+        backend.fileActionIds = ["a"]
+        backend.trashActionRunning = true
+        backend.changed()
+        wait(20)
+
+        var restore = findChild(header, "trashRestoreButton")
+        var clear = findChild(header, "trashClearButton")
+        var refresh = findChild(header, "trashRefreshButton")
+        verify(restore.enabled, "另一个条目在删，仍可还原当前选中的条目")
+        compare(clear.enabled, false, "回收站有写操作时不能同时清空")
+        compare(refresh.enabled, false, "写操作期间回收站刷新要等收尾")
+
+        backend.fileActionIds = ["b"]
+        backend.changed()
+        wait(20)
+        compare(restore.enabled, false, "同一目标在写时不能重复操作")
+    }
+
     function test_clear_trash_requires_confirmation_and_returns_immediately() {
         publish([entry("a", false), entry("b", false)])
         selection.selectAll(backend.trashFiles)
@@ -400,7 +439,7 @@ TestCase {
         compare(backend.trashFiles.length, 0, "确认后先移除选中的行")
         compare(list.count, 0)
         compare(selection.count, 2, "乐观移除期间保留选择，失败可回滚")
-        compare(backend.fileActionRunning, true)
+        compare(backend.trashActionRunning, true)
         backend.finish("trashDelete", true, "已彻底删除 2 项")
         wait(20)
         compare(selection.count, 0, "成功后清空选择")
@@ -447,6 +486,31 @@ TestCase {
         compare(list.count, 2)
         compare(selection.count, 2, "失败回滚后保留原选择")
         compare(backend.statusMessage, "network_error")
+    }
+
+    function test_partial_delete_failure_drops_completed_rows_from_selection() {
+        publish([entry("a", false), entry("b", false), entry("c", false)])
+        selection.selectAll(backend.trashFiles)
+        backend.deleteTrashEntries(["a", "b", "c"])
+        wait(20)
+        compare(selection.count, 3)
+
+        // Rust 先恢复失败批与未发送项，此时锁还没释放，选择必须暂存；
+        // fileActionDone 发出时锁已释放，完成删除的行不再属于选择。
+        backend.trashFiles = [entry("b", false)]
+        backend.trashRevision += 1
+        backend.fileActionIds = ["a", "b", "c"]
+        backend.changed()
+        wait(20)
+        compare(selection.count, 3, "回滚尚未收尾时保留原选择")
+
+        backend.trashActionRunning = false
+        backend.fileActionIds = []
+        backend.fileActionDone("trashDelete", false, "中断：只恢复了部分条目", ["a", "b", "c"])
+        backend.changed()
+        wait(20)
+        compare(selection.count, 1, "只保留仍在列表里的恢复项")
+        verify(selection.isSelected("b"))
     }
 
     function test_clear_button_is_disabled_for_an_empty_trash() {

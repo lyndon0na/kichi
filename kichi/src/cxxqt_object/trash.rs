@@ -10,6 +10,7 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 
 use super::actions::run_in_background;
+use super::file_action_lock::sync_file_action_properties;
 use super::qobject;
 use super::QVariantList;
 
@@ -20,7 +21,7 @@ mod trash_mutation;
 #[path = "trash_view.rs"]
 mod trash_view;
 
-pub(crate) use trash_actions::TrashActionState;
+pub(crate) use trash_actions::{TrashActionKind, TrashActionState};
 use trash_view::{sort_trash_entries, trash_list_from};
 
 /// 切回回收站时，列表缓存超过这个时间才在后台校准。
@@ -57,13 +58,12 @@ impl qobject::Kichi {
             rust.trash_request_running = false;
             rust.trash_loaded = false;
             rust.trash_refresh_at = None;
+            rust.trash_refresh_pending = false;
             rust.trash_error = QString::default();
             rust.trash_revision = rust.trash_revision.wrapping_add(1);
-            rust.trash_action = None;
+            rust.trash_actions.clear();
             rust.files_stale = false;
-            if rust.file_action_running {
-                rust.file_action_running = false;
-            }
+            sync_file_action_properties(&mut rust);
         }
         self.as_mut().notify();
     }
@@ -77,6 +77,7 @@ impl qobject::Kichi {
         rust.trash_request_running = false;
         rust.trash_loaded = false;
         rust.trash_refresh_at = None;
+        rust.trash_refresh_pending = false;
     }
 
     pub(super) fn refresh_trash_with_status(
@@ -84,11 +85,13 @@ impl qobject::Kichi {
         final_status: Option<String>,
         manual: bool,
     ) {
-        if self.file_action_running {
+        if self.as_ref().rust().has_trash_write() {
+            self.as_mut().rust_mut().trash_refresh_pending = true;
             return;
         }
         let has_cache = self.trash_loaded || !self.trash_list.is_empty();
         if self.trash_request_running {
+            self.as_mut().rust_mut().trash_refresh_pending = true;
             if manual && has_cache && !self.trash_loading {
                 self.as_mut().rust_mut().trash_loading = true;
                 self.as_mut().notify();
@@ -101,6 +104,7 @@ impl qobject::Kichi {
             let visible = manual || !has_cache;
             rust.trash_loading = visible;
             rust.trash_request_running = true;
+            rust.trash_refresh_pending = false;
             if visible {
                 rust.trash_error = QString::default();
             }
@@ -144,6 +148,7 @@ impl qobject::Kichi {
                         if notify {
                             qichi.as_mut().notify();
                         }
+                        qichi.as_mut().resume_pending_trash_refresh();
                     }
                     Err(err) => {
                         let text = err.to_string();
@@ -157,10 +162,28 @@ impl qobject::Kichi {
                             }
                         }
                         qichi.as_mut().on_refresh_failure(err);
+                        qichi.as_mut().resume_pending_trash_refresh();
                     }
                 }
             },
         );
+    }
+
+    /// 回收站请求 / 写操作期间又收到的刷新，只在最后一个动作收尾后补一次。
+    pub(super) fn resume_pending_trash_refresh(mut self: Pin<&mut Self>) {
+        let pending = {
+            let mut rust = self.as_mut().rust_mut();
+            if rust.trash_refresh_pending && !rust.has_trash_write() && !rust.trash_request_running
+            {
+                rust.trash_refresh_pending = false;
+                true
+            } else {
+                false
+            }
+        };
+        if pending {
+            self.as_mut().refresh_trash_with_status(None, false);
+        }
     }
 }
 

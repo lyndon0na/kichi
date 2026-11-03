@@ -32,6 +32,11 @@ Item {
     property alias menu: rowMenu
     property alias blankMenu: blankPopup
 
+    FileActionLocks {
+        id: locks
+        backend: root.backend
+    }
+
     Menu {
         id: rowMenu
 
@@ -72,7 +77,7 @@ Item {
         MenuItem {
             objectName: "libraryStarItem"
             text: root.targetStarred ? qsTr("取消星标") : qsTr("加星标")
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !locks.any([root.targetId])
                      && !root.backend.libraryLoading
             onTriggered: root.starRequested(root.targetId, !root.targetStarred)
         }
@@ -99,7 +104,7 @@ Item {
         MenuItem {
             objectName: "libraryShareItem"
             text: qsTr("分享…")
-            enabled: root.backend !== null && !root.backend.fileActionRunning
+            enabled: root.backend !== null && !locks.any([root.targetId])
                      && !root.backend.shareActionRunning
             onTriggered: root.shareRequested(root.targetEntry)
         }

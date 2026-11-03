@@ -302,8 +302,8 @@ Item {
     onDisplayEntriesChanged: {
         // 乐观移除 / 回滚期间保留选择，失败恢复后才能仍然指向原来的条目；
         // 操作成功由 handleFileActionDone 清掉移走 / 回收站的选择。
-        if (!page.backend || !page.backend.fileActionRunning)
-            selection.prune(page.displayEntries)
+        if (page.backend)
+            selection.pruneExcept(page.displayEntries, page.backend.fileActionIds)
         Qt.callLater(interaction.tryRevealPending)
     }
 
@@ -669,8 +669,8 @@ Item {
             }
         }
 
-        function onFileActionDone(action, ok) {
-            interaction.handleFileActionDone(action, ok)
+        function onFileActionDone(action, ok, message, ids) {
+            interaction.handleFileActionDone(action, ok, ids)
         }
 
         function onFolderCreateStarted(id) {

@@ -18,6 +18,11 @@ Item {
 
     KTheme { id: theme }
 
+    FileActionLocks {
+        id: locks
+        backend: root.backend
+    }
+
     readonly property int dialogWidth: 380
 
     // 当前操作对象。多选时 target 是右键点到的那一条，targetIds 是全部。
@@ -26,6 +31,7 @@ Item {
     property string targetName: ""
     property bool targetIsFolder: false
     property var targetIds: []
+    property string folderTempId: ""
 
     // —— 重命名 ——
     KDialog {
@@ -43,7 +49,7 @@ Item {
         footer: DialogFooter {
             outerMargin: renameDialog.padding
             okEnabled: root.backend !== null && !root.backend.filesLoading
-                       && !root.backend.fileActionRunning
+                       && !locks.any(root.targetIds)
             onOkClicked: root.submitRename(nameField.text)
             onCancelClicked: renameDialog.close()
         }
@@ -107,7 +113,6 @@ Item {
         footer: DialogFooter {
             outerMargin: folderDialog.padding
             okEnabled: root.backend !== null && !root.backend.filesLoading
-                       && !root.backend.fileActionRunning
             onOkClicked: root.submitNewFolder(folderField.text)
             onCancelClicked: folderDialog.close()
         }
@@ -117,6 +122,7 @@ Item {
         onOpened: {
             errorText = ""
             folderField.text = ""
+            root.folderTempId = ""
             folderField.forceActiveFocus()
         }
 
@@ -160,7 +166,8 @@ Item {
             outerMargin: trashDialog.padding
             okText: qsTr("移入回收站")
             okEnabled: root.backend !== null && !root.backend.filesLoading
-                       && !root.backend.fileActionRunning
+                       && !locks.any(root.targetIds)
+                       && root.backend.trashClearing !== true
             onOkClicked: root.submitTrash()
             onCancelClicked: trashDialog.close()
         }
@@ -267,9 +274,17 @@ Item {
     // 本地校验失败会同步返回 false；网络结果回来时窗口通常已经关闭。
     Connections {
         target: root.backend
+        ignoreUnknownSignals: true
 
-        function onFileActionDone(action, ok, message) {
+        function onFolderCreateStarted(id) {
+            if (folderDialog.visible)
+                root.folderTempId = id
+        }
+
+        function onFileActionDone(action, ok, message, ids) {
             if (action === "rename" && renameDialog.visible) {
+                if (ids && ids.indexOf(root.targetId) < 0)
+                    return
                 if (ok) {
                     renameDialog.errorText = ""
                     renameDialog.close()
@@ -277,12 +292,20 @@ Item {
                     renameDialog.errorText = message
                 }
             } else if (action === "folder" && folderDialog.visible) {
+                if (ids && ids.length > 0
+                        && (root.folderTempId.length === 0
+                            || ids.indexOf(root.folderTempId) < 0))
+                    return
                 if (ok) {
                     folderDialog.close()
                 } else {
                     folderDialog.errorText = message
                 }
             } else if (action === "trash" && trashDialog.visible) {
+                if (ids && !ids.some(function (id) {
+                        return root.targetIds.indexOf(id) >= 0
+                    }))
+                    return
                 if (ok) {
                     trashDialog.close()
                 } else {

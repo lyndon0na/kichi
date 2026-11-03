@@ -24,6 +24,8 @@ TestCase {
         id: backend
         property bool filesLoading: false
         property bool fileActionRunning: false
+        property var fileActionIds: []
+        property bool trashClearing: false
         property bool shareActionRunning: false
         property var playMenu: []
         property string sortField: "name"
@@ -32,7 +34,7 @@ TestCase {
         property string lastField: ""
         property bool lastAscending: true
 
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
 
         function isDownloadPending(id) {
             return false

@@ -21,35 +21,39 @@ TestCase {
         id: backend
         property bool filesLoading: false
         property bool fileActionRunning: false
+        property var fileActionIds: []
+        property bool trashClearing: false
         property int renameCount: 0
         property string renamedName: ""
         property int folderCount: 0
         property string createdName: ""
         property var lastTrashIds: []
 
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
+        signal folderCreateStarted(string id)
 
         function renameEntry(id, name) {
             renameCount += 1
             renamedName = name
-            fileActionRunning = true
+            fileActionIds = [id]
             return true
         }
         function createFolder(name) {
             folderCount += 1
             createdName = name
-            fileActionRunning = true
+            fileActionIds = ["kichi-pending-folder-1"]
+            folderCreateStarted("kichi-pending-folder-1")
             return true
         }
         function trashEntries(ids) {
             lastTrashIds = ids.slice()
-            fileActionRunning = true
+            fileActionIds = ids.slice()
             return true
         }
         /// 模拟 Rust 收尾：先清「进行中」，再发结果
-        function finish(action, ok, message) {
-            fileActionRunning = false
-            fileActionDone(action, ok, message)
+        function finish(action, ok, message, ids) {
+            fileActionIds = []
+            fileActionDone(action, ok, message, ids || [])
         }
     }
 
@@ -62,6 +66,7 @@ TestCase {
 
     function init() {
         backend.fileActionRunning = false
+        backend.fileActionIds = []
         backend.renameCount = 0
         backend.renamedName = ""
         backend.folderCount = 0
@@ -148,11 +153,40 @@ TestCase {
         verify(!dialog.opened, "失败只回滚并走底栏提示")
     }
 
+    function test_old_folder_result_does_not_close_a_new_dialog() {
+        menu.openNewFolder()
+        wait(60)
+        var first = findChild(menu, "folderDialog")
+        findChild(first, "folderNameField").text = "第一间"
+        mouseClick(findChild(first, "dialogFooterOk"))
+        wait(40)
+        verify(!first.opened, "第一间发出请求后立即关窗")
+
+        menu.openNewFolder()
+        wait(60)
+        var second = findChild(menu, "folderDialog")
+        verify(second.opened, "新确认框已打开")
+        compare(findChild(second, "folderError").text, "")
+
+        backend.finish("folder", false, "旧请求失败", ["kichi-pending-folder-1"])
+        wait(40)
+        verify(second.opened, "旧请求结果不能关掉新确认框")
+        compare(findChild(second, "folderError").text, "",
+                "旧请求错误不能写进新确认框")
+    }
+
     function test_ok_is_disabled_while_an_action_is_running() {
-        backend.fileActionRunning = true
+        backend.fileActionIds = ["id-1"]
         var dialog = startRename()
         var ok = findChild(dialog, "dialogFooterOk")
         compare(ok.enabled, false, "请求进行中：确定置灰，防连点")
+    }
+
+    function test_unrelated_action_does_not_disable_this_dialog() {
+        backend.fileActionIds = ["other-id"]
+        var dialog = startRename()
+        var ok = findChild(dialog, "dialogFooterOk")
+        compare(ok.enabled, true, "别的条目在写不应禁用当前重命名确认")
     }
 
     function test_unchanged_name_does_not_send_a_request() {

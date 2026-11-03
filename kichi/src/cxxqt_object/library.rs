@@ -9,6 +9,7 @@ use cxx_qt_lib::QString;
 use kichi_core::{EntryKind, LibraryKind};
 
 use super::actions::run_in_background;
+use super::file_action_lock::FileActionDomain;
 use super::files::{Crumb, ROOT_NAME};
 use super::qobject;
 use super::QVariantList;
@@ -44,14 +45,17 @@ impl LibraryCache {
     }
 }
 
-/// 资料库星标的乐观快照；失败时只恢复发起操作的那个集合。
+/// 资料库星标的乐观快照；失败时只恢复这个动作碰过的条目，不覆盖并发星标。
 pub(crate) struct LibraryStarSnapshot {
     pub(crate) kind: LibraryKind,
-    entries: Vec<kichi_core::LibraryEntry>,
-    rows: QVariantList,
-    refresh_at: Option<Instant>,
-    data_revision: i32,
-    cache: Option<LibraryCache>,
+    changes: Vec<LibraryStarChange>,
+}
+
+struct LibraryStarChange {
+    id: String,
+    before: bool,
+    removed_view: Option<(usize, kichi_core::LibraryEntry)>,
+    removed_cache: Option<(usize, kichi_core::LibraryEntry)>,
 }
 
 impl qobject::Kichi {
@@ -93,7 +97,7 @@ impl qobject::Kichi {
             }
 
             let had_cache = rust.library_loaded || !rust.library_entries.is_empty();
-            let can_request = !rust.file_action_running;
+            let can_request = !rust.has_file_action_domain(FileActionDomain::Library);
             let should_request = can_request
                 && if switching {
                     // 切集合时先恢复目标缓存；只有“切页”模式允许新鲜缓存直接复用。
@@ -280,14 +284,56 @@ impl qobject::Kichi {
         let now = Instant::now();
         let (snapshot, changed) = {
             let mut rust = self.as_mut().rust_mut();
-            let snapshot = LibraryStarSnapshot {
-                kind,
-                entries: rust.library_entries.clone(),
-                rows: rust.library_rows.clone(),
-                refresh_at: rust.library_refresh_at,
-                data_revision: rust.library_data_revision,
-                cache: rust.library_cache.get(kind.key()).cloned(),
-            };
+            let mut changes = Vec::new();
+            for id in &wanted {
+                let view_index = rust
+                    .library_entries
+                    .iter()
+                    .position(|entry| entry.entry.id == *id);
+                let cache_index = rust
+                    .library_cache
+                    .get(kind.key())
+                    .and_then(|cache| cache.entries.iter().position(|entry| entry.entry.id == *id));
+                let before = view_index
+                    .map(|index| rust.library_entries[index].entry.starred)
+                    .or_else(|| {
+                        cache_index.and_then(|index| {
+                            rust.library_cache
+                                .get(kind.key())
+                                .and_then(|cache| cache.entries.get(index))
+                                .map(|entry| entry.entry.starred)
+                        })
+                    })
+                    .unwrap_or(starred);
+                if view_index.is_none() && cache_index.is_none() {
+                    continue;
+                }
+                let removed_view = if kind == LibraryKind::Starred && !starred {
+                    view_index.map(|index| (index, rust.library_entries[index].clone()))
+                } else {
+                    None
+                };
+                let removed_cache = if kind == LibraryKind::Starred && !starred {
+                    cache_index.and_then(|index| {
+                        rust.library_cache
+                            .get(kind.key())
+                            .and_then(|cache| cache.entries.get(index))
+                            .cloned()
+                            .map(|entry| (index, entry))
+                    })
+                } else {
+                    None
+                };
+                changes.push(LibraryStarChange {
+                    id: id.clone(),
+                    before,
+                    removed_view,
+                    removed_cache,
+                });
+            }
+            if changes.is_empty() {
+                return None;
+            }
             let changed_view =
                 update_starred_entries(&mut rust.library_entries, kind, &wanted, starred);
             let mut data_revision = rust.library_data_revision;
@@ -310,7 +356,10 @@ impl qobject::Kichi {
                 }
             }
             rust.library_data_revision = data_revision;
-            (snapshot, changed_view || changed_cache)
+            (
+                LibraryStarSnapshot { kind, changes },
+                changed_view || changed_cache,
+            )
         };
         if !changed {
             return None;
@@ -326,14 +375,54 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             if rust.library_kind.to_string() == snapshot.kind.key() {
-                rust.library_entries = snapshot.entries;
-                rust.library_rows = snapshot.rows;
-                rust.library_refresh_at = snapshot.refresh_at;
+                for change in &snapshot.changes {
+                    if let Some((index, removed)) = &change.removed_view {
+                        if !rust
+                            .library_entries
+                            .iter()
+                            .any(|entry| entry.entry.id == change.id)
+                        {
+                            let at = (*index).min(rust.library_entries.len());
+                            rust.library_entries.insert(at, removed.clone());
+                        }
+                    }
+                    if let Some(entry) = rust
+                        .library_entries
+                        .iter_mut()
+                        .find(|entry| entry.entry.id == change.id)
+                    {
+                        entry.entry.starred = change.before;
+                    }
+                }
+                rust.library_rows = library_view::list_from(&rust.library_entries, snapshot.kind);
+                rust.library_refresh_at = Some(Instant::now());
                 rust.library_revision = rust.library_revision.wrapping_add(1);
-                rust.library_data_revision = snapshot.data_revision;
+                rust.library_data_revision = rust.library_data_revision.wrapping_add(1);
             }
-            if let Some(cache) = snapshot.cache {
-                rust.library_cache.insert(snapshot.kind.key(), cache);
+            let data_revision = rust.library_data_revision;
+            if let Some(cache) = rust.library_cache.get_mut(snapshot.kind.key()) {
+                for change in &snapshot.changes {
+                    if let Some((index, removed)) = &change.removed_cache {
+                        if !cache
+                            .entries
+                            .iter()
+                            .any(|entry| entry.entry.id == change.id)
+                        {
+                            let at = (*index).min(cache.entries.len());
+                            cache.entries.insert(at, removed.clone());
+                        }
+                    }
+                    if let Some(entry) = cache
+                        .entries
+                        .iter_mut()
+                        .find(|entry| entry.entry.id == change.id)
+                    {
+                        entry.entry.starred = change.before;
+                    }
+                }
+                cache.rows = library_view::list_from(&cache.entries, snapshot.kind);
+                cache.refresh_at = Some(Instant::now());
+                cache.revision = data_revision;
             }
         }
         self.as_mut().notify();

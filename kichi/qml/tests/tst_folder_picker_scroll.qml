@@ -82,10 +82,11 @@ TestCase {
         property bool moveTargetsLoading: false
         property string moveTargetsError: ""
         property bool fileActionRunning: false
+        property var fileActionIds: []
         property var current: [{ id: "", name: "全部文件" }]
 
         signal changed()
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
 
         function currentPath() {
             return current
@@ -146,6 +147,7 @@ TestCase {
         moveBackend.moveTargetsLoading = false
         moveBackend.moveTargetsError = ""
         moveBackend.fileActionRunning = false
+        moveBackend.fileActionIds = []
         moveBackend.current = [{ id: "", name: "全部文件" }]
     }
 

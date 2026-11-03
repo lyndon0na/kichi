@@ -247,16 +247,16 @@ QtObject {
             return
         // 搜索批次更新不一定改 filesRevision；结果模型一变就先清掉已消失的选择。
         if (ctl.searching) {
-            if (ctl.selection && !ctl.backend.fileActionRunning)
-                ctl.selection.prune(ctl.entries)
+            if (ctl.selection)
+                ctl.selection.pruneExcept(ctl.entries, ctl.backend.fileActionIds)
             return
         }
         const revision = ctl.backend.filesRevision
         if (revision === seenFilesRevision)
             return
         seenFilesRevision = revision
-        if (ctl.selection && !ctl.backend.fileActionRunning)
-            ctl.selection.prune(ctl.backend.files)
+        if (ctl.selection)
+            ctl.selection.pruneExcept(ctl.backend.files, ctl.backend.fileActionIds)
         if (restoreScrollPending) {
             restoreScrollPending = false
             const saved = scrollByDir[scrollKeyFor(viewMode)]
@@ -306,13 +306,18 @@ QtObject {
     }
 
     /// 文件操作结果回到界面：乐观模型已原位更新，移走 / 删掉的清空选择。
-    function handleFileActionDone(action, ok) {
-        if (action === "folder" && !ok)
+    function handleFileActionDone(action, ok, ids) {
+        if (action === "folder" && !ok
+                && (!ids || ids.length === 0 || ids.indexOf(ctl.createdFlashId) >= 0))
             ctl.clearCreatedFlash()
         if (!ok)
             return
-        if (action === "trash" || action === "move")
-            ctl.selection.clear()
+        if (action === "trash" || action === "move") {
+            if (ids && ids.length > 0)
+                ctl.selection.removeIds(ids)
+            else
+                ctl.selection.prune(ctl.entries)
+        }
     }
 
     // —— 键盘快捷键（挂在列表控件上，避开 Wayland 下窗口级 Keys 不可靠）——

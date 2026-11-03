@@ -85,6 +85,38 @@ impl FilesCache {
         }
     }
 
+    /// 改名失败时只恢复这一条的名称，不动同目录其它并发动作。
+    pub(crate) fn restore_name(&mut self, dir_id: &str, id: &str, name: &str) {
+        let Some(cache) = self.directories.get_mut(dir_id) else {
+            return;
+        };
+        if let Some(entry) = cache.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.name = name.to_owned();
+        }
+    }
+
+    /// 新建文件夹失败时移除临时行。
+    pub(crate) fn remove_entry(&mut self, dir_id: &str, id: &str) {
+        let Some(cache) = self.directories.get_mut(dir_id) else {
+            return;
+        };
+        cache.entries.retain(|entry| entry.id != id);
+    }
+
+    /// 移动 / 回收站失败时把条目按原位置放回缓存，保留其它动作造成的改动。
+    pub(crate) fn restore_entries(&mut self, dir_id: &str, removed: &[(usize, FileEntry)]) {
+        let Some(cache) = self.directories.get_mut(dir_id) else {
+            return;
+        };
+        for (index, entry) in removed {
+            if cache.entries.iter().any(|current| current.id == entry.id) {
+                continue;
+            }
+            let at = (*index).min(cache.entries.len());
+            cache.entries.insert(at, entry.clone());
+        }
+    }
+
     /// 请求失败后短暂退避，避免每次切回页面都立刻重试同一个失败目录。
     pub(crate) fn defer_refresh(&mut self, dir_id: &str, now: Instant) {
         if let Some(cache) = self.directories.get_mut(dir_id) {

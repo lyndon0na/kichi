@@ -21,6 +21,8 @@ TestCase {
         id: backend
         property bool filesLoading: false
         property bool fileActionRunning: false
+        property var fileActionIds: []
+        property bool trashClearing: false
         property bool shareActionRunning: false
         property var playMenu: []
         property var pending: []
@@ -33,7 +35,7 @@ TestCase {
         property bool starValue: false
 
         signal changed()
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
 
         function isDownloadPending(id) {
             return pending.indexOf(id) >= 0
@@ -64,6 +66,8 @@ TestCase {
     property var menu: null
 
     function init() {
+        backend.fileActionIds = []
+        backend.trashClearing = false
         backend.singleCount = 0
         backend.singleId = ""
         backend.batchCount = 0
@@ -115,6 +119,37 @@ TestCase {
         compare(backend.singleCount, 1, "单条走 downloadEntry")
         compare(backend.singleId, "a")
         compare(backend.batchCount, 0, "单条不调批量入口")
+    }
+
+    function test_other_entry_action_does_not_gray_this_entry() {
+        backend.fileActionIds = ["b"]
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file", playable: false },
+                         Qt.point(20, 20), ["a"], false)
+        wait(60)
+        var star = findChild(menu, "starItem")
+        var trash = findChild(menu, "trashItem")
+        verify(star !== null && star.enabled, "别的条目在写，不应禁用当前条目的星标")
+        verify(trash !== null && trash.enabled, "别的条目在写，不应禁用当前条目的回收站")
+    }
+
+    function test_same_entry_action_disables_that_entry() {
+        backend.fileActionIds = ["a"]
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file", playable: false },
+                         Qt.point(20, 20), ["a"], false)
+        wait(60)
+        var star = findChild(menu, "starItem")
+        verify(star !== null && !star.enabled, "同一目标在写时只禁用这一项")
+    }
+
+    function test_clear_in_progress_only_disables_move_to_trash() {
+        backend.trashClearing = true
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file", playable: false },
+                         Qt.point(20, 20), ["a"], false)
+        wait(60)
+        var star = findChild(menu, "starItem")
+        var trash = findChild(menu, "trashItem")
+        verify(star !== null && star.enabled, "清空回收站不应冻结文件页其它操作")
+        verify(trash !== null && !trash.enabled, "清空期间不能把新条目移入回收站")
     }
 
     function test_play_label_does_not_name_the_player() {

@@ -27,6 +27,7 @@ TestCase {
         property var playMenu: []
         property bool filesLoading: false
         property bool fileActionRunning: false
+        property var fileActionIds: []
         property bool shareActionRunning: false
         property string shareCreatedUrl: ""
         property string shareCreatedPassCode: ""
@@ -43,7 +44,7 @@ TestCase {
         property bool starredValue: false
 
         signal changed()
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
         signal thumbnailReady(string id, string path)
         signal shareActionDone(string action, bool ok, string message)
 
@@ -136,6 +137,7 @@ TestCase {
         backend.starredId = ""
         backend.starredValue = false
         backend.contentView = "list"
+        backend.fileActionIds = []
 
         page = pageComponent.createObject(parent, {
             visible: true,
@@ -537,13 +539,13 @@ TestCase {
         compare(refresh.enabled, true)
 
         // 星标等文件写操作不是刷新；不能让刷新按钮跟着变淡 / 禁用。
-        backend.fileActionRunning = true
+        backend.fileActionIds = ["one"]
         backend.changed()
         wait(20)
         compare(refresh.text, "刷新")
         compare(refresh.enabled, true)
 
-        backend.fileActionRunning = false
+        backend.fileActionIds = []
         backend.changed()
     }
 
@@ -624,6 +626,24 @@ TestCase {
         tryCompare(backend, "starCalls", 1)
         compare(backend.starredId, "plain")
         compare(backend.starredValue, true)
+    }
+
+    function test_unrelated_action_does_not_disable_library_star() {
+        publish([row("plain", false)], true)
+        var list = findChild(page, "libraryList")
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+
+        backend.fileActionIds = ["other"]
+        mouseClick(item, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        var starItem = findChild(page, "libraryStarItem")
+        verify(starItem !== null && starItem.enabled, "其它条目在写不应禁用当前条目星标")
+
+        backend.fileActionIds = ["plain"]
+        backend.changed()
+        compare(starItem.enabled, false, "同一目标在写时只禁用这一项")
+        page.contextMenu.close()
     }
 
     function test_starred_menu_offers_unstar() {

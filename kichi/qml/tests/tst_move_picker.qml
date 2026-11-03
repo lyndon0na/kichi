@@ -20,6 +20,7 @@ TestCase {
         property bool moveTargetsLoading: false
         property string moveTargetsError: ""
         property bool fileActionRunning: false
+        property var fileActionIds: []
         property var current: [
             { id: "", name: "全部文件" },
             { id: "A", name: "A" }
@@ -31,7 +32,7 @@ TestCase {
         property string lastTargetId: ""
 
         signal changed()
-        signal fileActionDone(string action, bool ok, string message)
+        signal fileActionDone(string action, bool ok, string message, var ids)
 
         function currentPath() {
             return current
@@ -57,7 +58,7 @@ TestCase {
             moveCount += 1
             lastIds = ids.slice()
             lastTargetId = targetId
-            fileActionRunning = true
+            fileActionIds = ids.slice()
             changed()
             return true
         }
@@ -66,14 +67,14 @@ TestCase {
             copyCount += 1
             lastIds = ids.slice()
             lastTargetId = targetId
-            fileActionRunning = true
+            fileActionIds = ids.slice()
             changed()
             return true
         }
 
         function finish(action, ok, message) {
-            fileActionRunning = false
-            fileActionDone(action, ok, message)
+            fileActionIds = []
+            fileActionDone(action, ok, message, [])
             changed()
         }
     }
@@ -91,6 +92,7 @@ TestCase {
         backend.moveTargetsLoading = false
         backend.moveTargetsError = ""
         backend.fileActionRunning = false
+        backend.fileActionIds = []
         backend.current = [{ id: "", name: "全部文件" }, { id: "A", name: "A" }]
         backend.moveCount = 0
         backend.copyCount = 0
@@ -132,6 +134,15 @@ TestCase {
         compare(picker.targetId, "", "起点是当前目录的上一级（根）")
         compare(picker.sourceParentId, "A")
         compare(okButton().enabled, true, "移到上一级是合法目标")
+    }
+
+    function test_unrelated_action_does_not_disable_the_picker() {
+        backend.fileActionIds = ["other"]
+        openMove({ id: "f1", name: "file.mkv", kind: "file" }, ["f1"], [])
+        compare(okButton().enabled, true, "别的条目在写不应禁用这次移动")
+
+        backend.fileActionIds = ["f1"]
+        compare(okButton().enabled, false, "同一目标在写时禁用确定")
     }
 
     function test_source_directory_can_be_traversed_but_not_chosen() {

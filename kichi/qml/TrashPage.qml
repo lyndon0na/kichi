@@ -22,7 +22,12 @@ Item {
     readonly property var entries: backend ? backend.trashFiles : []
     readonly property var trashRows: entryRows.model
     readonly property int selectedCount: selection.count
-    readonly property bool busy: backend !== null && (backend.trashLoading || backend.fileActionRunning)
+    readonly property bool busy: backend !== null && backend.trashLoading
+    readonly property bool actionRunning: backend !== null
+                                          && backend.trashActionRunning === true
+    readonly property bool clearing: backend !== null
+                                     && backend.trashClearing === true
+    readonly property bool selectedLocked: locks.any(selection.idList())
     readonly property bool backendSessionActive: page.backend === null
                                                  || typeof page.backend.authState === "undefined"
                                                  || page.backend.authState === "signedIn"
@@ -37,6 +42,11 @@ Item {
     EntryRows {
         id: entryRows
         source: page.entries
+    }
+
+    FileActionLocks {
+        id: locks
+        backend: page.backend
     }
 
     FirstLoadGate {
@@ -60,13 +70,13 @@ Item {
     }
 
     function restoreSelected() {
-        if (!backend || busy || selection.count === 0)
+        if (!backend || busy || selectedLocked || clearing || selection.count === 0)
             return
         backend.untrashEntries(selection.idList())
     }
 
     function deleteSelected() {
-        if (!backend || busy || selection.count === 0)
+        if (!backend || busy || selectedLocked || clearing || selection.count === 0)
             return
         const entry = selectedEntry()
         if (!entry)
@@ -75,7 +85,7 @@ Item {
     }
 
     function clearAll() {
-        if (!backend || busy || entries.length === 0)
+        if (!backend || busy || actionRunning || entries.length === 0)
             return
         dialogs.openClear(entries.length)
     }
@@ -401,6 +411,7 @@ Item {
         MenuItem {
             text: qsTr("还原")
             enabled: page.selectedCount > 0 && !page.busy
+                     && !page.selectedLocked && !page.clearing
             onTriggered: page.restoreSelected()
         }
 
@@ -408,6 +419,7 @@ Item {
             objectName: "trashDeleteMenuItem"
             text: qsTr("彻底删除")
             enabled: page.selectedCount > 0 && !page.busy
+                     && !page.selectedLocked && !page.clearing
             onTriggered: page.deleteSelected()
         }
     }
@@ -424,20 +436,29 @@ Item {
             if (!page.backend)
                 return
             // 乐观删除 / 回滚期间保留选择；成功后再由 fileActionDone 清空。
-            if (!page.backend.fileActionRunning)
-                selection.prune(page.entries)
+            if (!page.backend.trashClearing)
+                selection.pruneExcept(page.entries, page.backend.fileActionIds)
         }
 
-        function onFileActionDone(action, ok) {
-            if (!ok)
+        function onFileActionDone(action, ok, message, ids) {
+            if (!ok) {
+                if (action === "untrash" || action === "trashDelete")
+                    selection.pruneExcept(page.entries, page.backend.fileActionIds)
                 return
+            }
             if (action === "trash") {
                 if (page.visible && typeof page.backend.ensureTrashFresh === "function")
                     page.backend.ensureTrashFresh()
                 return
             }
-            if (action === "untrash" || action === "trashDelete" || action === "trashClear")
+            if (action === "trashClear") {
                 selection.clear()
+            } else if (action === "untrash" || action === "trashDelete") {
+                if (ids && ids.length > 0)
+                    selection.removeIds(ids)
+                else
+                    selection.pruneExcept(page.entries, page.backend.fileActionIds)
+            }
         }
     }
 }

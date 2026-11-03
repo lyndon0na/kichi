@@ -30,6 +30,11 @@ KDialog {
 
     property int seenRevision: -1
 
+    FileActionLocks {
+        id: locks
+        backend: picker.backend
+    }
+
     // 主题令牌来自 KDialog 的 `theme` 属性（见 KDialog.qml 的说明：
     // 不能再写一个 `KTheme { }` 子项，否则弹窗正文会塌成 0 高）。
 
@@ -38,7 +43,7 @@ KDialog {
                                                           : qsTr("全部文件")
     readonly property bool canApply: backend !== null
         && !backend.moveTargetsLoading
-        && !backend.fileActionRunning
+        && !locks.any(sourceIds)
         && sourceIds.length > 0
         && targetId !== sourceParentId
         && sourceIds.indexOf(targetId) < 0
@@ -52,9 +57,7 @@ KDialog {
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
     width: formWidth + leftPadding + rightPadding
-    closePolicy: backend && backend.fileActionRunning
-                 ? Popup.NoAutoClose
-                 : Popup.CloseOnEscape
+    closePolicy: Popup.CloseOnEscape
 
     onClosed: {
         if (picker.backend)
@@ -164,8 +167,12 @@ KDialog {
             picker.syncFolders()
         }
 
-        function onFileActionDone(action, ok, message) {
+        function onFileActionDone(action, ok, message, ids) {
             if (!picker.opened || action !== picker.mode)
+                return
+            if (!ids || !ids.some(function (id) {
+                    return picker.sourceIds.indexOf(id) >= 0
+                }))
                 return
             if (ok) {
                 picker.actionError = ""
@@ -311,7 +318,7 @@ KDialog {
         outerMargin: picker.padding
         okText: picker.mode === "move" ? qsTr("移动到这里") : qsTr("复制到这里")
         okEnabled: picker.canApply
-        cancelEnabled: !(picker.backend && picker.backend.fileActionRunning)
+        cancelEnabled: true
         onOkClicked: picker.apply()
         onCancelClicked: picker.close()
     }
