@@ -25,6 +25,7 @@ pub mod subtitles;
 mod tasks;
 mod throttle;
 pub mod thumbnail_cache;
+pub(crate) mod tree_index;
 pub mod upload;
 pub(crate) mod upload_resume;
 
@@ -32,7 +33,7 @@ mod client_cache;
 mod refresh;
 
 pub use paths::{config_dir, store_path, transfers_path};
-pub use search::{ScanBatch, ScanEnd, SearchHit};
+pub use search::{IndexSearchResult, ScanBatch, ScanEnd, SearchHit};
 pub use tasks::has_active;
 
 mod failure;
@@ -114,6 +115,10 @@ pub struct Session {
     clients: ClientCache,
     /// 令牌刷新单飞（并发下载线程同时发现临期时只刷一次）
     refresh_lock: Mutex<()>,
+    /// 当前账号的本地目录树索引；未登录 / 已登出时为 `None`
+    tree_index: Mutex<Option<Arc<tree_index::TreeIndex>>>,
+    /// 最近一次索引打开 / 后台回填失败；界面提示一次后取走
+    tree_index_error: Mutex<Option<String>>,
     /// 测试注入口：换成假刷新实现，验证只发一次请求
     #[cfg(test)]
     refresh_hook: Mutex<Option<Arc<refresh::RefreshHook>>>,
@@ -203,6 +208,11 @@ impl Session {
                 }
             }
         };
+        if restored.state == State::SignedIn {
+            // 启动恢复登录：索引没了 / 版本不认识会在这里重建出空库，
+            // 是否需要全量建库由调用方查 `needs_full_build` 决定。
+            let _ = session.open_tree_index();
+        }
         (session, restored)
     }
 
@@ -218,6 +228,8 @@ impl Session {
             inner: Mutex::new(Inner { current, device_id }),
             clients: ClientCache::default(),
             refresh_lock: Mutex::new(()),
+            tree_index: Mutex::new(None),
+            tree_index_error: Mutex::new(None),
             #[cfg(test)]
             refresh_hook: Mutex::new(None),
             #[cfg(test)]
@@ -292,6 +304,8 @@ impl Session {
         // 可能是换账号登录：旧账号的 client（以及里面的连接）不能留着
         self.clients.clear();
         self.with_inner(|inner| inner.current = Some(saved));
+        // 索引是缓存：打不开不影响登录，错误留给界面提示一次
+        let _ = self.open_tree_index();
         Ok(())
     }
 
@@ -319,6 +333,7 @@ impl Session {
     fn clear_tokens(&self) {
         // 登出 / 令牌失效：缓存里的 client 连同连接池一起放掉
         self.clients.clear();
+        self.close_tree_index();
         self.with_inner(|inner| inner.current = None);
     }
 
@@ -363,6 +378,123 @@ impl Session {
             DriveClient::new(&self.config, &device_id, &access, &user_id).map_err(Failure::from)?,
         );
         Ok(self.clients.install(access, built))
+    }
+
+    fn with_tree_index<T>(
+        &self,
+        f: impl FnOnce(&mut Option<Arc<tree_index::TreeIndex>>) -> T,
+    ) -> T {
+        let mut guard = match self.tree_index.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut guard)
+    }
+
+    fn with_tree_index_error<T>(&self, f: impl FnOnce(&mut Option<String>) -> T) -> T {
+        let mut guard = match self.tree_index_error.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut guard)
+    }
+
+    /// 记录一条索引错误；只保留第一条，避免后来的次要失败盖住根因。
+    pub(crate) fn record_tree_index_error(&self, message: String) {
+        self.with_tree_index_error(|slot| {
+            if slot.is_none() {
+                *slot = Some(message);
+            }
+        });
+    }
+
+    /// 取走待提示的索引错误（界面提示一次后不再重复）。
+    pub(crate) fn take_tree_index_error(&self) -> Option<String> {
+        self.with_tree_index_error(Option::take)
+    }
+
+    /// 当前账号的索引；未打开或已登出时为 `None`。
+    pub(crate) fn tree_index(&self) -> Option<Arc<tree_index::TreeIndex>> {
+        self.with_tree_index(|slot| slot.clone())
+    }
+
+    /// 索引已经成功建过库，可以承担 0 网络的本地读。
+    ///
+    /// 首次建库尚未完成、索引损坏重建、或已登出时都返回 `false`；
+    /// 调用方据此回退到网络路径。
+    pub(crate) fn local_index_ready(&self) -> bool {
+        let Some(index) = self.tree_index() else {
+            return false;
+        };
+        if index.is_closed() {
+            return false;
+        }
+        index
+            .needs_full_build()
+            .map(|needed| !needed)
+            .unwrap_or(false)
+    }
+
+    /// 最近一次全量建库时间（unix 秒）；索引未就绪或读取失败时为 `None`。
+    pub(crate) fn index_built_at(&self) -> Option<i64> {
+        self.tree_index()?.last_full_build_at().ok().flatten()
+    }
+
+    /// 在后台线程写索引：未打开 / 已关闭时跳过，写失败只记录错误。
+    ///
+    /// 调用点都在网络请求成功之后；这里不向调用方返回错误，写穿失败不能
+    /// 把已经成功的用户操作变成失败，也不能覆盖它的成功提示。
+    pub(crate) fn write_index(
+        &self,
+        f: impl FnOnce(&tree_index::TreeIndex) -> Result<(), tree_index::IndexError>,
+    ) {
+        let Some(index) = self.tree_index() else {
+            return;
+        };
+        if index.is_closed() {
+            return;
+        }
+        if let Err(err) = f(&index) {
+            // 登出关闭索引属于正常流程，不当作错误提示
+            if !index.is_closed() {
+                self.record_tree_index_error(format!("本地索引写入失败：{err}"));
+            }
+        }
+    }
+
+    /// 按当前账号打开索引。旧索引先逻辑关闭，连接交给后台线程自然放掉。
+    pub(crate) fn open_tree_index(&self) -> Result<Arc<tree_index::TreeIndex>, Failure> {
+        let (_, user_id, _) = self.current_credentials()?;
+        let path = paths::index_path(&user_id);
+        let opened = match tree_index::TreeIndex::open(&path, &user_id) {
+            Ok(opened) => opened,
+            Err(err) => {
+                let message = format!("本地索引不可用：{err}");
+                self.record_tree_index_error(message.clone());
+                return Err(Failure::Other(message));
+            }
+        };
+        let index = Arc::new(opened);
+        if let Some(old) = self.with_tree_index(|slot| slot.replace(Arc::clone(&index))) {
+            old.close();
+        }
+        Ok(index)
+    }
+
+    /// 需要时打开：已打开且未关闭就直接复用。
+    pub(crate) fn ensure_tree_index_open(&self) -> Result<Arc<tree_index::TreeIndex>, Failure> {
+        if let Some(index) = self.tree_index() {
+            if !index.is_closed() {
+                return Ok(index);
+            }
+        }
+        self.open_tree_index()
+    }
+
+    pub(crate) fn close_tree_index(&self) {
+        if let Some(index) = self.with_tree_index(Option::take) {
+            index.close();
+        }
     }
 
     /// 取当前容量（阻塞）。

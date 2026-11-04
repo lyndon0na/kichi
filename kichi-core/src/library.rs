@@ -46,6 +46,9 @@ pub struct LibraryEntry {
     pub occurred_at: Option<DateTime<Utc>>,
     /// 播放历史页使用；其它页面为空
     pub progress: Option<PlaybackProgress>,
+    /// 所在文件夹的相对路径（`父/子`）；只有本地索引能免费解析，
+    /// 云端来源或索引缺链时为空。
+    pub folder_path: Option<String>,
 }
 
 impl LibraryEntry {
@@ -55,6 +58,7 @@ impl LibraryEntry {
             event_id: None,
             occurred_at: None,
             progress: None,
+            folder_path: None,
         }
     }
 }

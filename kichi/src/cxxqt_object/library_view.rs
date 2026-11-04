@@ -66,6 +66,12 @@ fn entry_map(entry: &LibraryEntry, kind: LibraryKind, today: chrono::NaiveDate) 
         &QVariant::from(&QString::from(event_text)),
     );
     map.insert_clone(
+        &QString::from("folderPath"),
+        &QVariant::from(&QString::from(
+            entry.folder_path.as_deref().unwrap_or_default(),
+        )),
+    );
+    map.insert_clone(
         &QString::from("dateGroup"),
         &QVariant::from(&QString::from(if kind == LibraryKind::PlaybackHistory {
             playback_date_group(entry.occurred_at, today)
@@ -155,6 +161,7 @@ mod tests {
                 seconds: 45,
                 duration: 100,
             }),
+            folder_path: None,
         }
     }
 

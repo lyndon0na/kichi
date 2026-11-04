@@ -57,6 +57,21 @@ impl FilesCache {
         self.trim(&dir_id);
     }
 
+    /// 保存本地索引里的旧列表用于先显示：下一次进入必须后台校准。
+    ///
+    /// 与 [`FilesCache::store`] 的区别是 `fetched_at: None`——内容可以立刻
+    /// 渲染，但不能算作「刚读过网盘」。
+    pub(crate) fn store_stale(&mut self, dir_id: String, entries: &[FileEntry]) {
+        self.directories.insert(
+            dir_id.clone(),
+            CachedDirectory {
+                entries: entries.to_vec(),
+                fetched_at: None,
+            },
+        );
+        self.trim(&dir_id);
+    }
+
     /// 本地乐观修改后更新快照内容，并保留原来的 TTL 时刻。
     pub(crate) fn replace_entries(&mut self, dir_id: String, entries: &[FileEntry]) {
         if let Some(cache) = self.directories.get_mut(&dir_id) {
@@ -226,6 +241,19 @@ mod tests {
         cache.mark_stale("dir");
         assert!(cache.snapshot("dir").is_some());
         assert!(!cache.is_fresh("dir", now));
+    }
+
+    #[test]
+    fn index_snapshot_is_displayable_but_never_fresh() {
+        let mut cache = FilesCache::default();
+        let now = Instant::now();
+        cache.store_stale("dir".to_owned(), &[entry("from-index")]);
+
+        assert!(
+            cache.snapshot("dir").is_some(),
+            "旧索引行要能先渲染，不闪骨架"
+        );
+        assert!(!cache.is_fresh("dir", now), "索引行不能算刚校准过");
     }
 
     #[test]

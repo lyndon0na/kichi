@@ -14,6 +14,7 @@ use kichi_core::TrashEntry;
 use super::super::actions::run_in_background;
 use super::super::file_action_lock::{sync_file_action_properties, FileActionDomain};
 use super::super::qobject;
+use crate::session::tree_index::Change;
 use crate::session::Failure;
 
 /// core 的批量写接口上限；批量还原 / 彻底删除按这个大小分片。
@@ -175,7 +176,11 @@ impl qobject::Kichi {
 
         let session = self.backend.session.clone();
         run_in_background(
-            move || session.clear_trash(),
+            move || {
+                session.clear_trash()?;
+                session.write_index(|index| index.apply_change(Change::RemoveAllTrashed));
+                Ok(())
+            },
             move |mut qichi, result| {
                 let current = qichi
                     .as_ref()
@@ -267,11 +272,16 @@ impl qobject::Kichi {
             move || {
                 let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
                 match kind {
-                    TrashActionKind::Restore => session.untrash_entries(&refs),
+                    TrashActionKind::Restore => {
+                        session.untrash_entries(&refs)?;
+                        session.write_index(|index| index.apply_change(Change::Restore(&chunk)));
+                    }
                     TrashActionKind::Delete | TrashActionKind::Clear => {
-                        session.delete_entries_permanently(&refs)
+                        session.delete_entries_permanently(&refs)?;
+                        session.write_index(|index| index.apply_change(Change::Remove(&chunk)));
                     }
                 }
+                Ok(())
             },
             move |mut qichi, result| {
                 let current = qichi

@@ -75,6 +75,8 @@ pub mod qobject {
         #[qproperty(i32, trash_revision, cxx_name = "trashRevision", READ, NOTIFY = changed)]
         /// 有云端条目从回收站还原，下次显示文件页时需要重新拉取
         #[qproperty(bool, files_stale, cxx_name = "filesStale", READ, NOTIFY = changed)]
+        /// 本地索引正在全量建库（资料库与选择器据此暂缓读索引）
+        #[qproperty(bool, index_building, cxx_name = "indexBuilding", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         /// 首次读取或用户手动刷新在途：QML 据此显示可见加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
@@ -90,6 +92,8 @@ pub mod qobject {
         #[qproperty(bool, library_loading, cxx_name = "libraryLoading", READ, NOTIFY = changed)]
         #[qproperty(bool, library_loaded, cxx_name = "libraryLoaded", READ, NOTIFY = changed)]
         #[qproperty(QString, library_error, cxx_name = "libraryError", READ, NOTIFY = changed)]
+        /// 数据来源说明（星标页在本地索引 / 云端之间切换时显示）。
+        #[qproperty(QString, library_status, cxx_name = "libraryStatus", READ, NOTIFY = changed)]
         /// 集合真正替换时 +1；QML 据此把当前行复位并恢复焦点。
         #[qproperty(i32, library_revision, cxx_name = "libraryRevision", READ, NOTIFY = changed)]
         /// 当前资料库集合的数据版本；仅条目真正变化时 +1，切页恢复缓存不推进。
@@ -188,6 +192,9 @@ pub mod qobject {
         #[qproperty(bool, search_settled, cxx_name = "searchSettled", READ, NOTIFY = changed)]
         #[qproperty(QString, search_status, cxx_name = "searchStatus", READ, NOTIFY = changed)]
         #[qproperty(bool, search_truncated, cxx_name = "searchTruncated", READ, NOTIFY = changed)]
+        /// 结果来源："index"（本地索引）/ "fallback"（只筛当前目录）/ "network"（全盘扫描）；
+        /// 空串 = 没有搜索。只有 network 才显示扫描进度与停止按钮。
+        #[qproperty(QString, search_source, cxx_name = "searchSource", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -310,6 +317,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshFilesBackground"]
         fn refresh_files_background(self: Pin<&mut Self>);
+
+        /// 窗口重新获得焦点：触发一次 canary 探针（自带冷却与单飞）。
+        #[qinvokable]
+        #[cxx_name = "onWindowActivated"]
+        fn on_window_activated(self: Pin<&mut Self>);
 
         /// 请求某条文件的缩略图。QML 只传 id，远程地址和缓存路径都留在 Rust 侧。
         #[qinvokable]
@@ -829,6 +841,7 @@ mod queue_collect;
 mod queue_worker;
 mod reveal;
 mod search;
+mod search_local;
 mod settings;
 mod shares;
 mod tasks;
@@ -976,6 +989,7 @@ pub struct KichiRust {
     pub(crate) library_request_running: bool,
     pub(crate) library_loaded: bool,
     pub(crate) library_error: QString,
+    pub(crate) library_status: QString,
     /// 同一资料库页最近一次请求开始 / 成功的时刻：自动与手动刷新共用短冷却
     pub(crate) library_refresh_at: Option<std::time::Instant>,
     /// 文件写操作期间点过手动刷新：写操作收尾后补发
@@ -1035,6 +1049,20 @@ pub struct KichiRust {
     pub(crate) play_progress: play_history::ProgressReporter,
     /// 点播放时快照的字幕计划（菜单开着时目录刷新不影响本次播放）
     pub(crate) play_subtitle_plan: crate::session::subtitles::SubtitlePlan,
+    /// 全量建库的取消信号（登出 / 切换账号时置真）
+    pub(crate) index_build_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
+    /// 建库代数：退出登录后旧进度与旧结果作废
+    pub(crate) index_build_epoch: u64,
+    /// 有全量建库在后台跑（期间读路径不再同步查索引）
+    pub(crate) index_building: bool,
+    /// 本次会话已提示过索引错误（只提示一次）
+    pub(crate) index_error_reported: bool,
+    /// canary 探针在途（与全量建库单飞）
+    pub(crate) index_probing: bool,
+    /// 探针代数：登出 / 切换账号后旧结果作废
+    pub(crate) index_probe_epoch: u64,
+    /// 探针取消信号（登出 / 账号切换时置真）
+    pub(crate) index_probe_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
     /// 持久化设置（启动时读一次，改动即落盘）
     pub(crate) settings: crate::settings::Settings,
     /// 清晰度偏好（"ask" / "original" / "transcode"，QML 展示用）
@@ -1151,6 +1179,12 @@ pub struct KichiRust {
     pub(crate) search_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
     /// 搜索命中的领域数据（结果清单里的 id → 条目 / 路径）
     pub(crate) search_index: std::collections::HashMap<String, crate::session::SearchHit>,
+    /// 结果来源："index" / "fallback" / "network"；空串 = 没有搜索
+    pub(crate) search_source: QString,
+    /// 本地索引搜索在途：单飞，最多一个后台查询
+    pub(crate) search_local_running: bool,
+    /// 在途期间用户又输入了关键词：只保留最后一个，完成后接着搜
+    pub(crate) search_pending: Option<String>,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -1232,6 +1266,7 @@ impl Default for KichiRust {
             library_request_running: false,
             library_loaded: false,
             library_error: QString::default(),
+            library_status: QString::default(),
             library_refresh_at: None,
             library_refresh_pending: None,
             library_revision: 0,
@@ -1260,6 +1295,13 @@ impl Default for KichiRust {
             play_epoch: 0,
             play_progress: play_history::ProgressReporter::default(),
             play_subtitle_plan: crate::session::subtitles::SubtitlePlan::None,
+            index_build_cancel: None,
+            index_build_epoch: 0,
+            index_building: false,
+            index_error_reported: false,
+            index_probing: false,
+            index_probe_epoch: 0,
+            index_probe_cancel: None,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),
             player_backend: QString::from("mpv"),
@@ -1332,6 +1374,9 @@ impl Default for KichiRust {
             search_epoch: 0,
             search_cancel: None,
             search_index: std::collections::HashMap::new(),
+            search_source: QString::default(),
+            search_local_running: false,
+            search_pending: None,
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path()),
         };

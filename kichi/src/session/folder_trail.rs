@@ -15,6 +15,13 @@ impl Session {
         if entry_id.is_empty() {
             return Err(Failure::Other("产物 id 为空".to_owned()));
         }
+        if let Some(index) = self.tree_index() {
+            match index.parent_location(entry_id) {
+                Ok(Some(location)) => return Ok(location),
+                Ok(None) => {}
+                Err(err) => self.record_tree_index_error(format!("本地索引读取失败：{err}")),
+            }
+        }
         let client = self.drive()?;
         client.parent_of(entry_id).map_err(Failure::from)
     }
@@ -27,10 +34,27 @@ impl Session {
         if folder_id.is_empty() {
             return Err(Failure::Other("产物文件夹 id 为空".to_owned()));
         }
+        // 本地索引已有完整父链就不必逐级请求；索引缺链时再走网络。
+        if let Some(index) = self.tree_index() {
+            match index.path_to(folder_id) {
+                Ok(Some(trail)) if !trail.is_empty() => return Ok(trail),
+                Ok(_) => {}
+                Err(err) => {
+                    self.record_tree_index_error(format!("本地索引读取失败：{err}"));
+                }
+            }
+        }
         let client = self.drive()?;
-        resolve_trail(folder_id.to_owned(), |id| {
+        let trail = resolve_trail(folder_id.to_owned(), |id| {
             client.parent_of(id).map_err(Failure::from)
-        })
+        })?;
+        // 回填失败不影响本次路径结果；错误留给界面提示一次。
+        if let Some(index) = self.tree_index() {
+            if let Err(err) = index.backfill_trail(&trail) {
+                self.record_tree_index_error(format!("本地索引回填失败：{err}"));
+            }
+        }
+        Ok(trail)
     }
 }
 

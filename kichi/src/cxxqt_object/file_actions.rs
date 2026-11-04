@@ -17,6 +17,7 @@ use super::actions::run_in_background;
 use super::file_action_lock::FileActionDomain;
 use super::file_optimistic::{is_unconfirmed_create, pending_folder_id};
 use super::qobject;
+use crate::session::tree_index::Change;
 use crate::session::Failure;
 
 impl qobject::Kichi {
@@ -73,7 +74,17 @@ impl qobject::Kichi {
         self.as_mut()
             .set_file_action_message(action_id, &format!("正在改名为「{for_message}」……"));
         run_in_background(
-            move || session.rename_entry(&id, &name),
+            move || {
+                session.rename_entry(&id, &name)?;
+                // 网络成功后才写索引；索引失败只记录，不改变这次操作的结果。
+                session.write_index(|index| {
+                    index.apply_change(Change::Rename {
+                        id: &id,
+                        name: &name,
+                    })
+                });
+                Ok(())
+            },
             move |mut qichi, result| match result {
                 Ok(()) => {
                     qichi.as_mut().commit_file_mutation(action_id);
@@ -236,7 +247,9 @@ impl qobject::Kichi {
         run_in_background(
             move || {
                 let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-                session.trash_entries(&refs)
+                session.trash_entries(&refs)?;
+                session.write_index(|index| index.apply_change(Change::Trash(&ids)));
+                Ok(())
             },
             move |mut qichi, result| match result {
                 Ok(()) => {

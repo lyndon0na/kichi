@@ -9,6 +9,7 @@ license.workspace = true
 base64 = "0.22"
 chrono = "0.4"
 hmac = "0.13"
+icu_normalizer = "2.4"
 md-5 = "0.11"
 quick-xml = "0.41"
 rand = "0.9"

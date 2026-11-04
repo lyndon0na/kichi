@@ -183,6 +183,11 @@ ItemDelegate {
                 externallyHovered: row.rowHovered
                                    && row.pointerOver(nameLabel, mouseArea.mouseX,
                                                       mouseArea.mouseY)
+
+                // 索引来源的条目能免费给出所在文件夹；云端来源没有这个字段。
+                ToolTip.delay: 700
+                ToolTip.text: row.entry && row.entry.folderPath
+                              ? qsTr("所在文件夹：%1").arg(row.entry.folderPath) : ""
             }
 
             // 星标槽始终占位，名字右侧的状态变化不会挤动文件名。

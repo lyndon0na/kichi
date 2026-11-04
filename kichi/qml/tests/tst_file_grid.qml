@@ -1159,14 +1159,14 @@ TestCase {
                 "滚动条重新出现后 GridView 也必须按最终 cellWidth 排满整行")
     }
 
-    function test_search_placeholder_explains_scope_and_enter_action() {
+    function test_search_placeholder_names_the_whole_drive() {
         searchBar = searchBarComponent.createObject(parent, { visible: true })
         verify(searchBar !== null)
         wait(20)
 
         const field = findChild(searchBar, "filesSearchField")
         verify(field !== null)
-        compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索")
+        compare(field.placeholderText, "搜索整个网盘")
     }
 
     function test_view_toggle_switches_with_one_click_and_stays_available_during_search() {

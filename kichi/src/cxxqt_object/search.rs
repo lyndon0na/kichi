@@ -1,8 +1,9 @@
-//! 云端搜索：先在当前目录本地筛（0 请求），回车 / 搜索按钮才遍历网盘。
+//! 搜索桥接的共用部分：云端逐页扫描的线程 / 回投，以及结果行构造。
 //!
 //! 分工：
-//! - `session::search`：逐页扫描、名字匹配、可中断、三态结束；
-//! - 本文件：QML 入口、后台线程、`pump()` 回投、epoch 作废、属性刷新。
+//! - `session::search`：本地索引搜索与云端逐页扫描；
+//! - `search_local.rs`：输入即搜的本地索引路径、单飞与回退；
+//! - 本文件：云端扫描入口、`pump()` 回投、epoch 作废、属性刷新。
 //!
 //! 几个刻意的取舍：
 //! - **每条命中都保留在 `search_index` 里**（用户明确：不设固定条数上限），
@@ -17,7 +18,7 @@ use std::sync::Arc;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
-use kichi_core::{EntryKind, FileEntry};
+use kichi_core::{EntryKind, FileEntry, SearchMatcher};
 
 use super::actions::enqueue_ui;
 use super::files::{entry_map, ROOT_NAME};
@@ -29,65 +30,20 @@ use crate::session::{Failure, ScanBatch, ScanEnd, SearchHit};
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 /// 界面上最多显示多少条结果（内存里仍是全部命中）。
-const SEARCH_LIST_LIMIT: usize = 500;
+pub(super) const SEARCH_LIST_LIMIT: usize = 500;
 
 impl qobject::Kichi {
-    /// 第一段：只筛当前目录**已加载**的条目（0 请求）。
-    pub fn search_local(mut self: Pin<&mut Self>, query: QString) {
-        let query = query.to_string();
-        let trimmed = query.trim().to_owned();
-        if trimmed.is_empty() {
-            // 清空关键词 = 回到当前目录（Esc 的第一段就是这么来的）
-            self.as_mut().exit_search();
-            return;
-        }
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.search_active = true;
-            rust.search_query = QString::from(query.as_str());
-            // 本地筛选会把「结果」那一栏顶掉：在途的全盘扫描整轮作废
-            rust.search_epoch = rust.search_epoch.wrapping_add(1);
-            if let Some(cancel) = rust.search_cancel.take() {
-                cancel.cancel();
-            }
-            rust.search_settled = true;
-            rust.search_scanned = 0;
-            rust.search_results = QVariantList::default();
-            rust.search_displayed = 0;
-            rust.search_hits = 0;
-            rust.search_index.clear();
-        }
-        let folder = self
-            .crumbs
-            .last()
-            .map(|crumb| crumb.name.clone())
-            .unwrap_or_else(|| ROOT_NAME.to_owned());
-        let matched: Vec<FileEntry> = self
-            .entries
-            .iter()
-            .filter(|entry| kichi_core::search::matches(&entry.name, &trimmed))
-            .cloned()
-            .collect();
-        let count = matched.len();
-        let current = self.entries.len();
-        let status = if count == 0 {
-            format!(
-                "「{folder}」里没有名称包含「{trimmed}」的条目（只筛了本目录已加载的 {current} 项）"
-            )
-        } else {
-            format!(
-                "「{folder}」里命中 {count} 项（只筛了本目录已加载的 {current} 项，没有请求网盘）"
-            )
-        };
-        self.as_mut().apply_local_filter(matched, &status);
-    }
-
-    /// 第二段：遍历整个网盘（回车或点搜索框里的放大镜）。本地没筛到也可以直接点。
+    /// 搜索整个网盘：索引就绪时等价于再跑一次本地索引搜索（0 请求），
+    /// 未就绪时回退到逐页遍历网盘。回车或点搜索框里的放大镜触发。
     pub fn search_all(mut self: Pin<&mut Self>) {
         let query = self.search_query.to_string().trim().to_owned();
         if query.is_empty() {
             self.as_mut()
                 .set_message("先输入关键词，再按回车或点搜索按钮");
+            return;
+        }
+        if crate::cxxqt_object::search_local::local_index_ready(&self.backend.session) {
+            self.as_mut().start_local_index_search(query);
             return;
         }
         if !self.search_settled {
@@ -111,6 +67,9 @@ impl qobject::Kichi {
             rust.search_index.clear();
             rust.search_truncated = false;
             rust.search_status = QString::from("正在扫描网盘……");
+            rust.search_source = QString::from("network");
+            rust.search_local_running = false;
+            rust.search_pending = None;
             // 底栏不承担扫描进度；清掉上一轮筛选/校验留下的文案，避免看起来
             // 像当前扫描还在沿用旧状态。
             rust.status_message = QString::default();
@@ -148,6 +107,9 @@ impl qobject::Kichi {
             if let Some(cancel) = rust.search_cancel.take() {
                 cancel.cancel();
             }
+            // 本地索引查询无法中途打断：推进代数让结果回来即作废
+            rust.search_local_running = false;
+            rust.search_pending = None;
             // 线程下一轮检查到取消就退出；界面立刻宣告「已停止」，
             // 已扫出的结果原地保留
             rust.search_epoch = rust.search_epoch.wrapping_add(1);
@@ -174,6 +136,9 @@ impl qobject::Kichi {
             rust.search_status = QString::default();
             rust.search_index.clear();
             rust.search_truncated = false;
+            rust.search_source = QString::default();
+            rust.search_local_running = false;
+            rust.search_pending = None;
         }
         // 当前目录的条目一直留在 Rust 侧：换个列表重画即可，不用重新拉网
         let entries = self.entries.clone();
@@ -187,6 +152,11 @@ impl qobject::Kichi {
     pub fn search_open_folder(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
         if let Some(hit) = self.search_index.get(&id).cloned() {
+            if hit.in_trash {
+                self.as_mut()
+                    .set_message("这条结果在回收站里，请先还原再打开");
+                return;
+            }
             self.as_mut().navigate_to_folder(&hit);
             return;
         }
@@ -205,6 +175,11 @@ impl qobject::Kichi {
     /// `folder_id`，因此这里不会误把结果文件夹本身当成目标。
     pub fn search_reveal_folder(mut self: Pin<&mut Self>, id: QString) {
         let id = id.to_string();
+        if self.search_index.get(&id).is_some_and(|hit| hit.in_trash) {
+            self.as_mut()
+                .set_message("这个文件夹在回收站里，请先还原再进入");
+            return;
+        }
         // 名字从同一文件夹下的其它命中反推（路径末尾那一段），推不出就按根目录处理。
         let label = self
             .search_index
@@ -239,6 +214,7 @@ impl qobject::Kichi {
             folder_id: String::new(),
             folder_path: None,
             order: 0,
+            in_trash: false,
         };
         self.as_mut().navigate_to_folder(&hit);
     }
@@ -247,6 +223,11 @@ impl qobject::Kichi {
     fn navigate_to_folder(mut self: Pin<&mut Self>, folder: &SearchHit) {
         if folder.entry.kind != EntryKind::Folder {
             self.as_mut().set_message("这不是文件夹，无法进入");
+            return;
+        }
+        if folder.in_trash {
+            self.as_mut()
+                .set_message("这个文件夹在回收站里，请先还原再进入");
             return;
         }
         if self.listing {
@@ -268,6 +249,9 @@ impl qobject::Kichi {
             rust.search_status = QString::default();
             rust.search_index.clear();
             rust.search_truncated = false;
+            rust.search_source = QString::default();
+            rust.search_local_running = false;
+            rust.search_pending = None;
             // 读失败时把面包屑退回跳转前（别指着一个没读到的目录）
             rust.crumb_backup = Some(rust.crumbs.clone());
             // 根目录：id 为空，目录栈回到只有根那一级
@@ -285,7 +269,11 @@ impl qobject::Kichi {
     }
 
     /// 本地筛选的结果直接当列表显示；搜索状态在页面状态行 / 底栏上下文表达。
-    fn apply_local_filter(mut self: Pin<&mut Self>, entries: Vec<FileEntry>, status: &str) {
+    pub(super) fn apply_local_filter(
+        mut self: Pin<&mut Self>,
+        entries: Vec<FileEntry>,
+        status: &str,
+    ) {
         let folder = self
             .crumbs
             .last()
@@ -305,6 +293,8 @@ impl qobject::Kichi {
             rust.search_scanned = 0;
             rust.search_hits = i32::try_from(count).unwrap_or(i32::MAX);
             rust.search_displayed = count;
+            // 目录内兜底筛选不会截断；别把上一轮索引结果的「只显示前 500 条」留着
+            rust.search_truncated = false;
             rust.search_results = filtered;
             rust.search_status = QString::from(status);
             rust.status_message = QString::default();
@@ -324,7 +314,8 @@ impl qobject::Kichi {
                 }
                 rust.search_index.insert(hit.id().to_owned(), hit);
             }
-            let ordered = ordered_hits(&rust.search_index);
+            let query = rust.search_query.to_string();
+            let ordered = ordered_hits(&rust.search_index, &query);
             if ordered.len() > SEARCH_LIST_LIMIT {
                 rust.search_truncated = true;
             }
@@ -408,13 +399,26 @@ impl qobject::Kichi {
     }
 }
 
-/// 全盘结果的显示顺序：**先扫到的在前**（用户 2026-10-26 定的规则）。
+/// 搜索结果的显示顺序：匹配质量优先（完全同名 > 前缀 > 词首 > 包含），
+/// 同档按名字（不区分大小写）；再相同才按扫到顺序 / id 兜底。
 ///
-/// 不按文件夹优先分组：扫描是从第 1 页往后走的，用户要的是「结果自然长出来」
-/// 的感觉；文件夹用行首的类型标签区分，不靠位置。
-fn ordered_hits(index: &std::collections::HashMap<String, SearchHit>) -> Vec<SearchHit> {
+/// 规则本身在 `kichi_core::SearchMatcher`（纯函数、单测）；这里只接线。
+/// 不按文件夹优先分组：文件夹用行首的类型标签区分，不靠位置。
+fn ordered_hits(
+    index: &std::collections::HashMap<String, SearchHit>,
+    query: &str,
+) -> Vec<SearchHit> {
     let mut hits: Vec<SearchHit> = index.values().cloned().collect();
-    hits.sort_by_key(|hit| hit.order);
+    let matcher = SearchMatcher::new(query);
+    hits.sort_by(|left, right| {
+        let by_rank = match &matcher {
+            Some(matcher) => matcher.compare(&left.entry.name, &right.entry.name),
+            None => std::cmp::Ordering::Equal,
+        };
+        by_rank
+            .then_with(|| left.order.cmp(&right.order))
+            .then_with(|| left.id().cmp(right.id()))
+    });
     hits
 }
 
@@ -454,7 +458,7 @@ fn rebuild_visible_search(rust: &mut super::KichiRust, folder: &str) {
         rust.search_displayed = filtered.len();
         rust.search_truncated = false;
     } else {
-        let ordered = ordered_hits(&rust.search_index);
+        let ordered = ordered_hits(&rust.search_index, &query);
         for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
             rows.append(QVariant::from(&hit_map(hit)));
         }
@@ -466,17 +470,26 @@ fn rebuild_visible_search(rust: &mut super::KichiRust, folder: &str) {
 }
 
 /// 一条命中 → QML 小 map：条目字段与目录列表完全一致，外加「所在文件夹」。
-fn hit_map(hit: &SearchHit) -> QVariantMap {
+pub(super) fn hit_map(hit: &SearchHit) -> QVariantMap {
     let text = |value: &str| QVariant::from(&QString::from(value));
     let mut map = entry_map(&hit.entry);
-    let location = match &hit.folder_path {
-        Some(path) if !path.is_empty() => path.clone(),
-        // 路径拼不出来时至少说明在哪：根目录还是某个文件夹
-        _ if hit.folder_id.is_empty() => ROOT_NAME.to_owned(),
-        _ => "（所在文件夹）".to_owned(),
+    let location = if hit.in_trash {
+        match &hit.folder_path {
+            Some(path) if !path.is_empty() => format!("回收站 · 原位置：{path}"),
+            // 拼不出原位置就只说在回收站，绝不拿 id 冒充路径
+            _ => "回收站".to_owned(),
+        }
+    } else {
+        match &hit.folder_path {
+            Some(path) if !path.is_empty() => path.clone(),
+            // 路径拼不出来时至少说明在哪：根目录还是某个文件夹
+            _ if hit.folder_id.is_empty() => ROOT_NAME.to_owned(),
+            _ => "（所在文件夹）".to_owned(),
+        }
     };
     map.insert_clone(&QString::from("folderText"), &text(&location));
     map.insert_clone(&QString::from("folderId"), &text(&hit.folder_id));
+    map.insert_clone(&QString::from("inTrash"), &QVariant::from(&hit.in_trash));
     map
 }
 
@@ -562,6 +575,7 @@ mod tests {
             folder_id: folder.to_owned(),
             folder_path: path.map(str::to_owned),
             order: 0,
+            in_trash: false,
         }
     }
 
@@ -593,6 +607,7 @@ mod tests {
             folder_id: "season-2".to_owned(),
             folder_path: Some("Bangumi/汉化日记/第 2 季".to_owned()),
             order: 5,
+            in_trash: false,
         };
         let map = hit_map(&folder);
         assert_eq!(read(&map, "kind"), "folder", "结果要保持文件夹身份");
@@ -607,34 +622,54 @@ mod tests {
     }
 
     #[test]
-    fn results_are_ordered_by_arrival() {
-        // 用户 2026-10-26 定的规则：先扫到的在前，不按文件夹分组。
-        // 文件夹靠行首的类型标签区分，不靠位置。
+    fn results_rank_by_match_quality_then_name() {
+        // 用户 2026-11-04 定的规则：匹配质量优先，同档按名字；文件夹不插队。
         let mut index = std::collections::HashMap::new();
-        for (i, name) in ["a.mkv", "b.mkv", "c.mkv"].iter().enumerate() {
+        let names = [
+            (9, "包含第"),
+            (8, "其它 第"),
+            (7, "第 2 集"),
+            (6, "第"),
+            (5, "第 1 集"),
+        ];
+        for (order, name) in names {
             let mut h = hit(name, "", None);
-            h.order = i;
+            h.order = order;
             index.insert(h.id().to_owned(), h);
         }
-        // 第 9999 位才扫到的文件夹：就该排在最后
-        let mut late = SearchHit {
-            entry: entry("汉化日记", EntryKind::Folder),
+        // 文件夹靠行首类型标签区分，不靠位置：词首匹配就该排在包含之前
+        let mut folder = SearchHit {
+            entry: entry("第 3 季", EntryKind::Folder),
             folder_id: String::new(),
             folder_path: None,
             order: 9_999,
+            in_trash: false,
         };
-        late.entry.id = "dir-1".to_owned();
-        index.insert("dir-1".to_owned(), late);
+        folder.entry.id = "dir-1".to_owned();
+        index.insert("dir-1".to_owned(), folder);
 
-        let ordered = ordered_hits(&index);
+        let ordered = ordered_hits(&index, "第");
         assert_eq!(
             ordered.iter().map(|h| h.name()).collect::<Vec<_>>(),
-            vec!["a.mkv", "b.mkv", "c.mkv", "汉化日记"],
-            "按扫到的先后排，文件夹不插队"
+            vec!["第", "第 1 集", "第 2 集", "第 3 季", "其它 第", "包含第"],
+            "完全同名 > 前缀 > 词首 > 包含；同档按名字"
         );
-        assert!(
-            index.values().any(|h| h.is_folder()),
-            "文件夹仍在结果里，只是按到达顺序出现"
+    }
+
+    #[test]
+    fn same_rank_uses_name_not_hash_iteration() {
+        let mut index = std::collections::HashMap::new();
+        for (order, name) in [(3, "b 包含"), (1, "a 包含"), (2, "A 包含")] {
+            let mut h = hit(name, "", None);
+            h.entry.id = format!("id-{order}");
+            h.order = order;
+            index.insert(h.id().to_owned(), h);
+        }
+        let ordered = ordered_hits(&index, "包含");
+        assert_eq!(
+            ordered.iter().map(|h| h.name()).collect::<Vec<_>>(),
+            vec!["a 包含", "A 包含", "b 包含"],
+            "同档按名字（不区分大小写）稳定排序，不能落到 HashMap 顺序"
         );
     }
 
@@ -649,6 +684,47 @@ mod tests {
         assert!(
             !read(&unresolved, "folderText").contains("id-unknown"),
             "拼不出路径时不要拿 id 冒充名字"
+        );
+    }
+
+    #[test]
+    fn trash_hits_are_marked_and_keep_their_original_location() {
+        let mut trashed = hit(
+            "汉化日记 第 3 季 01.mkv",
+            "season-3",
+            Some("剧集/汉化日记 第 3 季"),
+        );
+        trashed.in_trash = true;
+        let map = hit_map(&trashed);
+        assert_eq!(
+            map.get(&QString::from("inTrash"))
+                .and_then(|value| value.value::<bool>()),
+            Some(true),
+            "QML 要能一眼分辨回收站行"
+        );
+        assert_eq!(
+            read(&map, "folderText"),
+            "回收站 · 原位置：剧集/汉化日记 第 3 季"
+        );
+
+        let mut unknown = hit("b.mkv", "id-unknown", None);
+        unknown.in_trash = true;
+        let map = hit_map(&unknown);
+        assert_eq!(read(&map, "folderText"), "回收站");
+        assert!(
+            !read(&map, "folderText").contains("id-unknown"),
+            "拼不出原位置时不要拿 id 冒充路径"
+        );
+    }
+
+    #[test]
+    fn live_hits_are_explicitly_not_in_trash() {
+        let map = hit_map(&hit("a.mkv", "", None));
+        assert_eq!(
+            map.get(&QString::from("inTrash"))
+                .and_then(|value| value.value::<bool>()),
+            Some(false),
+            "在库条目也要有明确的 inTrash=false，QML 才能统一判断"
         );
     }
 

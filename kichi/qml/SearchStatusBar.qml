@@ -11,9 +11,11 @@ RowLayout {
     property string statusText: backend ? backend.searchStatus : ""
     property bool truncated: backend !== null && backend.searchTruncated === true
 
+    // 只有网络全盘扫描才转圈 / 提供停止；本地索引搜索不显示这些
     readonly property bool scanning: backend !== null
                                      && backend.searchActive === true
                                      && backend.searchSettled !== true
+                                     && backend.searchSource === "network"
     readonly property KTheme theme: KTheme { parent: root }
 
     Layout.leftMargin: theme.gapMd

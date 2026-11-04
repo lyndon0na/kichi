@@ -29,6 +29,8 @@ ItemDelegate {
     /// 可选的第二行说明（搜索结果用它显示所在文件夹）。
     property string detailText: ""
     property bool detailClickable: false
+    /// 回收站条目：标「回收站」，双击不进入 / 不播放 / 不下载
+    readonly property bool inTrash: !!row.entry && row.entry.inTrash === true
     readonly property bool detailVisible: detailText.length > 0
     readonly property bool detailHovered: detailVisible && detailClickable
                                              && mouseArea.containsMouse
@@ -100,7 +102,7 @@ ItemDelegate {
         // 悬停底色要用 containsMouse，必须开 hoverEnabled（默认关闭）
         hoverEnabled: true
         cursorShape: row.detailHovered
-                     || (row.entry && row.entry.kind === "folder")
+                     || (!row.inTrash && row.entry && row.entry.kind === "folder")
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
         onClicked: function (mouse) {
@@ -146,6 +148,9 @@ ItemDelegate {
     // 双击的实际动作；单击选中由页面处理，不在这里做。
     function activate(point) {
         if (!row.backend || !row.entry)
+            return
+        // 回收站里的条目不是现役层级：只能从右键菜单还原
+        if (row.inTrash)
             return
         if (row.entry.kind === "folder") {
             row.folderOpenRequested(row.entry.id)
@@ -263,10 +268,12 @@ ItemDelegate {
                 Layout.fillHeight: true
                 spacing: 4
                 readonly property int extraCount: 1
+                                                    + (rowTrashBadge.visible ? 1 : 0)
                                                     + (rowPlayingStatus.visible ? 1 : 0)
                                                     + (auditLabel.visible ? 1 : 0)
                 readonly property real extraWidth:
                     rowStarSlot.width
+                    + (rowTrashBadge.visible ? rowTrashBadge.implicitWidth : 0)
                     + (rowPlayingStatus.visible ? rowPlayingStatus.implicitWidth : 0)
                     + (auditLabel.visible ? auditLabel.implicitWidth : 0)
                     + extraCount * spacing
@@ -285,6 +292,16 @@ ItemDelegate {
                     externallyHovered: mouseArea.containsMouse
                                        && row.pointerOver(nameLabel, mouseArea.mouseX,
                                                           mouseArea.mouseY)
+                }
+
+                KStatusBadge {
+                    id: rowTrashBadge
+                    objectName: "rowTrashBadge"
+
+                    visible: row.inTrash
+                    text: qsTr("回收站")
+                    tone: "neutral"
+                    y: Math.round((nameLine.height - height) / 2)
                 }
 
                 Rectangle {

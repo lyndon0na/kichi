@@ -56,6 +56,11 @@ ApplicationWindow {
             isMaximized = false
         saveGeometryTimer.restart()
     }
+    // 重新获得焦点：让本地索引与网盘对一次账（Rust 侧有 60 秒冷却与单飞）
+    onActiveChanged: {
+        if (root.active && root.signedIn)
+            backend.onWindowActivated()
+    }
 
     // 拖窗口边缘会连续触发尺寸变化：防抖后再落盘
     Timer {
@@ -832,6 +837,9 @@ ApplicationWindow {
         if (root.currentPage === pageIds.files) {
             if (backend.searchActive) {
                 if (!backend.searchSettled) {
+                    // 本地索引没有「已扫多少条」的进度，别借用网络扫描的文案
+                    if (backend.searchSource === "index")
+                        return qsTr("正在本地索引里搜索…")
                     return qsTr("全盘搜索 · 已扫 %1 条，命中 %2 条")
                             .arg(backend.searchScanned)
                             .arg(backend.searchHits)

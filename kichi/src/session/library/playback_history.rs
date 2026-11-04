@@ -70,6 +70,7 @@ where
             event_id: (!event.id.trim().is_empty()).then_some(event.id),
             occurred_at: event.updated_at,
             progress: event.progress,
+            folder_path: None,
         });
     }
     Ok(entries)

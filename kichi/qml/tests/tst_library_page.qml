@@ -19,6 +19,7 @@ TestCase {
         property bool libraryLoading: false
         property bool libraryLoaded: false
         property string libraryError: ""
+        property string libraryStatus: ""
         property int libraryRevision: 0
         property int libraryDataRevision: 0
         property bool playLoading: false
@@ -125,6 +126,7 @@ TestCase {
         backend.libraryLoading = false
         backend.libraryLoaded = false
         backend.libraryError = ""
+        backend.libraryStatus = ""
         backend.libraryRevision = 0
         backend.libraryDataRevision = 0
         backend.refreshCalls = 0
@@ -992,6 +994,21 @@ TestCase {
         compare(Math.round(page.blankContextMenu.y), Math.round(expected.y),
                 "列表空白菜单纵向跟随光标")
         page.blankContextMenu.close()
+    }
+
+    function test_library_source_hint_reports_index_or_fallback() {
+        backend.libraryStatus = "来自本地索引（更新于 2026-11-04 10:00），未请求网盘"
+        publish([row("indexed", false, "file", true)], true)
+        const hint = findChild(page, "librarySourceHint")
+        verify(hint !== null, "缺少数据来源提示")
+        verify(hint.visible)
+        verify(hint.text.indexOf("来自本地索引") >= 0)
+
+        backend.libraryStatus = "本地索引尚未就绪，已从网盘读取"
+        backend.libraryRevision += 1
+        backend.changed()
+        wait(20)
+        verify(hint.text.indexOf("已从网盘读取") >= 0)
     }
 
     function test_playback_history_grouped_grid_blank_menu_follows_cursor_after_scroll() {

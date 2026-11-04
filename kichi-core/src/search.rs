@@ -96,22 +96,14 @@ pub struct FileHit {
     pub parent_id: String,
 }
 
-/// 名字字面包含匹配（大小写不敏感）；文件与文件夹一视同仁。
+/// 名字包含匹配（归一化后大小写不敏感）；文件与文件夹一视同仁。
 ///
 /// **不做通配符**（用户决策）：`*`、`?` 就是普通字符。关键词首尾空白会被去掉，
-/// 全空白视为「不匹配任何东西」。
+/// 全空白视为「不匹配任何东西」。与本地索引共用
+/// [`crate::search_rank::SearchMatcher`]，网络回退与本地结果不会因为
+/// 全角 / 假名 / 繁体写法不同而一个命中一个不命中。
 pub fn matches(name: &str, query: &str) -> bool {
-    let needle = query.trim();
-    if needle.is_empty() {
-        return false;
-    }
-    contains_ignore_case(name, needle)
-}
-
-fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
-    let hay = haystack.to_lowercase();
-    let needle = needle.to_lowercase();
-    hay.contains(&needle)
+    crate::SearchMatcher::new(query).is_some_and(|matcher| matcher.matches(name))
 }
 
 /// 全盘列举的查询参数（单独成函数便于单测）。

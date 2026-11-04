@@ -29,6 +29,8 @@ ItemDelegate {
     /// 卡片底部的单行说明：普通文件显示大小 / 修改时间，搜索结果显示所在文件夹。
     property string detailText: ""
     property bool detailClickable: false
+    /// 回收站条目：标「回收站」，双击不进入 / 不播放 / 不下载
+    readonly property bool inTrash: !!card.entry && card.entry.inTrash === true
     readonly property string detailDisplayText: card.compactGridDate(detailText)
     readonly property bool detailVisible: detailDisplayText.length > 0
     readonly property bool detailHovered: detailVisible && detailClickable
@@ -116,7 +118,7 @@ ItemDelegate {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
         cursorShape: card.detailHovered
-                     || (card.activationEnabled && card.entry
+                     || (!card.inTrash && card.activationEnabled && card.entry
                          && (card.entry.kind === "folder"
                              || card.entry.playable === true
                              || card.downloadNonPlayable))
@@ -163,6 +165,9 @@ ItemDelegate {
 
     function activate(point) {
         if (!card.activationEnabled || !card.backend || !card.entry)
+            return
+        // 回收站里的条目不是现役层级：只能从右键菜单还原
+        if (card.inTrash)
             return
         if (card.entry.kind === "folder") {
             card.folderOpenRequested(card.entry.id)
@@ -329,6 +334,18 @@ ItemDelegate {
                 text: qsTr("违规")
                 tone: "danger"
                 visible: card.entry ? card.entry.auditFlag === true : false
+            }
+
+            KStatusBadge {
+                objectName: "gridTrashBadge"
+
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.margins: 6
+                z: 2
+                text: qsTr("回收站")
+                tone: "neutral"
+                visible: card.inTrash
             }
         }
 

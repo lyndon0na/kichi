@@ -1,4 +1,5 @@
-//! “已加星标”查询：服务端按 `system_tag=STAR` 筛选，再排序与去重。
+//! “已加星标”查询：索引就绪时读本地 `starred = 1 AND trashed = 0`，
+//! 否则回退服务端 `system_tag=STAR` 筛选；两条路径都在本模块排序与去重。
 //!
 //! 星标是 PikPak 的系统标签，列表项上显式 `starred` 不可靠；`FileEntry`
 //! 已经把显式字段与 `tags[].name == "STAR"` 统一成 `FileEntry::starred`。
@@ -10,8 +11,84 @@ use std::collections::HashSet;
 use kichi_core::{FileEntry, LibraryEntry};
 
 use super::super::{Failure, Session};
+use super::LibraryLoad;
 
-pub(super) fn load(session: &Session) -> Result<Vec<LibraryEntry>, Failure> {
+/// 索引来源的一次读取上限；云端的页数本身也没有硬上限。
+const INDEX_STARRED_LIMIT: usize = 10_000;
+
+/// 资料库「已加星标」：索引就绪时 0 网络，否则回退现有云端查询。
+pub(super) fn load(session: &Session) -> Result<LibraryLoad, Failure> {
+    if !session.local_index_ready() {
+        return Ok(LibraryLoad::new(
+            load_cloud(session)?,
+            "本地索引尚未就绪，已从网盘读取".to_owned(),
+        ));
+    }
+    match load_index(session) {
+        Ok(entries) => {
+            let built = session
+                .index_built_at()
+                .map(format_built_time)
+                .unwrap_or_default();
+            let mut status = if built.is_empty() {
+                "来自本地索引，未请求网盘".to_owned()
+            } else {
+                format!("来自本地索引（更新于 {built}），未请求网盘")
+            };
+            if entries.len() >= INDEX_STARRED_LIMIT {
+                status.push_str(&format!("；仅显示前 {INDEX_STARRED_LIMIT} 项"));
+            }
+            Ok(LibraryLoad::new(entries, status))
+        }
+        Err(err) => {
+            let reason = err.to_string();
+            session.record_tree_index_error(format!("本地索引读取星标失败：{reason}"));
+            Ok(LibraryLoad::new(
+                load_cloud(session)?,
+                "本地索引读取失败，已回退网盘读取".to_owned(),
+            ))
+        }
+    }
+}
+
+fn load_index(session: &Session) -> Result<Vec<LibraryEntry>, Failure> {
+    let index = session
+        .tree_index()
+        .ok_or_else(|| Failure::Other("本地索引未打开".to_owned()))?;
+    let entries = index
+        .starred(INDEX_STARRED_LIMIT)
+        .map_err(|err| Failure::Other(format!("本地索引读取失败：{err}")))?;
+    let mut result = starred_entries(entries);
+    attach_folder_paths(session, &mut result);
+    Ok(result)
+}
+
+/// 用索引里的父目录缓存补上「所在文件夹」；缺链的条目保持为空。
+fn attach_folder_paths(session: &Session, entries: &mut [LibraryEntry]) {
+    let Some(index) = session.tree_index() else {
+        return;
+    };
+    let parents: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.entry.parent_id.trim().to_owned())
+        .filter(|parent| !parent.is_empty())
+        .collect();
+    if parents.is_empty() {
+        return;
+    }
+    match index.folder_paths(&parents) {
+        Ok(paths) => {
+            for entry in entries {
+                entry.folder_path = paths.get(entry.entry.parent_id.trim()).cloned();
+            }
+        }
+        Err(err) => {
+            session.record_tree_index_error(format!("本地索引解析已加星标文件夹路径失败：{err}"))
+        }
+    }
+}
+
+fn load_cloud(session: &Session) -> Result<Vec<LibraryEntry>, Failure> {
     let client = session.drive()?;
     let mut entries = Vec::new();
     let mut page_token: Option<String> = None;
@@ -33,6 +110,16 @@ pub(super) fn load(session: &Session) -> Result<Vec<LibraryEntry>, Failure> {
             ));
         }
         page_token = Some(next);
+    }
+}
+
+fn format_built_time(seconds: i64) -> String {
+    match chrono::DateTime::from_timestamp(seconds, 0) {
+        Some(time) => time
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+        None => String::new(),
     }
 }
 

@@ -89,6 +89,7 @@ fn assemble(
                 event_id: event.event_id,
                 occurred_at: event.occurred_at,
                 progress: None,
+                folder_path: None,
             })
         })
         .collect()

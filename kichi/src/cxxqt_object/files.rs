@@ -39,11 +39,15 @@ impl Crumb {
 
 impl qobject::Kichi {
     /// 用户点击刷新：绕过 TTL，并在已有列表时显示手动刷新反馈。
-    pub fn refresh_files(self: Pin<&mut Self>) {
-        self.refresh_files_inner(true, true);
+    pub fn refresh_files(mut self: Pin<&mut Self>) {
+        // 根目录手动刷新顺带校准本地索引；探针自己带冷却与单飞
+        if self.crumbs.last().is_some_and(|crumb| crumb.id.is_empty()) {
+            self.as_mut().probe_tree_index();
+        }
+        self.as_mut().refresh_files_inner(true, true);
     }
 
-    /// 登录、写操作收尾等内部强制校准：不显示加载态。
+    /// 登录、写操作收尾等内部强制校准：有索引旧行时先占位，再静默校准。
     pub fn refresh_files_background(self: Pin<&mut Self>) {
         self.refresh_files_inner(true, false);
     }
@@ -128,8 +132,90 @@ impl qobject::Kichi {
         if !force && !self.files_stale && self.files_cache.is_fresh(&current.id, now) {
             return;
         }
+        // 本地索引可用时（建库期间不碰索引，避免主线程等建库事务的锁）：
+        // - 非强制刷新且完整新鲜 → 直接渲染，0 请求；
+        // - 过期 / 脏 / 未补全，以及启动 / 登录后的后台强制校准 → 先用索引
+        //   里的旧行占位（不闪骨架），再后台校准；校准失败时旧行原地保留；
+        // - 手动刷新仍直连网络，不拿索引旧行冒充。
+        if !self.index_building && !self.search_active {
+            // 首屏可能在 warmUp 打开索引之前就触发刷新，这里补一次打开；
+            // 打不开就静默回落网络，用户可见的提示由建库流程统一负责。
+            let _ = self.backend.session.ensure_tree_index_open();
+            if !force
+                && !self.files_stale
+                && !has_snapshot
+                && self.as_mut().show_local_index_listing(&current.id)
+            {
+                return;
+            }
+            if !manual && !has_snapshot && self.as_mut().show_stale_local_index_listing(&current.id)
+            {
+                self.as_mut().start_files_request(current.id, true, manual);
+                return;
+            }
+        }
         self.as_mut()
             .start_files_request(current.id, has_snapshot, manual);
+    }
+
+    /// 本地索引里有完整且新鲜的目录快照：直接渲染（不显示加载态）。
+    ///
+    /// 返回 `false` 表示索引不可用 / 缺目录 / 过期，调用方继续走网络。
+    fn show_local_index_listing(mut self: Pin<&mut Self>, dir_id: &str) -> bool {
+        let Some(index) = self.backend.session.tree_index() else {
+            return false;
+        };
+        let now = chrono::Utc::now().timestamp();
+        let entries =
+            match index.listing_if_fresh(dir_id, now, crate::session::tree_index::FRESH_TTL_SECS) {
+                Ok(Some(entries)) => entries,
+                Ok(None) => return false,
+                Err(err) => {
+                    self.backend
+                        .session
+                        .record_tree_index_error(format!("本地索引读取失败：{err}"));
+                    return false;
+                }
+            };
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.crumb_backup = None;
+            rust.files_stale = false;
+            rust.files_cache
+                .store(dir_id.to_owned(), &entries, Instant::now());
+        }
+        self.as_mut().show_cached_entries(entries);
+        true
+    }
+
+    /// 索引里有该目录的旧行（过期 / 脏 / 未补全）时先渲染，随后仍会后台校准。
+    ///
+    /// 返回 `false` 表示索引没有可显示的条目，调用方照旧显示加载态。
+    fn show_stale_local_index_listing(mut self: Pin<&mut Self>, dir_id: &str) -> bool {
+        let Some(index) = self.backend.session.tree_index() else {
+            return false;
+        };
+        if index.is_closed() {
+            return false;
+        }
+        let entries = match index.listing_any(dir_id) {
+            Ok(Some(entries)) => entries,
+            Ok(None) => return false,
+            Err(err) => {
+                self.backend
+                    .session
+                    .record_tree_index_error(format!("本地索引读取失败：{err}"));
+                return false;
+            }
+        };
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.crumb_backup = None;
+            rust.files_stale = false;
+            rust.files_cache.store_stale(dir_id.to_owned(), &entries);
+        }
+        self.as_mut().show_cached_entries(entries);
+        true
     }
 
     fn start_files_request(
@@ -155,8 +241,21 @@ impl qobject::Kichi {
             self.as_mut().notify();
         }
 
+        let index_dir = dir_id.clone();
         run_in_background(
-            move || session.list_dir(parent_id.as_deref()),
+            move || {
+                let entries = session.list_dir(parent_id.as_deref())?;
+                // 网络成功才更新索引；索引失败不覆盖这次已经拿到的列表。
+                if let Some(index) = session.tree_index() {
+                    if let Err(err) = index.put_listing(&index_dir, &entries, true) {
+                        // 登出关闭索引属于正常流程，不当作错误提示
+                        if !index.is_closed() {
+                            session.record_tree_index_error(format!("本地索引写入失败：{err}"));
+                        }
+                    }
+                }
+                Ok(entries)
+            },
             move |mut qichi, result| {
                 // 退出登录 / 重新登录后旧请求作废，避免把上个会话的列表贴上来
                 if qichi.as_ref().rust().list_epoch != epoch {
@@ -170,6 +269,7 @@ impl qobject::Kichi {
                             rust.crumb_backup = None;
                         }
                         qichi.as_mut().show_entries(entries);
+                        qichi.as_mut().report_index_error();
                     }
                     Err(err) => {
                         qichi.as_mut().finish_files_request();
@@ -247,8 +347,20 @@ impl qobject::Kichi {
     }
 
     /// 目标目录被其它目录的写操作改变：保留旧行用于先显示，下次进入立即校准。
+    ///
+    /// 新建文件夹 / 复制 / 上传 / 离线任务完成没有可确定的本地行，只把目录
+    /// 标脏；索引写入放后台，失败只记录错误。
     pub(crate) fn mark_file_dir_stale(mut self: Pin<&mut Self>, dir_id: &str) {
         self.as_mut().rust_mut().files_cache.mark_stale(dir_id);
+        let session = self.backend.session.clone();
+        let dir_id = dir_id.to_owned();
+        run_in_background(
+            move || {
+                session.write_index(|index| index.mark_dir_dirty(&dir_id));
+                Ok(())
+            },
+            |_, _| {},
+        );
     }
 
     /// 回收站还原 / 资料库星标等跨目录变化：所有目录下次进入都先校准。
@@ -809,6 +921,8 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
         &QVariant::from(&(entry.kind == EntryKind::File && !entry.thumbnail_url.is_empty())),
     );
     map.insert_clone(&QString::from("pending"), &QVariant::from(&false));
+    // 目录列表 / 资料库 / 手工筛出的行都不在回收站；搜索结果会覆盖这一项。
+    map.insert_clone(&QString::from("inTrash"), &QVariant::from(&false));
     map
 }
 

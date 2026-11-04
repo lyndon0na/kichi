@@ -335,6 +335,19 @@ Item {
             wrapMode: Text.Wrap
         }
 
+        // 数据来源（目前只有「已加星标」会填）：本地索引 / 回退网盘。
+        Label {
+            objectName: "librarySourceHint"
+            Layout.fillWidth: true
+            Layout.leftMargin: metrics.pageMargin
+            Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+            visible: text.length > 0
+            text: page.activeCollection ? String(page.backend.libraryStatus || "") : ""
+            color: theme.textMuted
+            font.pixelSize: theme.fontMeta
+            wrapMode: Text.Wrap
+        }
+
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true

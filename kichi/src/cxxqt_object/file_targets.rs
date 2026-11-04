@@ -13,6 +13,8 @@ use kichi_core::{EntryKind, FileEntry};
 use super::actions::run_in_background;
 use super::qobject;
 use super::QVariantList;
+use crate::session::tree_index::{self, FRESH_TTL_SECS};
+use crate::session::Session;
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -38,13 +40,20 @@ impl qobject::Kichi {
     }
 
     /// 读取选择器某一层的子文件夹。空 id = 根目录。
+    ///
+    /// 索引就绪时先读索引：完整且新鲜 → 直接渲染（0 网络）；否则先把已知
+    /// 子文件夹贴上，再后台补全。索引不可用 / 该目录从没见过 → 回退网络。
     pub fn load_move_targets(mut self: Pin<&mut Self>, parent_id: QString) {
         let parent_id = parent_id.to_string();
         let parent = {
             let trimmed = parent_id.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         };
+        let dir_key = parent.clone().unwrap_or_default();
         let session = self.backend.session.clone();
+        // 建库事务在后台跑着时不读索引：主线程等锁会卡住整个窗口
+        let use_index = session.local_index_ready() && !self.index_building;
+
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
             rust.move_targets_epoch = rust.move_targets_epoch.wrapping_add(1);
@@ -52,10 +61,50 @@ impl qobject::Kichi {
             rust.move_targets_error = QString::default();
             rust.move_targets_epoch
         };
+        let mut pre_rendered = false;
+
+        if use_index {
+            match index_targets(&session, &dir_key) {
+                Ok(Some(view)) => {
+                    let fresh = view.fresh;
+                    let folders = folder_from(&folder_entries(view.folders));
+                    pre_rendered = true;
+                    {
+                        let mut rust = self.as_mut().rust_mut();
+                        rust.move_targets = folders;
+                        rust.move_targets_loading = !fresh;
+                        rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
+                    }
+                    if fresh {
+                        self.as_mut().notify();
+                        return;
+                    }
+                }
+                // 索引就绪但该目录从没出现过：走下面的网络路径
+                Ok(None) => {}
+                Err(err) => {
+                    session.record_tree_index_error(format!("本地索引读取失败：{err}"));
+                }
+            }
+        }
         self.as_mut().notify();
 
         run_in_background(
-            move || session.list_dir(parent.as_deref()),
+            move || {
+                let entries = session.list_dir(parent.as_deref())?;
+                // 选择器只做补全：complete=false 只 upsert，不删任何旧行，
+                // 也不延长已有完整快照的新鲜期。
+                if use_index {
+                    if let Some(index) = session.tree_index() {
+                        if let Err(err) = index.put_listing(&dir_key, &entries, false) {
+                            if !index.is_closed() {
+                                session.record_tree_index_error(format!("本地索引写入失败：{err}"));
+                            }
+                        }
+                    }
+                }
+                Ok(entries)
+            },
             move |mut qichi, result| {
                 // 快速进出目录时旧请求作废，别把上一层的文件夹贴到当前层
                 if qichi.as_ref().rust().move_targets_epoch != epoch {
@@ -74,7 +123,10 @@ impl qobject::Kichi {
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.move_targets_loading = false;
-                            rust.move_targets = QVariantList::default();
+                            // 索引里已经渲染出来的行仍然可信，网络失败不清空
+                            if !pre_rendered {
+                                rust.move_targets = QVariantList::default();
+                            }
                             rust.move_targets_error = QString::from(err.to_string().as_str());
                             rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
                         }
@@ -99,6 +151,22 @@ impl qobject::Kichi {
         }
         self.as_mut().notify();
     }
+}
+
+/// 索引里这一层的子文件夹；目录从未出现过时返回 `None`，调用方回退网络。
+fn index_targets(
+    session: &Session,
+    dir_id: &str,
+) -> Result<Option<tree_index::MoveTargets>, tree_index::IndexError> {
+    let Some(index) = session.tree_index() else {
+        return Ok(None);
+    };
+    if index.is_closed() {
+        return Ok(None);
+    }
+    let now = chrono::Utc::now().timestamp();
+    let view = index.move_targets(dir_id, now, FRESH_TTL_SECS)?;
+    Ok((view.known || !view.folders.is_empty()).then_some(view))
 }
 
 /// 只留文件夹，按名字排序（大小写不敏感，同名回落到原串，保证稳定）。

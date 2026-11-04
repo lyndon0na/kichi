@@ -34,6 +34,8 @@ Item {
     readonly property int targetCount: targetIds.length
     // 搜索结果里的条目没有「源目录」上下文，暂不提供移动 / 复制
     property bool fromSearch: false
+    // 回收站条目只提供「还原」：其它动作要么不适用，要么可能误伤
+    property bool targetInTrash: false
 
     FileActionLocks {
         id: locks
@@ -72,11 +74,23 @@ Item {
             popup(Qt.point(point.x, point.y))
         }
 
+        // 回收站条目：只给「还原」一个入口
+        MenuItem {
+            objectName: "restoreItem"
+            text: qsTr("还原")
+            visible: root.targetInTrash
+            enabled: root.backend !== null && !locks.any(root.targetIds)
+            onTriggered: {
+                if (root.backend)
+                    root.backend.untrashEntries([root.targetId])
+            }
+        }
+
         // 只有视频/音频才有播放入口；多选时只对单条开放
         MenuItem {
             objectName: "playItem"
             text: qsTr("播放")
-            visible: root.targetPlayable && root.targetCount === 1
+            visible: !root.targetInTrash && root.targetPlayable && root.targetCount === 1
             enabled: root.backend !== null && !root.backend.filesLoading
                      && root.backend.playMenu.length === 0
             onTriggered: {
@@ -101,6 +115,7 @@ Item {
                     return qsTr("继续下载")
                 return root.targetIsFolder ? qsTr("下载整个文件夹到本地") : qsTr("下载到本地")
             }
+            visible: !root.targetInTrash
             enabled: root.backend !== null
             onTriggered: {
                 if (!root.backend)
@@ -114,6 +129,7 @@ Item {
 
         MenuItem {
             objectName: "starItem"
+            visible: !root.targetInTrash
             text: {
                 if (root.targetCount > 1) {
                     return root.targetStarred
@@ -132,6 +148,7 @@ Item {
 
         MenuItem {
             objectName: "shareItem"
+            visible: !root.targetInTrash
             text: root.targetCount > 1
                   ? qsTr("分享选中的 %1 项…").arg(root.targetCount)
                   : qsTr("分享…")
@@ -142,14 +159,14 @@ Item {
         }
 
         MenuSeparator {
-            visible: !root.fromSearch
+            visible: !root.fromSearch && !root.targetInTrash
         }
 
         MenuItem {
             text: root.targetCount > 1
                   ? qsTr("移动到…（%1 项）").arg(root.targetCount)
                   : qsTr("移动到…")
-            visible: !root.fromSearch
+            visible: !root.fromSearch && !root.targetInTrash
             enabled: root.backend !== null && !root.backend.filesLoading
                      && !locks.any(root.targetIds)
             onTriggered: root.moveRequested(root.target, root.targetIds)
@@ -159,16 +176,19 @@ Item {
             text: root.targetCount > 1
                   ? qsTr("复制到…（%1 项）").arg(root.targetCount)
                   : qsTr("复制到…")
-            visible: !root.fromSearch
+            visible: !root.fromSearch && !root.targetInTrash
             enabled: root.backend !== null && !root.backend.filesLoading
                      && !locks.any(root.targetIds)
             onTriggered: root.copyRequested(root.target, root.targetIds)
         }
 
-        MenuSeparator {}
+        MenuSeparator {
+            visible: !root.targetInTrash
+        }
 
         MenuItem {
             text: qsTr("重命名…")
+            visible: !root.targetInTrash
             enabled: root.backend !== null && !root.backend.filesLoading
                      && !locks.any(root.targetIds)
                      && root.targetCount === 1
@@ -177,6 +197,7 @@ Item {
 
         MenuItem {
             objectName: "trashItem"
+            visible: !root.targetInTrash
             text: root.targetCount > 1
                   ? qsTr("移至回收站…（%1 项）").arg(root.targetCount)
                   : qsTr("移至回收站…")
@@ -224,6 +245,7 @@ Item {
         targetIsFolder = entry.kind === "folder"
         targetPlayable = entry.playable === true
         targetStarred = entry.starred === true
+        targetInTrash = entry.inTrash === true
         // 每次打开都重新问一次：条目可能刚下完（已释放）或刚被排上
         targetPending = root.backend !== null && root.backend.isDownloadPending(entry.id)
         // 文件夹没有「单文件断点」；只有文件才可能显示「继续下载」
@@ -243,7 +265,7 @@ Item {
 
     /// 快捷键 F2：直接打开改名弹窗（不经过右键菜单）
     function openRenameFor(entry, ids) {
-        if (!entry)
+        if (!entry || entry.inTrash === true)
             return
         target = entry
         targetId = entry.id
@@ -255,7 +277,7 @@ Item {
 
     /// 快捷键 Delete：直接打开回收站确认（可多选）
     function openTrashFor(entry, ids) {
-        if (!entry)
+        if (!entry || entry.inTrash === true)
             return
         if (backend && backend.trashClearing === true)
             return

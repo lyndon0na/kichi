@@ -309,6 +309,7 @@ mod tests {
             folder_id: "folder-1".to_owned(),
             folder_path: None,
             order: 0,
+            in_trash: false,
         };
         let mut search = HashMap::new();
         search.insert("v".to_owned(), hit);

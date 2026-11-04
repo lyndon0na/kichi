@@ -98,6 +98,41 @@ impl qobject::Kichi {
             }
             return;
         }
+        // 会话内没有快照时先看本地索引：回收站快照仍新鲜就直接渲染。
+        if !has_cache {
+            if let Some(index) = self.backend.session.tree_index() {
+                let now = chrono::Utc::now().timestamp();
+                match index.trash_listing_if_fresh(now, crate::session::tree_index::FRESH_TTL_SECS)
+                {
+                    Ok(Some(mut entries)) => {
+                        sort_trash_entries(&mut entries);
+                        let files = trash_list_from(&entries);
+                        {
+                            let mut rust = self.as_mut().rust_mut();
+                            rust.trash_rows = files;
+                            rust.trash_list = entries;
+                            rust.trash_revision = rust.trash_revision.wrapping_add(1);
+                            rust.trash_loading = false;
+                            rust.trash_request_running = false;
+                            rust.trash_loaded = true;
+                            rust.trash_refresh_at = Some(Instant::now());
+                            rust.trash_error = QString::default();
+                            if let Some(status) = final_status {
+                                rust.status_message = QString::from(status.as_str());
+                            }
+                        }
+                        self.as_mut().notify();
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        self.backend
+                            .session
+                            .record_tree_index_error(format!("本地索引读取失败：{err}"));
+                    }
+                }
+            }
+        }
         let session = self.backend.session.clone();
         let (epoch, visible) = {
             let mut rust = self.as_mut().rust_mut();
@@ -117,13 +152,19 @@ impl qobject::Kichi {
         }
 
         run_in_background(
-            move || session.list_trash(),
+            move || {
+                let entries = session.list_trash()?;
+                // 网络成功后才替换本地快照；索引失败只记录，不影响回收站展示。
+                session.write_index(|index| index.replace_trash(&entries));
+                Ok(entries)
+            },
             move |mut qichi, result| {
                 if qichi.as_ref().rust().trash_epoch != epoch {
                     return;
                 }
                 match result {
                     Ok(mut entries) => {
+                        qichi.as_mut().report_index_error();
                         sort_trash_entries(&mut entries);
                         let files = trash_list_from(&entries);
                         let notify;

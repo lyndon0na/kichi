@@ -24,7 +24,7 @@ ColumnLayout {
 
     Label {
         Layout.fillWidth: true
-        text: qsTr("可以试试：\n· 换更短的关键词（搜索按名字字面包含，不支持 * ? 通配符）\n· 确认文件已上传完成，且不在回收站里\n· 只搜文件名，不搜文件内容")
+        text: qsTr("可以试试：\n· 换更短的关键词（按名字任意位置匹配，不支持 * ? 通配符）\n· 本地索引可能还没收录最新上传的文件\n· 只搜文件名，不搜文件内容；回收站里的条目也会列出")
         color: palette.placeholderText
         wrapMode: Text.Wrap
         font.pixelSize: 12

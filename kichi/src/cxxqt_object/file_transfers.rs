@@ -14,6 +14,7 @@ use super::file_actions::clean_ids;
 use super::file_actions::item_subject;
 use super::file_optimistic::is_unconfirmed_create;
 use super::qobject;
+use crate::session::tree_index::Change;
 use crate::session::Failure;
 
 impl qobject::Kichi {
@@ -124,6 +125,31 @@ impl qobject::Kichi {
             );
             return false;
         }
+        // 索引里有目标父链时直接挡住「移进自己的子孙」；缺链就放行，
+        // 让服务端错误冒出来，不能假装成功。
+        if !self.index_building {
+            if let Some(index) = self.backend.session.tree_index() {
+                if !index.is_closed() {
+                    match index.target_inside_sources(&target, &ids) {
+                        Ok(Some(true)) => {
+                            self.as_mut().fail_file_action(
+                                action_id,
+                                action,
+                                Failure::Other(format!(
+                                    "不能把文件夹{verb}到它自己或它的子文件夹里"
+                                )),
+                            );
+                            return false;
+                        }
+                        Ok(_) => {}
+                        Err(err) => self
+                            .backend
+                            .session
+                            .record_tree_index_error(format!("本地索引读取失败：{err}")),
+                    }
+                }
+            }
+        }
 
         let subject = item_subject(&ids, self.as_ref().rust().entry_name(&ids[0]));
         if action == "move" && !self.as_mut().optimistic_remove_entries(action_id, &ids) {
@@ -147,10 +173,20 @@ impl qobject::Kichi {
                 let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
                 let parent = (!target_for_thread.is_empty()).then_some(target_for_thread.as_str());
                 if action == "move" {
-                    session.move_entries(&refs, parent)
+                    session.move_entries(&refs, parent)?;
+                    // 只改被移动条目自身的父目录；目标与源目录都标脏。
+                    session.write_index(|index| {
+                        index.apply_change(Change::Move {
+                            ids: &ids,
+                            parent_id: &target_for_thread,
+                        })
+                    });
                 } else {
-                    session.copy_entries(&refs, parent)
+                    // 复制不产生可确定的本地行（副本 id 要等下次列目录），
+                    // 目标目录由 mark_file_dir_stale 标脏。
+                    session.copy_entries(&refs, parent)?;
                 }
+                Ok(())
             },
             move |mut qichi, result| match result {
                 Ok(()) => {

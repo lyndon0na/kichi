@@ -1,11 +1,10 @@
-//! 云端搜索的会话面：逐页扫描整个网盘 + 名字匹配 + 真实路径还原。
+//! 搜索的会话面：本地索引全盘搜索 + 云端逐页扫描（回退）。
 //!
-//! **两段式**（用户决策）：
-//! - 当前目录里已加载的条目由界面直接筛（0 请求），不进本模块；
-//! - 只有用户回车 / 点搜索按钮才来这里遍历网盘。
+//! 索引就绪时，每次有效输入都走 [`Session::search_index_local`]（0 请求）；
+//! 索引未就绪才退回 `search_all` 遍历网盘，或由界面只筛当前目录。
 //!
-//! 本模块只做「一次扫描」：每页回调一次进度（调用方决定怎么显示），
-//! `Cancel` 随时可中断，结束时给出三态之一。线程、回投、界面状态在
+//! 云端扫描每页回调一次进度（调用方决定怎么显示），`Cancel` 随时可中断，
+//! 结束时给出三态之一。线程、回投、界面状态在
 //! `kichi/src/cxxqt_object/search.rs`。
 //!
 //! 全部函数阻塞，调用方负责丢到后台线程。
@@ -14,9 +13,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use kichi_core::search::{matches, FileHit};
+use kichi_core::{MatchTier, SearchMatcher};
 
 use super::download::Cancel;
+use super::tree_index;
 use super::{Failure, Session};
+
+/// 本地搜索最多为多少条命中解析路径（界面也只显示这么多行）。
+pub const SEARCH_PATH_LIMIT: usize = 500;
 
 /// 扫描结束时为什么停下。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +64,19 @@ pub struct SearchHit {
     pub folder_path: Option<String>,
     /// 扫到的顺序：结果「先到先显示」，同批结果按它排
     pub order: usize,
+    /// 条目当前在回收站：界面要标「回收站」，且不能当在库文件夹导航
+    pub in_trash: bool,
+}
+
+/// 一次本地索引搜索的结果。
+#[derive(Debug, Clone)]
+pub struct IndexSearchResult {
+    /// 全部命中（已按匹配档位 + 名字排好），不只是界面显示的前 500 条
+    pub hits: Vec<SearchHit>,
+    /// 其中回收站条目数（状态行用）
+    pub trash_hits: usize,
+    /// 最近一次全量建库时间（unix 秒）；状态行说明「索引更新于」用
+    pub built_at: Option<i64>,
 }
 
 impl SearchHit {
@@ -119,6 +136,7 @@ impl Session {
                     folder_id,
                     folder_path,
                     order: page_start + index,
+                    in_trash: false,
                 });
             }
             on_batch(ScanBatch { scanned, hits });
@@ -133,6 +151,81 @@ impl Session {
             page_token = Some(next);
         }
     }
+    /// 本地索引全盘搜索（阻塞；调用方放后台线程）。
+    ///
+    /// 匹配包含回收站行；排序规则全部来自 [`SearchMatcher`]：完全同名 >
+    /// 前缀 > 词首 > 包含，同档按名字。只给界面显示的前
+    /// [`SEARCH_PATH_LIMIT`] 条解析路径，且路径全部来自索引，不回网络。
+    pub fn search_index_local(&self, query: &str) -> Result<IndexSearchResult, Failure> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(Failure::Other("搜索关键词不能为空".into()));
+        }
+        let index = self
+            .tree_index()
+            .ok_or_else(|| Failure::Other("本地索引尚未就绪".into()))?;
+        if index.is_closed() {
+            return Err(Failure::Other("本地索引尚未就绪".into()));
+        }
+        if index.needs_full_build().map_err(index_failure)? {
+            return Err(Failure::Other("本地索引尚未就绪".into()));
+        }
+        let matcher =
+            SearchMatcher::new(query).ok_or_else(|| Failure::Other("搜索关键词不能为空".into()))?;
+
+        let mut rows: Vec<(Option<(MatchTier, String)>, tree_index::IndexSearchHit)> = index
+            .search_with_trash(query)
+            .map_err(index_failure)?
+            .into_iter()
+            .map(|row| (matcher.sort_key(&row.entry.name), row))
+            .filter(|(key, _)| key.is_some())
+            .collect();
+        rows.sort_by(|(left, a), (right, b)| {
+            left.cmp(right).then_with(|| a.entry.id.cmp(&b.entry.id))
+        });
+
+        let folder_ids: Vec<String> = rows
+            .iter()
+            .take(SEARCH_PATH_LIMIT)
+            .map(|(_, row)| row.entry.parent_id.trim().to_owned())
+            .filter(|id| !id.is_empty())
+            .collect();
+        let paths = index.folder_paths(&folder_ids).map_err(index_failure)?;
+        let built_at = index.last_full_build_at().map_err(index_failure)?;
+
+        let mut trash_hits = 0usize;
+        let hits = rows
+            .into_iter()
+            .enumerate()
+            .map(|(order, (_, row))| {
+                let folder_id = row.entry.parent_id.trim().to_owned();
+                if row.trashed {
+                    trash_hits += 1;
+                }
+                SearchHit {
+                    folder_path: if order < SEARCH_PATH_LIMIT {
+                        paths.get(&folder_id).cloned()
+                    } else {
+                        None
+                    },
+                    entry: row.entry,
+                    folder_id,
+                    order,
+                    in_trash: row.trashed,
+                }
+            })
+            .collect();
+
+        Ok(IndexSearchResult {
+            hits,
+            trash_hits,
+            built_at,
+        })
+    }
+}
+
+fn index_failure(err: tree_index::IndexError) -> Failure {
+    Failure::Other(format!("本地索引读取失败：{err}"))
 }
 
 /// 一条命中的「所在文件夹」：能给出 id 就给出（点进去直接进真实层级），

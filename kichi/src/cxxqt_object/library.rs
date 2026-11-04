@@ -32,6 +32,8 @@ pub(crate) struct LibraryCache {
     pub(crate) entries: Vec<kichi_core::LibraryEntry>,
     pub(crate) loaded: bool,
     pub(crate) error: String,
+    /// 数据来源说明；切回该页时原样恢复。
+    pub(crate) status: String,
     pub(crate) refresh_at: Option<Instant>,
     pub(crate) revision: i32,
 }
@@ -160,7 +162,9 @@ impl qobject::Kichi {
                     return;
                 }
                 match result {
-                    Ok(entries) => {
+                    Ok(load) => {
+                        let status = load.status;
+                        let entries = load.entries;
                         let rows = library_view::list_from(&entries, kind);
                         let refresh_at = Instant::now();
                         let mut notify = false;
@@ -177,6 +181,7 @@ impl qobject::Kichi {
                                     entries: entries.clone(),
                                     loaded: true,
                                     error: String::new(),
+                                    status: status.clone(),
                                     refresh_at: Some(refresh_at),
                                     revision: data_revision,
                                 },
@@ -184,6 +189,7 @@ impl qobject::Kichi {
                             if rust.library_kind.to_string() == kind.key() {
                                 let changed = rust.library_entries != entries;
                                 let visible = rust.library_loading;
+                                let status_changed = rust.library_status.to_string() != status;
                                 if changed {
                                     rust.library_rows = rows;
                                     rust.library_revision = rust.library_revision.wrapping_add(1);
@@ -193,9 +199,10 @@ impl qobject::Kichi {
                                 rust.library_request_running = false;
                                 rust.library_loaded = true;
                                 rust.library_error = QString::default();
+                                rust.library_status = QString::from(status.as_str());
                                 rust.library_refresh_at = Some(refresh_at);
                                 rust.library_data_revision = data_revision;
-                                notify = changed || visible;
+                                notify = changed || visible || status_changed;
                             } else {
                                 rust.library_request_running = false;
                             }
@@ -244,6 +251,7 @@ impl qobject::Kichi {
             rust.library_request_running = false;
             rust.library_loaded = false;
             rust.library_error = QString::default();
+            rust.library_status = QString::default();
             rust.library_refresh_at = None;
             rust.library_refresh_pending = None;
             rust.library_revision = rust.library_revision.wrapping_add(1);
@@ -548,7 +556,17 @@ impl qobject::Kichi {
                 .set_message("该条目已不在资料库中，请刷新后重试");
             return false;
         };
+        self.as_mut()
+            .reveal_entry_in_files(target_id, target_name, expected_kind)
+    }
 
+    /// 切到文件页并选中目标：资料库各页共用。
+    pub(crate) fn reveal_entry_in_files(
+        mut self: Pin<&mut Self>,
+        target_id: String,
+        target_name: String,
+        expected_kind: EntryKind,
+    ) -> bool {
         self.as_mut().exit_search();
         let session = self.backend.session.clone();
         let previous_crumbs = self.crumbs.clone();
@@ -637,6 +655,7 @@ fn clear_library_view(rust: &mut super::KichiRust, kind: LibraryKind) {
     rust.library_request_running = false;
     rust.library_loaded = false;
     rust.library_error = QString::default();
+    rust.library_status = QString::default();
     rust.library_refresh_at = None;
     rust.library_revision = rust.library_revision.wrapping_add(1);
     rust.library_data_revision = 0;
@@ -653,6 +672,7 @@ fn restore_library_cache(rust: &mut super::KichiRust, kind: LibraryKind) -> bool
     rust.library_request_running = false;
     rust.library_loaded = cache.loaded;
     rust.library_error = QString::from(cache.error.as_str());
+    rust.library_status = QString::from(cache.status.as_str());
     rust.library_refresh_at = cache.refresh_at;
     rust.library_revision = rust.library_revision.wrapping_add(1);
     rust.library_data_revision = cache.revision;
@@ -742,6 +762,7 @@ mod starred_state_tests {
             event_id: None,
             occurred_at: None,
             progress: None,
+            folder_path: None,
         }
     }
 
@@ -804,6 +825,7 @@ mod starred_state_tests {
             entries: vec![entry("a", true)],
             loaded: true,
             error: String::new(),
+            status: String::new(),
             refresh_at: Some(now - LIBRARY_REFRESH_TTL + Duration::from_millis(1)),
             revision: 1,
         };
@@ -827,6 +849,7 @@ mod starred_state_tests {
             entries: entries.clone(),
             loaded: true,
             error: String::new(),
+            status: String::new(),
             refresh_at: Some(Instant::now()),
             revision: 4,
         };

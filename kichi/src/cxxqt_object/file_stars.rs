@@ -13,6 +13,7 @@ use super::file_action_lock::FileActionDomain;
 use super::file_actions::{clean_ids, item_subject};
 use super::file_optimistic::is_unconfirmed_create;
 use super::qobject;
+use crate::session::tree_index::Change;
 use crate::session::Failure;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -144,7 +145,14 @@ impl qobject::Kichi {
         run_in_background(
             move || {
                 let refs: Vec<&str> = request_ids.iter().map(String::as_str).collect();
-                session.set_starred(&refs, starred)
+                session.set_starred(&refs, starred)?;
+                session.write_index(|index| {
+                    index.apply_change(Change::Starred {
+                        ids: &request_ids,
+                        starred,
+                    })
+                });
+                Ok(())
             },
             move |mut qichi, result| match result {
                 Ok(()) => {

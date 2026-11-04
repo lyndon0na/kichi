@@ -341,6 +341,18 @@ impl DriveClient {
         })
     }
 
+    /// 只取配额用量（本地索引 canary 探针用）。
+    ///
+    /// 与 [`DriveClient::about`] 的区别是不顺带请求会员状态：探针每 60 秒
+    /// 最多跑一次，没必要为一个字节数再发一次请求。
+    pub fn usage(&self) -> Result<u64, Error> {
+        let response: AboutResponse = self.get(&self.config.about_url())?;
+        response
+            .quota
+            .map(|quota| quota.usage)
+            .ok_or_else(|| Error::ApiChanged("about 响应缺少 quota".into()))
+    }
+
     /// 排障用：`about` 的原始响应（只给集成测试打印字段名，不对外暴露）。
     #[doc(hidden)]
     pub fn about_raw_for_probe(&self) -> Result<serde_json::Value, Error> {
@@ -405,6 +417,32 @@ impl DriveClient {
         Ok((files, next))
     }
 
+    /// 全盘「最近修改」第一页（`parent_id=*`，canary 探针用）。
+    ///
+    /// 尝试带 `order=modified_time desc`，但**不能假设官方一定认这个参数**
+    /// （未知查询参数历史上会被静默忽略）。调用方必须校验返回页确实按
+    /// `modified_time` 倒序，校验不过就把探针当作不可用，不能据此重建索引。
+    pub fn list_recent_page(
+        &self,
+        page_token: Option<&str>,
+    ) -> Result<(Vec<FileEntry>, Option<String>), Error> {
+        let response: FileListResponse =
+            self.get_with_query(&self.config.files_url(), &recent_query(page_token))?;
+        if !response.kind.is_empty() && response.kind != "drive#fileList" {
+            return Err(Error::ApiChanged(format!(
+                "最近修改列表返回了意外的类型：{}",
+                response.kind
+            )));
+        }
+        let files = response
+            .files
+            .into_iter()
+            .map(FileDto::into_entry)
+            .collect();
+        let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
+        Ok((files, next))
+    }
+
     /// 只读读取一个条目的完整列表形状。
     ///
     /// 播放历史通常随事件带 `reference_resource`；只有资源缺少名称或类型时，
@@ -457,6 +495,22 @@ fn list_query(parent_id: Option<&str>, page_token: Option<&str>) -> Vec<(String,
     if let Some(parent) = parent_id.map(str::trim).filter(|id| !id.is_empty()) {
         query.push(("parent_id".to_owned(), parent.to_owned()));
     }
+    if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
+        query.push(("page_token".to_owned(), token.to_owned()));
+    }
+    query
+}
+
+/// 「最近修改」查询参数：与全盘列举同一组过滤，额外尝试按修改时间倒序。
+fn recent_query(page_token: Option<&str>) -> Vec<(String, String)> {
+    let mut query = vec![
+        ("limit".to_owned(), LIST_LIMIT.to_string()),
+        ("thumbnail_size".to_owned(), "SIZE_MEDIUM".to_owned()),
+        ("with_audit".to_owned(), "true".to_owned()),
+        ("filters".to_owned(), LIST_FILTERS.to_owned()),
+        ("parent_id".to_owned(), "*".to_owned()),
+        ("order".to_owned(), "modified_time desc".to_owned()),
+    ];
     if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
         query.push(("page_token".to_owned(), token.to_owned()));
     }
@@ -729,6 +783,16 @@ pub(crate) fn is_media(name: &str, category: &str, mime: &str, extension: &str) 
     is_video(name, category, mime, extension) || is_audio(name, category, mime, extension)
 }
 
+/// 只按文件名判断是否媒体（本地索引没有官方分类字段时用）。
+pub fn is_media_name(name: &str) -> bool {
+    is_media(name, "", "", "")
+}
+
+/// 只按文件名判断是否视频（本地索引没有官方分类字段时用）。
+pub fn is_video_name(name: &str) -> bool {
+    is_video(name, "", "", "")
+}
+
 /// RFC3339 时间；官方可能给 `null`、空串或无法解析的值，一律按“没有时间”处理。
 pub(crate) fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where
@@ -858,6 +922,32 @@ mod tests {
         assert_eq!(user.name, "夏日用户");
         assert_eq!(user.picture, "https://user.mypikpak.com/avatar/1");
         assert_eq!(user.email, "mail@example.com");
+    }
+
+    #[test]
+    fn recent_query_pins_everything_parent_and_tries_modified_order() {
+        let query = recent_query(None);
+        let get = |key: &str| {
+            query
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(
+            get("parent_id"),
+            Some("*"),
+            "探针必须看全盘，不能只看根目录"
+        );
+        assert_eq!(get("order"), Some("modified_time desc"));
+        assert_eq!(
+            get("filters"),
+            Some(r#"{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}"#),
+            "与全盘列举保持一致：只取完成且未进回收站的条目"
+        );
+        assert_eq!(get("page_token"), None);
+
+        let second = recent_query(Some(" page-2 "));
+        assert!(second.contains(&("page_token".to_owned(), "page-2".to_owned())));
     }
 
     #[test]

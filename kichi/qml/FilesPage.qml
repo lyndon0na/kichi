@@ -6,8 +6,8 @@ import QtQuick.Layouts
 // 只调 backend 的 Q_INVOKABLE；配额只在侧栏账号区里显示（AccountCard.qml），这里不重复。
 // 播放（S5）：右键菜单点「播放」→ 立刻弹固定的清晰度菜单（原画 / 1080P / 720P / 480P），
 // 选中某一档后才去请求直链。
-// 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入只筛当前目录，
-// 全盘搜索由回车 / 内嵌按钮触发；结果直接复用当前列表 / 网格视图。
+// 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入即搜全盘
+// （优先本地索引；未就绪时只筛当前目录）；结果直接复用当前列表 / 网格视图。
 Item {
     id: page
 
@@ -97,13 +97,21 @@ Item {
         return names
     }
 
+    /// 搜索结果第二行的位置说明；回收站行直接显示「回收站 · 原位置」。
+    function searchDetailText(entry) {
+        if (!entry)
+            return ""
+        if (entry.inTrash === true)
+            return String(entry.folderText || qsTr("回收站"))
+        return qsTr("所在文件夹：%1").arg(entry.folderText
+                                          || qsTr("（所在文件夹）"))
+    }
+
     function gridDetailText(entry) {
         if (!entry)
             return ""
-        if (page.showingSearchEntries) {
-            return qsTr("所在文件夹：%1").arg(entry.folderText
-                                              || qsTr("（所在文件夹）"))
-        }
+        if (page.showingSearchEntries)
+            return page.searchDetailText(entry)
         const modified = String(entry.modifiedText || "")
         if (entry.kind === "folder")
             return modified.length > 0 ? qsTr("文件夹 · %1").arg(modified)
@@ -189,8 +197,8 @@ Item {
 
     // —— 搜索入口 ——
     //
-    // 搜索框本身在标题行（FilesPageSearchBar.qml）：输入只筛本目录，
-    // 回车 / 内嵌按钮才全盘搜。本页只负责显示结果和从结果跳转。
+    // 搜索框本身在标题行（FilesPageSearchBar.qml）：输入即搜全盘（本地索引优先），
+    // 回车 / 内嵌按钮再跑一次。本页只负责显示结果和从结果跳转。
 
     // 标题行的「＋ 新建文件夹」调这里：弹窗和菜单都在本页（FilesPageMenu）
     function beginNewFolder() {
@@ -477,10 +485,12 @@ Item {
                             createdFlash: !!entry
                                           && entry.id === interaction.createdFlashId
                             detailText: page.showingSearchEntries
-                                        ? qsTr("所在文件夹：%1").arg(entry.folderText
-                                                                   || qsTr("（所在文件夹）"))
+                                        ? page.searchDetailText(entry)
                                         : ""
-                            detailClickable: page.showingSearchEntries && !!entry.folderId
+                            // 回收站里的位置不是可进入的现役层级
+                            detailClickable: page.showingSearchEntries
+                                             && !!entry.folderId
+                                             && entry.inTrash !== true
                             // 选中态按 id 判断：刷新 / 排序后仍指向同一条目
                             highlighted: !!entry && selection.isSelected(entry.id)
                             // 单击：把修饰键交给 FileSelection 处理（Ctrl 切换 / Shift 区间）
@@ -587,7 +597,9 @@ Item {
                         createdFlash: !!entry
                                       && entry.id === interaction.createdFlashId
                         detailText: page.gridDetailText(entry)
-                        detailClickable: page.showingSearchEntries && !!entry.folderId
+                        detailClickable: page.showingSearchEntries
+                                         && !!entry.folderId
+                                         && entry.inTrash !== true
 
                         onSelectRequested: function (modifiers, itemIndex) {
                             const entries = page.displayEntries
@@ -712,6 +724,10 @@ Item {
 
         function onFileActionDone(action, ok, message, ids) {
             interaction.handleFileActionDone(action, ok, ids)
+            // 搜索里还原成功后重查：该行必须失去「回收站」标注
+            if (action === "untrash" && ok && page.searching && page.backend
+                    && typeof page.backend.searchLocal === "function")
+                page.backend.searchLocal(page.backend.searchQuery)
         }
 
         function onFolderCreateStarted(id) {
