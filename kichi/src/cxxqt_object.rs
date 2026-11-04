@@ -1528,6 +1528,14 @@ impl KichiRust {
             if let Some(path) = self.backend.session.cached_avatar_path() {
                 self.avatar_path = QString::from(reveal::file_uri(&path).as_str());
             }
+            // 容量也先用上次成功读取的值占位；后台刷新回来再静默校准。
+            if let Some(quota) = self.backend.session.cached_quota() {
+                let display = actions::quota_display(&quota);
+                self.quota_used_text = QString::from(display.used.as_str());
+                self.quota_limit_text = QString::from(display.limit.as_str());
+                self.quota_ratio = display.ratio;
+                self.quota_vip = quota.vip;
+            }
             return;
         }
         let notice = self.backend.restored_notice().to_owned();

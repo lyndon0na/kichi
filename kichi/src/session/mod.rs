@@ -79,6 +79,15 @@ pub struct PersistedSession {
     /// `/v1/user/me` 返回的头像地址；只供 Rust 下载器使用，不直接交给 QML。
     #[serde(default)]
     pub avatar_url: String,
+    /// 上次成功读取的已用容量；启动时先显示，避免账号区闪骨架。
+    #[serde(default)]
+    pub quota_usage: Option<u64>,
+    /// 容量上限；0 表示不限量。仅在 `quota_usage` 有值时有意义。
+    #[serde(default)]
+    pub quota_limit: u64,
+    /// 上次读取到的会员状态，和容量一起先显示。
+    #[serde(default)]
+    pub quota_vip: bool,
 }
 
 impl PersistedSession {
@@ -279,6 +288,9 @@ impl Session {
             email: String::new(),
             display_name: String::new(),
             avatar_url: String::new(),
+            quota_usage: None,
+            quota_limit: 0,
+            quota_vip: false,
         };
         let mut session = Self::new(config, PathBuf::new(), Some(saved), device_id);
         session.store_disabled = true;
@@ -328,6 +340,9 @@ impl Session {
             email: username.trim().to_owned(),
             display_name: String::new(),
             avatar_url: String::new(),
+            quota_usage: None,
+            quota_limit: 0,
+            quota_vip: false,
         };
         store::save(&self.store_path, &saved)?;
         // 可能是换账号登录：旧账号的 client（以及里面的连接）不能留着

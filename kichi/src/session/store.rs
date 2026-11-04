@@ -172,6 +172,9 @@ mod tests {
             email: "e@example.com".into(),
             display_name: "昵称".into(),
             avatar_url: "https://user.mypikpak.com/avatar/1".into(),
+            quota_usage: Some(123),
+            quota_limit: 456,
+            quota_vip: true,
         }
     }
 
@@ -180,6 +183,9 @@ mod tests {
         let text = encode(&sample()).unwrap_or_else(|e| panic!("{e}"));
         let back = decode(&text).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(back.refresh_token, "r");
+        assert_eq!(back.quota_usage, Some(123));
+        assert_eq!(back.quota_limit, 456);
+        assert!(back.quota_vip);
     }
 
     #[test]

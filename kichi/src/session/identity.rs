@@ -1,9 +1,14 @@
-//! 账号身份：昵称、邮箱与本地头像缓存。
+//! 账号身份：昵称、邮箱、本地头像缓存与上次容量。
 //!
 //! 昵称和邮箱是两份独立数据；`name` 不再冒充 `email` 写回会话，否则界面上
 //! 会把昵称显示成邮箱、也丢失真实昵称。
+//!
+//! 容量也随会话落盘：启动时先显示上次的值，网络回来再静默校准，
+//! 账号区不必每次都从骨架开始。
 
 use std::path::PathBuf;
+
+use kichi_core::Quota;
 
 use super::{avatar_cache, store, Failure, Session};
 
@@ -49,6 +54,47 @@ impl Session {
             }
             avatar_cache::find(user_id, url)
         })
+    }
+
+    /// 启动时立即显示上一次成功读取的容量；不发网络请求。
+    pub fn cached_quota(&self) -> Option<Quota> {
+        self.with_inner(|inner| {
+            let saved = inner.current.as_ref()?;
+            Some(Quota {
+                usage: saved.quota_usage?,
+                limit: (saved.quota_limit > 0).then_some(saved.quota_limit),
+                vip: saved.quota_vip,
+                ..Quota::default()
+            })
+        })
+    }
+
+    /// 缓存容量到会话存储（内容没变时不重复写盘）。
+    pub fn cache_quota(&self, quota: &Quota) {
+        let limit = quota.limit.unwrap_or(0);
+        let updated = self.with_inner(|inner| {
+            let saved = inner.current.as_mut()?;
+            if saved.quota_usage == Some(quota.usage)
+                && saved.quota_limit == limit
+                && saved.quota_vip == quota.vip
+            {
+                return None;
+            }
+            saved.quota_usage = Some(quota.usage);
+            saved.quota_limit = limit;
+            saved.quota_vip = quota.vip;
+            Some(saved.clone())
+        });
+        let Some(saved) = updated else {
+            return;
+        };
+        #[cfg(test)]
+        if self.store_disabled {
+            return;
+        }
+        if let Err(err) = store::save(&self.store_path, &saved) {
+            eprintln!("[kichi] 容量信息未能落盘：{err}");
+        }
     }
 
     /// 用更完整的身份信息补全会话（`/v1/user/me`，尽力而为）。
@@ -140,6 +186,9 @@ mod tests {
             email: email.into(),
             display_name: display_name.into(),
             avatar_url: avatar_url.into(),
+            quota_usage: None,
+            quota_limit: 0,
+            quota_vip: false,
         };
         let device_id = saved.device_id.clone();
         let mut session = Session::new(
@@ -195,5 +244,38 @@ mod tests {
             serde_json::from_str(raw).expect("旧会话应可反序列化");
         assert_eq!(saved.display_name, "");
         assert_eq!(saved.avatar_url, "");
+        assert_eq!(saved.quota_usage, None);
+        assert_eq!(saved.quota_limit, 0);
+        assert!(!saved.quota_vip);
+    }
+
+    #[test]
+    fn cached_quota_round_trips_and_keeps_unlimited() {
+        let session = session_with("mail@example.com", "", "");
+        assert!(session.cached_quota().is_none(), "旧会话没有容量缓存");
+
+        let unlimited = kichi_core::Quota {
+            usage: 5,
+            limit: None,
+            vip: true,
+            ..kichi_core::Quota::default()
+        };
+        session.cache_quota(&unlimited);
+        let saved = session.cached_quota().expect("缓存后应能读回");
+        assert_eq!(saved.usage, 5);
+        assert_eq!(saved.limit, None);
+        assert!(saved.vip);
+
+        let limited = kichi_core::Quota {
+            usage: 12,
+            limit: Some(100),
+            vip: false,
+            ..kichi_core::Quota::default()
+        };
+        session.cache_quota(&limited);
+        let saved = session.cached_quota().expect("覆盖后应能读回");
+        assert_eq!(saved.usage, 12);
+        assert_eq!(saved.limit, Some(100));
+        assert!(!saved.vip);
     }
 }

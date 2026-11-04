@@ -80,6 +80,9 @@ fn test_session(tag: &str) -> Session {
         email: String::new(),
         display_name: String::new(),
         avatar_url: String::new(),
+        quota_usage: None,
+        quota_limit: 0,
+        quota_vip: false,
     };
     let device_id = saved.device_id.clone();
     Session::new(kichi_core::Config::default(), store, Some(saved), device_id)

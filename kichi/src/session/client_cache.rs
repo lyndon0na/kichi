@@ -149,6 +149,9 @@ mod tests {
             email: String::new(),
             display_name: String::new(),
             avatar_url: String::new(),
+            quota_usage: None,
+            quota_limit: 0,
+            quota_vip: false,
         };
         let device_id = saved.device_id.clone();
         let session = super::super::Session::new(

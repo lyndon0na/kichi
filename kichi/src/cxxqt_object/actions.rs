@@ -586,21 +586,12 @@ impl qobject::Kichi {
     }
 
     fn on_quota(mut self: Pin<&mut Self>, quota: kichi_core::Quota) {
-        let used = format_size(quota.usage);
-        let limit = quota
-            .limit
-            .map(format_size)
-            .unwrap_or_else(|| "无限制".to_owned());
-        // 不限量 / 上限为 0 时给 -1，QML 隐藏进度条，避免除零和「永远 0%」的假象
-        let ratio = match quota.limit {
-            None | Some(0) => -1.0,
-            Some(limit) => (quota.usage as f64 / limit as f64).clamp(0.0, 1.0),
-        };
+        let display = quota_display(&quota);
         {
             let mut rust = self.as_mut().rust_mut();
-            rust.quota_used_text = QString::from(used.as_str());
-            rust.quota_limit_text = QString::from(limit.as_str());
-            rust.quota_ratio = ratio;
+            rust.quota_used_text = QString::from(display.used.as_str());
+            rust.quota_limit_text = QString::from(display.limit.as_str());
+            rust.quota_ratio = display.ratio;
             rust.quota_vip = quota.vip;
         }
         self.as_mut().notify();
@@ -612,7 +603,15 @@ impl qobject::Kichi {
         self.as_mut().notify();
         let session = self.backend.session.clone();
         run_in_background(
-            move || Ok((session.refresh_identity(), session.quota())),
+            move || {
+                let identity = session.refresh_identity();
+                let quota = session.quota();
+                // 容量随会话落盘：下次启动先显示旧值，再等这次刷新。
+                if let Ok(ref quota) = quota {
+                    session.cache_quota(quota);
+                }
+                Ok((identity, quota))
+            },
             |mut qichi, result| {
                 let (identity, quota) = match result {
                     Ok(pair) => pair,
@@ -766,6 +765,28 @@ where
 
 /// 字节数转人类可读（实现在 [`crate::format::size`]，会话层也要用同一套格式）。
 pub(crate) use crate::format::size as format_size;
+
+pub(crate) struct QuotaDisplay {
+    pub(crate) used: String,
+    pub(crate) limit: String,
+    /// < 0 = 不限量 / 未知，QML 据此隐藏容量条
+    pub(crate) ratio: f64,
+}
+
+/// 容量显示：账号区用 TB 档，避免 10 TB 显示成「10240.0 GB」。
+pub(crate) fn quota_display(quota: &kichi_core::Quota) -> QuotaDisplay {
+    let used = crate::format::capacity(quota.usage);
+    let limit = quota
+        .limit
+        .map(crate::format::capacity)
+        .unwrap_or_else(|| "无限制".to_owned());
+    // 不限量 / 上限为 0 时给 -1，QML 隐藏进度条，避免除零和「永远 0%」的假象
+    let ratio = match quota.limit {
+        None | Some(0) => -1.0,
+        Some(limit) => (quota.usage as f64 / limit as f64).clamp(0.0, 1.0),
+    };
+    QuotaDisplay { used, limit, ratio }
+}
 
 /// 会话状态 → QML 用的字符串。
 pub(crate) fn state_name(state: State) -> &'static str {
