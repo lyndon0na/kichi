@@ -13,14 +13,13 @@ Item {
     objectName: "transferTableHeader"
     implicitHeight: density.headerRowHeight
 
-    UiMetrics { id: metrics }
     TransferTableDensity { id: density }
     KTheme { id: theme }
 
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: density.rowPadding
-        anchors.rightMargin: density.rowPadding + metrics.scrollBarSlot
+        anchors.rightMargin: density.rowPadding
         spacing: density.columnSpacing
 
         Item {

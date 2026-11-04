@@ -133,7 +133,7 @@ Item {
     ColumnLayout {
         objectName: "sharesTableLayout"
         anchors.fill: parent
-        anchors.leftMargin: metrics.pageMargin
+        // 内容铺满页面，左右留白由表头 / 行内边距提供；条悬浮在右侧留白里
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapXs
@@ -172,7 +172,7 @@ Item {
 
                 delegate: ShareRow {
                     id: row
-                    width: list.width - metrics.scrollBarSlot
+                    width: list.width
                     highlighted: selection.isSelected(key)
                     rowHeight: page.rowHeight
                     iconColumnWidth: page.iconColumnWidth

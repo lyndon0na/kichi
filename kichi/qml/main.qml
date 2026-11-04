@@ -214,10 +214,10 @@ ApplicationWindow {
 
                     Layout.fillWidth: true
                     // 左边对齐列表行的图标列（行内边距 12），右边对齐「修改时间」的右边缘
-                    // （滚动条车道 10 + 行内边距 12）——页头和列表共用两条竖轴，
-                    // 换页时内容不会横向错开
+                    // （行内边距 12；滚动条悬浮在这段留白里，不占布局）——页头和列表
+                    // 共用两条竖轴，换页时内容不会横向错开
                     Layout.leftMargin: metrics.pageMargin
-                    Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+                    Layout.rightMargin: metrics.pageMargin
                     Layout.topMargin: 10
                     Layout.preferredHeight: 38
 
@@ -349,7 +349,7 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: metrics.pageMargin
-                    Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+                    Layout.rightMargin: metrics.pageMargin
                     Layout.topMargin: metrics.pageMargin
                     // 下边距交给内容自己的 topMargin（同样是 pageMargin）：
                     // 面包屑到表头的距离 = 页名到面包屑的距离
@@ -802,7 +802,7 @@ ApplicationWindow {
     // 保证三者永远是同一份数据（分开读后端时，改一处容易忘另一处）
     readonly property var crumbs: backend ? backend.breadcrumb : []
 
-    // 页面级尺寸常量（滚动条车道 / 页边距），与各页共用同一套数字
+    // 页面级尺寸常量（滚动条悬浮宽度 / 页边距），与各页共用同一套数字
     UiMetrics {
         id: metrics
     }

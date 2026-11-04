@@ -34,7 +34,7 @@ Item {
             objectName: "taskCenterTabs"
             Layout.fillWidth: true
             Layout.leftMargin: metrics.pageMargin
-            Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+            Layout.rightMargin: metrics.pageMargin
             Layout.topMargin: metrics.pageMargin
             Layout.preferredHeight: 32
             currentTab: page.currentTab

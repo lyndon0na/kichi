@@ -100,7 +100,7 @@ Item {
             property alias entryItem: row
 
             y: rowOffset
-            width: list.width - (root.metrics ? root.metrics.scrollBarSlot : 10)
+            width: list.width
             height: rowExtent
 
             LibraryDateSection {

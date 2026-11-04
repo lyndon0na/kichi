@@ -77,7 +77,7 @@ Item {
             page.refresh()
     }
 
-    // 页面尺寸常量：滚动条车道（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    // 页面尺寸常量：滚动条悬浮宽度（见 KScrollBar / docs/pitfalls.md 第 13 条）
     UiMetrics {
         id: metrics
     }
@@ -141,8 +141,7 @@ Item {
     ColumnLayout {
         objectName: "tasksTableLayout"
         anchors.fill: parent
-        // 右边不留：列表铺到窗口右缘，滚动条贴边
-        anchors.leftMargin: metrics.pageMargin
+        // 内容铺满页面，左右留白由表头 / 行内边距提供；条悬浮在右侧留白里
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapXs
@@ -177,14 +176,13 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
                 onContentHeightChanged: page.restoreScroll()
 
-                // 列表铺到窗口右缘，条画在右侧 10px 车道里
+                // 列表铺到窗口右缘，条悬浮在右侧留白里
                 ScrollBar.vertical: KScrollBar {}
 
                 delegate: TaskRow {
                     id: row
 
-                    // 行宽减去滚动条车道，右边不会压到条
-                    width: list.width - metrics.scrollBarSlot
+                    width: list.width
                     rowHeight: page.tableRowHeight
                     backend: page.backend
                     thumbnailColumnWidth: page.thumbnailColumnWidth

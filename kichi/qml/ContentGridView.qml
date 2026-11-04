@@ -2,7 +2,8 @@ import QtQuick
 import QtQuick.Controls
 
 // 文件类内容页共用的网格容器。
-// 页面只提供 model、密度和委托；列数、卡片尺寸、滚动条车道在这里统一计算。
+// 页面只提供 model、密度和委托；列数、卡片尺寸和右侧留白在这里统一计算。
+// 滚动条悬浮在页面留白里，不参与布局，内容装得下与否都不改变几何。
 Item {
     id: root
 
@@ -24,59 +25,29 @@ Item {
     readonly property int columnGap: root.density ? root.density.gridColumnGap : 14
     readonly property int rowGap: root.density ? root.density.gridRowGap : 18
     // 末列 cell 尾部自带 columnGap，右 margin 先扣掉这一段。
-    readonly property int noScrollBarRightMargin: Math.max(
+    // 滚动条悬浮在页面右侧留白里，不参与布局，右缘始终收在页面边距上。
+    readonly property int rightMargin: Math.max(
         0, root.sideMargin - root.columnGap)
-    readonly property int scrollBarRightMargin: Math.max(
+    // 列数按再让出一条车道的宽度估算，给悬浮条留出余量，也避免窗口宽度临界时抖列。
+    readonly property int columnBasisRightMargin: Math.max(
         0, root.sideMargin + root.scrollBarSlot - root.columnGap)
-    // 列数按有滚动条时的最窄可用宽度算，避免有无滚动条时列数来回变化。
     readonly property real layoutAvailableWidth: Math.max(
-        0, root.width - root.sideMargin - root.scrollBarRightMargin)
+        0, root.width - root.sideMargin - root.columnBasisRightMargin)
     readonly property int columns: Math.max(1, Math.floor(
         (root.layoutAvailableWidth + root.columnGap)
         / (root.minItemWidth + root.columnGap)))
-    readonly property real noScrollBarAvailableWidth: Math.max(
-        0, root.width - root.sideMargin - root.noScrollBarRightMargin)
-    readonly property real noScrollBarCellSlotWidth: Math.max(
-        1, Math.floor(Math.max(0, root.noScrollBarAvailableWidth - 1)
-                      / root.columns))
-    readonly property real noScrollBarRemainder: Math.max(
-        0, root.noScrollBarAvailableWidth
-           - root.columns * root.noScrollBarCellSlotWidth)
-    // 无滚动条时让卡片吸收末列尾间距和取整余量，使左右边距严格一致。
-    readonly property real noScrollBarItemWidth: Math.max(
-        1, root.noScrollBarCellSlotWidth - root.sideMargin
-           + root.noScrollBarRemainder)
-    readonly property real noScrollBarItemHeight: root.density
-        ? root.density.gridItemHeight(root.noScrollBarItemWidth, root.reserveDetail) : 1
-    readonly property int projectedRows: Math.ceil(gridView.count / root.columns)
-    readonly property bool scrollBarVisible: root.projectedRows
-                                             * (root.noScrollBarItemHeight + root.rowGap)
-                                             > root.height
-    readonly property int rightMargin: root.scrollBarVisible
-                                       ? root.scrollBarRightMargin
-                                       : root.noScrollBarRightMargin
     readonly property real availableWidth: Math.max(
         0, root.width - root.sideMargin - root.rightMargin)
-    readonly property real cellSlotWidth: root.scrollBarVisible
-        ? Math.max(1, Math.floor(root.availableWidth / root.columns))
-        : root.noScrollBarCellSlotWidth
-    readonly property real itemWidth: root.scrollBarVisible
-        ? Math.max(1, root.cellSlotWidth - root.columnGap)
-        : root.noScrollBarItemWidth
+    readonly property real cellSlotWidth: Math.max(
+        1, Math.floor(Math.max(0, root.availableWidth - 1) / root.columns))
+    readonly property real remainder: Math.max(
+        0, root.availableWidth - root.columns * root.cellSlotWidth)
+    // 卡片吸收末列尾间距和取整余量，使左右边距严格一致。
+    readonly property real itemWidth: Math.max(
+        1, root.cellSlotWidth - root.sideMargin + root.remainder)
     readonly property real itemHeight: root.density
         ? root.density.gridItemHeight(root.itemWidth, root.reserveDetail) : 1
     readonly property real cellHeight: root.itemHeight + root.rowGap
-
-    // GridView 在右 margin 与 cellWidth 同一轮变化时可能沿用旧的列数。
-    // 轻推一次 cellWidth 再恢复绑定，强制它重新计算每一行的列数。
-    property real reflowNudge: 0
-    onScrollBarVisibleChanged: {
-        root.reflowNudge = 0.01
-        Qt.callLater(function () {
-            if (root)
-                root.reflowNudge = 0
-        })
-    }
 
     property alias view: gridView
     property alias contentY: gridView.contentY
@@ -128,12 +99,11 @@ Item {
         id: gridView
 
         objectName: root.viewObjectName
-        readonly property bool scrollBarVisible: root.scrollBarVisible
         anchors.fill: parent
         visible: root.visible
         model: root.model
         delegate: root.delegate
-        cellWidth: root.cellSlotWidth + root.reflowNudge
+        cellWidth: root.cellSlotWidth
         cellHeight: root.cellHeight
         leftMargin: root.sideMargin
         rightMargin: root.rightMargin

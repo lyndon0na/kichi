@@ -14,7 +14,6 @@ Item {
     property int headerRowHeight: 32
     property int headerPixelSize: 12
 
-    UiMetrics { id: metrics }
     KTheme { id: theme }
 
     implicitHeight: header.headerRowHeight
@@ -22,7 +21,7 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: header.contentPadding
-        anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
+        anchors.rightMargin: header.contentPadding
         spacing: header.columnSpacing
 
         Item {

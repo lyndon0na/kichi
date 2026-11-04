@@ -777,16 +777,13 @@ TestCase {
         tryCompare(grouped, "visible", true)
         tryCompare(grouped, "count", 3)
         compare(grouped.cellSlotWidth,
-                Math.floor(grouped.availableWidth / grouped.columns))
+                Math.floor(Math.max(0, grouped.availableWidth - 1) / grouped.columns))
         const occupiedWidth = (grouped.columns - 1) * grouped.cellSlotWidth
                               + grouped.itemWidth
         verify(occupiedWidth <= grouped.availableWidth)
         const visualRightMargin = grouped.rightMargin
                                   + grouped.availableWidth - occupiedWidth
         const expectedRightMargin = grouped.sideMargin
-                                    + (grouped.scrollBarVisible
-                                       ? grouped.scrollBarSlot : 0)
-        compare(grouped.scrollBarVisible, grouped.contentHeight > grouped.height)
         verify(visualRightMargin >= expectedRightMargin)
         verify(visualRightMargin - expectedRightMargin < grouped.columns,
                "播放历史网格末列不能额外留下整段列间距")
@@ -897,7 +894,7 @@ TestCase {
         compare(view.instantiatedRows, 0)
     }
 
-    function test_playback_history_grid_drops_scrollbar_lane_when_content_fits() {
+    function test_playback_history_grid_keeps_page_margin_when_content_fits() {
         backend.libraryKind = "playback-history"
         page.kind = "playback-history"
         page.dateSectionsEnabled = true
@@ -907,7 +904,6 @@ TestCase {
         var grouped = findChild(page, "libraryGroupedGrid")
         verify(grouped !== null)
         tryCompare(grouped, "visible", true)
-        compare(grouped.scrollBarVisible, false)
         verify(grouped.contentHeight <= grouped.height)
 
         const occupiedWidth = (grouped.columns - 1) * grouped.cellSlotWidth

@@ -34,7 +34,8 @@ Item {
 
         ColumnLayout {
             id: body
-            width: scroller.width - metrics.scrollBarSlot
+            // 卡片右缘收在页面边距上，把最右 12px 留给悬浮滚动条
+            width: Math.max(0, scroller.width - metrics.pageMargin)
             spacing: 0
 
             SettingsPlayback {

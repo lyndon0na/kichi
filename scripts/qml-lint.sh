@@ -156,3 +156,16 @@ for test_file in kichi/qml/tests/tst_*.qml; do
     fi
     echo "qml-lint: $test_file 通过"
 done
+
+# 真实界面跑在 org.kde.desktop 风格下；它的 ScrollBar 会把内边距绑到样式自己的
+# 槽位上，默认风格里能用的 padding 在那里可能完全不生效（滑块宽度不变）。
+# 滚动条样式必须两种风格下都通过。
+kde_out="$(QT_QPA_PLATFORM=offscreen QT_QUICK_CONTROLS_STYLE=org.kde.desktop \
+    timeout 120 "$RUNNER" -input kichi/qml/tests/tst_scroll_bar.qml 2>&1)"
+status=$?
+if [[ $status -ne 0 ]] || grep -qE '^(FAIL!|QWARN|WARNING)' <<<"$kde_out"; then
+    echo "qml-lint: 滚动条样式在 KDE 风格下失败（退出码 $status）" >&2
+    printf '%s\n' "$kde_out" >&2
+    exit 1
+fi
+echo "qml-lint: tst_scroll_bar.qml（KDE 风格）通过"

@@ -16,7 +16,6 @@ Item {
     property string primaryLabel: ""
     property string secondaryLabel: ""
 
-    UiMetrics { id: metrics }
     KTheme { id: theme }
 
     implicitHeight: header.headerRowHeight
@@ -24,7 +23,7 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: header.contentPadding
-        anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
+        anchors.rightMargin: header.contentPadding
         spacing: header.columnSpacing
 
         Item {

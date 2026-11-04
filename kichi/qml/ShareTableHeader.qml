@@ -19,13 +19,12 @@ Item {
     objectName: "sharesTableHeader"
     implicitHeight: header.rowHeight
 
-    UiMetrics { id: metrics }
     KTheme { id: theme }
 
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: header.contentPadding
-        anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
+        anchors.rightMargin: header.contentPadding
         spacing: header.columnSpacing
 
         Item {

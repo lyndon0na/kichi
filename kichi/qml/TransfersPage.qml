@@ -506,7 +506,7 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.leftMargin: metrics.pageMargin
+        // 内容铺满页面，左右留白由表头 / 行内边距提供；条悬浮在右侧留白里
         anchors.topMargin: metrics.pageMargin
         anchors.bottomMargin: metrics.pageMargin
         spacing: theme.gapXs
@@ -538,7 +538,7 @@ Item {
                 ScrollBar.vertical: KScrollBar {}
 
                 delegate: TransferMainRow {
-                    width: list.width - metrics.scrollBarSlot
+                    width: list.width
                     live: page.liveByKey
                     showSize: page.showSize
                     showRate: page.showRate
@@ -591,7 +591,7 @@ Item {
             }
 
             TransferStickyRow {
-                width: list.width - metrics.scrollBarSlot
+                width: list.width
                 rowData: page.expandedRowData
                 live: page.liveByKey
                 wheelTarget: list

@@ -344,7 +344,7 @@ Item {
             objectName: "libraryError"
             Layout.fillWidth: true
             Layout.leftMargin: metrics.pageMargin
-            Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+            Layout.rightMargin: metrics.pageMargin
             visible: text.length > 0
             text: page.errorText
             color: theme.danger
@@ -357,7 +357,7 @@ Item {
             objectName: "librarySourceHint"
             Layout.fillWidth: true
             Layout.leftMargin: metrics.pageMargin
-            Layout.rightMargin: metrics.pageMargin + metrics.scrollBarSlot
+            Layout.rightMargin: metrics.pageMargin
             visible: text.length > 0
             text: page.activeCollection ? String(page.backend.libraryStatus || "") : ""
             color: theme.textMuted
@@ -430,7 +430,7 @@ Item {
 
                         delegate: LibraryRow {
                             id: row
-                            width: ListView.view.width - metrics.scrollBarSlot
+                            width: ListView.view.width
                             backend: page.backend
                             rowIndex: index
                             highlighted: ListView.isCurrentItem

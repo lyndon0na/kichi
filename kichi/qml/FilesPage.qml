@@ -190,7 +190,7 @@ Item {
                ? 0 : page.displayEntries.length
     }
 
-    // 页面尺寸常量（滚动条车道 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
+    // 页面尺寸常量（滚动条悬浮宽度 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
     UiMetrics {
         id: metrics
     }
@@ -436,8 +436,7 @@ Item {
                         visible: !page.gridMode
                         model: page.fileRows
                         boundsBehavior: Flickable.StopAtBounds
-                        // 列表铺满到页面右缘，条画在右侧 10px 车道里；
-                        // 委托宽度减去车道，文字永远停在条左边
+                        // 列表铺满到页面右缘，条悬浮在右侧留白里
                         ScrollBar.vertical: KScrollBar {}
 
                         // 快捷键要有焦点才收得到（KDE Wayland 下窗口级 Keys 不可靠）。
@@ -484,7 +483,7 @@ Item {
 
                         delegate: FileRow {
                             id: row
-                            width: ListView.view.width - metrics.scrollBarSlot
+                            width: ListView.view.width
                             backend: page.backend
                             rowIndex: index
                             thumbnailSlotWidth: density.thumbnailSlotWidth

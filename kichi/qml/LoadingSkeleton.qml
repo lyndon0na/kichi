@@ -2,7 +2,7 @@ import QtQuick
 
 // 数据页空内容加载时的内容骨架。
 //
-// 页面本身保留页头、表头和滚动条车道，只在内容区盖一层与当前列表 / 网格
+// 页面本身保留页头和表头，只在内容区盖一层与当前列表 / 网格
 // 同尺寸的占位块。颜色和动画都从 KTheme 取，避免维护第二套视觉变量。
 Item {
     id: skeleton
@@ -29,8 +29,6 @@ Item {
                                  ? skeleton.density.rowPadding : 12
     property int columnSpacing: skeleton.density
                                 ? skeleton.density.columnSpacing : 12
-    readonly property int scrollBarSlot: skeleton.metrics
-                                         ? skeleton.metrics.scrollBarSlot : 10
     property int rowHeight: skeleton.density
                             ? skeleton.density.rowHeight : 48
     property int leadingWidth: skeleton.density
@@ -76,8 +74,7 @@ Item {
                     id: rowContent
 
                     x: skeleton.contentPadding
-                    width: Math.max(0, parent.width - skeleton.contentPadding * 2
-                                    - skeleton.scrollBarSlot)
+                    width: Math.max(0, parent.width - skeleton.contentPadding * 2)
                     height: parent.height
                     opacity: skeleton.pulse
 

@@ -6,21 +6,26 @@ import QtQuick.Controls
 // 普通页面只写 `ScrollBar.vertical: KScrollBar {}`，不传参数。
 // ScrollView 内替换任一方向的默认滚动条时，必须像 NewTaskDialog 一样显式挂 parent
 // 和 anchors，并把车道补进 viewport；否则桌面风格的原定位绑定会一起被替换掉。
-// 竖向车道 10px = 滑块 6px + 两侧各 2px。
-// 离线任务输入框的横向条不要整条轨道线，只自绘 6px 椭圆滑块。
-// 列表 / 表格始终保留车道；网格只在确实需要滚动时保留。
-// 这里只管画：内容装得下时 policy 自动隐藏，装不下就一直淡淡在位。
+// 竖向条宽 10px = 滑块 6px + 两侧各 2px，悬浮在页面右侧 12px 留白里，不占布局。
+// 继承来的 KDE 风格背景会画整条轨道线和外框，这里统一 background: null，只留滑块。
 ScrollBar {
     id: bar
 
-    // 车道宽度。UiMetrics.scrollBarSlot 直接量这个值，改宽度只改这里
+    // 悬浮条宽度。UiMetrics.scrollBarSlot 直接量这个值，改宽度只改这里
     implicitWidth: 10
-    // 装得下就不画；不搞「滚动后淡出」，静止时四页观感一致
+    // 装得下就不画；装不下就一直淡淡在位，不做滚动后淡出
     policy: ScrollBar.AsNeeded
     // 上万条时滑块仍抓得住
     minimumSize: 0.08
-    // 车道 10 = 滑块 6 + 左右各 2
-    padding: 2
+    // KDE 风格把四边内边距绑到自己的样式槽位上，只写 `padding` 在真实界面里
+    // 不生效（实测滑块永远是整条 10px）；必须直接写具体边距。
+    // 竖向条左右各让 2，滑块本体成 6px；横向条不缩放滑块。
+    leftPadding: horizontal ? 0 : 2
+    rightPadding: horizontal ? 0 : 2
+    topPadding: 0
+    bottomPadding: 0
+    // KDE 原生背景会画轨道线，必须清掉
+    background: null
 
     contentItem: Rectangle {
         implicitWidth: 6

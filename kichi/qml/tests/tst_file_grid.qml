@@ -17,10 +17,6 @@ TestCase {
         id: themeProbe
     }
 
-    UiMetrics {
-        id: uiMetrics
-    }
-
     QtObject {
         id: fakeBackend
 
@@ -1111,15 +1107,15 @@ TestCase {
         compare(actualColumns, page.gridColumns, "实际列数不能比计算值少一列")
         const pageDensity = findChild(page, "fileListDensity")
         verify(pageDensity !== null)
-        compare(grid.scrollBarVisible, true)
         verify(grid.contentHeight > grid.height)
-        compare(page.gridCellSlotWidth, Math.floor(usableWidth / page.gridColumns))
+        compare(page.gridCellSlotWidth,
+                Math.floor(Math.max(0, usableWidth - 1) / page.gridColumns))
         const occupiedWidth = (page.gridColumns - 1) * page.gridCellSlotWidth
                               + page.gridItemWidth
         verify(occupiedWidth <= usableWidth)
         const visualRightMargin = page.gridRightMargin
                                   + usableWidth - occupiedWidth
-        const expectedRightMargin = page.gridSideMargin + uiMetrics.scrollBarSlot
+        const expectedRightMargin = page.gridSideMargin
         verify(visualRightMargin >= expectedRightMargin)
         verify(visualRightMargin - expectedRightMargin < page.gridColumns,
                "末列尾间距只能吸收取整误差，不能多留一整段列间距")
@@ -1133,14 +1129,14 @@ TestCase {
                "实际末列右缘不能多留一整段列间距（actual="
                + actualRightMargin + ", expected=" + expectedRightMargin
                + ", columns=" + page.gridColumns + "）")
-        verify(page.gridItemWidth + pageDensity.gridColumnGap <= page.gridCellSlotWidth)
+        verify(page.gridItemWidth <= page.gridCellSlotWidth)
         const firstThumbnail = findChild(firstItem, "gridThumbnail")
         verify(firstThumbnail !== null)
         compare(firstThumbnail.radius,
                 pageDensity.gridThumbnailRadius(page.gridItemWidth))
     }
 
-    function test_grid_drops_scrollbar_lane_when_content_fits() {
+    function test_grid_keeps_page_margin_when_content_fits() {
         fakeBackend.files = manyEntries(8)
         fakeBackend.contentView = "grid"
         page = pageComponent.createObject(parent, {
@@ -1153,7 +1149,6 @@ TestCase {
 
         const grid = findChild(page, "fileGrid")
         verify(grid !== null)
-        compare(grid.scrollBarVisible, false)
         verify(grid.contentHeight <= grid.height)
         const lastInRow = grid.itemAtIndex(page.gridColumns - 1)
         verify(lastInRow !== null)
@@ -1173,7 +1168,7 @@ TestCase {
                 + grid.itemAtIndex(2).x + "/" + grid.itemAtIndex(2).y + "）")
     }
 
-    function test_grid_reflows_after_scrollbar_lane_disappears() {
+    function test_grid_geometry_stays_fixed_when_content_crosses_scroll_threshold() {
         fakeBackend.files = manyEntries(30)
         fakeBackend.contentView = "grid"
         page = pageComponent.createObject(parent, {
@@ -1186,11 +1181,25 @@ TestCase {
 
         const grid = findChild(page, "fileGrid")
         verify(grid !== null)
-        compare(grid.scrollBarVisible, true)
+        verify(grid.contentHeight > grid.height)
+        const cellWidth = grid.cellWidth
+        const rightMargin = grid.rightMargin
+        const itemWidth = page.gridItemWidth
 
         fakeBackend.files = manyEntries(5)
-        tryCompare(grid, "scrollBarVisible", false)
+        tryCompare(grid, "count", 5)
         wait(40)
+        verify(grid.contentHeight <= grid.height)
+        compare(grid.cellWidth, cellWidth, "内容装得下时网格几何不能变")
+        compare(grid.rightMargin, rightMargin, "滚动条出现不能改变右侧 margin")
+        compare(page.gridItemWidth, itemWidth, "滚动条出现不能改变卡片宽度")
+
+        fakeBackend.files = manyEntries(30)
+        tryCompare(grid, "count", 30)
+        wait(40)
+        compare(grid.cellWidth, cellWidth, "内容再次溢出时网格几何也不能变")
+        compare(grid.rightMargin, rightMargin)
+        compare(page.gridItemWidth, itemWidth)
 
         const firstItem = grid.itemAtIndex(0)
         verify(firstItem !== null)
@@ -1202,22 +1211,7 @@ TestCase {
             actualColumns += 1
         }
         compare(actualColumns, page.gridColumns,
-                "滚动条消失后 GridView 必须按新的 cellWidth 补齐整行")
-
-        fakeBackend.files = manyEntries(30)
-        tryCompare(grid, "scrollBarVisible", true)
-        wait(40)
-        const restoredFirst = grid.itemAtIndex(0)
-        verify(restoredFirst !== null)
-        actualColumns = 0
-        for (let i = 0; i < page.gridColumns; i++) {
-            const item = grid.itemAtIndex(i)
-            if (!item || Math.abs(item.y - restoredFirst.y) > 0.5)
-                break
-            actualColumns += 1
-        }
-        compare(actualColumns, page.gridColumns,
-                "滚动条重新出现后 GridView 也必须按最终 cellWidth 排满整行")
+                "整行必须排满计算出的列数")
     }
 
     function test_search_placeholder_names_the_whole_drive() {

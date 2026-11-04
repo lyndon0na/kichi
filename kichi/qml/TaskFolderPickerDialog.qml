@@ -207,7 +207,7 @@ KDialog {
                 required property string folderId
                 required property string folderName
 
-                width: folderList.width - metrics.scrollBarSlot
+                width: folderList.width
                 text: folderName
                 onClicked: picker.enterFolder({
                     id: folderId,

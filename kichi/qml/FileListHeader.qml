@@ -22,12 +22,6 @@ Item {
     property int headerRowHeight: 32
     property int headerPixelSize: 12
 
-    // 表头本身铺满整个列表区（含滚动条车道）：行宽已减去车道，
-    // 右侧再补一个车道宽度，列才会和行对齐
-    UiMetrics {
-        id: metrics
-    }
-
     KTheme { id: theme }
 
     // 分隔线覆盖在表头底部，不额外增加布局高度。
@@ -68,9 +62,8 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: header.contentPadding
-        // 行宽比表头窄一个滚动条车道：右内边距同步 +10，
-        // 否则「修改时间」列头和行里的时间差 10px
-        anchors.rightMargin: header.contentPadding + metrics.scrollBarSlot
+        // 表头与行共用同一个内容边距，右对齐列才能对齐
+        anchors.rightMargin: header.contentPadding
         spacing: header.columnSpacing
 
         // 图标列占位：让「名称」和行的文件名左边缘对齐
