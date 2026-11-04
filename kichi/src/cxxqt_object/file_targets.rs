@@ -13,7 +13,7 @@ use kichi_core::{EntryKind, FileEntry};
 use super::actions::run_in_background;
 use super::qobject;
 use super::QVariantList;
-use crate::session::tree_index::{self, FRESH_TTL_SECS};
+use crate::session::tree_index;
 use crate::session::Session;
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
@@ -41,9 +41,11 @@ impl qobject::Kichi {
 
     /// 读取选择器某一层的子文件夹。空 id = 根目录。
     ///
-    /// 索引就绪时先读索引：完整且新鲜 → 直接渲染（0 网络）；否则先把已知
-    /// 子文件夹贴上，再后台补全。索引不可用 / 该目录从没见过 → 回退网络。
-    pub fn load_move_targets(mut self: Pin<&mut Self>, parent_id: QString) {
+    /// 索引就绪时优先读本地：完整且未标脏的快照直接渲染，不再联网（不看
+    /// 30 秒 TTL，目录树是低变更数据）；脏 / 未补全时先贴已知行，再后台
+    /// 补全。`force` 跳过本地快照强制联网，供界面「刷新」使用。
+    /// 索引不可用 / 该目录从没见过 → 回退网络。
+    pub fn load_move_targets(mut self: Pin<&mut Self>, parent_id: QString, force: bool) {
         let parent_id = parent_id.to_string();
         let parent = {
             let trimmed = parent_id.trim();
@@ -63,19 +65,20 @@ impl qobject::Kichi {
         };
         let mut pre_rendered = false;
 
-        if use_index {
+        if use_index && !force {
             match index_targets(&session, &dir_key) {
                 Ok(Some(view)) => {
-                    let fresh = view.fresh;
+                    let stable = view.stable;
                     let folders = folder_from(&folder_entries(view.folders));
                     pre_rendered = true;
                     {
                         let mut rust = self.as_mut().rust_mut();
                         rust.move_targets = folders;
-                        rust.move_targets_loading = !fresh;
+                        rust.move_targets_loading = !stable;
+                        rust.move_targets_dir = dir_key.clone();
                         rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
                     }
-                    if fresh {
+                    if stable {
                         self.as_mut().notify();
                         return;
                     }
@@ -89,14 +92,15 @@ impl qobject::Kichi {
         }
         self.as_mut().notify();
 
+        let result_dir = dir_key.clone();
         run_in_background(
             move || {
                 let entries = session.list_dir(parent.as_deref())?;
-                // 选择器只做补全：complete=false 只 upsert，不删任何旧行，
-                // 也不延长已有完整快照的新鲜期。
+                // `list_dir` 会翻完所有页，这一批就是该目录的完整列表：
+                // 按完整快照写入，目录才可能变成可直接渲染的稳定层。
                 if use_index {
                     if let Some(index) = session.tree_index() {
-                        if let Err(err) = index.put_listing(&dir_key, &entries, false) {
+                        if let Err(err) = index.put_listing(&dir_key, &entries, true) {
                             if !index.is_closed() {
                                 session.record_tree_index_error(format!("本地索引写入失败：{err}"));
                             }
@@ -116,6 +120,7 @@ impl qobject::Kichi {
                         let mut rust = qichi.as_mut().rust_mut();
                         rust.move_targets_loading = false;
                         rust.move_targets = folders;
+                        rust.move_targets_dir = result_dir.clone();
                         rust.move_targets_error = QString::default();
                         rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
                     }
@@ -123,8 +128,9 @@ impl qobject::Kichi {
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.move_targets_loading = false;
-                            // 索引里已经渲染出来的行仍然可信，网络失败不清空
-                            if !pre_rendered {
+                            // 同一目录刷新失败时保留已有行；进入新目录失败则清空，
+                            // 免得旧目录的文件夹被当成当前层
+                            if !pre_rendered && rust.move_targets_dir != result_dir {
                                 rust.move_targets = QVariantList::default();
                             }
                             rust.move_targets_error = QString::from(err.to_string().as_str());
@@ -146,6 +152,7 @@ impl qobject::Kichi {
             rust.move_targets_epoch = rust.move_targets_epoch.wrapping_add(1);
             rust.move_targets_loading = false;
             rust.move_targets = QVariantList::default();
+            rust.move_targets_dir = String::new();
             rust.move_targets_error = QString::default();
             rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
         }
@@ -164,8 +171,7 @@ fn index_targets(
     if index.is_closed() {
         return Ok(None);
     }
-    let now = chrono::Utc::now().timestamp();
-    let view = index.move_targets(dir_id, now, FRESH_TTL_SECS)?;
+    let view = index.move_targets(dir_id)?;
     Ok((view.known || !view.folders.is_empty()).then_some(view))
 }
 

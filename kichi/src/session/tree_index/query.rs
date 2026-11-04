@@ -85,31 +85,21 @@ pub(super) fn listing_any(
 /// 移动 / 复制选择器的一层目录：已知子文件夹 + 快照状态。
 ///
 /// `known` 表示这个目录在索引里出现过（哪怕一行子文件夹都没有）；
-/// `fresh` 才表示可以完全信任、0 网络直接渲染。
+/// `stable` 表示快照完整且未标脏，选择器可以直接渲染而不联网。
+/// 选择器不套 30 秒 TTL：目录树是低变更数据，需要时由界面手动刷新。
 pub(crate) struct MoveTargets {
     pub(crate) folders: Vec<FileEntry>,
     pub(crate) known: bool,
-    pub(crate) fresh: bool,
+    pub(crate) stable: bool,
 }
 
 /// 只读子文件夹（`kind = 1`，排除回收站），并给出目录快照状态。
-pub(super) fn move_targets(
-    conn: &Connection,
-    dir_id: &str,
-    now: i64,
-    max_age_secs: i64,
-) -> rusqlite::Result<MoveTargets> {
+pub(super) fn move_targets(conn: &Connection, dir_id: &str) -> rusqlite::Result<MoveTargets> {
     let state = conn
         .query_row(
-            "SELECT complete, dirty, fetched_at FROM dirs WHERE id = ?1",
+            "SELECT complete, dirty FROM dirs WHERE id = ?1",
             [dir_id],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                ))
-            },
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()?;
     let sql = format!(
@@ -120,15 +110,10 @@ pub(super) fn move_targets(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([dir_id], row_to_entry)?;
     let folders = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    let fresh = state.is_some_and(|(complete, dirty, fetched_at)| {
-        complete == 1
-            && dirty == 0
-            && fetched_at.is_some_and(|at| now.saturating_sub(at) <= max_age_secs)
-    });
     Ok(MoveTargets {
         folders,
         known: state.is_some(),
-        fresh,
+        stable: state.is_some_and(|(complete, dirty)| complete == 1 && dirty == 0),
     })
 }
 

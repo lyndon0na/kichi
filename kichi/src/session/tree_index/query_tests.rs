@@ -472,51 +472,45 @@ fn move_targets_returns_only_live_subfolders_with_state() {
             .expect("写入");
 
         let fresh = store
-            .with_conn(|conn| move_targets(conn, "dir", 1_020, 30))
+            .with_conn(|conn| move_targets(conn, "dir"))
             .expect("读选择器");
         assert!(fresh.known);
-        assert!(fresh.fresh, "完整、干净且 30 秒内应直接渲染");
+        assert!(fresh.stable, "完整、未标脏的快照应直接渲染");
         assert_eq!(
             names(&fresh.folders),
             vec!["A", "b"],
             "只留在库文件夹，按名字排序"
         );
 
-        let stale = store
-            .with_conn(|conn| move_targets(conn, "dir", 1_031, 30))
-            .expect("读过期");
-        assert!(stale.known, "目录已知时可以先用旧行占位");
-        assert!(!stale.fresh);
-
         store
             .with_conn(|conn| conn.execute("UPDATE dirs SET dirty = 1 WHERE id = 'dir'", []))
             .expect("置脏");
         let dirty = store
-            .with_conn(|conn| move_targets(conn, "dir", 1_010, 30))
+            .with_conn(|conn| move_targets(conn, "dir"))
             .expect("读脏目录");
         assert!(dirty.known);
-        assert!(!dirty.fresh, "脏目录必须后台补全");
+        assert!(!dirty.stable, "脏目录必须后台补全");
 
         let unknown = store
-            .with_conn(|conn| move_targets(conn, "other", 1_010, 30))
+            .with_conn(|conn| move_targets(conn, "other"))
             .expect("读未知目录");
         assert!(!unknown.known);
-        assert!(!unknown.fresh);
+        assert!(!unknown.stable);
         assert!(unknown.folders.is_empty());
     });
 }
 
 #[test]
-fn move_targets_exposes_partial_rows_but_not_freshness() {
+fn move_targets_exposes_partial_rows_but_not_stability() {
     with_store(|store| {
         store
             .with_conn(|conn| put_listing(conn, "new", &[folder("n", "新建", "new")], false, 2_000))
             .expect("写入");
         let view = store
-            .with_conn(|conn| move_targets(conn, "new", 2_010, 30))
+            .with_conn(|conn| move_targets(conn, "new"))
             .expect("读部分目录");
         assert!(view.known, "写入过一批行就算已知目录");
-        assert!(!view.fresh, "不完整的一批数据不能当作新鲜快照");
+        assert!(!view.stable, "不完整的一批数据不能当作稳定快照");
         assert_eq!(names(&view.folders), vec!["新建"]);
     });
 }

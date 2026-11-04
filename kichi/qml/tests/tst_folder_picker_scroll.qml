@@ -18,6 +18,8 @@ TestCase {
         property bool moveTargetsLoading: false
         property string moveTargetsError: ""
         property bool delayedLoads: false
+        /// 子目录条目数少一档：用来复现「长目录底部进入短目录」
+        property bool shortChildren: false
         property var pendingItems: []
 
         signal changed()
@@ -36,7 +38,8 @@ TestCase {
                     })
                 }
             } else {
-                for (let i = 0; i < 30; i++) {
+                const count = shortChildren ? 3 : 30
+                for (let i = 0; i < count; i++) {
                     items.push({
                         id: parentId + "-child-" + i,
                         name: "任务子目录 " + i
@@ -83,6 +86,7 @@ TestCase {
         property string moveTargetsError: ""
         property bool fileActionRunning: false
         property var fileActionIds: []
+        property bool shortChildren: false
         property var current: [{ id: "", name: "全部文件" }]
 
         signal changed()
@@ -102,7 +106,8 @@ TestCase {
                     })
                 }
             } else {
-                for (let i = 0; i < 30; i++) {
+                const count = shortChildren ? 3 : 30
+                for (let i = 0; i < count; i++) {
                     items.push({
                         id: parentId + "-child-" + i,
                         name: "移动子目录 " + i
@@ -139,6 +144,7 @@ TestCase {
         taskBackend.moveTargetsLoading = false
         taskBackend.moveTargetsError = ""
         taskBackend.delayedLoads = false
+        taskBackend.shortChildren = false
         taskBackend.pendingItems = []
         taskLoadTimer.stop()
 
@@ -148,6 +154,7 @@ TestCase {
         moveBackend.moveTargetsError = ""
         moveBackend.fileActionRunning = false
         moveBackend.fileActionIds = []
+        moveBackend.shortChildren = false
         moveBackend.current = [{ id: "", name: "全部文件" }]
     }
 
@@ -260,6 +267,8 @@ TestCase {
         const firstItem = list.itemAtIndex(0)
         verify(firstItem)
         compare(String(firstItem.folderId), prefix + index + "-child-0")
+        compare(Math.round(firstItem.y), 0,
+                "新目录第一行必须落在视口顶部（不能残留上一层的 originY）")
     }
 
     function test_task_picker_entering_from_bottom_opens_at_top() {
@@ -308,6 +317,113 @@ TestCase {
         verify(firstItem)
         compare(String(firstItem.folderId),
                 "task-folder-" + index + "-child-0")
+    }
+
+    function test_task_picker_height_stays_fixed_across_states() {
+        const list = openTaskPicker()
+        const initialHeight = taskPicker.height
+        const initialListHeight = list.height
+        verify(initialHeight > 0)
+
+        // 空目录：提示条换文案，窗口和列表都不能变高变矮
+        taskBackend.moveTargets = []
+        taskBackend.moveTargetsRevision += 1
+        taskBackend.changed()
+        wait(40)
+        compare(taskPicker.height, initialHeight, "空目录提示不能改变窗口高度")
+        compare(list.height, initialListHeight, "空目录提示不能改变列表高度")
+
+        // 出错：提示条换成错误 + 重试
+        taskBackend.moveTargetsError = "读取目录失败"
+        taskBackend.moveTargetsRevision += 1
+        taskBackend.changed()
+        wait(40)
+        compare(taskPicker.height, initialHeight, "错误提示不能改变窗口高度")
+        compare(list.height, initialListHeight, "错误提示不能改变列表高度")
+    }
+
+    function test_task_picker_long_to_short_folder_starts_at_top() {
+        const list = openTaskPicker()
+        list.contentY = Math.max(0, list.contentHeight - list.height)
+        wait(40)
+        verify(list.contentY > 0, "测试必须从长目录底部出发")
+
+        taskBackend.shortChildren = true
+        const x = list.width / 2
+        const y = list.height / 2
+        const index = list.indexAt(x, y + list.contentY)
+        verify(index >= 0)
+        mouseClick(list, x, y)
+        wait(120)
+        compare(taskPicker.path.length, 2)
+        verify(list.contentHeight < list.height, "短目录必须短于视口")
+        compare(Math.round(list.contentY), 0,
+                "从长目录底部进入短目录也必须从顶部显示")
+        const firstItem = list.itemAtIndex(0)
+        verify(firstItem)
+        compare(String(firstItem.folderId),
+                "task-folder-" + index + "-child-0")
+        compare(Math.round(firstItem.y), 0,
+                "短目录第一行必须落在视口顶部（不能残留上一层的 originY）")
+    }
+
+    function test_move_picker_long_to_short_folder_starts_at_top() {
+        const list = openMovePicker()
+        list.contentY = Math.max(0, list.contentHeight - list.height)
+        wait(40)
+        verify(list.contentY > 0, "测试必须从长目录底部出发")
+
+        moveBackend.shortChildren = true
+        const x = list.width / 2
+        const y = list.height / 2
+        const index = list.indexAt(x, y + list.contentY)
+        verify(index >= 0)
+        mouseClick(list, x, y)
+        wait(120)
+        compare(movePicker.path.length, 2)
+        verify(list.contentHeight < list.height, "短目录必须短于视口")
+        compare(Math.round(list.contentY), 0,
+                "从长目录底部进入短目录也必须从顶部显示")
+        const firstItem = list.itemAtIndex(0)
+        verify(firstItem)
+        compare(String(firstItem.folderId),
+                "move-folder-" + index + "-child-0")
+        compare(Math.round(firstItem.y), 0,
+                "短目录第一行必须落在视口顶部（不能残留上一层的 originY）")
+    }
+
+    function test_task_picker_enter_starts_at_top_and_go_up_restores() {
+        const list = openTaskPicker()
+        list.contentY = 200
+        wait(30)
+        taskPicker.enterFolder({ id: "task-folder-3", name: "任务文件夹 3" })
+        wait(60)
+        compare(taskPicker.path.length, 2)
+        compare(Math.round(list.contentY), 0, "进入子目录必须从顶部显示")
+
+        list.contentY = 240
+        wait(30)
+        taskPicker.goUp()
+        wait(60)
+        compare(taskPicker.targetId, "")
+        tryCompare(list, "contentY", 200)
+    }
+
+    function test_move_picker_enter_starts_at_top_and_go_up_restores() {
+        const list = openMovePicker()
+        list.contentY = 200
+        wait(30)
+        movePicker.enterFolder({ id: "move-folder-3", name: "移动文件夹 3" })
+        wait(60)
+        compare(movePicker.path.length, 2)
+        compare(Math.round(list.contentY), 0, "进入子目录必须从顶部显示")
+
+        list.contentY = 240
+        wait(30)
+        movePicker.goUp()
+        wait(60)
+        compare(movePicker.targetId, "")
+        tryCompare(list, "contentY", 200)
     }
 
     function test_picker_keeps_drag_scrolling() {

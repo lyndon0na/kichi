@@ -29,6 +29,11 @@ KDialog {
     property string actionError: ""
 
     property int seenRevision: -1
+    /// 目录 id → 离开时的 contentY：进入子目录回顶部，上一级回到原位置
+    property var scrollByDir: ({})
+    /// 下一次列表就绪后要恢复的位置（< 0 回到顶部）；
+    /// -2 表示未指定——同目录后台更新沿用当前列表位置，不跳顶部
+    property real restoreY: -2
 
     FileActionLocks {
         id: locks
@@ -42,7 +47,6 @@ KDialog {
     readonly property string targetLabel: path.length > 0 ? path[path.length - 1].name
                                                           : qsTr("全部文件")
     readonly property bool canApply: backend !== null
-        && !backend.moveTargetsLoading
         && !locks.any(sourceIds)
         && sourceIds.length > 0
         && targetId !== sourceParentId
@@ -50,6 +54,11 @@ KDialog {
 
     /// 弹窗内容宽度（子项统一撑满，别各自写死）
     readonly property int formWidth: 460
+    /// 文件夹列表高度固定：提示出现 / 消失时弹窗和列表都不动
+    readonly property int listHeight: 224
+    readonly property int hintHeight: 36
+    readonly property bool hasListError: backend !== null
+                                          && backend.moveTargetsError !== ""
 
     title: mode === "move" ? qsTr("移动到…") : qsTr("复制到…")
     modal: true
@@ -96,27 +105,53 @@ KDialog {
         picker.path = full.slice(0, depth)
 
         seenRevision = -1
+        scrollByDir = ({})
+        restoreY = -1
         picker.open()
         picker.reload()
+    }
+
+    /// 记住当前目录列表的滚动位置（导航前调用）
+    function rememberListScroll() {
+        const next = ({})
+        const keys = Object.keys(scrollByDir)
+        for (let i = 0; i < keys.length; i++)
+            next[keys[i]] = scrollByDir[keys[i]]
+        next[targetId] = folderList.contentY
+        scrollByDir = next
     }
 
     function reload() {
         actionError = ""
         folderList.beginDirectoryLoad()
         if (backend)
-            backend.loadMoveTargets(targetId)
+            backend.loadMoveTargets(targetId, false)
+    }
+
+    /// 手动刷新：跳过本地快照强制联网，刷新后留在原位置
+    function refresh() {
+        if (!backend || backend.moveTargetsLoading)
+            return
+        actionError = ""
+        folderList.beginDirectoryLoad()
+        backend.loadMoveTargets(targetId, true)
     }
 
     function goUp() {
         if (path.length <= 1)
             return
+        rememberListScroll()
         path = path.slice(0, path.length - 1)
+        const saved = scrollByDir[targetId]
+        restoreY = saved !== undefined ? saved : -1
         reload()
     }
 
     function enterFolder(folder) {
         if (!folder || blocked(folder.id))
             return
+        rememberListScroll()
+        restoreY = -1
         path = path.concat([{ id: folder.id, name: folder.name }])
         reload()
     }
@@ -153,11 +188,18 @@ KDialog {
         if (!backend || backend.moveTargetsRevision === seenRevision)
             return
         seenRevision = backend.moveTargetsRevision
+        const pending = picker.restoreY
+        picker.restoreY = -2
+        // 同目录的后台补全不能把用户刚滚到的位置冲回顶部；
+        // 位置必须在回顶之前取，否则拿到的已经是 0
+        const restore = pending === -2 ? folderList.contentY : pending
+        // 列表缩短时 Qt 会残留旧 originY，替换模型前先回顶
+        folderList.prepareDirectoryReplace()
         foldersModel.clear()
         const list = backend.moveTargets || []
         for (let i = 0; i < list.length; i++)
             foldersModel.append({ folderId: list[i].id, folderName: list[i].name })
-        folderList.finishDirectoryLoad()
+        folderList.finishDirectoryLoad(restore)
     }
 
     Connections {
@@ -187,11 +229,13 @@ KDialog {
 
     ColumnLayout {
         width: picker.formWidth
-        spacing: 8
+        spacing: picker.theme.gapSm
 
         Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
+            maximumLineCount: 1
+            elide: Text.ElideRight
             text: picker.mode === "move"
                   ? qsTr("把%1移动到：").arg(picker.subject())
                   : qsTr("把%1复制到：").arg(picker.subject())
@@ -199,16 +243,14 @@ KDialog {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 6
+            spacing: picker.theme.gapXs
 
             KButton {
                 objectName: "movePickerUp"
                 text: qsTr("↑ 上一级")
                 variant: "secondary"
                 implicitHeight: 30
-                enabled: picker.backend !== null
-                         && !picker.backend.moveTargetsLoading
-                         && picker.path.length > 1
+                enabled: picker.backend !== null && picker.path.length > 1
                 onClicked: picker.goUp()
             }
 
@@ -222,20 +264,20 @@ KDialog {
 
             BusyIndicator {
                 visible: picker.backend !== null && picker.backend.moveTargetsLoading
+                         && foldersModel.count === 0
                 running: visible
                 Layout.preferredWidth: 18
                 Layout.preferredHeight: 18
             }
-        }
 
-        // 目标就是源目录：确定键已置灰，这里把原因说清楚
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            font.pixelSize: theme.fontMeta
-            color: theme.textMuted
-            visible: picker.targetId === picker.sourceParentId
-            text: qsTr("这里就是源目录；请进入其它文件夹或点「上一级」。")
+            KButton {
+                objectName: "movePickerRefresh"
+                text: qsTr("刷新")
+                variant: "secondary"
+                implicitHeight: 30
+                enabled: picker.backend !== null && !picker.backend.moveTargetsLoading
+                onClicked: picker.refresh()
+            }
         }
 
         FolderPickerListView {
@@ -243,10 +285,9 @@ KDialog {
 
             objectName: "movePickerList"
             Layout.fillWidth: true
-            Layout.preferredHeight: 260
+            Layout.preferredHeight: picker.listHeight
             model: foldersModel
             enabled: picker.backend !== null
-                     && !picker.backend.moveTargetsLoading
 
             onRowActivated: function (index) {
                 const item = foldersModel.get(index)
@@ -270,47 +311,86 @@ KDialog {
             }
         }
 
-        Label {
-            objectName: "movePickerEmpty"
+        // 固定高度的提示条：源目录提示 / 空目录 / 错误 / 操作失败都放这里。
+        // 状态切换时弹窗和列表高度不变——列表一变高，Qt 会异步恢复旧滚动位置。
+        // 优先级：操作失败 > 列表错误 > 源目录提示 > 空目录。
+        Item {
             Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            color: palette.placeholderText
-            visible: picker.backend !== null && !picker.backend.moveTargetsLoading
-                     && foldersModel.count === 0 && picker.backend.moveTargetsError === ""
-            text: qsTr("这个文件夹下没有子文件夹；可以直接操作到这里。")
-        }
+            Layout.preferredHeight: picker.hintHeight
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 6
-            visible: picker.backend !== null && picker.backend.moveTargetsError !== ""
+            Label {
+                objectName: "movePickerActionError"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                font.pixelSize: picker.theme.fontMeta
+                color: picker.theme.danger
+                visible: picker.actionError.length > 0
+                text: picker.actionError
+            }
 
             Label {
                 objectName: "movePickerListError"
-                Layout.fillWidth: true
+                anchors.left: parent.left
+                anchors.right: retry.visible ? retry.left : parent.right
+                anchors.rightMargin: retry.visible ? picker.theme.gapSm : 0
+                anchors.verticalCenter: parent.verticalCenter
                 wrapMode: Text.Wrap
-                font.pixelSize: theme.fontMeta
-                color: theme.danger
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                font.pixelSize: picker.theme.fontMeta
+                color: picker.theme.danger
+                visible: picker.actionError.length === 0 && picker.hasListError
                 text: picker.backend ? picker.backend.moveTargetsError : ""
             }
 
             KButton {
+                id: retry
                 objectName: "movePickerRetry"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("重试")
                 variant: "secondary"
                 implicitHeight: 28
-                onClicked: picker.reload()
+                visible: picker.actionError.length === 0 && picker.hasListError
+                onClicked: picker.refresh()
             }
-        }
 
-        Label {
-            objectName: "movePickerActionError"
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            font.pixelSize: theme.fontMeta
-            color: theme.danger
-            visible: picker.actionError.length > 0
-            text: picker.actionError
+            // 目标就是源目录：确定键已置灰，这里把原因说清楚
+            Label {
+                objectName: "movePickerNote"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                font.pixelSize: picker.theme.fontMeta
+                color: picker.theme.textMuted
+                visible: picker.actionError.length === 0 && !picker.hasListError
+                         && picker.targetId === picker.sourceParentId
+                text: qsTr("这里就是源目录；请进入其它文件夹或点「上一级」。")
+            }
+
+            Label {
+                objectName: "movePickerEmpty"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                font.pixelSize: picker.theme.fontMeta
+                color: picker.theme.textMuted
+                visible: picker.actionError.length === 0 && !picker.hasListError
+                         && picker.targetId !== picker.sourceParentId
+                         && picker.backend !== null && !picker.backend.moveTargetsLoading
+                         && foldersModel.count === 0
+                text: qsTr("这个文件夹下没有子文件夹；可以直接操作到这里。")
+            }
         }
     }
 

@@ -19,8 +19,18 @@ KDialog {
     /// 确认时返回给离线任务弹窗的完整路径
     property var selectedPath: []
     property int seenRevision: -1
+    /// 目录 id → 离开时的 contentY：进入子目录回顶部，上一级回到原位置
+    property var scrollByDir: ({})
+    /// 下一次列表就绪后要恢复的位置（< 0 回到顶部）；
+    /// -2 表示未指定——同目录后台更新沿用当前列表位置，不跳顶部
+    property real restoreY: -2
 
     readonly property int formWidth: 460
+    /// 列表 + 提示条总高度固定：提示出现 / 消失时窗口和列表都不动
+    readonly property int listHeight: 224
+    readonly property int hintHeight: 36
+    readonly property bool hasListError: backend !== null
+                                          && backend.moveTargetsError !== ""
     UiMetrics {
         id: metrics
     }
@@ -36,7 +46,6 @@ KDialog {
                                      ? String(path[path.length - 1].id || "") : ""
     readonly property string targetPathText: pathText(path)
     readonly property bool canChoose: backend !== null
-                                      && !backend.moveTargetsLoading
 
     title: qsTr("选择保存位置")
     modal: true
@@ -60,6 +69,8 @@ KDialog {
         picker.path = normalizePath(source)
         picker.selectedPath = picker.path.slice()
         picker.seenRevision = -1
+        picker.scrollByDir = ({})
+        picker.restoreY = -1
         picker.open()
         picker.reload()
     }
@@ -84,22 +95,45 @@ KDialog {
         return parts.length > 0 ? parts.join(" / ") : picker.rootName
     }
 
+    /// 记住当前目录列表的滚动位置（导航前调用）
+    function rememberListScroll() {
+        const next = ({})
+        const keys = Object.keys(scrollByDir)
+        for (let i = 0; i < keys.length; i++)
+            next[keys[i]] = scrollByDir[keys[i]]
+        next[targetId] = folderList.contentY
+        scrollByDir = next
+    }
+
     function reload() {
         folderList.beginDirectoryLoad()
         if (picker.backend)
-            picker.backend.loadMoveTargets(picker.targetId)
+            picker.backend.loadMoveTargets(picker.targetId, false)
+    }
+
+    /// 手动刷新：跳过本地快照强制联网，刷新后留在原位置
+    function refresh() {
+        if (!picker.backend || picker.backend.moveTargetsLoading)
+            return
+        folderList.beginDirectoryLoad()
+        picker.backend.loadMoveTargets(picker.targetId, true)
     }
 
     function goUp() {
         if (path.length <= 1)
             return
+        rememberListScroll()
         path = path.slice(0, path.length - 1)
+        const saved = scrollByDir[targetId]
+        restoreY = saved !== undefined ? saved : -1
         reload()
     }
 
     function enterFolder(folder) {
         if (!folder)
             return
+        rememberListScroll()
+        restoreY = -1
         path = path.concat([{
             id: String(folder.id || ""),
             name: String(folder.name || folder.id || "")
@@ -123,6 +157,13 @@ KDialog {
         if (!backend || backend.moveTargetsRevision === seenRevision)
             return
         seenRevision = backend.moveTargetsRevision
+        const pending = picker.restoreY
+        picker.restoreY = -2
+        // 同目录的后台补全不能把用户刚滚到的位置冲回顶部；
+        // 位置必须在回顶之前取，否则拿到的已经是 0
+        const restore = pending === -2 ? folderList.contentY : pending
+        // 列表缩短时 Qt 会残留旧 originY，替换模型前先回顶
+        folderList.prepareDirectoryReplace()
         foldersModel.clear()
         const list = backend.moveTargets || []
         for (let i = 0; i < list.length; i++)
@@ -130,7 +171,7 @@ KDialog {
                 folderId: String(list[i].id || ""),
                 folderName: String(list[i].name || "")
             })
-        folderList.finishDirectoryLoad()
+        folderList.finishDirectoryLoad(restore)
     }
 
     Connections {
@@ -162,9 +203,7 @@ KDialog {
                 text: qsTr("↑ 上一级")
                 variant: "secondary"
                 implicitHeight: 30
-                enabled: picker.backend !== null
-                         && !picker.backend.moveTargetsLoading
-                         && picker.path.length > 1
+                enabled: picker.backend !== null && picker.path.length > 1
                 onClicked: picker.goUp()
             }
 
@@ -178,9 +217,19 @@ KDialog {
 
             BusyIndicator {
                 visible: picker.backend !== null && picker.backend.moveTargetsLoading
+                         && foldersModel.count === 0
                 running: visible
                 Layout.preferredWidth: 18
                 Layout.preferredHeight: 18
+            }
+
+            KButton {
+                objectName: "taskFolderPickerRefresh"
+                text: qsTr("刷新")
+                variant: "secondary"
+                implicitHeight: 30
+                enabled: picker.backend !== null && !picker.backend.moveTargetsLoading
+                onClicked: picker.refresh()
             }
         }
 
@@ -189,10 +238,9 @@ KDialog {
 
             objectName: "taskFolderPickerList"
             Layout.fillWidth: true
-            Layout.preferredHeight: 260
+            Layout.preferredHeight: picker.listHeight
             model: foldersModel
             enabled: picker.backend !== null
-                     && !picker.backend.moveTargetsLoading
 
             onRowActivated: function (index) {
                 const item = foldersModel.get(index)
@@ -216,38 +264,52 @@ KDialog {
             }
         }
 
-        Label {
-            objectName: "taskFolderPickerEmpty"
+        // 固定高度的提示条：空目录 / 错误都放这里，避免弹窗和列表跳动
+        Item {
             Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            color: picker.theme.textMuted
-            visible: picker.backend !== null && !picker.backend.moveTargetsLoading
-                     && foldersModel.count === 0
-                     && picker.backend.moveTargetsError === ""
-            text: qsTr("这个文件夹下没有子文件夹；可以直接保存到这里。")
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: picker.theme.gapXs
-            visible: picker.backend !== null
-                     && picker.backend.moveTargetsError !== ""
+            Layout.preferredHeight: picker.hintHeight
 
             Label {
                 objectName: "taskFolderPickerError"
-                Layout.fillWidth: true
+                anchors.left: parent.left
+                anchors.right: retry.visible ? retry.left : parent.right
+                anchors.rightMargin: retry.visible ? picker.theme.gapSm : 0
+                anchors.verticalCenter: parent.verticalCenter
                 wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
                 color: picker.theme.danger
                 font.pixelSize: picker.theme.fontMeta
+                visible: picker.hasListError
                 text: picker.backend ? picker.backend.moveTargetsError : ""
             }
 
+            Label {
+                objectName: "taskFolderPickerEmpty"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                color: picker.theme.textMuted
+                font.pixelSize: picker.theme.fontMeta
+                visible: picker.backend !== null && !picker.hasListError
+                         && !picker.backend.moveTargetsLoading
+                         && foldersModel.count === 0
+                text: qsTr("这个文件夹下没有子文件夹；可以直接保存到这里。")
+            }
+
             KButton {
+                id: retry
                 objectName: "taskFolderPickerRetry"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("重试")
                 variant: "secondary"
                 implicitHeight: 28
-                onClicked: picker.reload()
+                visible: picker.hasListError
+                onClicked: picker.refresh()
             }
         }
     }

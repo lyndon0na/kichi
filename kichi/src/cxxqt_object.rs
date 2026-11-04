@@ -744,9 +744,10 @@ pub mod qobject {
         fn current_path(self: &Self) -> QVariantList;
 
         /// 读取目标选择器某一层的子文件夹（独立状态，不干扰当前目录列表）
+        /// `force` = true 时跳过本地快照强制联网（界面「刷新」）
         #[qinvokable]
         #[cxx_name = "loadMoveTargets"]
-        fn load_move_targets(self: Pin<&mut Self>, parent_id: QString);
+        fn load_move_targets(self: Pin<&mut Self>, parent_id: QString, force: bool);
 
         /// 关闭选择器：丢弃在途结果
         #[qinvokable]
@@ -1165,6 +1166,8 @@ pub struct KichiRust {
     pub(crate) move_targets_revision: i32,
     /// 选择器请求代数：快速进出目录时旧结果作废
     pub(crate) move_targets_epoch: u64,
+    /// `move_targets` 属于哪个目录（网络失败时判断旧行还能不能留）
+    pub(crate) move_targets_dir: String,
     /// 搜索视图是否打开（打开时文件页显示结果而不是当前目录）
     pub(crate) search_active: bool,
     /// 当前搜索关键词（QML 输入框双向绑定的那一份）
@@ -1378,6 +1381,7 @@ impl Default for KichiRust {
             move_targets_error: QString::default(),
             move_targets_revision: 0,
             move_targets_epoch: 0,
+            move_targets_dir: String::new(),
             search_active: false,
             search_query: QString::default(),
             search_results: QVariantList::default(),

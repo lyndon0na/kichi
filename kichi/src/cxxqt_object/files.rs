@@ -669,6 +669,7 @@ impl qobject::Kichi {
             rust.move_targets_epoch = rust.move_targets_epoch.wrapping_add(1);
             rust.move_targets = QVariantList::default();
             rust.move_targets_loading = false;
+            rust.move_targets_dir = String::new();
             rust.move_targets_error = QString::default();
             rust.move_targets_revision = rust.move_targets_revision.wrapping_add(1);
             reset_file_action_state(&mut rust);

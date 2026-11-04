@@ -160,14 +160,9 @@ impl TreeIndex {
     }
 
     /// 移动 / 复制选择器的一层：已知子文件夹 + 能否 0 网络直接渲染。
-    pub(crate) fn move_targets(
-        &self,
-        dir_id: &str,
-        now: i64,
-        max_age_secs: i64,
-    ) -> Result<MoveTargets, IndexError> {
+    pub(crate) fn move_targets(&self, dir_id: &str) -> Result<MoveTargets, IndexError> {
         self.store
-            .with_conn(|conn| query::move_targets(conn, dir_id, now, max_age_secs))
+            .with_conn(|conn| query::move_targets(conn, dir_id))
     }
 
     /// 目标是否落在某个源条目内部（含自身）；索引缺链时返回 `None`。

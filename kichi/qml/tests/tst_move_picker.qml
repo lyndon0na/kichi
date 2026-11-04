@@ -30,6 +30,7 @@ TestCase {
         property int copyCount: 0
         property var lastIds: []
         property string lastTargetId: ""
+        property bool lastForce: false
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -38,7 +39,8 @@ TestCase {
             return current
         }
 
-        function loadMoveTargets(parentId) {
+        function loadMoveTargets(parentId, force) {
+            lastForce = force === true
             if (parentId === "A")
                 moveTargets = [{ id: "B", name: "B" }, { id: "F", name: "F" }]
             else if (parentId === "B")
@@ -98,6 +100,7 @@ TestCase {
         backend.copyCount = 0
         backend.lastIds = []
         backend.lastTargetId = ""
+        backend.lastForce = false
         picker = pickerComponent.createObject(parent, {
             visible: false, backend: backend
         })
@@ -241,5 +244,43 @@ TestCase {
         mouseClick(okButton())
         wait(40)
         compare(backend.lastIds.length, 3, "批量 id 一次提交")
+    }
+
+    function test_background_refresh_does_not_block_confirm() {
+        openMove({ id: "f1", name: "file.mkv", kind: "file" }, ["f1"], [])
+        backend.moveTargets = [{ id: "B", name: "B" }]
+        backend.moveTargetsRevision += 1
+        backend.moveTargetsLoading = true
+        backend.changed()
+        wait(20)
+        compare(okButton().enabled, true,
+                "本地行已经显示时，后台刷新不能禁用确定")
+    }
+
+    function test_refresh_button_forces_network() {
+        openMove({ id: "f1", name: "file.mkv", kind: "file" }, ["f1"], [])
+        compare(backend.lastForce, false, "普通打开先读本地快照")
+
+        mouseClick(findChild(picker, "movePickerRefresh"))
+        wait(20)
+        compare(backend.lastForce, true, "刷新必须跳过本地快照强制联网")
+    }
+
+    function test_dialog_height_stays_fixed_across_states() {
+        openMove({ id: "f1", name: "file.mkv", kind: "file" }, ["f1"], [])
+        const initialHeight = picker.height
+        verify(initialHeight > 0, "弹窗应已布局")
+
+        // 进入空目录：底部多出「没有子文件夹」提示
+        picker.enterFolder({ id: "B", name: "B" })
+        wait(40)
+        compare(picker.height, initialHeight, "空目录提示不能改变窗口高度")
+
+        // 出错：底部多出错误 + 重试
+        backend.moveTargetsError = "读取目录失败"
+        backend.moveTargetsRevision += 1
+        backend.changed()
+        wait(40)
+        compare(picker.height, initialHeight, "错误提示不能改变窗口高度")
     }
 }

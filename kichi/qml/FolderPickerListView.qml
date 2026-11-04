@@ -32,17 +32,33 @@ Item {
         return view.itemAtIndex(index)
     }
 
-    // 加载期间保留旧列表；新模型就绪后再原子切换到新目录顶部。
+    // 加载期间保留旧列表；新模型就绪后再原子替换。进入子目录从顶部开始。
     function beginDirectoryLoad() {
         pressedIndex = -1
         view.cancelFlick()
     }
 
-    function finishDirectoryLoad() {
+    /// 替换模型**之前**调用：先把列表拉回顶部。
+    /// Qt 6.11 在列表停在旧底部时重灌更短的模型，会把 `originY` 留在旧值上
+    /// （实测 384），新内容整体被推到视口下方；事后改 `contentY` 无法修正
+    /// `originY`，所以必须抢在 `clear()` 之前回顶。
+    function prepareDirectoryReplace() {
+        view.positionViewAtBeginning()
+        view.contentY = 0
+        view.forceLayout()
+    }
+
+    /// `restoreY` 用于「上一级」和手动刷新：回到顶部之后再落到原位置。
+    /// 进入子目录不传（或传 -1），保持从顶部显示。
+    function finishDirectoryLoad(restoreY) {
         view.forceLayout()
         view.positionViewAtBeginning()
         view.contentY = 0
         view.forceLayout()
+        if (restoreY !== undefined && restoreY > 0) {
+            const maxY = Math.max(0, view.contentHeight - view.height)
+            view.contentY = Math.min(restoreY, maxY)
+        }
     }
 
     ListView {
