@@ -143,6 +143,10 @@ impl qobject::Kichi {
         // 当前目录的条目一直留在 Rust 侧：换个列表重画即可，不用重新拉网
         let entries = self.entries.clone();
         self.as_mut().show_entries(entries);
+        // show_entries 只在条目有变化 / 有加载在途时 notify。退出搜索时目录没变，
+        // 这里必须补一次：否则 QML 的 searchActive 停在 true，清空关键词回不到目录视图
+        // （上面 clear_status_message 的 notify 发生在字段清空之前，救不了这次状态变化）。
+        self.as_mut().notify();
     }
 
     /// 进了搜索结果里的文件夹：走正常目录导航，面包屑是真实层级。
