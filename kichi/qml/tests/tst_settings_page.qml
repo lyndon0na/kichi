@@ -33,6 +33,7 @@ TestCase {
         property int uploadRateMib: 0
         property bool autoResumeDownloads: true
         property bool autoResumeUploads: false
+        property bool localIndexEnabled: false
         property bool notifyEnabled: true
         property bool closeToTray: false
         property string storageBackend: "KWallet"
@@ -60,6 +61,7 @@ TestCase {
         function setUploadRateMib(value) { uploadRateMib = value }
         function setAutoResumeDownloads(value) { autoResumeDownloads = value }
         function setAutoResumeUploads(value) { autoResumeUploads = value }
+        function setLocalIndexEnabled(value) { localIndexEnabled = value }
         function chooseDownloadDir() { chooseDownloadDirCalls += 1 }
         function openDownloadDir() { openDownloadDirCalls += 1 }
         function setNotifyEnabled(value) { notifyEnabled = value }
@@ -282,6 +284,17 @@ TestCase {
         compare(backend.uploadParallel, 4)
         compare(backend.uploadRateMib, 8)
         compare(backend.autoResumeUploads, true)
+    }
+
+    function test_local_index_switch_defaults_off_and_is_wired() {
+        var box = findChild(page, "settingsLocalIndex")
+        verify(box !== null, "有本地目录索引开关")
+        compare(box.checked, false, "本地目录索引默认关闭")
+
+        box.checked = true
+        box.toggled()
+        wait(40)
+        compare(backend.localIndexEnabled, true, "打开后写回后端")
     }
 
     function test_upload_group_keeps_the_same_spacing_as_other_groups() {

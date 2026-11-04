@@ -238,6 +238,46 @@ impl qobject::Kichi {
         });
     }
 
+    /// 本地目录索引 / 页面快照开关。
+    ///
+    /// 关闭：取消在途建库与探针、放开库句柄，之后所有读写入口都不再碰本地库
+    /// （库文件保留）。打开：复用已有库，空库补建、已有库顺手对一次账。
+    pub fn set_local_index_enabled(mut self: Pin<&mut Self>, enabled: bool) {
+        if self.local_index_enabled == enabled {
+            return;
+        }
+        self.backend.session.set_local_index_enabled(enabled);
+        if enabled {
+            self.as_mut().update_settings(|settings| {
+                settings.local_index_enabled = true;
+            });
+            self.as_mut().rust_mut().index_error_reported = false;
+            self.as_mut().ensure_tree_index_build();
+            return;
+        }
+        let was_busy = {
+            let mut rust = self.as_mut().rust_mut();
+            let busy = rust.index_building;
+            if let Some(cancel) = rust.index_build_cancel.take() {
+                cancel.cancel();
+            }
+            rust.index_building = false;
+            rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
+            if let Some(cancel) = rust.index_probe_cancel.take() {
+                cancel.cancel();
+            }
+            rust.index_probing = false;
+            rust.index_probe_epoch = rust.index_probe_epoch.wrapping_add(1);
+            busy
+        };
+        self.as_mut().update_settings(|settings| {
+            settings.local_index_enabled = false;
+        });
+        if was_busy {
+            self.as_mut().set_message("");
+        }
+    }
+
     /// 调起系统原生目录选择器，选中后走正常的下载目录保存流程。
     pub fn choose_download_dir(mut self: Pin<&mut Self>) {
         let start = self.settings.download_dir_path();
@@ -348,6 +388,7 @@ impl qobject::Kichi {
         rust.download_rate_mib = i32::try_from(snapshot.download_rate_mib).unwrap_or(i32::MAX);
         rust.auto_resume_downloads = snapshot.auto_resume_downloads;
         rust.auto_resume_uploads = snapshot.auto_resume_uploads;
+        rust.local_index_enabled = snapshot.local_index_enabled;
         rust.upload_parallel = i32::try_from(snapshot.upload_parallel)
             .unwrap_or(limits::DEFAULT_UPLOAD_PARALLEL as i32);
         rust.upload_rate_mib = i32::try_from(snapshot.upload_rate_mib).unwrap_or(i32::MAX);

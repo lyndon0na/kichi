@@ -11,8 +11,8 @@ pub(crate) struct Backend {
 }
 
 impl Backend {
-    pub(crate) fn new(store_path: std::path::PathBuf) -> Self {
-        let (session, restored) = Session::bootstrap(store_path);
+    pub(crate) fn new(store_path: std::path::PathBuf, local_index_enabled: bool) -> Self {
+        let (session, restored) = Session::bootstrap(store_path, local_index_enabled);
         Self {
             session: Arc::new(session),
             restored,

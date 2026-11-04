@@ -19,10 +19,12 @@ const INDEX_STARRED_LIMIT: usize = 10_000;
 /// 资料库「已加星标」：索引就绪时 0 网络，否则回退现有云端查询。
 pub(super) fn load(session: &Session) -> Result<LibraryLoad, Failure> {
     if !session.local_index_ready() {
-        return Ok(LibraryLoad::new(
-            load_cloud(session)?,
-            "本地索引尚未就绪，已从网盘读取".to_owned(),
-        ));
+        let status = if session.local_index_enabled() {
+            "本地索引尚未就绪，已从网盘读取"
+        } else {
+            "本地索引已关闭，已从网盘读取"
+        };
+        return Ok(LibraryLoad::new(load_cloud(session)?, status.to_owned()));
     }
     match load_index(session) {
         Ok(entries) => {

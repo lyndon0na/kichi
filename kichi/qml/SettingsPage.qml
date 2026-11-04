@@ -56,6 +56,22 @@ Item {
                 Layout.topMargin: theme.gapXl
 
                 KSettingsRow {
+                    title: qsTr("本地目录索引")
+                    description: qsTr("在本机保存目录与页面快照，用于输入即搜、重启秒开与路径定位。关闭时不读写本地库，已保存的库文件保留。")
+
+                    CheckBox {
+                        objectName: "settingsLocalIndex"
+                        checked: page.backend ? page.backend.localIndexEnabled : false
+                        Accessible.name: qsTr("本地目录索引")
+                        onToggled: function () {
+                            if (page.backend)
+                                page.backend.setLocalIndexEnabled(checked)
+                        }
+                    }
+                }
+
+                KSettingsRow {
+                    divider: true
                     title: qsTr("任务结束通知")
                     description: qsTr("下载、上传或离线任务结束时通知。")
 

@@ -169,6 +169,8 @@ pub mod qobject {
         #[qproperty(i32, download_rate_mib, cxx_name = "downloadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, auto_resume_downloads, cxx_name = "autoResumeDownloads", READ, NOTIFY = changed)]
         #[qproperty(bool, auto_resume_uploads, cxx_name = "autoResumeUploads", READ, NOTIFY = changed)]
+        /// 本机保存目录树索引与页面快照；关闭时不读不写本地库
+        #[qproperty(bool, local_index_enabled, cxx_name = "localIndexEnabled", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_parallel, cxx_name = "uploadParallel", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_rate_mib, cxx_name = "uploadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
@@ -653,6 +655,11 @@ pub mod qobject {
         #[cxx_name = "setAutoResumeUploads"]
         fn set_auto_resume_uploads(self: Pin<&mut Self>, enabled: bool);
 
+        /// 打开 / 关闭本地目录索引与页面快照（关闭后不读写本地库，库文件保留）
+        #[qinvokable]
+        #[cxx_name = "setLocalIndexEnabled"]
+        fn set_local_index_enabled(self: Pin<&mut Self>, enabled: bool);
+
         #[qinvokable]
         #[cxx_name = "setUploadParallel"]
         fn set_upload_parallel(self: Pin<&mut Self>, value: i32);
@@ -1129,6 +1136,8 @@ pub struct KichiRust {
     pub(crate) download_rate_mib: i32,
     pub(crate) auto_resume_downloads: bool,
     pub(crate) auto_resume_uploads: bool,
+    /// 在本机保存目录树索引与页面快照（关闭时不读不写本地库）
+    pub(crate) local_index_enabled: bool,
     pub(crate) upload_parallel: i32,
     pub(crate) upload_rate_mib: i32,
     /// 启动时自动续跑标记是否已经处理过（每进程一次）
@@ -1194,6 +1203,12 @@ impl Default for KichiRust {
     fn default() -> Self {
         let mut breadcrumb = QStringList::default();
         breadcrumb.append(QString::from(files::ROOT_NAME));
+
+        // 索引开关在会话启动前就要生效：关闭时启动期不创建也不打开索引库。
+        // `load_settings` 之后还会再读一次设置，这里只为拿到这一个布尔值。
+        let local_index_enabled = crate::settings::load(&crate::settings::default_path())
+            .0
+            .local_index_enabled;
 
         let mut object = Self {
             auth_state: QString::from("signedOut"),
@@ -1346,6 +1361,7 @@ impl Default for KichiRust {
             download_rate_mib: 0,
             auto_resume_downloads: true,
             auto_resume_uploads: false,
+            local_index_enabled,
             upload_parallel: i32::try_from(crate::session::limits::DEFAULT_UPLOAD_PARALLEL)
                 .unwrap_or(2),
             upload_rate_mib: 0,
@@ -1378,7 +1394,7 @@ impl Default for KichiRust {
             search_local_running: false,
             search_pending: None,
             captcha_url: String::new(),
-            backend: Backend::new(crate::session::store_path()),
+            backend: Backend::new(crate::session::store_path(), local_index_enabled),
         };
         object.load_settings();
         // 启动时读回传输历史（首次 sync_transfers 之前；批次号从历史最大值之后接着走）
@@ -1476,6 +1492,7 @@ impl KichiRust {
         self.download_rate_mib = i32::try_from(settings.download_rate_mib).unwrap_or(i32::MAX);
         self.auto_resume_downloads = settings.auto_resume_downloads;
         self.auto_resume_uploads = settings.auto_resume_uploads;
+        self.local_index_enabled = settings.local_index_enabled;
         self.upload_parallel = i32::try_from(settings.upload_parallel)
             .unwrap_or(crate::session::limits::DEFAULT_UPLOAD_PARALLEL as i32);
         self.upload_rate_mib = i32::try_from(settings.upload_rate_mib).unwrap_or(i32::MAX);

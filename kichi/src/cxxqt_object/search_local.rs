@@ -27,6 +27,16 @@ pub(crate) fn local_index_ready(session: &Session) -> bool {
     session.local_index_ready()
 }
 
+/// 本地索引不可用时的状态行：区分「还没建好」和「用户关掉了」，
+/// 默认关闭时不能让用户以为后台一直在建库。
+fn fallback_hint(session: &Session) -> &'static str {
+    if session.local_index_enabled() {
+        "本地索引尚未就绪，只筛了当前目录"
+    } else {
+        "本地索引已关闭，只筛了当前目录（可在设置中开启）"
+    }
+}
+
 impl qobject::Kichi {
     /// 搜索框每次有效输入都会来这里。
     pub fn search_local(mut self: Pin<&mut Self>, query: QString) {
@@ -45,8 +55,8 @@ impl qobject::Kichi {
         if local_index_ready(&self.backend.session) {
             self.as_mut().start_local_index_search(trimmed);
         } else {
-            self.as_mut()
-                .run_local_fallback(&trimmed, "本地索引尚未就绪，只筛了当前目录");
+            let hint = fallback_hint(&self.backend.session);
+            self.as_mut().run_local_fallback(&trimmed, hint);
         }
     }
 
@@ -54,8 +64,8 @@ impl qobject::Kichi {
     pub(crate) fn start_local_index_search(mut self: Pin<&mut Self>, query: String) {
         let session = self.backend.session.clone();
         if !local_index_ready(&session) {
-            self.as_mut()
-                .run_local_fallback(&query, "本地索引尚未就绪，只筛了当前目录");
+            let hint = fallback_hint(&session);
+            self.as_mut().run_local_fallback(&query, hint);
             return;
         }
 

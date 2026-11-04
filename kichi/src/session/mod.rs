@@ -45,6 +45,7 @@ pub use failure::{rate_limit_text, Failure};
 mod live_tests;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -116,8 +117,10 @@ pub struct Session {
     clients: ClientCache,
     /// 令牌刷新单飞（并发下载线程同时发现临期时只刷一次）
     refresh_lock: Mutex<()>,
-    /// 当前账号的本地目录树索引；未登录 / 已登出时为 `None`
+    /// 当前账号的本地目录树索引；未登录 / 已登出 / 开关关闭时为 `None`
     tree_index: Mutex<Option<Arc<tree_index::TreeIndex>>>,
+    /// 本地索引总开关：关掉后连库文件都不打开（页面快照同库，一起停用）
+    index_enabled: AtomicBool,
     /// 最近一次索引打开 / 后台回填失败；界面提示一次后取走
     tree_index_error: Mutex<Option<String>>,
     /// 测试注入口：换成假刷新实现，验证只发一次请求
@@ -137,8 +140,9 @@ impl Session {
     /// 启动时调用：加载配置、恢复（并必要时刷新）会话。
     ///
     /// `store_path` 是钥匙串不可用时的降级文件位置。
-    /// 返回 `(会话, 恢复状态, 存储后端)`；后端为 `None` 表示未读写过存储。
-    pub fn bootstrap(store_path: PathBuf) -> (Self, RestoredState) {
+    /// `local_index_enabled` 来自设置；关闭时启动期不创建 / 不打开索引库。
+    /// 返回 `(会话, 恢复状态)`；存储后端信息在 `RestoredState` 里。
+    pub fn bootstrap(store_path: PathBuf, local_index_enabled: bool) -> (Self, RestoredState) {
         let config = Config::from_env();
         let (persisted, backend) = match store::load(&store_path) {
             Ok(Some((session, backend))) => (Some(session), Some(backend)),
@@ -150,7 +154,13 @@ impl Session {
                     notice: Some(err.to_string()),
                     email: None,
                 };
-                let session = Self::new(config, store_path, None, String::new());
+                let session = Self::new_with_index(
+                    config,
+                    store_path,
+                    None,
+                    String::new(),
+                    local_index_enabled,
+                );
                 return (session, state);
             }
         };
@@ -161,7 +171,13 @@ impl Session {
             .filter(|id| id.len() == 32)
             .unwrap_or_else(captcha::generate_device_id);
 
-        let session = Self::new(config, store_path, persisted.clone(), device_id);
+        let session = Self::new_with_index(
+            config,
+            store_path,
+            persisted.clone(),
+            device_id,
+            local_index_enabled,
+        );
         let restored = match persisted {
             None => RestoredState {
                 state: State::SignedOut,
@@ -212,6 +228,7 @@ impl Session {
         if restored.state == State::SignedIn {
             // 启动恢复登录：索引没了 / 版本不认识会在这里重建出空库，
             // 是否需要全量建库由调用方查 `needs_full_build` 决定。
+            // 开关关闭时这里直接跳过，不创建也不打开库文件。
             let _ = session.open_tree_index();
         }
         (session, restored)
@@ -223,6 +240,16 @@ impl Session {
         current: Option<PersistedSession>,
         device_id: String,
     ) -> Self {
+        Self::new_with_index(config, store_path, current, device_id, true)
+    }
+
+    fn new_with_index(
+        config: Config,
+        store_path: PathBuf,
+        current: Option<PersistedSession>,
+        device_id: String,
+        local_index_enabled: bool,
+    ) -> Self {
         Self {
             config,
             store_path,
@@ -230,6 +257,7 @@ impl Session {
             clients: ClientCache::default(),
             refresh_lock: Mutex::new(()),
             tree_index: Mutex::new(None),
+            index_enabled: AtomicBool::new(local_index_enabled),
             tree_index_error: Mutex::new(None),
             #[cfg(test)]
             refresh_hook: Mutex::new(None),
@@ -414,8 +442,25 @@ impl Session {
         self.with_tree_index_error(Option::take)
     }
 
-    /// 当前账号的索引；未打开或已登出时为 `None`。
+    /// 本地索引总开关当前是否打开。
+    pub(crate) fn local_index_enabled(&self) -> bool {
+        self.index_enabled.load(Ordering::SeqCst)
+    }
+
+    /// 运行时切换本地索引。关闭时立即逻辑关闭当前库；关闭后所有读写入口
+    /// 都不可见（`tree_index` 返回 `None`），后台线程持有的旧句柄写不进去。
+    pub(crate) fn set_local_index_enabled(&self, enabled: bool) {
+        self.index_enabled.store(enabled, Ordering::SeqCst);
+        if !enabled {
+            self.close_tree_index();
+        }
+    }
+
+    /// 当前账号的索引；未打开、已登出或开关关闭时为 `None`。
     pub(crate) fn tree_index(&self) -> Option<Arc<tree_index::TreeIndex>> {
+        if !self.local_index_enabled() {
+            return None;
+        }
         self.with_tree_index(|slot| slot.clone())
     }
 
@@ -465,6 +510,10 @@ impl Session {
 
     /// 按当前账号打开索引。旧索引先逻辑关闭，连接交给后台线程自然放掉。
     pub(crate) fn open_tree_index(&self) -> Result<Arc<tree_index::TreeIndex>, Failure> {
+        if !self.local_index_enabled() {
+            // 开关关闭不是错误：调用方按「索引不可用」静默回退网络
+            return Err(Failure::Other("本地索引已关闭".to_owned()));
+        }
         let (_, user_id, _) = self.current_credentials()?;
         let path = paths::index_path(&user_id);
         let opened = match tree_index::TreeIndex::open(&path, &user_id) {
@@ -651,4 +700,40 @@ pub struct RestoredState {
     pub backend: Option<Backend>,
     pub notice: Option<String>,
     pub email: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_index_is_never_exposed_or_opened() {
+        let session = Session::for_test(Config::from_env(), "token");
+        session.set_local_index_enabled(false);
+
+        assert!(!session.local_index_enabled());
+        assert!(session.tree_index().is_none(), "关闭后不暴露索引句柄");
+        assert!(!session.local_index_ready());
+        assert!(session.index_built_at().is_none());
+        session.write_index(|_| Ok(()));
+        assert!(
+            session.take_tree_index_error().is_none(),
+            "关闭不是错误，不能攒一条提示"
+        );
+        assert!(session.open_tree_index().is_err(), "关闭后不得打开库");
+        assert!(
+            session.take_tree_index_error().is_none(),
+            "打开被开关拒绝也不该写错误"
+        );
+    }
+
+    #[test]
+    fn enabling_again_allows_the_index_to_be_used() {
+        let session = Session::for_test(Config::from_env(), "token");
+        session.set_local_index_enabled(false);
+        session.set_local_index_enabled(true);
+
+        assert!(session.local_index_enabled());
+        assert!(session.tree_index().is_none(), "只放开开关，不主动开库");
+    }
 }

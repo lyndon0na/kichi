@@ -247,6 +247,8 @@ pub struct Settings {
     pub auto_resume_downloads: bool,
     /// 正常退出后，下次恢复登录态时自动继续未完成的上传（默认关闭）
     pub auto_resume_uploads: bool,
+    /// 在本机保存目录树索引与页面快照（默认关闭）
+    pub local_index_enabled: bool,
 }
 
 impl Default for Settings {
@@ -274,6 +276,7 @@ impl Default for Settings {
             upload_rate_mib: 0,
             auto_resume_downloads: true,
             auto_resume_uploads: false,
+            local_index_enabled: false,
         }
     }
 }
@@ -487,6 +490,7 @@ mod tests {
             upload_rate_mib: 8,
             auto_resume_downloads: false,
             auto_resume_uploads: true,
+            local_index_enabled: true,
             ..Settings::default()
         };
         save(&path, &settings).expect("保存失败");
@@ -560,6 +564,10 @@ mod tests {
         assert_eq!(settings.upload_rate_mib, 0, "旧设置上传默认不限速");
         assert!(settings.auto_resume_downloads, "自动续跑默认开启");
         assert!(!settings.auto_resume_uploads, "上传自动续传默认关闭");
+        assert!(
+            !settings.local_index_enabled,
+            "本地目录索引默认关闭（旧设置没有这个字段时同样关闭）"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
