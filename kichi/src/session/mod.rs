@@ -13,6 +13,7 @@ mod identity;
 pub(crate) mod library;
 pub(crate) mod limits;
 pub mod media;
+pub(crate) mod page_snapshot;
 pub mod partials;
 pub mod paths;
 mod playback_history;

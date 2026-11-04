@@ -22,7 +22,7 @@ use super::actions::{format_size, run_in_background};
 use super::qobject;
 use super::tasks_submit::{parse_urls, submit, submit_torrents, summary, torrent_summary};
 use super::QVariantList;
-use crate::session::{has_active, Failure};
+use crate::session::{has_active, page_snapshot, Failure, Session};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -103,7 +103,19 @@ impl qobject::Kichi {
 
     fn refresh_tasks_inner(mut self: Pin<&mut Self>, force: bool, manual: bool) {
         let session = self.backend.session.clone();
-        let has_cache = self.tasks_loaded;
+        let (has_cache, restored) = {
+            let mut rust = self.as_mut().rust_mut();
+            let restored = if !rust.tasks_loaded && rust.task_list.is_empty() {
+                restore_task_snapshot(&mut rust, &session)
+            } else {
+                false
+            };
+            (rust.tasks_loaded, restored)
+        };
+        if restored {
+            // 快照换了 tasks 属性，任务页激活时先渲染出来，再静默校准。
+            self.as_mut().notify();
+        }
         if self.tasks_request_running {
             let show_manual = {
                 let mut rust = self.as_mut().rust_mut();
@@ -482,6 +494,7 @@ impl qobject::Kichi {
         announce: bool,
     ) {
         sort_tasks_newest_first(&mut tasks);
+        let session = self.backend.session.clone();
 
         let (finished_now, completed_folders) = {
             // 先在 rust_mut 里完成「谁刚结束」的判定，再统一写属性
@@ -523,6 +536,8 @@ impl qobject::Kichi {
             let changed = rust.task_list != tasks;
             let visible = rust.tasks_loading;
             if changed {
+                // 轮询 / 提交 / 删除产生的新列表写回快照，重启后直接可用。
+                page_snapshot::save(&session, page_snapshot::OFFLINE_TASKS, &tasks);
                 rust.tasks = list;
                 rust.task_list = tasks;
             }
@@ -556,6 +571,27 @@ impl qobject::Kichi {
 /// 状态分组压到几十天前的「产物已删除」任务下面，和表头「创建时间」不一致。
 fn sort_tasks_newest_first(tasks: &mut [OfflineTask]) {
     tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+}
+
+/// 冷启动恢复上次成功列表；返回是否恢复出了行。
+///
+/// 不恢复 `known_running`：任务若在应用关闭期间完成，首次校准不补发系统通知。
+fn restore_task_snapshot(rust: &mut super::KichiRust, session: &Session) -> bool {
+    let Some(tasks) =
+        page_snapshot::load::<Vec<OfflineTask>>(session, page_snapshot::OFFLINE_TASKS)
+    else {
+        return false;
+    };
+    let mut list = QVariantList::default();
+    for task in &tasks {
+        list.append(QVariant::from(&task_map(task)));
+    }
+    rust.tasks = list;
+    rust.task_list = tasks;
+    rust.tasks_loaded = true;
+    // 快照只负责占位：保持刷新到期时间为空，首轮校准静默进行。
+    rust.task_refresh_at = None;
+    true
 }
 
 /// 任务完成后应校准的目录；优先用提交时记下的目标，重启后回退到资源父目录。

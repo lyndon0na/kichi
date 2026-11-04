@@ -2,7 +2,8 @@
 //!
 //! 索引只是可重建的缓存（ADR 0024）：库文件删掉、坏了、版本不认识都会重建，
 //! 所以这里不提供迁移，也不在内存里保留第二份权威状态。所有读写错误都原样
-//! 冒泡，由调用方决定是提示用户还是静默降级到网络。
+//! 冒泡，由调用方决定是提示用户还是静默降级到网络。纯追加表是唯一例外：
+//! 打开时用 `IF NOT EXISTS` 原地补建，不提升版本（见 `store`）。
 
 pub(crate) mod apply;
 pub(crate) mod query;
@@ -120,6 +121,19 @@ impl TreeIndex {
     ) -> Result<Option<Vec<TrashEntry>>, IndexError> {
         self.store
             .with_conn(|conn| query::trash_listing_if_fresh(conn, now, max_age_secs))
+    }
+
+    /// 页面快照：重启后先渲染上次成功结果，再后台校准。
+    pub(crate) fn page_snapshot(&self, kind: &str) -> Result<Option<String>, IndexError> {
+        self.store.with_conn(|conn| {
+            Ok(store::page_snapshot(conn, kind)?.map(|(payload, _updated_at)| payload))
+        })
+    }
+
+    pub(crate) fn put_page_snapshot(&self, kind: &str, payload: &str) -> Result<(), IndexError> {
+        let now = Utc::now().timestamp();
+        self.store
+            .with_conn(|conn| store::put_page_snapshot(conn, kind, payload, now))
     }
 
     /// 网络父链回填（folder_trail 找不到本地链时用）。

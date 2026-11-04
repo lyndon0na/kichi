@@ -11,7 +11,7 @@ use super::actions::run_in_background;
 use super::file_optimistic::is_unconfirmed_create;
 use super::qobject;
 use super::QVariantList;
-use crate::session::Failure;
+use crate::session::{page_snapshot, Failure, Session};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -44,7 +44,19 @@ impl qobject::Kichi {
 
     fn refresh_shares_inner(mut self: Pin<&mut Self>, force: bool, manual: bool) {
         let session = self.backend.session.clone();
-        let has_cache = self.shares_loaded;
+        let (has_cache, restored) = {
+            let mut rust = self.as_mut().rust_mut();
+            let restored = if !rust.shares_loaded && rust.share_list.is_empty() {
+                restore_share_snapshot(&mut rust, &session)
+            } else {
+                false
+            };
+            (rust.shares_loaded, restored)
+        };
+        if restored {
+            // 快照换了 shares 属性，页面激活时先渲染出来，再静默校准。
+            self.as_mut().notify();
+        }
         if self.shares_request_running {
             let show_manual = {
                 let mut rust = self.as_mut().rust_mut();
@@ -284,6 +296,7 @@ impl qobject::Kichi {
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
                 .then_with(|| a.share_id.cmp(&b.share_id))
         });
+        let session = self.backend.session.clone();
         let mut list = QVariantList::default();
         for share in &shares {
             list.append(QVariant::from(&share_map(share)));
@@ -294,6 +307,8 @@ impl qobject::Kichi {
             let changed = rust.share_list != shares;
             let visible = rust.shares_loading;
             if changed {
+                // 每次成功校准都把整份列表写回快照，重启后直接可用。
+                page_snapshot::save(&session, page_snapshot::SHARES, &shares);
                 rust.shares = list;
                 rust.share_list = shares;
             }
@@ -330,6 +345,23 @@ impl qobject::Kichi {
 
 fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|last| now.saturating_duration_since(last) >= REFRESH_COOLDOWN)
+}
+
+/// 冷启动恢复上次成功列表；返回是否恢复出了行。
+fn restore_share_snapshot(rust: &mut super::KichiRust, session: &Session) -> bool {
+    let Some(shares) = page_snapshot::load::<Vec<MyShare>>(session, page_snapshot::SHARES) else {
+        return false;
+    };
+    let mut list = QVariantList::default();
+    for share in &shares {
+        list.append(QVariant::from(&share_map(share)));
+    }
+    rust.shares = list;
+    rust.share_list = shares;
+    rust.shares_loaded = true;
+    // 快照只负责占位：保持刷新到期时间为空，页面激活时静默校准。
+    rust.share_refresh_at = None;
+    true
 }
 
 fn clean_ids(ids: QStringList) -> Vec<String> {

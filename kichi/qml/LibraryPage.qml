@@ -647,7 +647,15 @@ Item {
         target: page.backend
 
         function onChanged() {
-            if (!page.active || !page.backend || page.backend.libraryKind !== page.kind)
+            // 退出登录 / 换账号后后端会把集合置空。隐藏页也必须丢掉旧账号的行，
+            // 否则新账号快照恢复出的 revision 可能和旧值相同而被 accept 跳过。
+            if (!page.backend || page.backend.libraryKind.length === 0) {
+                if (page.cachedEntries.length > 0)
+                    page.cachedEntries = []
+                page.acceptedDataRevision = -1
+                return
+            }
+            if (!page.active || page.backend.libraryKind !== page.kind)
                 return
             page.acceptBackendEntries()
             if (page.lastRevision === page.backend.libraryRevision)

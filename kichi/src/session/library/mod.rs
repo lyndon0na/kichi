@@ -10,7 +10,7 @@ mod starred;
 
 use kichi_core::{LibraryEntry, LibraryKind};
 
-use super::{Failure, Session};
+use super::{page_snapshot, Failure, Session};
 
 /// 一次资料库读取：条目 + 数据来源说明。
 pub(crate) struct LibraryLoad {
@@ -34,10 +34,14 @@ impl LibraryLoad {
 
 impl Session {
     pub(crate) fn load_library(&self, kind: LibraryKind) -> Result<LibraryLoad, Failure> {
-        match kind {
+        let load = match kind {
             LibraryKind::RecentSaved => recent_saved::load(self).map(LibraryLoad::quiet),
             LibraryKind::PlaybackHistory => playback_history::load(self).map(LibraryLoad::quiet),
             LibraryKind::Starred => starred::load(self),
+        }?;
+        if let Some(key) = page_snapshot::library_key(kind) {
+            page_snapshot::save(self, key, &load.entries);
         }
+        Ok(load)
     }
 }

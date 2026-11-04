@@ -4,6 +4,7 @@
 //! 已加星标可以分别从事件或文件列表产出 [`LibraryEntry`]，界面只消费这一种形状。
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::{FileEntry, PlaybackProgress};
 
@@ -37,7 +38,7 @@ impl LibraryKind {
 }
 
 /// 一条资料库记录：文件本体 + 页面需要的排序时间 / 播放进度。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryEntry {
     pub entry: FileEntry,
     /// 官方事件 id；文件列表来源的页面为空

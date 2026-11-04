@@ -2,6 +2,7 @@
 //! 与线上的 JSON DTO 解耦——DTO 转换放在各 API 模块里（S2 起）。
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// 登录后持有的令牌对。
 #[derive(Debug, Clone)]
@@ -25,7 +26,7 @@ impl TokenPair {
 }
 
 /// 条目类别：文件夹或文件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
     Folder,
     File,
@@ -43,7 +44,7 @@ impl EntryKind {
 }
 
 /// 文件或文件夹（列表项）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEntry {
     pub id: String,
     pub name: String,
@@ -65,6 +66,9 @@ pub struct FileEntry {
     /// 官方明确归类为视频（缩略图角标用）
     pub video: bool,
     /// 列表下发的缩略图地址。只在 Rust 侧用于下载到本地缓存，不映射给 QML。
+    ///
+    /// 签名地址会过期，页面快照不持久化它：反序列化后为空，等后台校准补回。
+    #[serde(skip)]
     pub thumbnail_url: String,
 }
 
@@ -83,7 +87,7 @@ pub struct TrashEntry {
 ///
 /// 官方的 `PHASE_TYPE_*` 集合并不能穷举（实测还有 `PAUSED` 与拼写为
 /// `UNKNOW` 的未知态），未识别的取值一律落到 [`TaskPhase::Unknown`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskPhase {
     Pending,
     Running,
@@ -104,7 +108,7 @@ impl TaskPhase {
 }
 
 /// 离线下载任务。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfflineTask {
     pub id: String,
     pub name: String,
@@ -123,6 +127,7 @@ pub struct OfflineTask {
     /// 产物类别；列表未带 `reference_resource` 时为 `None`
     pub kind: Option<EntryKind>,
     /// 产物缩略图地址。只在 Rust 侧用于下载到本地缓存，不映射给 QML。
+    #[serde(skip)]
     pub thumbnail_url: String,
     /// 产物是否可由播放器打开（视频 / 音频）
     pub media: bool,

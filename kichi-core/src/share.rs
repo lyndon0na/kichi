@@ -42,7 +42,7 @@ pub struct CreatedShare {
 }
 
 /// 分享列表中的一条记录。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MyShare {
     pub share_id: String,
     pub share_url: String,
@@ -428,5 +428,28 @@ mod tests {
         .expect("null 可选字段应兼容");
         let share = parsed.into_share().expect("应可用");
         assert_eq!(share.pass_code, "");
+    }
+
+    #[test]
+    fn share_survives_snapshot_serde_round_trip() {
+        let share = MyShare {
+            share_id: "S1".to_owned(),
+            share_url: "https://mypikpak.com/s/S1".to_owned(),
+            title: "电影合集".to_owned(),
+            pass_code: "a1b2".to_owned(),
+            share_to: "encryptedlink".to_owned(),
+            created_at: DateTime::parse_from_rfc3339("2026-10-29T10:20:30+08:00")
+                .ok()
+                .map(|time| time.with_timezone(&Utc)),
+            expiration_days: 7,
+            view_count: 12,
+            restore_count: 3,
+            file_count: 5,
+            status: "OK".to_owned(),
+            kind: Some(EntryKind::Folder),
+        };
+        let payload = serde_json::to_string(&share).expect("序列化");
+        let restored: MyShare = serde_json::from_str(&payload).expect("反序列化");
+        assert_eq!(restored, share);
     }
 }

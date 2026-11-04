@@ -1,7 +1,9 @@
 //! 本地索引的 SQLite 存储：连接、schema、版本与账号归属。
 //!
-//! 索引只是可重建的缓存：文件损坏或 `user_version` 不认识时直接删库重建，
-//! 不需要迁移。数据库按账号分文件（见 [`super::super::paths::index_path`]），
+//! 索引只是可重建的缓存：文件损坏或 `user_version` 不认识时直接删库重建。
+//! 纯追加的表（如 `page_snapshots`）在打开时用 `IF NOT EXISTS` 补建，**不提升版本**：
+//! 旧二进制看到更高版本会整库删除重建，追加表不该触发这种清库。
+//! 数据库按账号分文件（见 [`super::super::paths::index_path`]），
 //! 但 `KICHI_INDEX_FILE` 可能指向共享路径，所以 `meta.owner` 仍要校验。
 
 use std::path::{Path, PathBuf};
@@ -9,9 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
-/// schema 版本；改表结构必须 +1（旧库会被当作不认识的版本重建）。
+/// schema 版本；不兼容的表结构改动必须 +1。
+///
+/// 纯追加表不提升版本：新旧的 kichi 二进制共用同一账号库时，互相不会把对方的库
+/// 当成「未知版本」删掉重扫。
 pub(super) const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
@@ -47,6 +52,15 @@ CREATE TABLE dirs (
 CREATE TABLE meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+";
+
+/// 页面快照表。纯追加表，打开时按需补建，不提升 `user_version`。
+const PAGE_SNAPSHOTS_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS page_snapshots (
+  kind TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 ";
 
@@ -155,6 +169,8 @@ impl Store {
         if version != SCHEMA_VERSION {
             return Err(IndexError::Version(version));
         }
+        // 追加表按需补建；`IF NOT EXISTS` 对已建好的库是空操作。
+        conn.execute_batch(PAGE_SNAPSHOTS_SCHEMA)?;
         Ok(conn)
     }
 
@@ -176,6 +192,7 @@ fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(PAGE_SNAPSHOTS_SCHEMA)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -189,9 +206,39 @@ fn ensure_owner(conn: &mut Connection, owner: &str) -> Result<(), IndexError> {
     tx.execute("DELETE FROM nodes", [])?;
     tx.execute("DELETE FROM dirs", [])?;
     tx.execute("DELETE FROM meta", [])?;
+    tx.execute("DELETE FROM page_snapshots", [])?;
     tx.execute("INSERT INTO meta(key, value) VALUES('owner', ?1)", [owner])?;
     tx.commit()?;
     Ok(())
+}
+
+/// 页面快照按 `kind` 覆盖写；数据是可丢弃的展示缓存。
+pub(super) fn put_page_snapshot(
+    conn: &Connection,
+    kind: &str,
+    payload: &str,
+    updated_at: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO page_snapshots(kind, payload, updated_at) VALUES(?1, ?2, ?3) \
+         ON CONFLICT(kind) DO UPDATE SET payload = excluded.payload, \
+         updated_at = excluded.updated_at",
+        params![kind, payload, updated_at],
+    )?;
+    Ok(())
+}
+
+pub(super) fn page_snapshot(
+    conn: &Connection,
+    kind: &str,
+) -> rusqlite::Result<Option<(String, i64)>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT payload, updated_at FROM page_snapshots WHERE kind = ?1",
+        [kind],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
 }
 
 pub(super) fn meta_get(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
@@ -269,6 +316,93 @@ mod tests {
             .expect("读 owner")
             .expect("owner 应已写入");
         assert_eq!(owner, "u1");
+    }
+
+    #[test]
+    fn page_snapshot_upserts_and_reads_back() {
+        let store = Store::open_in_memory("u1").expect("打开内存库");
+        store
+            .with_conn(|conn| put_page_snapshot(conn, "library", "v1", 1))
+            .expect("写快照");
+        assert_eq!(
+            store
+                .with_conn(|conn| page_snapshot(conn, "library"))
+                .expect("读快照"),
+            Some(("v1".to_owned(), 1))
+        );
+        store
+            .with_conn(|conn| put_page_snapshot(conn, "library", "v2", 2))
+            .expect("覆盖快照");
+        assert_eq!(
+            store
+                .with_conn(|conn| page_snapshot(conn, "library"))
+                .expect("读快照"),
+            Some(("v2".to_owned(), 2))
+        );
+        assert_eq!(
+            store
+                .with_conn(|conn| page_snapshot(conn, "missing"))
+                .expect("读空快照"),
+            None
+        );
+    }
+
+    #[test]
+    fn switching_owner_wipes_page_snapshots() {
+        let dir = temp_dir("page-owner");
+        let path = dir.join("index.sqlite3");
+        {
+            let store = Store::open(&path, "owner-a").expect("首次打开");
+            store
+                .with_conn(|conn| put_page_snapshot(conn, "library", "old", 1))
+                .expect("写快照");
+            store.close();
+        }
+        let store = Store::open(&path, "owner-b").expect("换账号打开");
+        assert_eq!(
+            store
+                .with_conn(|conn| page_snapshot(conn, "library"))
+                .expect("读快照"),
+            None,
+            "换账号不能看到上一个账号的页面快照"
+        );
+        store.close();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn additive_table_is_created_without_bumping_version() {
+        let dir = temp_dir("additive-upgrade");
+        let path = dir.join("index.sqlite3");
+        {
+            let store = Store::open(&path, "u1").expect("首次打开");
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO nodes(id, parent_id, name, norm_name, kind) \
+                         VALUES('n1', '', 'x', 'x', 0)",
+                        [],
+                    )?;
+                    conn.execute_batch("DROP TABLE page_snapshots;")
+                })
+                .expect("造旧库");
+            store.close();
+        }
+        let store = Store::open(&path, "u1").expect("旧库应原地补表");
+        assert_eq!(
+            schema_version(&store),
+            SCHEMA_VERSION,
+            "追加表不能提升版本，否则旧二进制会把新库当未知版本删掉"
+        );
+        let count: i64 = store
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0)))
+            .expect("数节点");
+        assert_eq!(count, 1, "补表不能丢掉已经建好的目录索引");
+        store
+            .with_conn(|conn| put_page_snapshot(conn, "library", "v", 1))
+            .expect("补出的快照表可用");
+        store.close();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

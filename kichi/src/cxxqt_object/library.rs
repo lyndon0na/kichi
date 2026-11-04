@@ -8,6 +8,8 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 use kichi_core::{EntryKind, LibraryKind};
 
+use crate::session::{page_snapshot, Session};
+
 use super::actions::run_in_background;
 use super::file_action_lock::FileActionDomain;
 use super::files::{Crumb, ROOT_NAME};
@@ -91,6 +93,11 @@ impl qobject::Kichi {
             let switching = current_kind != kind.key();
             let mut restored = false;
             if switching {
+                if !rust.library_cache.contains_key(kind.key()) {
+                    if let Some(cache) = load_library_snapshot(&session, kind) {
+                        rust.library_cache.insert(kind.key(), cache);
+                    }
+                }
                 if rust.library_cache.contains_key(kind.key()) {
                     restored = restore_library_cache(&mut rust, kind);
                 } else {
@@ -372,6 +379,11 @@ impl qobject::Kichi {
         if !changed {
             return None;
         }
+        persist_library_snapshot(
+            &self.as_ref().rust().library_cache,
+            kind,
+            &self.backend.session,
+        );
         self.as_mut().notify();
         Some(snapshot)
     }
@@ -433,6 +445,11 @@ impl qobject::Kichi {
                 cache.revision = data_revision;
             }
         }
+        persist_library_snapshot(
+            &self.as_ref().rust().library_cache,
+            snapshot.kind,
+            &self.backend.session,
+        );
         self.as_mut().notify();
     }
 
@@ -659,6 +676,36 @@ fn clear_library_view(rust: &mut super::KichiRust, kind: LibraryKind) {
     rust.library_refresh_at = None;
     rust.library_revision = rust.library_revision.wrapping_add(1);
     rust.library_data_revision = 0;
+}
+
+fn load_library_snapshot(session: &Session, kind: LibraryKind) -> Option<LibraryCache> {
+    let key = page_snapshot::library_key(kind)?;
+    let entries: Vec<kichi_core::LibraryEntry> = page_snapshot::load(session, key)?;
+    let rows = library_view::list_from(&entries, kind);
+    Some(LibraryCache {
+        rows,
+        entries,
+        loaded: true,
+        error: String::new(),
+        status: String::new(),
+        // 快照只负责占位：页面恢复后立刻静默校准，不能当成新鲜数据。
+        refresh_at: None,
+        revision: 1,
+    })
+}
+
+/// 乐观更新（星标 / 回滚）后把当前集合写回快照；已加星标走索引，不落快照。
+fn persist_library_snapshot(
+    caches: &std::collections::HashMap<&'static str, LibraryCache>,
+    kind: LibraryKind,
+    session: &Session,
+) {
+    let Some(key) = page_snapshot::library_key(kind) else {
+        return;
+    };
+    if let Some(cache) = caches.get(kind.key()) {
+        page_snapshot::save(session, key, &cache.entries);
+    }
 }
 
 fn restore_library_cache(rust: &mut super::KichiRust, kind: LibraryKind) -> bool {

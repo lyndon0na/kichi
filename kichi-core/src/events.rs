@@ -28,7 +28,7 @@ const EVENT_TYPE_UPLOAD: &str = "TYPE_UPLOAD";
 const EVENT_TYPE_RESTORE: &str = "TYPE_RESTORE";
 
 /// 官方播放进度（整数秒）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlaybackProgress {
     pub seconds: u64,
     pub duration: u64,
