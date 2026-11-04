@@ -215,7 +215,7 @@ impl TreeIndex {
     }
 
     /// 探针结果落库（补丁 + 时间戳 + 冷却标记）。
-    pub(crate) fn record_probe(&self, record: &apply::ProbeRecord<'_>) -> Result<(), IndexError> {
+    fn record_probe(&self, record: &apply::ProbeRecord<'_>) -> Result<(), IndexError> {
         self.store
             .with_conn(|conn| apply::record_probe(conn, record))
     }
