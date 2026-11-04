@@ -11,6 +11,7 @@ pub(crate) const LIBRARY_RECENT_SAVED: &str = "library-recent-saved";
 pub(crate) const LIBRARY_PLAYBACK_HISTORY: &str = "library-playback-history";
 pub(crate) const SHARES: &str = "shares";
 pub(crate) const OFFLINE_TASKS: &str = "offline-tasks";
+pub(crate) const TRASH: &str = "trash";
 
 /// 页面快照键；不需要持久化的集合（已加星标走索引）返回 `None`。
 pub(crate) fn library_key(kind: kichi_core::LibraryKind) -> Option<&'static str> {
@@ -81,5 +82,28 @@ mod tests {
         assert!(restored[0].entry.starred);
         assert!(restored[0].entry.thumbnail_url.is_empty());
         assert_eq!(restored[0].event_id.as_deref(), Some("e1"));
+    }
+
+    #[test]
+    fn trash_snapshot_round_trip_keeps_deleted_at_and_drops_signed_thumbnail_url() {
+        let trash = kichi_core::TrashEntry {
+            entry: sample().entry,
+            parent_id: "p1".to_owned(),
+            deleted_at: Utc.with_ymd_and_hms(2026, 11, 2, 8, 0, 0).single(),
+        };
+        let payload = serde_json::to_string(&vec![trash]).expect("序列化");
+        assert!(
+            !payload.contains("signed.example"),
+            "签名缩略图地址不能落盘"
+        );
+        let restored: Vec<kichi_core::TrashEntry> =
+            serde_json::from_str(&payload).expect("反序列化");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].parent_id, "p1");
+        assert_eq!(
+            restored[0].deleted_at,
+            Utc.with_ymd_and_hms(2026, 11, 2, 8, 0, 0).single()
+        );
+        assert!(restored[0].entry.thumbnail_url.is_empty());
     }
 }

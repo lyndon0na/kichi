@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
+use kichi_core::TrashEntry;
+
+use crate::session::page_snapshot;
 
 use super::actions::run_in_background;
 use super::file_action_lock::sync_file_action_properties;
@@ -89,7 +92,7 @@ impl qobject::Kichi {
             self.as_mut().rust_mut().trash_refresh_pending = true;
             return;
         }
-        let has_cache = self.trash_loaded || !self.trash_list.is_empty();
+        let mut has_cache = self.trash_loaded || !self.trash_list.is_empty();
         if self.trash_request_running {
             self.as_mut().rust_mut().trash_refresh_pending = true;
             if manual && has_cache && !self.trash_loading {
@@ -133,6 +136,30 @@ impl qobject::Kichi {
                 }
             }
         }
+        // 索引过期或还没建好时，用上次成功列表的快照先占位，再静默校准。
+        if !has_cache {
+            let session = self.backend.session.clone();
+            if let Some(mut entries) =
+                page_snapshot::load::<Vec<TrashEntry>>(&session, page_snapshot::TRASH)
+            {
+                sort_trash_entries(&mut entries);
+                let files = trash_list_from(&entries);
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.trash_rows = files;
+                    rust.trash_list = entries;
+                    rust.trash_revision = rust.trash_revision.wrapping_add(1);
+                    rust.trash_loading = false;
+                    rust.trash_request_running = false;
+                    rust.trash_loaded = true;
+                    // 快照只负责占位：校准仍需走网络。
+                    rust.trash_refresh_at = None;
+                    rust.trash_error = QString::default();
+                }
+                self.as_mut().notify();
+                has_cache = true;
+            }
+        }
         let session = self.backend.session.clone();
         let (epoch, visible) = {
             let mut rust = self.as_mut().rust_mut();
@@ -156,6 +183,7 @@ impl qobject::Kichi {
                 let entries = session.list_trash()?;
                 // 网络成功后才替换本地快照；索引失败只记录，不影响回收站展示。
                 session.write_index(|index| index.replace_trash(&entries));
+                page_snapshot::save(&session, page_snapshot::TRASH, &entries);
                 Ok(entries)
             },
             move |mut qichi, result| {

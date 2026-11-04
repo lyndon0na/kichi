@@ -73,7 +73,7 @@ pub struct FileEntry {
 }
 
 /// 回收站条目：普通文件字段 + 原父目录与删除时间。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrashEntry {
     pub entry: FileEntry,
     /// 删除前所在目录；根目录为空串。仅作原始元数据保留，
