@@ -15,6 +15,14 @@ use super::actions::run_in_background;
 use super::qobject;
 use crate::session::Failure;
 
+/// 这次播放要不要写官方播放历史。
+///
+/// 只记视频：音乐 / 音频不往账号写 `TYPE_PLAY` 事件，避免听歌记录挤进
+/// 官方播放历史；历史读取仍照旧，音频有旧记录时仍可续播。
+pub(super) fn reports_progress(name: &str) -> bool {
+    kichi_core::is_video_name(name)
+}
+
 /// 播放历史上报状态。纯数据结构，便于锁定同一文件串行与旧回投隔离。
 #[derive(Default)]
 pub(crate) struct ProgressReporter {
@@ -191,6 +199,16 @@ mod tests {
         assert!(!reporter.finish("f", 1), "旧代数的回投必须丢弃");
         assert!(reporter.is_inflight("f"), "不能误删新请求的占用");
         assert!(reporter.finish("f", 2));
+    }
+
+    #[test]
+    fn only_video_playback_is_reported_to_history() {
+        assert!(reports_progress("Movie.mkv"));
+        assert!(reports_progress("Show.S01E01.MP4"));
+        assert!(!reports_progress("song.flac"));
+        assert!(!reports_progress("track.mp3"));
+        assert!(!reports_progress("audiobook.m4b"));
+        assert!(!reports_progress("README"));
     }
 
     #[test]

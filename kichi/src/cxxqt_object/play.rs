@@ -152,6 +152,8 @@ impl qobject::Kichi {
             .rust()
             .find_entry(&id)
             .is_some_and(|entry| entry.audit_flagged);
+        // 音乐不写官方播放历史：只让视频的样本进入上报队列
+        let report_history = super::play_history::reports_progress(name);
         let name = name.to_owned();
         let session = self.backend.session.clone();
         let playback_id = id.clone();
@@ -208,9 +210,14 @@ impl qobject::Kichi {
                     return;
                 }
                 match result {
-                    Ok(work) => qichi
-                        .as_mut()
-                        .start_tier(work, tier, &playback_id, &name, epoch),
+                    Ok(work) => qichi.as_mut().start_tier(
+                        work,
+                        tier,
+                        &playback_id,
+                        &name,
+                        epoch,
+                        report_history,
+                    ),
                     Err(err) => match err {
                         // 登录失效 / 人机验证 / 限速必须全局可见：走统一出口，
                         // 但如果因此切走了登录页，提示条不该继续挂着
@@ -240,6 +247,7 @@ impl qobject::Kichi {
         id: &str,
         name: &str,
         epoch: u64,
+        report_history: bool,
     ) {
         let all = &work.options;
         let crate::session::subtitles::SubtitlePrep {
@@ -279,6 +287,7 @@ impl qobject::Kichi {
             subtitles,
             late,
             work.resume,
+            report_history,
         );
     }
 
@@ -297,6 +306,7 @@ impl qobject::Kichi {
         subtitles: Option<SubtitleAssets>,
         late: Option<LateSubtitles>,
         resume: Option<kichi_core::PlaybackProgress>,
+        report_history: bool,
     ) {
         if option.is_expired(None) {
             self.as_mut()
@@ -339,9 +349,13 @@ impl qobject::Kichi {
                 let playback_id = playback_id.clone();
                 let event_notice = event_notice.clone();
                 enqueue_ui(move |mut qichi| {
-                    qichi
-                        .as_mut()
-                        .on_play_event(event, event_notice, &playback_id, epoch);
+                    qichi.as_mut().on_play_event(
+                        event,
+                        event_notice,
+                        &playback_id,
+                        epoch,
+                        report_history,
+                    );
                 });
             },
         );
@@ -362,6 +376,7 @@ impl qobject::Kichi {
         notice: Option<String>,
         id: &str,
         epoch: u64,
+        report_history: bool,
     ) {
         // 已经切到下一次播放：旧会话的失败 / 取消不再打扰当前界面；
         // 但旧播放器真正退出时仍要清掉它自己的「播放中」标记。
@@ -395,10 +410,12 @@ impl qobject::Kichi {
                 self.finish_play();
             }
             StartEvent::Progress { progress } => {
-                self.as_mut().queue_play_progress(id, epoch, progress);
+                if report_history {
+                    self.as_mut().queue_play_progress(id, epoch, progress);
+                }
             }
             StartEvent::Stopped { progress } => {
-                if let Some(progress) = progress {
+                if let Some(progress) = progress.filter(|_| report_history) {
                     self.as_mut().queue_play_progress(id, epoch, progress);
                 }
                 if self.as_mut().update_active_play_session(epoch, id, false) {

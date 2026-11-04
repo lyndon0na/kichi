@@ -5,8 +5,9 @@ import QtQuick.Effects
 // 文件列表的首列：固定 36×24，不随内容改变列位置。
 //
 // 图片 / 视频加载成功时铺满裁切；文件夹、不支持预览、远程失败、
-// 本地图片解码失败都退回原来的 FileIcon。可播放视频无论有没有缩略图都保留
-// 右下角描边播放角标；真正开播后改为强调色内环，加载时由 VideoLoadingOverlay 覆盖。
+// 本地图片解码失败都退回原来的 FileIcon。可播放的视频 / 音频无论有没有
+// 缩略图都保留右下角描边播放角标；真正开播后改为强调色内环，
+// 加载时由 VideoLoadingOverlay 覆盖。
 Item {
     id: control
 
@@ -14,7 +15,7 @@ Item {
     property var entry: null
     property int iconPixelSize: 18
     property int radius: 3
-    /// 视频角标尺寸：列表用小角标，网格可以放大
+    /// 播放角标尺寸：列表用小角标，网格可以放大
     property int videoBadgeSize: 16
     property int videoBadgeMargin: 2
     /// 非零时使用固定解码尺寸，避免网格卡片随窗口缩放时反复解码。
@@ -32,8 +33,8 @@ Item {
 
     readonly property bool imageReady: localUri.length > 0 && preview.status === Image.Ready
     readonly property bool hasFixedDecodeSize: decodeWidth > 0 && decodeHeight > 0
+    // 可播放媒体都带角标，包括没有缩略图的音乐（回退成音乐图标时也显示）
     readonly property bool showVideoBadge: entry !== null
-                                            && entry.video === true
                                             && entry.playable === true
                                             && !loading
                                             && !playing

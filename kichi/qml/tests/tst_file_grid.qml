@@ -570,6 +570,35 @@ TestCase {
         tryCompare(badge, "visible", false)
     }
 
+    function test_grid_audio_keeps_music_icon_and_play_badge() {
+        density = densityComponent.createObject(parent)
+        verify(density !== null)
+        const audio = entry(10, "file")
+        audio.name = "夜曲.flac"
+        audio.video = false
+        audio.playable = true
+        gridItem = gridItemComponent.createObject(parent, {
+            width: 200,
+            height: density.gridItemHeight(200),
+            contentPadding: density.gridCardPadding,
+            cardSpacing: density.gridCardSpacing,
+            nameLineHeight: density.gridNameLineHeight,
+            nameBlockHeight: density.gridNameBlockHeight,
+            thumbnailRadius: density.gridThumbnailRadius(200),
+            entry: audio
+        })
+        verify(gridItem !== null)
+        wait(30)
+
+        const thumbnail = findChild(gridItem, "gridThumbnail")
+        const icon = findChild(thumbnail, "thumbnailFallbackIcon")
+        verify(icon !== null)
+        compare(icon.iconName, "music")
+        const badge = findChild(thumbnail, "videoBadge")
+        verify(badge !== null)
+        compare(badge.visible, true)
+    }
+
     function test_grid_item_marks_audit_files_on_the_thumbnail() {
         density = densityComponent.createObject(parent)
         const audited = entry(3, "file")

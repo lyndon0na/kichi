@@ -315,6 +315,30 @@ TestCase {
         compare(findChild(thumbnail, "videoBadge").visible, true)
     }
 
+    function test_music_icon_shows_play_badge() {
+        thumbnail = thumbnailComponent.createObject(parent, {
+            entry: {
+                id: "music-thumb",
+                name: "夜曲.flac",
+                kind: "file",
+                sizeText: "42 MB",
+                modifiedText: "",
+                hasThumbnail: false,
+                video: false,
+                playable: true,
+                auditFlag: false
+            }
+        })
+        verify(thumbnail !== null)
+        wait(20)
+
+        compare(thumbnail.imageReady, false)
+        const icon = findChild(thumbnail, "thumbnailFallbackIcon")
+        compare(icon.visible, true)
+        compare(icon.iconName, "music")
+        compare(findChild(thumbnail, "videoBadge").visible, true)
+    }
+
     function test_playing_row_uses_ring_and_name_status_without_resizing() {
         harness = harnessComponent.createObject(parent, { visible: true })
         verify(harness !== null)
