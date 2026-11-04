@@ -10,14 +10,16 @@ import QtQuick.Layouts
 // （docs/pitfalls.md 第 6 / 18 条）。`visible` 必须是真 false，不只是透明。
 //
 // 三个状态（优先级：错误 > 加载 > 回退提示）：
-// - 加载：仅当加载中的缩略图不在当前文件页时兜底显示，延迟 400 ms；
+// - 加载：仅当加载中的条目不在当前列表里（切目录 / 退出搜索 / 换标签页 /
+//   离开对应页面）时兜底显示，延迟 400 ms；
 // - 错误：播放失败。立即出现，[关闭] 清掉；
 // - 提示：档位回退说明（ADR 0003），3 秒后自己收起。
 Rectangle {
     id: toast
 
     property var backend: null
-    /// 文件页已在自己的缩略图里画出加载 / 取消；那里不要再叠一条底部提示。
+    /// 当前列表正内联显示加载 / 取消；那里不要再叠一条底部提示。
+    /// 加载条目已经不在列表里（切目录 / 退出搜索 / 换标签页）时必须为 false。
     property bool inlineLoading: false
 
     readonly property bool loading: toast.backend !== null

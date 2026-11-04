@@ -79,6 +79,25 @@ Item {
                 && page.playLoadingId === String(id)
     }
 
+    /// 加载中的条目是否就在当前显示的数据里（目录 / 搜索结果）。
+    /// 切到别的目录或退出搜索后它不再可见，底部提示条要接管取消入口。
+    readonly property bool showsInlinePlayLoading: {
+        if (page.backend === null || page.backend.playLoading !== true)
+            return false
+        // 切目录时骨架会盖住上一目录的旧行，那些行不算可见
+        if (page.showLoadingSkeleton)
+            return false
+        const id = page.playLoadingId
+        if (id.length === 0)
+            return false
+        const entries = page.displayEntries
+        for (let i = 0; i < entries.length; ++i) {
+            if (entries[i] && String(entries[i].id) === id)
+                return true
+        }
+        return false
+    }
+
     function isEntryPlaying(id) {
         const target = String(id)
         for (let i = 0; i < page.playingIds.length; i++) {

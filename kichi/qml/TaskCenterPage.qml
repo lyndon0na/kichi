@@ -16,6 +16,8 @@ Item {
     readonly property TasksPage tasksView: tasksPage
     readonly property int transferActiveCount: transfersPage.activeCount
     readonly property int offlineActiveCount: tasksPage.activeCount
+    /// 当前标签页是否正内联显示播放加载态（传输标签没有内联播放）。
+    readonly property bool showsInlinePlayLoading: page.tasksView.showsInlinePlayLoading
 
     signal openFolderRequested(string fileId)
     signal revealLocationRequested(string fileId)

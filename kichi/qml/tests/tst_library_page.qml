@@ -197,6 +197,26 @@ TestCase {
         wait(20)
     }
 
+    // 加载中的条目不在当前资料库集合里（或页面退到后台）时不再内联显示，
+    // 底部提示条据此接管取消入口。
+    function test_inline_play_loading_follows_visible_entries() {
+        publish([row("lib-a", true), row("lib-b", true)])
+        backend.playLoading = true
+        backend.playLoadingId = "lib-a"
+        backend.changed()
+        tryCompare(page, "showsInlinePlayLoading", true)
+
+        publish([row("lib-b", true)])
+        tryCompare(page, "showsInlinePlayLoading", false)
+
+        backend.playLoadingId = "lib-b"
+        backend.changed()
+        tryCompare(page, "showsInlinePlayLoading", true)
+
+        page.active = false
+        tryCompare(page, "showsInlinePlayLoading", false)
+    }
+
     function test_cached_rows_survive_switching_library_collections() {
         const recentRows = [row("recent-a", false), row("recent-b", false)]
         publish(recentRows, true)

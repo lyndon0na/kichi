@@ -316,6 +316,22 @@ Item {
                 && String(page.backend.playLoadingId || "") === String(id)
     }
 
+    /// 加载中的条目是否就在当前离线任务列表里。
+    /// 切到传输标签或离开任务页后它不再可见，底部提示条接管取消入口。
+    readonly property bool showsInlinePlayLoading: {
+        if (!page.active || page.backend === null || page.backend.playLoading !== true)
+            return false
+        const id = String(page.backend.playLoadingId || "")
+        if (id.length === 0)
+            return false
+        const tasks = page.backend.tasks || []
+        for (let i = 0; i < tasks.length; ++i) {
+            if (tasks[i] && String(tasks[i].fileId || "") === id)
+                return true
+        }
+        return false
+    }
+
     function isTaskPlaying(id) {
         if (!page.backend || typeof page.backend.playingIds === "undefined")
             return false

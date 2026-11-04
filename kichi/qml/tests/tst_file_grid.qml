@@ -797,6 +797,38 @@ TestCase {
         tryCompare(third, "playing", false)
     }
 
+    // 加载中的条目离开当前列表（切目录 / 退出搜索）后不再内联显示，
+    // 底部提示条据此接管取消入口。
+    function test_inline_play_loading_follows_visible_entries() {
+        fakeBackend.files = [entry(0, "file"), entry(1, "file")]
+        fakeBackend.contentView = "list"
+        fakeBackend.playLoading = true
+        fakeBackend.playLoadingId = "entry-0"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(30)
+        compare(page.showsInlinePlayLoading, true)
+
+        // 进入另一个目录：原来的条目不在列表里
+        fakeBackend.files = [entry(2, "file")]
+        fakeBackend.filesRevision += 1
+        fakeBackend.currentDirId = "another-folder"
+        fakeBackend.changed()
+        tryCompare(page, "showsInlinePlayLoading", false)
+
+        // 搜索结果里又能看到它：交回缩略图
+        fakeBackend.searchActive = true
+        fakeBackend.searchResults = [entry(0, "file")]
+        fakeBackend.changed()
+        tryCompare(page, "showsInlinePlayLoading", true)
+
+        // 退出搜索，仍停在没有该条目的目录
+        fakeBackend.searchActive = false
+        fakeBackend.searchResults = []
+        fakeBackend.changed()
+        tryCompare(page, "showsInlinePlayLoading", false)
+    }
+
     function test_reveal_entry_selects_and_scrolls_the_target() {
         fakeBackend.files = manyEntries(30)
         fakeBackend.contentView = "list"

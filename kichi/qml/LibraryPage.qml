@@ -73,6 +73,23 @@ Item {
                 && String(page.backend.playLoadingId) === String(id)
     }
 
+    /// 加载中的条目是否就在当前资料库页的列表里。
+    /// 切到别的资料库页或数据刷新后条目不再可见时，底部提示条接管取消入口。
+    readonly property bool showsInlinePlayLoading: {
+        if (!page.active || !page.activeCollection
+                || page.backend === null || page.backend.playLoading !== true)
+            return false
+        const id = String(page.backend.playLoadingId || "")
+        if (id.length === 0)
+            return false
+        const entries = page.entries
+        for (let i = 0; i < entries.length; ++i) {
+            if (entries[i] && String(entries[i].id) === id)
+                return true
+        }
+        return false
+    }
+
     function isPlaying(id) {
         const ids = page.backend && page.backend.playingIds
                     ? page.backend.playingIds : []

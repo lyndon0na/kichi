@@ -386,6 +386,25 @@ TestCase {
                   + " row.visible=" + row.visible)
     }
 
+    // 加载中的产物不在当前离线任务列表里（换标签页 / 离开任务页）时不再内联显示，
+    // 底部提示条据此接管取消入口。
+    function test_inline_play_loading_follows_visible_tasks() {
+        var done = task("inline", "completed", 100)
+        done.fileId = "inline-file"
+        push([done])
+        backend.playLoading = true
+        backend.playLoadingId = "inline-file"
+        tryCompare(page, "showsInlinePlayLoading", true)
+
+        backend.playLoadingId = "other-file"
+        tryCompare(page, "showsInlinePlayLoading", false)
+
+        backend.playLoadingId = "inline-file"
+        tryCompare(page, "showsInlinePlayLoading", true)
+        page.active = false
+        tryCompare(page, "showsInlinePlayLoading", false)
+    }
+
     function test_loading_and_playing_follow_the_resource_id() {
         var done = task("state", "completed", 100)
         done.fileId = "file-state"

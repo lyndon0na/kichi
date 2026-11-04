@@ -634,16 +634,27 @@ ApplicationWindow {
         }
     }
 
-    // 播放错误 / 回退提示条：文件页加载态在缩略图内，离开文件页时这里兜底显示取消。
+    // 播放错误 / 回退提示条：加载中的条目在当前列表里由缩略图内联显示，
+    // 条目不再可见（切目录 / 退出搜索 / 换标签页）或离开对应页面时，这里接管取消入口。
     // 底部居中浮动，只占自身尺寸（踩坑第 6 / 18 条）。
     // ApplicationWindow 的 contentItem 已经把 footer 的高度扣掉，
     // 所以贴 parent.bottom 就已经在底栏之上。
     PlayToast {
         id: playToast
         backend: backend
-        inlineLoading: root.currentPage === pageIds.files
-                       || root.currentPage === pageIds.transfers
-                       || pageIds.libraryPages.indexOf(root.currentPage) >= 0
+        inlineLoading: {
+            if (root.currentPage === pageIds.files)
+                return filesPage.showsInlinePlayLoading
+            if (root.currentPage === pageIds.transfers)
+                return taskCenterPage.showsInlinePlayLoading
+            if (root.currentPage === pageIds.recentSaved)
+                return recentSavedPage.showsInlinePlayLoading
+            if (root.currentPage === pageIds.playbackHistory)
+                return playbackHistoryPage.showsInlinePlayLoading
+            if (root.currentPage === pageIds.starred)
+                return starredPage.showsInlinePlayLoading
+            return false
+        }
     }
 
     // 底栏：左侧单槽消息 + 右侧固定传输入口。消息默认显示当前页面 / 目录上下文，
