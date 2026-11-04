@@ -10,6 +10,8 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
 use kichi_core::{EntryKind, FileEntry, TaskPhase};
 
+use crate::session::thumbnail_cache;
+
 use super::actions::{format_size, run_in_background};
 use super::file_action_lock::{reset_file_action_state, FileActionDomain};
 use super::file_optimistic::{is_unconfirmed_create, merge_unresolved_create};
@@ -918,12 +920,27 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
     // 只告诉界面「有没有可尝试的缩略图」，远程 URL 永远不离开 Rust。
     map.insert_clone(
         &QString::from("hasThumbnail"),
-        &QVariant::from(&(entry.kind == EntryKind::File && !entry.thumbnail_url.is_empty())),
+        &QVariant::from(&has_thumbnail(entry)),
     );
     map.insert_clone(&QString::from("pending"), &QVariant::from(&false));
     // 目录列表 / 资料库 / 手工筛出的行都不在回收站；搜索结果会覆盖这一项。
     map.insert_clone(&QString::from("inTrash"), &QVariant::from(&false));
     map
+}
+
+/// 远程地址或本地缓存任一可用，界面就能先显示缩略图。
+///
+/// 快照与本地索引条目不保存签名地址（`thumbnail_url` 反序列化为空），
+/// 冷启动只有本地缓存能立刻出图，不能等后台校准补回地址。
+fn has_thumbnail(entry: &FileEntry) -> bool {
+    if entry.kind != EntryKind::File {
+        return false;
+    }
+    if !entry.thumbnail_url.is_empty() {
+        return true;
+    }
+    let visual = entry.video || kichi_core::is_image_name(&entry.name);
+    visual && thumbnail_cache::find(&entry.id).is_some()
 }
 
 #[cfg(test)]

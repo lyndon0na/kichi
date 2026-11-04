@@ -793,6 +793,11 @@ pub fn is_video_name(name: &str) -> bool {
     is_video(name, "", "", "")
 }
 
+/// 只按文件名判断是否图片（快照 / 索引条目探测本地缩略图缓存时用）。
+pub fn is_image_name(name: &str) -> bool {
+    is_image(name, "", "", "")
+}
+
 /// RFC3339 时间；官方可能给 `null`、空串或无法解析的值，一律按“没有时间”处理。
 pub(crate) fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where

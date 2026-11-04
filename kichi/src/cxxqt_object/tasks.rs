@@ -22,7 +22,7 @@ use super::actions::{format_size, run_in_background};
 use super::qobject;
 use super::tasks_submit::{parse_urls, submit, submit_torrents, summary, torrent_summary};
 use super::QVariantList;
-use crate::session::{has_active, page_snapshot, Failure, Session};
+use crate::session::{has_active, page_snapshot, thumbnail_cache, Failure, Session};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -806,7 +806,7 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
     );
     map.insert_clone(
         &QString::from("hasThumbnail"),
-        &QVariant::from(&(task.kind == Some(EntryKind::File) && !task.thumbnail_url.is_empty())),
+        &QVariant::from(&has_task_thumbnail(task)),
     );
     map.insert_clone(&QString::from("video"), &QVariant::from(&task.video));
     map.insert_clone(
@@ -818,6 +818,26 @@ fn task_map(task: &OfflineTask) -> QVariantMap {
         &QVariant::from(&status.is_settled()),
     );
     map
+}
+
+/// 远程地址或本地缓存任一可用即可显示缩略图；快照不保存签名地址，
+/// 冷启动只能靠本地缓存先出图。
+fn has_task_thumbnail(task: &OfflineTask) -> bool {
+    if task.kind != Some(EntryKind::File) {
+        return false;
+    }
+    if !task.thumbnail_url.is_empty() {
+        return true;
+    }
+    let Some(id) = task
+        .file_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return false;
+    };
+    (task.video || kichi_core::is_image_name(&task.name)) && thumbnail_cache::find(id).is_some()
 }
 
 #[cfg(test)]

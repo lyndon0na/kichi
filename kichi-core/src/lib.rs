@@ -32,7 +32,7 @@ mod upload_state;
 pub use auth::{LoginOutcome, REFRESH_MARGIN};
 pub use config::Config;
 pub use dl::DownloadStream;
-pub use drive::{is_media_name, is_video_name, DriveClient, UserInfo};
+pub use drive::{is_image_name, is_media_name, is_video_name, DriveClient, UserInfo};
 pub use error::Error;
 pub use events::{PlaybackHistoryEntry, PlaybackProgress, RecentSavedEvent};
 pub use library::{LibraryEntry, LibraryKind};
