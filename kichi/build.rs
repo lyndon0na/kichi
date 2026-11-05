@@ -63,6 +63,8 @@ const QML_FILES: &[&str] = &[
     "qml/KScrollBar.qml",
     "qml/KScrollMemory.qml",
     "qml/KRowChrome.qml",
+    "qml/KTableHeader.qml",
+    "qml/KHeaderCell.qml",
     "qml/KProgressBar.qml",
     "qml/DialogFooter.qml",
     "qml/StandardDialogFooter.qml",
