@@ -6,6 +6,7 @@
 
 mod cxxqt_object;
 mod format;
+mod instance;
 mod player;
 mod session;
 mod settings;
@@ -13,6 +14,14 @@ mod settings;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
+    // 单实例检查必须最先做：第二个进程连上已有实例的 socket 后直接退出，
+    // 不能先跑缓存清理，更不能建第二个窗口。锁文件要活到进程结束。
+    let _instance_guard = match instance::claim() {
+        instance::Claim::Secondary => return,
+        instance::Claim::Primary(instance) => Some(instance),
+        instance::Claim::Unprotected => None,
+    };
+
     // 控件风格：跟随 KDE 桌面（Breeze 图标 + 系统配色方案）。
     // 不指定时 Qt 用 Basic 风格——一套刻意不带装饰的裸控件，菜单 / 弹窗 / 输入框
     // 会显得和桌面其它应用不是一家人。

@@ -142,6 +142,12 @@ impl qobject::Kichi {
             self.as_mut().handle_tray_event(event);
             handled = true;
         }
+        // 再次启动 kichi：第二个进程通过实例 socket 请求唤回窗口，
+        // 与托盘「显示」走同一条路径（QML 的 trayShowRequested 监听）。
+        for _ in 0..crate::instance::take_activations() {
+            self.as_mut()
+                .handle_tray_event(super::tray::TrayEvent::Show);
+        }
         loop {
             let task = {
                 let mut queue = tasks().lock().unwrap_or_else(|e| e.into_inner());
