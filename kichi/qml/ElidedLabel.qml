@@ -15,7 +15,9 @@ Label {
     property bool externallyHovered: false
     property int toolTipDelay: 500
 
-    readonly property bool toolTipRequested: toolTipText.length > 0
+    // 判断用实际要显示的 ToolTip.text：调用点可以把它改写成别的说明（如所在文件夹），
+    // 改写结果可能为空；只看 toolTipText 会在那时弹出一个没有字的空框。
+    readonly property bool toolTipRequested: ToolTip.text.length > 0
         && (control.truncated || showToolTipWhenUntruncated)
         && (localHover.hovered || externallyHovered)
 

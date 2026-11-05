@@ -19,6 +19,8 @@ TestCase {
             property alias fileRow: fileRow
             property alias gridItem: gridItem
             property alias trashRow: trashRow
+            property alias libraryRow: libraryRow
+            property alias libraryRowWithPath: libraryRowWithPath
             property alias transferRow: transferRow
             property alias narrowButton: narrowButton
             property alias searchBackend: fakeSearchBackend
@@ -97,6 +99,24 @@ TestCase {
                 entry: harness.entry("trash")
             }
 
+            LibraryRow {
+                id: libraryRow
+                y: 560
+                width: 760
+                index: -1
+                rowHeight: 48
+                entry: harness.libraryEntry("")
+            }
+
+            LibraryRow {
+                id: libraryRowWithPath
+                y: 618
+                width: 760
+                index: -1
+                rowHeight: 48
+                entry: harness.libraryEntry("/父目录/子目录")
+            }
+
             TransferMainRow {
                 id: transferRow
                 y: 330
@@ -129,6 +149,20 @@ TestCase {
                 y: 410
                 width: 72
                 text: "一个很长但会截断的按钮文字"
+            }
+
+            function libraryEntry(folderPath) {
+                return {
+                    id: "library",
+                    name: "资料库里同样很长的文件名用来确认所在文件夹提示有内容.mkv",
+                    kind: "file",
+                    sizeText: "1.2 GB",
+                    modifiedText: "2026-10-30 12:34",
+                    primaryText: "1.2 GB",
+                    secondaryText: "2026-10-30 12:34",
+                    playable: true,
+                    folderPath: folderPath
+                }
             }
 
             function entry(prefix) {
@@ -201,6 +235,27 @@ TestCase {
 
         hoverCenter(harness.trashRow, label)
         verify(label.toolTipRequested)
+    }
+
+    function test_library_row_without_folder_path_falls_back_to_name() {
+        const label = findChild(harness.libraryRow, "libraryNameText")
+        disablePopup(label)
+        verify(label.truncated)
+        verify(!label.toolTipRequested)
+
+        hoverCenter(harness.libraryRow, label)
+        verify(label.toolTipRequested)
+        compare(label.toolTipText, label.text)
+    }
+
+    function test_library_row_with_folder_path_uses_folder_hint() {
+        const label = findChild(harness.libraryRowWithPath, "libraryNameText")
+        disablePopup(label)
+        verify(label.truncated)
+
+        hoverCenter(harness.libraryRowWithPath, label)
+        verify(label.toolTipRequested)
+        verify(label.toolTipText.indexOf("所在文件夹：") === 0)
     }
 
     function test_transfer_name_uses_row_hover_for_plain_file() {

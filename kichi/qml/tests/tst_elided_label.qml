@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtTest
 import ".."
 
@@ -21,6 +22,8 @@ TestCase {
             property alias forcedText: forcedLabel
             property alias clickableOverlayText: clickableOverlayLabel
             property alias disabledOverlayText: disabledOverlayLabel
+            property alias emptyOverrideText: emptyOverrideLabel
+            property alias customOverrideText: customOverrideLabel
 
             ElidedLabel {
                 id: truncatedLabel
@@ -108,6 +111,33 @@ TestCase {
                     hoverEnabled: true
                 }
             }
+
+            // 调用点把提示文字改写成空串（例如条目没有所在文件夹）时不能弹空框。
+            ElidedLabel {
+                id: emptyOverrideLabel
+                x: 10
+                y: 240
+                width: 90
+                height: 24
+                text: "调用点改成空文本的长目录名"
+                elide: Text.ElideRight
+                toolTipEnabled: false
+                externallyHovered: true
+                ToolTip.text: ""
+            }
+
+            ElidedLabel {
+                id: customOverrideLabel
+                x: 10
+                y: 270
+                width: 90
+                height: 24
+                text: "调用点改成补充说明的长目录名"
+                elide: Text.ElideRight
+                toolTipEnabled: false
+                externallyHovered: true
+                ToolTip.text: "所在文件夹：/a/b/c"
+            }
         }
     }
 
@@ -157,6 +187,16 @@ TestCase {
 
     function test_tooltip_text_defaults_to_visible_text() {
         compare(harness.truncatedText.toolTipText, harness.truncatedText.text)
+    }
+
+    function test_empty_text_override_never_requests_a_tooltip() {
+        verify(harness.emptyOverrideText.truncated)
+        verify(!harness.emptyOverrideText.toolTipRequested)
+    }
+
+    function test_text_override_with_content_still_requests_a_tooltip() {
+        verify(harness.customOverrideText.truncated)
+        verify(harness.customOverrideText.toolTipRequested)
     }
 
     function test_breadcrumb_mouse_areas_do_not_block_tooltips() {
