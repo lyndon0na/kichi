@@ -94,8 +94,8 @@ TestCase {
     }
 
     function test_footer_button_order_matches_system() {
-        // 两套页脚（DialogFooter / StandardDialogFooter）的「最右一个」都必须是取消，
-        // 否则同一个位置在两类弹窗里做不同的事，容易误点。
+        // 全应用确认弹窗共用 DialogFooter，「最右一个」必须是取消，
+        // 否则同一个位置在不同弹窗里做不同的事，容易误点。
         var dialog = startRename()
         var footer = dialog.footer
         var ok = findChild(footer, "dialogFooterOk")

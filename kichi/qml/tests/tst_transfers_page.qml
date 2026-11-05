@@ -1136,7 +1136,7 @@ TestCase {
 
         var footer = findChild(dialog, "clearConfirmBox")
         verify(footer !== null)
-        mouseClick(footer.standardButton(Dialog.Ok))
+        mouseClick(findChild(footer, "dialogFooterOk"))
         wait(40)
         compare(backend.clearCount, 1)
     }

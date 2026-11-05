@@ -440,9 +440,15 @@ Item {
         modal: true
         anchors.centerIn: parent
         width: 420 + leftPadding + rightPadding
-        footer: StandardDialogFooter {
+        footer: DialogFooter {
             objectName: "clearFinishedTasksFooter"
-            dialog: clearFinishedDialog
+            outerMargin: clearFinishedDialog.padding
+            onOkClicked: {
+                if (page.backend)
+                    page.backend.clearFinishedTasks()
+                clearFinishedDialog.close()
+            }
+            onCancelClicked: clearFinishedDialog.close()
         }
 
         Label {
@@ -467,8 +473,16 @@ Item {
         modal: true
         anchors.centerIn: parent
         width: 380 + leftPadding + rightPadding
-        footer: StandardDialogFooter {
-            dialog: deleteDialog
+        footer: DialogFooter {
+            outerMargin: deleteDialog.padding
+            okText: qsTr("删除")
+            okVariant: "danger"
+            onOkClicked: {
+                if (page.backend)
+                    page.backend.deleteTask(page.pendingDeleteId)
+                deleteDialog.close()
+            }
+            onCancelClicked: deleteDialog.close()
         }
 
         Label {
@@ -477,8 +491,6 @@ Item {
             text: qsTr("确定删除任务「%1」吗？\n只会移除这条任务记录，已下载的云端文件不会删除。")
                 .arg(page.pendingDeleteName)
         }
-
-        onAccepted: page.backend.deleteTask(page.pendingDeleteId)
     }
 
     NewTaskDialog {

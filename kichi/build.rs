@@ -68,7 +68,6 @@ const QML_FILES: &[&str] = &[
     "qml/FolderPickerNavigation.qml",
     "qml/KProgressBar.qml",
     "qml/DialogFooter.qml",
-    "qml/StandardDialogFooter.qml",
     "qml/UiMetrics.qml",
     "qml/KTheme.qml",
     "qml/LoadingSkeletonGate.qml",

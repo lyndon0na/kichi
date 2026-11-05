@@ -710,7 +710,12 @@ TestCase {
         verify(dialog)
         verify(dialog.opened)
         compare(page.pendingDeleteId, "delete-me")
-        dialog.accept()
+        var ok = findChild(dialog, "dialogFooterOk")
+        verify(ok !== null, "删除弹窗有「删除」按钮")
+        compare(ok.text, "删除")
+        compare(ok.variant, "danger")
+        mouseClick(ok)
+        wait(40)
         compare(backend.deletedId, "delete-me")
     }
 
@@ -1226,7 +1231,7 @@ TestCase {
 
         var footer = findChild(dialog, "clearFinishedTasksFooter")
         verify(footer !== null)
-        mouseClick(footer.standardButton(Dialog.Ok))
+        mouseClick(findChild(footer, "dialogFooterOk"))
         wait(40)
         compare(backend.clearFinishedCalls, 1, "一次确认只发一次批量清理")
         compare(dialog.opened, false)

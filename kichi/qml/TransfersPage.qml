@@ -644,9 +644,15 @@ Item {
         modal: true
         anchors.centerIn: Overlay.overlay
         width: 380 + leftPadding + rightPadding
-        footer: StandardDialogFooter {
+        footer: DialogFooter {
             objectName: "clearConfirmBox"
-            dialog: clearDialog
+            outerMargin: clearDialog.padding
+            onOkClicked: {
+                if (page.backend)
+                    page.backend.clearFinishedTransfers()
+                clearDialog.close()
+            }
+            onCancelClicked: clearDialog.close()
         }
 
         Label {
@@ -654,11 +660,6 @@ Item {
             text: page.clearConfirmMessage
             wrapMode: Text.Wrap
             width: 380
-        }
-
-        onAccepted: {
-            if (page.backend)
-                page.backend.clearFinishedTransfers()
         }
     }
 

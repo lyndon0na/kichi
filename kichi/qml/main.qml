@@ -758,8 +758,13 @@ ApplicationWindow {
         modal: true
         anchors.centerIn: parent
         width: 360 + leftPadding + rightPadding
-        footer: StandardDialogFooter {
-            dialog: signOutDialog
+        footer: DialogFooter {
+            outerMargin: signOutDialog.padding
+            onOkClicked: {
+                backend.signOut()
+                signOutDialog.close()
+            }
+            onCancelClicked: signOutDialog.close()
         }
 
         Label {
@@ -767,8 +772,6 @@ ApplicationWindow {
             wrapMode: Text.Wrap
             width: 360
         }
-
-        onAccepted: backend.signOut()
     }
 
     property int currentPage: pageIds.files
