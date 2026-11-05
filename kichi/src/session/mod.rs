@@ -8,6 +8,7 @@ pub mod avatar_cache;
 pub mod download;
 mod download_naming;
 mod download_resume;
+pub(crate) mod file_cache;
 mod folder_trail;
 mod identity;
 pub(crate) mod library;

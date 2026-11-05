@@ -11,15 +11,14 @@
 //! 同名不同目录的文件 id 不同，不会互相串。字幕被原地改名也会换一个缓存名。
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
+use super::file_cache::{self, MAX_AGE};
 use super::subtitles::MAX_SUBTITLE_BYTES;
 
-/// 缓存最多留多久（按文件 mtime）。
-const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// 缓存目录名与错误文案里的称呼。
+const LABEL: &str = "字幕缓存";
 /// 缓存总大小上限；超过就从最旧的开始删。
 const MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// 净化后的文件名超过这个**字节数**就不缓存（Linux 单个文件名上限 255 字节）。
@@ -27,23 +26,7 @@ const MAX_NAME_BYTES: usize = 180;
 
 /// 缓存根目录（`KICHI_SUBTITLE_CACHE` > `$XDG_CACHE_HOME/kichi/subtitles`）。
 pub fn base_dir() -> PathBuf {
-    if let Some(dir) = read_env("KICHI_SUBTITLE_CACHE") {
-        return PathBuf::from(dir);
-    }
-    let home = read_env("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".cache"))
-                .unwrap_or_else(std::env::temp_dir)
-        });
-    home.join("kichi").join("subtitles")
-}
-
-fn read_env(name: &str) -> Option<String> {
-    let value = std::env::var(name).ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_owned())
+    file_cache::base_dir("KICHI_SUBTITLE_CACHE", "subtitles")
 }
 
 /// 读缓存；没有 / 太大 / 读失败都当未命中。
@@ -75,20 +58,8 @@ fn store_in(base: &Path, id: &str, name: &str, bytes: &[u8]) -> Result<(), Strin
     let dir = path
         .parent()
         .ok_or_else(|| "缓存路径没有父目录".to_owned())?;
-    create_private_dir(dir)?;
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
-    let tmp = dir.join(format!(".tmp-{}-{sequence}", std::process::id()));
-    let written = write_private(&tmp, bytes);
-    if let Err(reason) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(reason);
-    }
-    if let Err(err) = fs::rename(&tmp, &path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("替换字幕缓存失败：{err}"));
-    }
-    Ok(())
+    file_cache::create_cache_dir(dir, LABEL)?;
+    file_cache::store_atomic(dir, &path, bytes, LABEL)
 }
 
 /// 缓存路径；名字太长返回 `None`（这条字幕不缓存）。
@@ -117,33 +88,6 @@ fn safe_component(value: &str) -> String {
     } else {
         trimmed.to_owned()
     }
-}
-
-fn create_private_dir(dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|err| format!("创建字幕缓存目录失败：{err}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-            .map_err(|err| format!("收紧字幕缓存目录权限失败：{err}"))?;
-    }
-    Ok(())
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|err| format!("创建字幕缓存文件失败：{err}"))?;
-    file.write_all(bytes)
-        .map_err(|err| format!("写字幕缓存失败：{err}"))?;
-    Ok(())
 }
 
 /// 启动时清一次缓存：先删超过 [`MAX_AGE`] 的，再按总大小收到 [`MAX_BYTES`] 以内。
@@ -177,25 +121,14 @@ fn sweep_in(base: &Path, max_age: Duration, max_bytes: u64) {
                 continue;
             }
             let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            if is_stale(now, modified, max_age) {
+            if file_cache::is_stale(now, modified, max_age) {
                 let _ = fs::remove_file(file.path());
                 continue;
             }
             files.push((file.path(), meta.len(), modified));
         }
     }
-    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
-    if total > max_bytes {
-        files.sort_by_key(|(_, _, modified)| *modified);
-        for (path, len, _) in files {
-            if total <= max_bytes {
-                break;
-            }
-            if fs::remove_file(&path).is_ok() {
-                total = total.saturating_sub(len);
-            }
-        }
-    }
+    file_cache::evict_to_limit(&mut files, max_bytes);
     // 空掉的 id 目录顺手收掉（非空 remove_dir 会失败，忽略即可）
     if let Ok(entries) = fs::read_dir(base) {
         for entry in entries.flatten() {
@@ -204,15 +137,10 @@ fn sweep_in(base: &Path, max_age: Duration, max_bytes: u64) {
     }
 }
 
-fn is_stale(now: SystemTime, modified: SystemTime, older_than: Duration) -> bool {
-    now.duration_since(modified)
-        .map(|age| age > older_than)
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn temp_base(tag: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -280,7 +208,7 @@ mod tests {
     fn an_empty_or_oversized_cache_file_is_a_miss() {
         let base = temp_base("badfile");
         let path = cache_path(&base, "id", "x.ass").expect("有路径");
-        create_private_dir(path.parent().expect("有父目录")).expect("建目录");
+        file_cache::create_cache_dir(path.parent().expect("有父目录"), LABEL).expect("建目录");
         fs::write(&path, b"").expect("写空文件");
         assert!(load_from(&base, "id", "x.ass").is_none(), "空文件不命中");
         fs::write(&path, vec![7u8; MAX_SUBTITLE_BYTES as usize + 1]).expect("写超大文件");
@@ -312,21 +240,5 @@ mod tests {
         assert!(total <= 4, "超过总上限要从旧的删：{sizes:?}");
         assert_eq!(sizes.iter().flatten().count(), 1, "只留一份：{sizes:?}");
         let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn the_age_boundary_is_strict() {
-        let now = SystemTime::now();
-        assert!(is_stale(
-            now,
-            now - Duration::from_secs(40 * 24 * 60 * 60),
-            MAX_AGE
-        ));
-        assert!(!is_stale(
-            now,
-            now - Duration::from_secs(29 * 24 * 60 * 60),
-            MAX_AGE
-        ));
-        assert!(!is_stale(now - MAX_AGE, now, MAX_AGE), "时钟回拨不该误删");
     }
 }

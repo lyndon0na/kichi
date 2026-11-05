@@ -5,34 +5,19 @@
 //! 启动时删 30 天前条目，并把总大小收到 64 MiB 以内。
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+use super::file_cache::{self, MAX_AGE};
+
+/// 缓存目录名与错误文案里的称呼。
+const LABEL: &str = "缩略图缓存";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_THUMBNAIL_BYTES: usize = 4 * 1024 * 1024;
 const SUFFIXES: &[&str] = &[".jpg", ".png", ".webp", ".gif", ".bmp", ".img"];
 
 pub fn base_dir() -> PathBuf {
-    if let Some(dir) = read_env("KICHI_THUMBNAIL_CACHE") {
-        return PathBuf::from(dir);
-    }
-    let home = read_env("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".cache"))
-                .unwrap_or_else(std::env::temp_dir)
-        });
-    home.join("kichi").join("thumbnails")
-}
-
-fn read_env(name: &str) -> Option<String> {
-    let value = std::env::var(name).ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_owned())
+    file_cache::base_dir("KICHI_THUMBNAIL_CACHE", "thumbnails")
 }
 
 /// 找到可用的本地缓存；空文件、超限文件都按未命中处理。
@@ -64,24 +49,14 @@ fn store_in(base: &Path, id: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     if bytes.is_empty() || bytes.len() > MAX_THUMBNAIL_BYTES {
         return Err("缩略图大小不在缓存范围内".to_owned());
     }
-    create_private_dir(base)?;
+    file_cache::create_cache_dir(base, LABEL)?;
     let stem = cache_stem(id).ok_or_else(|| "缩略图文件 id 无效".to_owned())?;
     for suffix in SUFFIXES {
         let _ = fs::remove_file(base.join(format!("{stem}{suffix}")));
     }
 
     let path = base.join(format!("{stem}{}", suffix_for(bytes)));
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
-    let tmp = base.join(format!(".tmp-{}-{sequence}", std::process::id()));
-    if let Err(reason) = write_private(&tmp, bytes) {
-        let _ = fs::remove_file(&tmp);
-        return Err(reason);
-    }
-    if let Err(err) = fs::rename(&tmp, &path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("替换缩略图缓存失败：{err}"));
-    }
+    file_cache::store_atomic(base, &path, bytes, LABEL)?;
     Ok(path)
 }
 
@@ -112,33 +87,6 @@ fn suffix_for(bytes: &[u8]) -> &'static str {
     }
 }
 
-fn create_private_dir(dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|err| format!("创建缩略图缓存目录失败：{err}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-            .map_err(|err| format!("收紧缩略图缓存目录权限失败：{err}"))?;
-    }
-    Ok(())
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|err| format!("创建缩略图缓存文件失败：{err}"))?;
-    file.write_all(bytes)
-        .map_err(|err| format!("写缩略图缓存失败：{err}"))?;
-    Ok(())
-}
-
 /// 启动时清一次缓存。
 pub fn sweep() {
     sweep_in(&base_dir(), MAX_AGE, MAX_BYTES);
@@ -158,31 +106,14 @@ fn sweep_in(base: &Path, max_age: Duration, max_bytes: u64) {
             continue;
         }
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        if is_stale(now, modified, max_age) {
+        if file_cache::is_stale(now, modified, max_age) {
             let _ = fs::remove_file(entry.path());
             continue;
         }
         files.push((entry.path(), metadata.len(), modified));
     }
 
-    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
-    if total > max_bytes {
-        files.sort_by_key(|(_, _, modified)| *modified);
-        for (path, len, _) in files {
-            if total <= max_bytes {
-                break;
-            }
-            if fs::remove_file(path).is_ok() {
-                total = total.saturating_sub(len);
-            }
-        }
-    }
-}
-
-fn is_stale(now: SystemTime, modified: SystemTime, older_than: Duration) -> bool {
-    now.duration_since(modified)
-        .map(|age| age > older_than)
-        .unwrap_or(false)
+    file_cache::evict_to_limit(&mut files, max_bytes);
 }
 
 #[cfg(test)]
