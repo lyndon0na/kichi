@@ -15,15 +15,9 @@ KDialog {
     property var backend: null
     property var startPath: []
     /// 根 → 当前，元素为 { id, name }
-    property var path: []
+    property alias path: nav.path
     /// 确认时返回给离线任务弹窗的完整路径
     property var selectedPath: []
-    property int seenRevision: -1
-    /// 目录 id → 离开时的 contentY：进入子目录回顶部，上一级回到原位置
-    property var scrollByDir: ({})
-    /// 下一次列表就绪后要恢复的位置（< 0 回到顶部）；
-    /// -2 表示未指定——同目录后台更新沿用当前列表位置，不跳顶部
-    property real restoreY: -2
 
     readonly property int formWidth: 460
     /// 列表 + 提示条总高度固定：提示出现 / 消失时窗口和列表都不动
@@ -35,6 +29,12 @@ KDialog {
         id: metrics
     }
 
+    FolderPickerNavigation {
+        id: nav
+        backend: picker.backend
+        fileList: folderList
+    }
+
     readonly property string rootName: {
         if (!backend || typeof backend.currentPath !== "function")
             return qsTr("全部文件")
@@ -42,8 +42,7 @@ KDialog {
         return raw.length > 0 && String(raw[0].name || "").length > 0
                 ? String(raw[0].name) : qsTr("全部文件")
     }
-    readonly property string targetId: path.length > 0
-                                     ? String(path[path.length - 1].id || "") : ""
+    readonly property string targetId: nav.targetId
     readonly property string targetPathText: pathText(path)
     readonly property bool canChoose: backend !== null
 
@@ -68,9 +67,7 @@ KDialog {
                      ? initialPath : picker.startPath
         picker.path = normalizePath(source)
         picker.selectedPath = picker.path.slice()
-        picker.seenRevision = -1
-        picker.scrollByDir = ({})
-        picker.restoreY = -1
+        nav.reset()
         picker.open()
         picker.reload()
     }
@@ -95,50 +92,23 @@ KDialog {
         return parts.length > 0 ? parts.join(" / ") : picker.rootName
     }
 
-    /// 记住当前目录列表的滚动位置（导航前调用）
-    function rememberListScroll() {
-        const next = ({})
-        const keys = Object.keys(scrollByDir)
-        for (let i = 0; i < keys.length; i++)
-            next[keys[i]] = scrollByDir[keys[i]]
-        next[targetId] = folderList.contentY
-        scrollByDir = next
-    }
-
     function reload() {
-        folderList.beginDirectoryLoad()
-        if (picker.backend)
-            picker.backend.loadMoveTargets(picker.targetId, false)
+        nav.reload()
     }
 
     /// 手动刷新：跳过本地快照强制联网，刷新后留在原位置
     function refresh() {
         if (!picker.backend || picker.backend.moveTargetsLoading)
             return
-        folderList.beginDirectoryLoad()
-        picker.backend.loadMoveTargets(picker.targetId, true)
+        nav.refresh()
     }
 
     function goUp() {
-        if (path.length <= 1)
-            return
-        rememberListScroll()
-        path = path.slice(0, path.length - 1)
-        const saved = scrollByDir[targetId]
-        restoreY = saved !== undefined ? saved : -1
-        reload()
+        nav.goUp()
     }
 
     function enterFolder(folder) {
-        if (!folder)
-            return
-        rememberListScroll()
-        restoreY = -1
-        path = path.concat([{
-            id: String(folder.id || ""),
-            name: String(folder.name || folder.id || "")
-        }])
-        reload()
+        nav.enterFolder(folder)
     }
 
     function chooseHere() {
@@ -147,39 +117,6 @@ KDialog {
         selectedPath = path.slice()
         folderChosen(targetId, targetPathText)
         close()
-    }
-
-    ListModel {
-        id: foldersModel
-    }
-
-    function syncFolders() {
-        if (!backend || backend.moveTargetsRevision === seenRevision)
-            return
-        seenRevision = backend.moveTargetsRevision
-        const pending = picker.restoreY
-        picker.restoreY = -2
-        // 同目录的后台补全不能把用户刚滚到的位置冲回顶部；
-        // 位置必须在回顶之前取，否则拿到的已经是 0
-        const restore = pending === -2 ? folderList.contentY : pending
-        // 列表缩短时 Qt 会残留旧 originY，替换模型前先回顶
-        folderList.prepareDirectoryReplace()
-        foldersModel.clear()
-        const list = backend.moveTargets || []
-        for (let i = 0; i < list.length; i++)
-            foldersModel.append({
-                folderId: String(list[i].id || ""),
-                folderName: String(list[i].name || "")
-            })
-        folderList.finishDirectoryLoad(restore)
-    }
-
-    Connections {
-        target: picker.backend
-
-        function onChanged() {
-            picker.syncFolders()
-        }
     }
 
     ColumnLayout {
@@ -217,7 +154,7 @@ KDialog {
 
             BusyIndicator {
                 visible: picker.backend !== null && picker.backend.moveTargetsLoading
-                         && foldersModel.count === 0
+                         && nav.foldersModel.count === 0
                 running: visible
                 Layout.preferredWidth: 18
                 Layout.preferredHeight: 18
@@ -239,11 +176,11 @@ KDialog {
             objectName: "taskFolderPickerList"
             Layout.fillWidth: true
             Layout.preferredHeight: picker.listHeight
-            model: foldersModel
+            model: nav.foldersModel
             enabled: picker.backend !== null
 
             onRowActivated: function (index) {
-                const item = foldersModel.get(index)
+                const item = nav.foldersModel.get(index)
                 if (item)
                     picker.enterFolder({
                         id: item.folderId,
@@ -296,7 +233,7 @@ KDialog {
                 font.pixelSize: picker.theme.fontMeta
                 visible: picker.backend !== null && !picker.hasListError
                          && !picker.backend.moveTargetsLoading
-                         && foldersModel.count === 0
+                         && nav.foldersModel.count === 0
                 text: qsTr("这个文件夹下没有子文件夹；可以直接保存到这里。")
             }
 
