@@ -236,6 +236,12 @@ pub mod qobject {
         #[cxx_name = "shareActionDone"]
         fn share_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
 
+        /// 已取到文件直链：`url` 是带签名的临时地址，仅供界面立即写剪贴板。
+        /// 不写日志、不存属性；失败不加班信号，直接走底栏提示。
+        #[qsignal]
+        #[cxx_name = "fileLinkReady"]
+        fn file_link_ready(self: Pin<&mut Self>, id: QString, url: QString);
+
         /// 请求界面跳到传输任务页并定位这个条目的那一行（只对已占用的条目发）
         #[qsignal]
         #[cxx_name = "locateTransfer"]
@@ -556,6 +562,12 @@ pub mod qobject {
         #[cxx_name = "downloadEntries"]
         fn download_entries(self: Pin<&mut Self>, ids: QStringList);
 
+        /// 取单个文件的下载直链，成功后发 `fileLinkReady` 让界面复制到剪贴板。
+        /// 文件夹没有直链，不会请求。
+        #[qinvokable]
+        #[cxx_name = "copyLink"]
+        fn copy_link(self: Pin<&mut Self>, id: QString);
+
         /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）
         #[qinvokable]
         #[cxx_name = "isDownloadPending"]
@@ -832,6 +844,7 @@ mod backend;
 mod downloads;
 mod file_action_lock;
 mod file_actions;
+mod file_link;
 mod file_optimistic;
 mod file_stars;
 mod file_targets;

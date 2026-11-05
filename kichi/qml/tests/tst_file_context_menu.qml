@@ -33,6 +33,8 @@ TestCase {
         property int starCount: 0
         property var starIds: []
         property bool starValue: false
+        property int copyLinkCalls: 0
+        property string copyLinkId: ""
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -56,6 +58,10 @@ TestCase {
             starIds = ids.slice()
             starValue = starred
         }
+        function copyLink(id) {
+            copyLinkCalls += 1
+            copyLinkId = id
+        }
     }
 
     Component {
@@ -75,6 +81,8 @@ TestCase {
         backend.starCount = 0
         backend.starIds = []
         backend.starValue = false
+        backend.copyLinkCalls = 0
+        backend.copyLinkId = ""
         backend.pending = []
         menu = menuComponent.createObject(parent, {
             width: 600, height: 400, visible: true, backend: backend
@@ -232,5 +240,32 @@ TestCase {
         wait(60)
         compare(findChild(menu, "revealFolderItem"), null,
                 "文件页右键菜单不应再有「打开所在目录」")
+    }
+
+    function test_copy_link_is_offered_for_a_single_file() {
+        openMenu(["a"])
+        var item = findChild(menu, "copyLinkItem")
+        verify(item !== null, "菜单里有复制链接项")
+        verify(item.visible, "单个文件应显示复制链接")
+        compare(item.text, qsTr("复制下载链接"))
+
+        mouseClick(item)
+        wait(40)
+        compare(backend.copyLinkCalls, 1)
+        compare(backend.copyLinkId, "a")
+    }
+
+    function test_copy_link_is_hidden_for_folder() {
+        menu.openContext({ id: "dir", name: "dir", kind: "folder" },
+                         Qt.point(20, 20), ["dir"], false)
+        wait(60)
+        verify(!findChild(menu, "copyLinkItem").visible, "文件夹没有直链")
+    }
+
+    function test_copy_link_is_hidden_for_multi_selection() {
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file" },
+                         Qt.point(20, 20), ["a", "b"], false)
+        wait(60)
+        verify(!findChild(menu, "copyLinkItem").visible, "多选时不复制链接")
     }
 }

@@ -25,6 +25,20 @@ ApplicationWindow {
         id: backend
     }
 
+    // 文件直链是带签名的临时地址：只在 Rust 侧取一次，信号一到就写剪贴板，
+    // 不存属性、不绑定到界面文字。
+    ClipboardHelper {
+        id: fileLinkClipboard
+    }
+
+    Connections {
+        target: backend
+
+        function onFileLinkReady(id, url) {
+            fileLinkClipboard.copyText(url)
+        }
+    }
+
     property bool signedIn: backend.authState === "signedIn"
     /// 当前是否最大化（Wayland 下窗口状态由混成器管，这里跟踪自己的意图）
     property bool isMaximized: false

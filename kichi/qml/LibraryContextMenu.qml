@@ -102,6 +102,17 @@ Item {
         }
 
         MenuItem {
+            objectName: "libraryCopyLinkItem"
+            text: qsTr("复制下载链接")
+            visible: !root.targetIsFolder
+            enabled: root.backend !== null && !root.backend.filesLoading
+            onTriggered: {
+                if (root.backend)
+                    root.backend.copyLink(root.targetId)
+            }
+        }
+
+        MenuItem {
             objectName: "libraryShareItem"
             text: qsTr("分享…")
             enabled: root.backend !== null && !locks.any([root.targetId])

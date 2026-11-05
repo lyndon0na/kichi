@@ -128,6 +128,18 @@ Item {
         }
 
         MenuItem {
+            objectName: "copyLinkItem"
+            text: qsTr("复制下载链接")
+            // 文件夹没有直链；多选时一次复制几十条签名链接没有实际用途
+            visible: !root.targetInTrash && !root.targetIsFolder && root.targetCount === 1
+            enabled: root.backend !== null && !root.backend.filesLoading
+            onTriggered: {
+                if (root.backend)
+                    root.backend.copyLink(root.targetId)
+            }
+        }
+
+        MenuItem {
             objectName: "starItem"
             visible: !root.targetInTrash
             text: {

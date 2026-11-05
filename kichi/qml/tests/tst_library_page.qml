@@ -43,6 +43,8 @@ TestCase {
         property int starCalls: 0
         property string starredId: ""
         property bool starredValue: false
+        property int copyLinkCalls: 0
+        property string copiedLinkId: ""
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -79,6 +81,11 @@ TestCase {
             starCalls += 1
             starredId = id
             starredValue = starred
+        }
+
+        function copyLink(id) {
+            copyLinkCalls += 1
+            copiedLinkId = id
         }
 
         function isDownloadPending(id) {
@@ -138,6 +145,8 @@ TestCase {
         backend.starCalls = 0
         backend.starredId = ""
         backend.starredValue = false
+        backend.copyLinkCalls = 0
+        backend.copiedLinkId = ""
         backend.contentView = "list"
         backend.fileActionIds = []
 
@@ -657,6 +666,31 @@ TestCase {
         compare(findChild(page, "libraryPlayItem").visible, false)
         compare(findChild(page, "libraryOpenFolderItem").visible, false)
         compare(findChild(page, "libraryRevealItem").text, "打开文件所在位置")
+        page.contextMenu.close()
+    }
+
+    function test_copy_link_is_offered_for_files_only() {
+        publish([row("document", false)], true)
+        var list = findChild(page, "libraryList")
+        var item = list.itemAtIndex(0)
+        verify(item !== null)
+
+        mouseClick(item, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        var copyItem = findChild(page, "libraryCopyLinkItem")
+        verify(copyItem !== null)
+        compare(copyItem.visible, true)
+        mouseClick(copyItem)
+        tryCompare(backend, "copyLinkCalls", 1)
+        compare(backend.copiedLinkId, "document")
+        page.contextMenu.close()
+
+        publish([row("folder", false, "folder")], true)
+        item = list.itemAtIndex(0)
+        mouseClick(item, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        compare(findChild(page, "libraryCopyLinkItem").visible, false,
+                "文件夹没有直链")
         page.contextMenu.close()
     }
 
