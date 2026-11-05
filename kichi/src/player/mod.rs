@@ -25,6 +25,7 @@
 //! - [`vlc`]：VLC 专用：oldrc socket、状态 / 进度查询、seek、quit；
 //! - [`session`]：播放会话登记表 + 监控线程 + 退出收尾。
 
+mod connection;
 mod input;
 pub mod ipc;
 mod launch;

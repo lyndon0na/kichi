@@ -13,10 +13,9 @@ use std::time::{Duration, Instant};
 
 use crate::session::download::Cancel;
 
+use super::connection::{connect_with, is_timeout, CONNECT_RETRY, CONNECT_TIMEOUT};
 use super::{expand, PlayerConfig};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const CONNECT_RETRY: Duration = Duration::from_millis(20);
 const READ_TIMEOUT: Duration = Duration::from_millis(200);
 /// RC 一般在一个轮询周期内回应；超时就先当作本轮未知，不阻塞播放。
 const QUERY_TIMEOUT: Duration = Duration::from_millis(900);
@@ -88,19 +87,9 @@ impl Connection {
 
 /// 连上 VLC 的 RC socket；取消或超时返回 `None`。
 pub fn connect(socket: &Path, cancel: &Cancel) -> Option<Connection> {
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        if let Some(connection) = try_connect(socket) {
-            return Some(connection);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(CONNECT_RETRY);
-    }
+    connect_with(cancel, CONNECT_TIMEOUT, CONNECT_RETRY, || {
+        try_connect(socket)
+    })
 }
 
 fn try_connect(socket: &Path) -> Option<Connection> {
@@ -212,13 +201,6 @@ fn is_flatpak(config: &PlayerConfig) -> bool {
     Path::new(&config.program)
         .file_name()
         .is_some_and(|name| name == "flatpak")
-}
-
-fn is_timeout(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    )
 }
 
 #[cfg(test)]

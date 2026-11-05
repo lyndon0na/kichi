@@ -22,12 +22,9 @@ use serde_json::{json, Value};
 
 use crate::session::download::Cancel;
 
+use super::connection::{connect_with, is_timeout, CONNECT_RETRY, CONNECT_TIMEOUT};
 use super::{expand, PlayerConfig};
 
-/// 连 socket 的总宽限（mpv 实测 0.13–0.15 秒就绪）。
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// 每次重连的间隔。
-const CONNECT_RETRY: Duration = Duration::from_millis(20);
 /// 读循环的切片：每轮查一次取消标志，`quit` 后也不会卡死。
 const READ_TIMEOUT: Duration = Duration::from_millis(200);
 /// 连上之后这么久还一个 JSON 都没读到，就当播放器不吭声（老 mpv 等）。
@@ -276,19 +273,9 @@ impl Connection {
 ///
 /// 连不上或期间被取消返回 `None`。
 pub fn connect(socket: &Path, cancel: &Cancel) -> Option<Connection> {
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        if let Some(connection) = try_connect(socket) {
-            return Some(connection);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(CONNECT_RETRY);
-    }
+    connect_with(cancel, CONNECT_TIMEOUT, CONNECT_RETRY, || {
+        try_connect(socket)
+    })
 }
 
 /// 只试一次（退出收尾用，不能在那里等 5 秒）。
@@ -469,13 +456,6 @@ fn is_flatpak(config: &PlayerConfig) -> bool {
     Path::new(&config.program)
         .file_name()
         .is_some_and(|name| name == "flatpak")
-}
-
-fn is_timeout(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    )
 }
 
 #[cfg(test)]
