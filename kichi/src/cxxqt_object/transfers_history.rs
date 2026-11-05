@@ -27,6 +27,7 @@ use super::transfers::{
     is_folder_ledger, restore_row, with_records, Transfer, TransferDirection, TransferJob,
     TransferState, UploadDir, UploadJob,
 };
+use crate::session::private_fs;
 
 /// 落盘格式版本。读取不看版本号：高版本也只按已知字段解析，未知字段忽略。
 pub(crate) const HISTORY_VERSION: u32 = 3;
@@ -611,31 +612,8 @@ pub(crate) fn save(path: &Path, entries: &[EntryRecord]) -> Result<(), String> {
     })
     .map_err(|err| format!("序列化传输历史失败：{err}"))?;
     let temp = path.with_extension("json.tmp");
-    write_private(&temp, &body).map_err(|err| format!("写入传输历史失败：{err}"))?;
-    std::fs::rename(&temp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&temp);
-        format!("保存传输历史失败：{err}")
-    })
-}
-
-/// 写一个只有本人可读写的文件（0600）。与 `partials.rs` 同一做法。
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(body)?;
-    file.flush()
+    private_fs::write_private(&temp, &body).map_err(|err| format!("写入传输历史失败：{err}"))?;
+    private_fs::replace_file(&temp, path).map_err(|err| format!("保存传输历史失败：{err}"))
 }
 
 // —— 记录表 ↔ 磁盘 ——

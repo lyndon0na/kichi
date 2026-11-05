@@ -17,6 +17,7 @@ pub(crate) mod page_snapshot;
 pub mod partials;
 pub mod paths;
 mod playback_history;
+pub(crate) mod private_fs;
 pub mod search;
 mod shards;
 mod shares;

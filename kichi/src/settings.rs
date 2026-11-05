@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use kichi_core::types::Tier;
 use serde::{Deserialize, Serialize};
 
+use crate::session::private_fs;
+
 /// 设置文件格式版本（将来不兼容改动时据此迁移）。
 pub const SETTINGS_VERSION: u32 = 2;
 
@@ -409,29 +411,8 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
     let body =
         serde_json::to_vec_pretty(settings).map_err(|err| format!("序列化设置失败：{err}"))?;
     let temp = path.with_extension("json.tmp");
-    write_private(&temp, &body).map_err(|err| format!("写入设置失败：{err}"))?;
-    std::fs::rename(&temp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&temp);
-        format!("保存设置失败：{err}")
-    })
-}
-
-/// 写一个只有本人可读写的文件（0600）。
-///
-/// 设置里虽然没有密码，但含播放器命令与窗口信息，同一台机器的其他用户
-/// 没必要能看到；和令牌降级文件保持一致的口径。
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(body)?;
-    file.flush()
+    private_fs::write_private(&temp, &body).map_err(|err| format!("写入设置失败：{err}"))?;
+    private_fs::replace_file(&temp, path).map_err(|err| format!("保存设置失败：{err}"))
 }
 
 #[cfg(test)]

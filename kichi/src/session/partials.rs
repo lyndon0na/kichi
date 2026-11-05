@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::paths;
+use super::{paths, private_fs};
 
 /// 索引格式版本。
 ///
@@ -422,31 +422,8 @@ fn save(path: &Path, entries: &[PartialEntry]) -> Result<(), String> {
     })
     .map_err(|err| format!("序列化下载断点失败：{err}"))?;
     let temp = path.with_extension("json.tmp");
-    write_private(&temp, &body).map_err(|err| format!("写入下载断点失败：{err}"))?;
-    std::fs::rename(&temp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&temp);
-        format!("保存下载断点失败：{err}")
-    })
-}
-
-/// 写一个只有本人可读写的文件（0600）。
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(body)?;
-    file.flush()
+    private_fs::write_private(&temp, &body).map_err(|err| format!("写入下载断点失败：{err}"))?;
+    private_fs::replace_file(&temp, path).map_err(|err| format!("保存下载断点失败：{err}"))
 }
 
 fn now_unix() -> i64 {
