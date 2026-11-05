@@ -10,9 +10,9 @@ Item {
     property var backend: null
     /// 页面被侧栏切到前台：首次进入立即刷新，之后由 Rust 冷却与轮询合并请求。
     property bool active: false
-    property real savedContentY: 0
-    property bool pendingScrollRestore: false
-    property int scrollRestoreAttempts: 0
+    property alias savedContentY: scrollMemory.savedY
+    property alias pendingScrollRestore: scrollMemory.pending
+    property alias scrollRestoreAttempts: scrollMemory.attempts
     property string pendingDeleteId: ""
     property string pendingDeleteName: ""
 
@@ -54,10 +54,8 @@ Item {
 
     onActiveChanged: {
         if (!active) {
-            if (list)
-                page.savedContentY = list.contentY
-            page.pendingScrollRestore = false
-            page.scrollRestoreAttempts = 0
+            scrollMemory.remember()
+            scrollMemory.cancel()
             taskRows.clear()
             if (list) {
                 list.positionViewAtBeginning()
@@ -68,9 +66,7 @@ Item {
         if (list)
             list.positionViewAtBeginning()
         page.syncRows()
-        page.pendingScrollRestore = true
-        page.scrollRestoreAttempts = 0
-        Qt.callLater(page.restoreScroll)
+        scrollMemory.begin()
         if (page.backend && typeof page.backend.ensureTasksFresh === "function")
             page.backend.ensureTasksFresh()
         else
@@ -83,6 +79,11 @@ Item {
     }
 
     KTheme { id: theme }
+
+    KScrollMemory {
+        id: scrollMemory
+        flickable: list
+    }
 
     LoadingSkeletonGate {
         id: loadingSkeletonGate
@@ -112,21 +113,6 @@ Item {
     }
 
     Component.onCompleted: syncRows()
-
-    function restoreScroll() {
-        if (!page.pendingScrollRestore || !list || list.contentHeight <= 0)
-            return
-        var maxY = Math.max(0, list.contentHeight - list.height)
-        var target = Math.max(0, Math.min(page.savedContentY, maxY))
-        list.contentY = target
-        if (target >= page.savedContentY || page.scrollRestoreAttempts >= 4) {
-            page.pendingScrollRestore = false
-            page.scrollRestoreAttempts = 0
-            return
-        }
-        page.scrollRestoreAttempts += 1
-        Qt.callLater(page.restoreScroll)
-    }
 
     readonly property int activeCount: {
         var tasks = page.backend ? page.backend.tasks : []
@@ -174,7 +160,7 @@ Item {
                 spacing: 0
                 model: taskRows
                 boundsBehavior: Flickable.StopAtBounds
-                onContentHeightChanged: page.restoreScroll()
+                onContentHeightChanged: scrollMemory.restore()
 
                 // 列表铺到窗口右缘，条悬浮在右侧留白里
                 ScrollBar.vertical: KScrollBar {}

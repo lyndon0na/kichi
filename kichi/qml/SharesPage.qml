@@ -9,9 +9,9 @@ Item {
     property var backend: null
     property bool active: false
     property string copyNotice: ""
-    property real savedContentY: 0
-    property bool pendingScrollRestore: false
-    property int scrollRestoreAttempts: 0
+    property alias savedContentY: scrollMemory.savedY
+    property alias pendingScrollRestore: scrollMemory.pending
+    property alias scrollRestoreAttempts: scrollMemory.attempts
 
     readonly property bool loading: backend ? backend.sharesLoading : false
     readonly property bool actionRunning: backend ? backend.shareActionRunning : false
@@ -37,10 +37,8 @@ Item {
 
     onActiveChanged: {
         if (!active) {
-            if (list)
-                page.savedContentY = list.contentY
-            page.pendingScrollRestore = false
-            page.scrollRestoreAttempts = 0
+            scrollMemory.remember()
+            scrollMemory.cancel()
             shareRows.clear()
             if (list) {
                 list.positionViewAtBeginning()
@@ -51,9 +49,7 @@ Item {
         if (list)
             list.positionViewAtBeginning()
         page.syncRows()
-        page.pendingScrollRestore = true
-        page.scrollRestoreAttempts = 0
-        Qt.callLater(page.restoreScroll)
+        scrollMemory.begin()
         if (page.backend && typeof page.backend.ensureSharesFresh === "function")
             page.backend.ensureSharesFresh()
         else
@@ -63,6 +59,12 @@ Item {
 
     UiMetrics { id: metrics }
     KTheme { id: theme }
+
+    KScrollMemory {
+        id: scrollMemory
+        flickable: list
+    }
+
     ClipboardHelper { id: clipboard }
     FileSelection { id: selection }
 
@@ -115,21 +117,6 @@ Item {
 
     Component.onCompleted: syncRows()
 
-    function restoreScroll() {
-        if (!page.pendingScrollRestore || !list || list.contentHeight <= 0)
-            return
-        var maxY = Math.max(0, list.contentHeight - list.height)
-        var target = Math.max(0, Math.min(page.savedContentY, maxY))
-        list.contentY = target
-        if (target >= page.savedContentY || page.scrollRestoreAttempts >= 4) {
-            page.pendingScrollRestore = false
-            page.scrollRestoreAttempts = 0
-            return
-        }
-        page.scrollRestoreAttempts += 1
-        Qt.callLater(page.restoreScroll)
-    }
-
     ColumnLayout {
         objectName: "sharesTableLayout"
         anchors.fill: parent
@@ -163,7 +150,7 @@ Item {
                 spacing: 0
                 model: shareRows
                 boundsBehavior: Flickable.StopAtBounds
-                onContentHeightChanged: page.restoreScroll()
+                onContentHeightChanged: scrollMemory.restore()
                 ScrollBar.vertical: KScrollBar {}
                 focus: page.active
                 Keys.onPressed: function (event) {

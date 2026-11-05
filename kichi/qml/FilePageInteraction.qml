@@ -24,7 +24,9 @@ QtObject {
 
     // —— 滚动位置记忆（目录 id → contentY）——
     // 进目录 / 返回 / 刷新 / 移动完成后都不跳回顶部。
-    property var scrollByDir: ({})
+    property KScrollMemory scrollMemory: KScrollMemory {
+        flickable: ctl.fileList
+    }
     property bool restoreScrollPending: false
     property real pendingScrollY: -1
     property string pendingViewMode: ""
@@ -73,12 +75,7 @@ QtObject {
     function rememberScroll() {
         if (!ctl.backend || !ctl.fileList)
             return
-        const next = ({})
-        const keys = Object.keys(scrollByDir)
-        for (let i = 0; i < keys.length; i++)
-            next[keys[i]] = scrollByDir[keys[i]]
-        next[scrollKeyFor(viewMode)] = ctl.fileList.contentY
-        scrollByDir = next
+        scrollMemory.rememberKey(scrollKeyFor(viewMode))
     }
 
     function cancelScrollRestore() {
@@ -104,8 +101,7 @@ QtObject {
         }
         if (ctl.fileList.contentHeight <= 0)
             return
-        const maxY = Math.max(0, ctl.fileList.contentHeight - ctl.fileList.height)
-        ctl.fileList.contentY = Math.max(0, Math.min(pendingScrollY, maxY))
+        scrollMemory.applyTo(ctl.fileList, pendingScrollY)
         pendingScrollY = -1
         pendingViewMode = ""
     }
@@ -219,8 +215,7 @@ QtObject {
     function prepareViewSwitch(view) {
         if (!ctl.backend)
             return
-        const saved = scrollByDir[scrollKeyFor(view)]
-        pendingScrollY = saved !== undefined ? saved : 0
+        pendingScrollY = scrollMemory.valueFor(scrollKeyFor(view), 0)
         pendingViewMode = view
         restoreScrollPending = false
         Qt.callLater(ctl.restoreScrollNow)
@@ -259,8 +254,7 @@ QtObject {
             ctl.selection.pruneExcept(ctl.backend.files, ctl.backend.fileActionIds)
         if (restoreScrollPending) {
             restoreScrollPending = false
-            const saved = scrollByDir[scrollKeyFor(viewMode)]
-            pendingScrollY = saved !== undefined ? saved : 0
+            pendingScrollY = scrollMemory.valueFor(scrollKeyFor(viewMode), 0)
             pendingViewMode = ""
             // 列表布局在模型更新之后才完成；contentHeight 变化时会再试一次
             Qt.callLater(ctl.restoreScrollNow)

@@ -19,6 +19,11 @@ Item {
     UiMetrics { id: metrics }
     KTheme { id: theme }
 
+    KScrollMemory {
+        id: scrollMemory
+        flickable: page.activeView
+    }
+
     readonly property var entries: backend ? backend.trashFiles : []
     readonly property var trashRows: entryRows.model
     readonly property int selectedCount: selection.count
@@ -35,7 +40,6 @@ Item {
     readonly property bool gridMode: backend !== null
                                      && backend.contentView === "grid"
     readonly property var activeView: gridMode ? trashGrid : trashList
-    property var scrollByView: ({ "list": 0, "grid": 0 })
     property bool pendingScrollRestore: false
     property real pendingScrollY: 0
 
@@ -96,14 +100,7 @@ Item {
     }
 
     function rememberScroll() {
-        if (!page.activeView)
-            return
-        const next = ({})
-        const keys = Object.keys(page.scrollByView)
-        for (let i = 0; i < keys.length; ++i)
-            next[keys[i]] = page.scrollByView[keys[i]]
-        next[page.gridMode ? "grid" : "list"] = page.activeView.contentY
-        page.scrollByView = next
+        scrollMemory.rememberKey(page.gridMode ? "grid" : "list")
     }
 
     function setContentView(view) {
@@ -121,9 +118,7 @@ Item {
             return
         if (page.activeView.contentHeight <= 0)
             return
-        const maxY = Math.max(0, page.activeView.contentHeight
-                                 - page.activeView.height)
-        page.activeView.contentY = Math.max(0, Math.min(page.pendingScrollY, maxY))
+        scrollMemory.applyTo(page.activeView, page.pendingScrollY)
         page.pendingScrollRestore = false
     }
 
@@ -152,7 +147,7 @@ Item {
     }
 
     onGridModeChanged: {
-        page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+        page.pendingScrollY = scrollMemory.valueFor(page.gridMode ? "grid" : "list", 0)
         page.pendingScrollRestore = true
         Qt.callLater(page.restoreScroll)
         Qt.callLater(page.focusActiveView)
@@ -170,7 +165,7 @@ Item {
                 backend.refreshTrash()
         }
         if (!page.pendingScrollRestore) {
-            page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+            page.pendingScrollY = scrollMemory.valueFor(page.gridMode ? "grid" : "list", 0)
             page.pendingScrollRestore = true
         }
         Qt.callLater(function () {

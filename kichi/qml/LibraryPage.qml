@@ -42,7 +42,6 @@ Item {
                                       ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid)
                                       : activeList
     readonly property var activeList: page.dateGrouped ? libraryGroupedList : libraryList
-    property var scrollByView: ({ "list": 0, "grid": 0 })
     property bool pendingScrollRestore: false
     property real pendingScrollY: 0
 
@@ -57,6 +56,11 @@ Item {
     }
     UiMetrics { id: metrics }
     KTheme { id: theme }
+
+    KScrollMemory {
+        id: scrollMemory
+        flickable: page.activeView
+    }
 
     LoadingSkeletonGate {
         id: loadingSkeletonGate
@@ -129,14 +133,7 @@ Item {
     }
 
     function rememberScroll() {
-        if (!page.activeView)
-            return
-        const next = ({})
-        const keys = Object.keys(page.scrollByView)
-        for (let i = 0; i < keys.length; ++i)
-            next[keys[i]] = page.scrollByView[keys[i]]
-        next[page.gridMode ? "grid" : "list"] = page.activeView.contentY
-        page.scrollByView = next
+        scrollMemory.rememberKey(page.gridMode ? "grid" : "list")
     }
 
     function setContentView(view) {
@@ -156,9 +153,7 @@ Item {
             page.activeView.forceLayout()
         if (page.activeView.contentHeight <= 0)
             return
-        const maxY = Math.max(0, page.activeView.contentHeight
-                                 - page.activeView.height)
-        page.activeView.contentY = Math.max(0, Math.min(page.pendingScrollY, maxY))
+        scrollMemory.applyTo(page.activeView, page.pendingScrollY)
         page.pendingScrollRestore = false
     }
 
@@ -312,7 +307,7 @@ Item {
         page.ensureFresh()
         page.acceptBackendEntries()
         if (!page.pendingScrollRestore) {
-            page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+            page.pendingScrollY = scrollMemory.valueFor(page.gridMode ? "grid" : "list", 0)
             page.pendingScrollRestore = true
         }
         Qt.callLater(function () {
@@ -322,7 +317,7 @@ Item {
     }
 
     onGridModeChanged: {
-        page.pendingScrollY = page.scrollByView[page.gridMode ? "grid" : "list"] || 0
+        page.pendingScrollY = scrollMemory.valueFor(page.gridMode ? "grid" : "list", 0)
         page.pendingScrollRestore = true
         const index = page.indexOfCurrentEntry()
         if (index >= 0) {
