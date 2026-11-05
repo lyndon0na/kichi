@@ -227,9 +227,13 @@ TestCase {
 
         mouseClick(offlineTab)
         tryCompare(page, "currentTab", "offline")
-        tryCompare(indicator, "x",
-                   offlineTab.mapToItem(indicator.parent, 0, 0).x, 1000)
-        compare(indicator.width, offlineTab.width)
+        // 选中态字重不同，会让两个标签宽度差 1px 并引起布局位移；
+        // 期望位置必须按布局稳定后的实时值算，不能在切换瞬间取快照。
+        tryVerify(function () {
+            return Math.abs(indicator.x
+                            - offlineTab.mapToItem(indicator.parent, 0, 0).x) <= 0.5
+                   && Math.abs(indicator.width - offlineTab.width) <= 0.5
+        }, 1000, "选中指示器没有跟住离线任务标签")
     }
 
     function test_task_entry_prefers_local_transfers_when_both_have_tasks() {
