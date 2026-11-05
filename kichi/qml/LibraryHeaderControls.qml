@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 资料库三页共用的页头操作，不显示条目数或读取状态。
+// 资料库三页共用的页头操作，不显示条目数；只有「已加星标」在标题旁放数据来源。
 RowLayout {
     id: root
 
@@ -10,9 +10,28 @@ RowLayout {
 
     readonly property bool loading: root.target ? root.target.loading : false
 
+    // 数据来源提示（目前只有「已加星标」会填）：只在索引已开启且就绪时出现。
+    readonly property string sourceText: root.target
+                                          && root.target.backend
+                                          && root.target.backend.localIndexEnabled === true
+                                          && root.target.kind === "starred"
+                                        ? String(root.target.backend.libraryStatus || "")
+                                        : ""
+
     readonly property KTheme theme: KTheme { parent: root }
 
     spacing: theme.gapSm
+
+    Label {
+        objectName: "librarySourceHint"
+        Layout.alignment: Qt.AlignVCenter
+        Layout.maximumWidth: 300
+        visible: text.length > 0
+        text: root.sourceText
+        color: theme.textMuted
+        font.pixelSize: theme.fontMeta
+        elide: Text.ElideRight
+    }
 
     Item {
         Layout.fillWidth: true

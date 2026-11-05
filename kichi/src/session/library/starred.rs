@@ -19,12 +19,8 @@ const INDEX_STARRED_LIMIT: usize = 10_000;
 /// 资料库「已加星标」：索引就绪时 0 网络，否则回退现有云端查询。
 pub(super) fn load(session: &Session) -> Result<LibraryLoad, Failure> {
     if !session.local_index_ready() {
-        let status = if session.local_index_enabled() {
-            "本地索引尚未就绪，已从网盘读取"
-        } else {
-            "本地索引已关闭，已从网盘读取"
-        };
-        return Ok(LibraryLoad::new(load_cloud(session)?, status.to_owned()));
+        // 提示只在索引真正承担数据时显示；回退网盘不解释来源。
+        return Ok(LibraryLoad::new(load_cloud(session)?, String::new()));
     }
     match load_index(session) {
         Ok(entries) => {
@@ -33,22 +29,19 @@ pub(super) fn load(session: &Session) -> Result<LibraryLoad, Failure> {
                 .map(format_built_time)
                 .unwrap_or_default();
             let mut status = if built.is_empty() {
-                "来自本地索引，未请求网盘".to_owned()
+                "本地索引".to_owned()
             } else {
-                format!("来自本地索引（更新于 {built}），未请求网盘")
+                format!("本地索引 · 更新于 {built}")
             };
             if entries.len() >= INDEX_STARRED_LIMIT {
-                status.push_str(&format!("；仅显示前 {INDEX_STARRED_LIMIT} 项"));
+                status.push_str(&format!(" · 仅显示前 {INDEX_STARRED_LIMIT} 项"));
             }
             Ok(LibraryLoad::new(entries, status))
         }
         Err(err) => {
             let reason = err.to_string();
             session.record_tree_index_error(format!("本地索引读取星标失败：{reason}"));
-            Ok(LibraryLoad::new(
-                load_cloud(session)?,
-                "本地索引读取失败，已回退网盘读取".to_owned(),
-            ))
+            Ok(LibraryLoad::new(load_cloud(session)?, String::new()))
         }
     }
 }
@@ -119,7 +112,7 @@ fn format_built_time(seconds: i64) -> String {
     match chrono::DateTime::from_timestamp(seconds, 0) {
         Some(time) => time
             .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
+            .format("%m-%d %H:%M")
             .to_string(),
         None => String::new(),
     }
