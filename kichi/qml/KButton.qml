@@ -28,10 +28,14 @@ Button {
     property bool busy: false
     // 调用处已有说明性 ToolTip 时关掉文字自身的截断提示，避免同时弹两层。
     property bool showTextToolTip: true
+    /// 常驻入口当前所在的页面：淡强调色底 + 强调色文字（不参与点击勾选）
+    property bool pageActive: false
 
     KTheme { id: theme }
 
     readonly property color foregroundColor: {
+        if (pageActive)
+            return theme.accent
         if (variant === "primary")
             return theme.accentForeground
         if (variant === "danger")
@@ -71,6 +75,8 @@ Button {
                                        : theme.surfaceClear
             }
             if (control.variant === "ghost") {
+                if (control.pageActive)
+                    return control.hovered ? theme.accentGhost : theme.accentSoft
                 if (control.down)
                     return theme.surfacePressed
                 return control.hovered ? theme.surfaceHover : theme.surfaceClear

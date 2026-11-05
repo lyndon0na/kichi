@@ -204,7 +204,14 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 backend: backend
                 currentIndex: root.currentPage
-                onPageRequested: function (index) { root.navigateTo(index) }
+                localTaskCount: backend.downloadActive + backend.uploadActive
+                offlineTaskCount: taskCenterPage.offlineActiveCount
+                onPageRequested: function (index) {
+                    if (index === pageIds.transfers)
+                        root.openTaskCenter()
+                    else
+                        root.navigateTo(index)
+                }
                 onSettingsRequested: root.navigateTo(pageIds.settings)
             }
 
@@ -222,7 +229,8 @@ ApplicationWindow {
 
                 // 页头两行，和列表同一块底色（页头是内容的一部分，不单独成栏）：
                 //   上行 页名 + 搜索框 + 目录操作
-                //   下行 面包屑（只有文件页有）
+                //   下行 面包屑（文件页）或返回文件页的路径（资料库三页），
+                //        右端常驻「资料库」入口
                 Item {
                     id: titleRow
 
@@ -370,6 +378,7 @@ ApplicationWindow {
                     Layout.bottomMargin: 0
                     Layout.preferredHeight: 30
                     visible: root.currentPage === pageIds.files
+                             || pageIds.libraryPages.indexOf(root.currentPage) >= 0
                     spacing: 4
 
                     // 面包屑：上一级 + 各级目录，可点着往回跳。
@@ -378,6 +387,8 @@ ApplicationWindow {
                     Item {
                         id: crumbBar
 
+                        // 目录面包屑只属于文件页；库页用下面的「‹ 我的文件」代替
+                        visible: root.currentPage === pageIds.files
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
                         // 不写 Layout.fillHeight：布局里的 fillHeight 子项会把整行撑到
@@ -574,6 +585,52 @@ ApplicationWindow {
                         }
                     }
 
+                    // 库页：目录面包屑让位给一条回文件页的路径
+                    RowLayout {
+                        objectName: "libraryBackRow"
+
+                        visible: pageIds.libraryPages.indexOf(root.currentPage) >= 0
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredHeight: 30
+                        spacing: 2
+
+                        KIconButton {
+                            objectName: "libraryBackButton"
+
+                            iconName: "chevron-left"
+                            iconSize: 14
+                            iconOpacity: 0.65
+                            Layout.alignment: Qt.AlignVCenter
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("返回我的文件")
+                            Accessible.name: qsTr("返回我的文件")
+                            onClicked: root.navigateTo(pageIds.files)
+                        }
+
+                        Label {
+                            text: qsTr("我的文件")
+                            font.pixelSize: 13
+                            color: Qt.rgba(palette.text.r, palette.text.g,
+                                           palette.text.b, 0.7)
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.navigateTo(pageIds.files)
+                            }
+                        }
+                    }
+
+                    // 三个资料库的入口：文件页和库页都常驻，进库后可直接换库
+                    LibraryMenuButton {
+                        Layout.alignment: Qt.AlignVCenter
+                        currentPage: root.currentPage
+                        onPageRequested: function (pageIndex) {
+                            root.navigateTo(pageIndex)
+                        }
+                    }
                 }
 
                 // 内容区：与页头同一块底色（窗口色就是 palette.base），中间不画分隔线
@@ -671,9 +728,9 @@ ApplicationWindow {
         }
     }
 
-    // 底栏：左侧单槽消息 + 右侧固定传输入口。消息默认显示当前页面 / 目录上下文，
+    // 底栏：左侧单槽消息 + 右侧容量指示。消息默认显示当前页面 / 目录上下文，
     // 进度、错误和需要留意的结果临时覆盖它，结束后自动回到上下文。
-    // 登录页只在本就有错误时出现，此时右侧传输入口隐藏。
+    // 登录页只在本就有错误时出现，此时容量指示隐藏。
     footer: Item {
         id: statusBar
 
@@ -728,26 +785,14 @@ ApplicationWindow {
                 showToolTipWhenUntruncated: true
             }
 
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: 16
+            QuotaIndicator {
+                objectName: "statusBarQuota"
                 Layout.alignment: Qt.AlignVCenter
                 visible: root.signedIn
-                color: theme.divider
-            }
-
-            TransferStatusButton {
-                objectName: "transferStatusButton"
-
-                visible: root.signedIn
-                activeCount: backend.downloadActive + backend.uploadActive
-                offlineCount: taskCenterPage.offlineActiveCount
-                pageActive: root.currentPage === pageIds.transfers
-                onRequested: {
-                    if (root.currentPage !== pageIds.transfers)
-                        taskCenterPage.showTaskEntry()
-                    root.navigateTo(pageIds.transfers)
-                }
+                used: backend ? backend.quotaUsed : ""
+                limit: backend ? backend.quotaLimit : ""
+                loading: backend ? backend.quotaLoading : false
+                ratio: backend ? backend.quotaRatio : -1
             }
         }
     }
@@ -837,7 +882,7 @@ ApplicationWindow {
         if (root.currentPage === pageIds.shares)
             return qsTr("分享")
         if (root.currentPage === pageIds.transfers)
-            return qsTr("任务")
+            return qsTr("传输任务")
         if (root.currentPage === pageIds.trash)
             return qsTr("回收站")
         if (root.currentPage === pageIds.settings)
@@ -855,6 +900,14 @@ ApplicationWindow {
         if (root.currentPage !== pageIndex)
             backend.clearStatusMessage()
         root.currentPage = pageIndex
+    }
+
+    /// 侧栏「传输任务」入口：从其他页面进来时按任务状态选标签，
+    /// 已经停在任务页时只保持当前标签。
+    function openTaskCenter() {
+        if (root.currentPage !== pageIds.transfers)
+            taskCenterPage.showTaskEntry()
+        root.navigateTo(pageIds.transfers)
     }
 
     /// 底栏无提醒时显示的上下文。读取的是各页已经维护的加载态与计数，

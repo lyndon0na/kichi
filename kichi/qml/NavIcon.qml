@@ -109,7 +109,10 @@ Item {
         "layout-grid": "M4 4h6v6h-6z M14 4h6v6h-6z M4 14h6v6h-6z M14 14h6v6h-6z",
         // 下拉框箭头
         "chevron-down": "M6 9l6 6l6 -6",
-        "chevron-right": "M9 6l6 6l-6 6"
+        "chevron-right": "M9 6l6 6l-6 6",
+        "chevron-left": "M15 6l-6 6l6 6",
+        // 资料库：三层叠加（最近保存 / 播放历史 / 已加星标共用的入口）
+        library: "M4 6l8 -4l8 4l-8 4l-8 -4 M4 10l8 4l8 -4 M4 14l8 4l8 -4"
     })
 
     Shape {

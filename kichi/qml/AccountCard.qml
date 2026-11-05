@@ -5,8 +5,8 @@ import QtQuick.Layouts
 
 // 侧栏底部的账号区（从 SideBar.qml 拆出来，守 QML 行数提醒线）。
 //
-// 第一行：头像 + 用户名 + 会员标。
-// 第二行：已用容量 / 上限 + 容量条。
+// 一行：头像 + 用户名 + 右侧设置入口。容量已挪到底栏右侧（QuotaIndicator.qml）；
+// 会员标在 2026-11-05 去掉——身份只留头像和名字，不再和设置按钮抢位置。
 //
 // 退出登录不在这里：它是低频、不可逆的操作，放在设置页「账号」一节，
 // 点下去还要过一道确认（2026-10-29 用户要求，别再加回账号区）。
@@ -23,13 +23,7 @@ Item {
     property string displayName: ""
     /// Rust 下载后的本地头像 `file://` URI；空串时显示首字母
     property string avatarPath: ""
-    property string quotaUsed: ""
-    property string quotaLimit: ""
-    /// 容量请求在途；与昵称加载分开，缓存昵称不会误伤容量骨架
-    property bool quotaLoading: false
-    /// < 0 表示不限量 / 未知，此时不画容量条
-    property double quotaRatio: -1
-    property bool vip: false
+    /// 当前停在设置页：右侧设置按钮点亮强调色
     property bool settingsActive: false
 
     signal settingsRequested()
@@ -50,9 +44,6 @@ Item {
     }
 
     readonly property bool identityPending: card.shownName.length === 0
-    readonly property bool quotaPending: card.quotaLoading
-                                          && card.quotaUsed.length === 0
-                                          && card.quotaLimit.length === 0
 
     /// 骨架条的呼吸透明度（只在加载中动）
     property real skeletonPulse: 1
@@ -74,7 +65,6 @@ Item {
         width: parent.width - 2 * theme.gapMd
         spacing: theme.gapSm
 
-        // —— 第一行：头像 + 用户名 + 会员标 ——
         RowLayout {
             Layout.fillWidth: true
             spacing: theme.gapSm
@@ -160,34 +150,16 @@ Item {
                 opacity: card.skeletonPulse
             }
 
-            Rectangle {
-                objectName: "memberBadge"
-                Layout.alignment: Qt.AlignVCenter
-                visible: !card.identityPending && card.vip
-                implicitWidth: vipLabel.implicitWidth + 10
-                implicitHeight: 15
-                radius: theme.radiusSmall
-                color: theme.accentGhost
-
-                Label {
-                    id: vipLabel
-                    anchors.centerIn: parent
-                    text: qsTr("会员")
-                    color: theme.accent
-                    font.pixelSize: theme.fontCaption
-                    font.weight: Font.DemiBold
-                }
-            }
-
+            // 设置是页面，但常驻入口放在账号行右侧：不放 checkable，避免
+            // 点击改写 checked、永久切断与 settingsActive 的绑定（同侧栏导航项）。
             KIconButton {
                 objectName: "accountSettingsButton"
                 Layout.alignment: Qt.AlignVCenter
-                implicitWidth: 24
-                implicitHeight: 24
+                implicitWidth: 28
+                implicitHeight: 28
                 iconName: "settings"
-                iconSize: 14
+                iconSize: 16
                 iconOpacity: 0.7
-                checkable: true
                 checked: card.settingsActive
 
                 Accessible.name: qsTr("设置")
@@ -196,62 +168,11 @@ Item {
                 onClicked: card.settingsRequested()
             }
         }
-
-        // —— 第二行：已用容量 / 上限 ——
-        // 真实文字和骨架共用同一个 16px 槽；容量回来时只换内容，不改变高度。
-        Item {
-            objectName: "quotaTextSlot"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 16
-
-            ElidedLabel {
-                anchors.fill: parent
-                visible: !card.quotaPending && card.quotaLimit.length > 0
-                text: qsTr("已用 %1 / %2").arg(card.quotaUsed).arg(card.quotaLimit)
-                elide: Text.ElideRight
-                verticalAlignment: Text.AlignVCenter
-                color: theme.textMuted
-                font.pixelSize: theme.fontCaption
-                showToolTipWhenUntruncated: true
-            }
-
-            Rectangle {
-                objectName: "quotaSkeleton"
-                anchors.fill: parent
-                readonly property bool showing: card.quotaPending
-                visible: showing
-                radius: 2
-                color: theme.surfacePressed
-                opacity: card.skeletonPulse
-            }
-        }
-
-        // 容量条：quotaRatio < 0 表示不限量 / 未知，此时只留 3px 空位不画条。
-        // 高度锁死为 3px，加载前后始终占位，避免容量数据到达时把账号区撑开。
-        Rectangle {
-            objectName: "quotaBar"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 3
-            Layout.minimumHeight: 3
-            Layout.maximumHeight: 3
-            radius: height / 2
-            color: card.quotaPending ? theme.surfacePressed
-                                     : card.quotaRatio >= 0 ? theme.surfacePressed : "transparent"
-            opacity: card.quotaPending ? card.skeletonPulse : 1
-
-            Rectangle {
-                width: parent.width * Math.max(card.quotaRatio, 0)
-                height: parent.height
-                radius: parent.radius
-                color: theme.accent
-                visible: !card.quotaPending && card.quotaRatio >= 0
-            }
-        }
     }
 
     // 骨架的呼吸动画：只动透明度，不画实体色块，安静地表示「正在取」
     SequentialAnimation {
-        running: card.identityPending || card.quotaPending
+        running: card.identityPending
         loops: Animation.Infinite
         NumberAnimation {
             target: card

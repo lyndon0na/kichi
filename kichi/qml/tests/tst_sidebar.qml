@@ -25,11 +25,6 @@ TestCase {
         property string account: "tester"
         property string displayName: "Tester"
         property string avatarPath: ""
-        property string quotaUsed: "0 B"
-        property string quotaLimit: "1 GB"
-        property bool quotaLoading: false
-        property double quotaRatio: 0
-        property bool quotaVip: false
     }
 
     property var sidebar: null
@@ -76,7 +71,8 @@ TestCase {
     }
 
     function test_order_and_page_mapping() {
-        const expectedPages = [0, 5, 6, 7, 1, 3]
+        // 传输任务紧跟我的文件；三个资料库收进文件页，设置收进账号行。
+        const expectedPages = [0, 2, 1, 3]
         let previousY = -1
 
         for (let i = 0; i < expectedPages.length; ++i) {
@@ -95,14 +91,35 @@ TestCase {
             wait(0)
         }
 
-        compare(navItem(2), null, "传输任务不再占主导航")
-        compare(navItem(4), null, "设置不再占主导航")
-        compare(findChild(sidebar, "sidebarTaskBadge"), null,
-                "离线任务数量不再放在侧栏")
+        compare(navItem(4), null, "设置不占主导航")
+        compare(navItem(5), null, "最近保存不占主导航")
+        compare(navItem(6), null, "播放历史不占主导航")
+        compare(navItem(7), null, "已加星标不占主导航")
+    }
+
+    function test_task_badge_only_shows_unfinished_count() {
+        const badge = findChild(sidebar, "sidebarTaskBadge")
+        verify(badge !== null, "传输任务入口缺少数量徽标")
+        compare(badge.visible, false)
+
+        sidebar.localTaskCount = 1
+        sidebar.offlineTaskCount = 2
+        wait(0)
+        compare(badge.visible, true)
+        compare(badge.text, "3")
+
+        sidebar.localTaskCount = 0
+        sidebar.offlineTaskCount = 120
+        wait(0)
+        compare(badge.text, "99+")
+
+        sidebar.offlineTaskCount = 0
+        wait(0)
+        compare(badge.visible, false)
     }
 
     function test_repeated_click_keeps_current_page_selected() {
-        const page = 6
+        const page = 1
         const item = navItem(page)
         verify(item !== null)
         compare(item.checkable, false, "导航按钮不能自行切换勾选")
@@ -127,7 +144,8 @@ TestCase {
 
     function test_account_settings_entry_requests_settings_page() {
         const settingsButton = findChild(sidebar, "accountSettingsButton")
-        verify(settingsButton !== null, "账号区缺少设置入口")
+        verify(settingsButton !== null, "账号行缺少设置入口")
+        compare(settingsButton.checkable, false, "设置按钮不能自行切换勾选")
 
         settingsSpy.clear()
         settingsButton.clicked()
@@ -136,7 +154,7 @@ TestCase {
 
     function test_selection_surface_follows_current_page() {
         const filesSurface = findChild(navItem(0), "sidebarSelectionSurface")
-        const targetSurface = findChild(navItem(6), "sidebarSelectionSurface")
+        const targetSurface = findChild(navItem(1), "sidebarSelectionSurface")
         const selectionBar = findChild(sidebar, "sidebarSelectionBar")
         verify(filesSurface !== null, "当前页缺少选中底色")
         verify(targetSurface !== null, "目标页缺少选中底色")
@@ -147,19 +165,42 @@ TestCase {
         tryCompare(targetSurface, "opacity", 0, 1000)
         compare(selectionBar.visible, true)
 
-        sidebar.currentIndex = 6
+        sidebar.currentIndex = 1
         tryCompare(targetSurface, "opacity", 1, 1000)
         tryCompare(filesSurface, "opacity", 0, 1000)
 
-        const target = navItem(6)
+        const target = navItem(1)
         const expectedY = target.mapToItem(
             sidebar, 0, (target.height - selectionBar.height) / 2).y
         tryCompare(selectionBar, "y", expectedY, 1000)
 
         sidebar.currentIndex = 2
-        compare(selectionBar.visible, false, "任务中心没有侧栏入口，竖条应隐藏")
+        const tasksItem = navItem(2)
+        verify(tasksItem.navSelected, "传输任务页应选中侧栏入口")
+        compare(selectionBar.visible, true)
+        const tasksY = tasksItem.mapToItem(
+            sidebar, 0, (tasksItem.height - selectionBar.height) / 2).y
+        tryCompare(selectionBar, "y", tasksY, 1000)
 
+        // 库页属于文件页：侧栏仍选中「我的文件」
+        sidebar.currentIndex = 5
+        tryCompare(filesSurface, "opacity", 1, 1000)
+        tryCompare(targetSurface, "opacity", 0, 1000)
+        verify(navItem(0).navSelected, "最近保存页应选中我的文件")
+        const filesTarget = navItem(0)
+        const filesY = filesTarget.mapToItem(
+            sidebar, 0, (filesTarget.height - selectionBar.height) / 2).y
+        tryCompare(selectionBar, "y", filesY, 1000)
+
+        // 设置不在主导航：滑条隐藏，选中态由账号行的设置按钮承担
+        const settingsButton = findChild(sidebar, "accountSettingsButton")
         sidebar.currentIndex = 4
-        compare(selectionBar.visible, false, "设置页没有侧栏入口，竖条应隐藏")
+        wait(0)
+        compare(selectionBar.visible, false, "设置页不应在主导航上出现选中竖条")
+        compare(settingsButton.checked, true, "设置页应点亮账号行的设置按钮")
+
+        sidebar.currentIndex = 0
+        wait(0)
+        compare(settingsButton.checked, false)
     }
 }
