@@ -17,6 +17,7 @@ pub mod media;
 mod naming;
 pub mod normalize;
 mod normalize_table;
+pub mod rate_bucket;
 pub mod search;
 mod search_rank;
 pub mod share;

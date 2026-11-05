@@ -4,28 +4,16 @@
 //! 最多一个切片内生效；读到的字节会先写盘再因取消返回，不丢数据。
 
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use kichi_core::rate_bucket::{RateBucket, CANCEL_POLL};
 
 use super::download::Cancel;
 use super::limits;
 
-const CANCEL_POLL: Duration = Duration::from_millis(50);
-const MIN_CAPACITY: f64 = 64.0 * 1024.0;
-const MAX_CAPACITY: f64 = 4.0 * 1024.0 * 1024.0;
-
-struct Bucket {
-    tokens: f64,
-    at: Instant,
-}
-
-fn bucket() -> &'static Mutex<Bucket> {
-    static BUCKET: OnceLock<Mutex<Bucket>> = OnceLock::new();
-    BUCKET.get_or_init(|| {
-        Mutex::new(Bucket {
-            tokens: MIN_CAPACITY,
-            at: Instant::now(),
-        })
-    })
+fn bucket() -> &'static Mutex<RateBucket> {
+    static BUCKET: OnceLock<Mutex<RateBucket>> = OnceLock::new();
+    BUCKET.get_or_init(|| Mutex::new(RateBucket::new()))
 }
 
 /// 记入已经收到的字节；`false` = 等待期间被取消 / 暂停。
@@ -46,56 +34,15 @@ pub(crate) fn consume(cancel: &Cancel, bytes: usize) -> bool {
             let mut bucket = bucket()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            refill(&mut bucket, Instant::now(), rate as f64);
-            if bucket.tokens >= bytes {
-                bucket.tokens -= bytes;
-                return true;
+            bucket.take(bytes, Instant::now(), rate as f64)
+        };
+        match wait {
+            None => return true,
+            Some(wait) => {
+                if !super::download::sleep_cancellable(cancel, wait.min(CANCEL_POLL)) {
+                    return false;
+                }
             }
-            duration_for((bytes - bucket.tokens) / rate as f64)
-        };
-        if !super::download::sleep_cancellable(cancel, wait.min(CANCEL_POLL)) {
-            return false;
         }
-    }
-}
-
-fn refill(bucket: &mut Bucket, now: Instant, rate: f64) {
-    let elapsed = now.saturating_duration_since(bucket.at).as_secs_f64();
-    let capacity = (rate / 4.0).clamp(MIN_CAPACITY, MAX_CAPACITY);
-    bucket.tokens = (bucket.tokens + elapsed * rate).min(capacity);
-    bucket.at = now;
-}
-
-fn duration_for(seconds: f64) -> Duration {
-    let millis = (seconds.max(0.001) * 1000.0).ceil();
-    Duration::from_millis(if millis.is_finite() && millis > 0.0 {
-        millis.min(u64::MAX as f64) as u64
-    } else {
-        1
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bucket_refills_to_a_bounded_capacity() {
-        let now = Instant::now();
-        let mut bucket = Bucket {
-            tokens: 0.0,
-            at: now,
-        };
-        refill(&mut bucket, now + Duration::from_secs(10), 1024.0 * 1024.0);
-        assert_eq!(bucket.tokens, 256.0 * 1024.0);
-        refill(&mut bucket, now + Duration::from_secs(30), 1024.0 * 1024.0);
-        assert_eq!(bucket.tokens, 256.0 * 1024.0, "不会攒出无上限突发");
-    }
-
-    #[test]
-    fn wait_duration_is_at_least_one_millisecond() {
-        assert_eq!(duration_for(0.0), Duration::from_millis(1));
-        assert_eq!(duration_for(0.001), Duration::from_millis(1));
-        assert_eq!(duration_for(0.0015), Duration::from_millis(2));
     }
 }
