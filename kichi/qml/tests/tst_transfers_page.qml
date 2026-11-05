@@ -86,8 +86,7 @@ TestCase {
             downloadActive = active === undefined ? 0 : active
             downloadQueued = queued === undefined ? 0 : queued
             transferHasFinished = items.some(function(item) {
-                return item.state === "done" || item.state === "failed"
-                        || item.state === "cancelled"
+                return item.state === "done"
             })
             transferHasRetryable = items.some(function(item) {
                 return item.state === "failed"
@@ -367,6 +366,7 @@ TestCase {
         backend.setDetails("9:folder", [
             makeRow("9:0", "子文件.mkv", "done", { progress: 100 })
         ])
+        page.completedExpanded = true
         backend.publish([
             makeRow("1:0", "普通文件.mkv", "done", { progress: 100 }),
             makeRow("9:folder", "目录", "done", {
@@ -374,7 +374,7 @@ TestCase {
                 childCount: 1
             })
         ], 0, 0)
-        waitRows(2)
+        waitRows(3)
 
         var fileIcon = findChild(row("1:0"), "rowTypeIcon")
         var folderIcon = findChild(row("9:folder"), "rowTypeIcon")
@@ -383,7 +383,7 @@ TestCase {
         compare(fileIcon.x, folderIcon.x, "顶层普通文件与目录图标必须同一竖线")
 
         mouseClick(findChild(row("9:folder"), "rowHeader"))
-        waitRows(3)
+        waitRows(4)
         var childIcon = findChild(row("9:0"), "rowTypeIcon")
         verify(childIcon !== null)
         compare(childIcon.x, 28, "子文件图标保持现有缩进")
@@ -471,8 +471,9 @@ TestCase {
                 childCount: 2
             }))
         }
+        page.completedExpanded = true
         backend.publish(items)
-        waitRows(30)
+        waitRows(31)
         verify(list.contentHeight > list.height)
 
         list.flick(0, -600)
@@ -547,16 +548,17 @@ TestCase {
             items.push(makeRow("after:" + after, "后续" + after + ".mkv",
                                "done", { progress: 100 }))
         }
+        page.completedExpanded = true
         backend.publish(items, 0, 0)
-        waitRows(23)
+        waitRows(24)
 
         mouseClick(findChild(row("60:folder"), "rowHeader"))
-        waitRows(35)
+        waitRows(36)
         var sticky = findChild(page, "transferStickyRow")
         verify(sticky !== null)
         compare(sticky.visible, false, "父行自己还在顶部时不应重复覆盖")
 
-        list.contentY = 100
+        list.contentY = 160
         tryVerify(function() { return sticky.visible })
         compare(sticky.y, list.y)
         compare(findChild(sticky, "nameText").text, "长目录")
@@ -568,7 +570,7 @@ TestCase {
                "吸附父行必须能打开同一套右键菜单")
         menu.close()
 
-        list.contentY = 720
+        list.contentY = 800
         tryVerify(function() { return !sticky.visible })
 
         list.contentY = 480
@@ -577,11 +579,11 @@ TestCase {
         mouseWheel(sticky, sticky.width / 2, sticky.height / 2, 0, -120)
         tryVerify(function() { return list.contentY !== beforeWheel })
         mouseClick(findChild(sticky, "openDetailsArrowHit"))
-        waitRows(23)
+        waitRows(24)
         compare(page.expandedKey, "")
         compare(backend.closeCount, 1)
         wait(500)
-        compare(list.contentY, 96, "收起吸附层后列表应回到父行位置")
+        compare(list.contentY, 144, "收起吸附层后列表应回到父行位置")
     }
 
     function test_switching_expanded_folder_keeps_clicked_row_in_place() {
@@ -615,11 +617,12 @@ TestCase {
             items.push(makeRow("tail:" + tail, "尾部" + tail + ".mkv",
                                "done", { progress: 100 }))
         }
+        page.completedExpanded = true
         backend.publish(items, 0, 0)
-        waitRows(29)
+        waitRows(30)
 
         mouseClick(findChild(row("70:folder"), "rowHeader"))
-        waitRows(41)
+        waitRows(42)
         list.contentY = 18 * 48
         wait(40)
         var second = row("71:folder")
@@ -627,7 +630,7 @@ TestCase {
         var beforeY = second.y - list.contentY
 
         mouseClick(findChild(second, "rowHeader"))
-        waitRows(31)
+        waitRows(32)
         second = row("71:folder")
         verify(second !== null)
         wait(40)
@@ -1115,6 +1118,63 @@ TestCase {
         compare(row("1:0").y < row("2:0").y, true)
     }
 
+    function test_completed_rows_fold_behind_the_newest_one() {
+        backend.publish([
+            makeRow("1:0", "最新.mkv", "done", { progress: 100 }),
+            makeRow("2:0", "稍早.mkv", "done", { progress: 100 }),
+            makeRow("3:0", "更早.mkv", "done", { progress: 100 })
+        ], 0, 0)
+        waitRows(2)
+
+        verify(row("1:0") !== null, "最新完成的一批留在外面")
+        compare(row("2:0"), null, "更早的默认收起")
+        var group = row("group:done")
+        verify(group !== null, "折叠组头不存在")
+        compare(findChild(group, "nameText").text, "已完成 2 项")
+        compare(group.expanded, false)
+
+        mouseClick(findChild(group, "rowHeader"))
+        waitRows(4)
+        compare(page.completedExpanded, true)
+        verify(row("2:0") !== null)
+        verify(row("3:0") !== null)
+        compare(row("group:done").expanded, true)
+
+        mouseClick(findChild(row("group:done"), "rowHeader"))
+        waitRows(2)
+        compare(page.completedExpanded, false)
+        compare(row("2:0"), null)
+    }
+
+    function test_single_completed_row_has_no_group_header() {
+        backend.publish([
+            makeRow("1:0", "完成.mkv", "done", { progress: 100 })
+        ], 0, 0)
+        waitRows(1)
+        compare(row("group:done"), null)
+    }
+
+    function test_new_active_task_leaves_completed_group_folded() {
+        backend.publish([
+            makeRow("1:0", "最新.mkv", "done", { progress: 100 }),
+            makeRow("2:0", "稍早.mkv", "done", { progress: 100 })
+        ], 0, 0)
+        waitRows(2)
+
+        backend.publish([
+            makeRow("3:0", "新下载.mkv", "running", {
+                progress: 1,
+                progressText: "1%"
+            }),
+            makeRow("1:0", "最新.mkv", "done", { progress: 100 }),
+            makeRow("2:0", "稍早.mkv", "done", { progress: 100 })
+        ], 1, 0)
+        waitRows(3)
+        compare(page.completedExpanded, false)
+        verify(row("group:done") !== null)
+        compare(row("2:0"), null)
+    }
+
     function test_clear_finished_uses_confirmation() {
         backend.publish([
             makeRow("1:0", "完成.mkv", "done", {
@@ -1216,8 +1276,9 @@ TestCase {
         for (var i = 0; i < 30; ++i)
             items.push(makeRow("release-" + i, "release-" + i + ".mkv",
                                i === 0 ? "running" : "done"))
+        page.completedExpanded = true
         backend.publish(items, 1, 0)
-        waitRows(30)
+        waitRows(31)
         list.contentY = 240
         tryVerify(function () { return list.contentY === 240 })
 
@@ -1227,7 +1288,7 @@ TestCase {
         compare(list.count, 0, "隐藏页收到后端更新时不能重新建行")
 
         page.active = true
-        waitRows(30)
+        waitRows(31)
         tryVerify(function () { return list.contentY > 0 },
                   2000, "回到传输页后应恢复原滚动位置")
     }

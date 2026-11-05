@@ -642,22 +642,40 @@ fn detail_notice_map(hidden: usize) -> QVariantMap {
     )
 }
 
-/// 排序：进行中在前（按排队顺序），其余顶层记录按批次新 → 旧。只取顶层记录。
+/// 顶层记录的显示顺序，只取顶层记录：
 ///
-/// 已中断不算进行中，也不单独置顶；它和完成 / 失败 / 取消一样属于历史，
-/// 按批次时间参与同一套排序。
+/// 1. 进行中（排队 / 准备 / 下载或上传中 / 正在暂停），按排队顺序；
+/// 2. 已暂停：用户自己按下的暂停，属于「还没做完的活」，紧跟进行中；
+/// 3. 失败 / 已中断：要重试的待处理项，新 → 旧；
+/// 4. 已完成（及瞬态的已取消）：新 → 旧。
+///
+/// 「已完成」放在最后，QML 只留最新一批在列表里，其余折进组头。
 pub(crate) fn ordered(records: &[Transfer]) -> Vec<&Transfer> {
-    let mut active: Vec<&Transfer> = records
-        .iter()
-        .filter(|record| !record.child && record.state.is_active())
+    let top_level = || records.iter().filter(|record| !record.child);
+    let mut active: Vec<&Transfer> = top_level()
+        .filter(|record| record.state.is_active())
         .collect();
-    let mut historical: Vec<&Transfer> = records
-        .iter()
-        .filter(|record| !record.child && !record.state.is_active())
+    let mut paused: Vec<&Transfer> = top_level()
+        .filter(|record| record.state == TransferState::Paused)
+        .collect();
+    let mut attention: Vec<&Transfer> = top_level()
+        .filter(|record| {
+            matches!(
+                record.state,
+                TransferState::Failed | TransferState::Interrupted
+            )
+        })
+        .collect();
+    let mut completed: Vec<&Transfer> = top_level()
+        .filter(|record| matches!(record.state, TransferState::Done | TransferState::Cancelled))
         .collect();
     active.sort_by_key(|record| (record.batch, record.index));
-    historical.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
-    active.extend(historical);
+    paused.sort_by_key(|record| (record.batch, record.index));
+    attention.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
+    completed.sort_by(|a, b| (b.batch, b.index).cmp(&(a.batch, a.index)));
+    active.extend(paused);
+    active.extend(attention);
+    active.extend(completed);
     active
 }
 

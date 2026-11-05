@@ -623,7 +623,9 @@ pub(crate) fn snapshot() -> (crate::cxxqt_object::QVariantList, i32) {
     with_records(|records| crate::cxxqt_object::transfers_view::build_snapshot(records))
 }
 
-/// 全部历史里有没有「所有行都已结束」的批次（清空按钮据此置灰，不按日期收窄）。
+/// 全部历史里有没有整批都已完成（`Done`）的批次（「清空已完成」据此显隐）。
+///
+/// 失败 / 已中断的批次要留给用户重试，不算「已完成」。
 pub(crate) fn has_finished() -> bool {
     with_records(|records| {
         let mut batches: Vec<u64> = records.iter().map(|record| record.batch).collect();
@@ -633,7 +635,7 @@ pub(crate) fn has_finished() -> bool {
             records
                 .iter()
                 .filter(|record| record.batch == *batch)
-                .all(|record| record.state.is_finished())
+                .all(|record| record.state == TransferState::Done)
         })
     })
 }

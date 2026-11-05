@@ -30,6 +30,8 @@ Item {
     property int expandedIndex: -1
     property int expandedChildCount: 0
     property var expandedRowData: null
+    /// 「已完成」折叠组是否展开。最新完成的一批始终留在列表里，更早的收进组头。
+    property bool completedExpanded: false
 
     readonly property real responsiveWidth: viewportWidth > 0 ? viewportWidth : width
     readonly property bool showRate: responsiveWidth >= 1180
@@ -293,6 +295,44 @@ Item {
         }
     }
 
+    function normalizeGroup(count) {
+        return {
+            modelKey: "group:done",
+            key: "group:done",
+            name: qsTr("已完成 %1 项").arg(count),
+            sourceId: "",
+            direction: "download",
+            phase: "group",
+            stateText: "",
+            running: false,
+            progress: 0,
+            progressText: "",
+            sizeText: "",
+            detail: "",
+            path: "",
+            folder: false,
+            childCount: 0,
+            failedCount: 0,
+            failedDirs: 0,
+            depth: 0,
+            rowKind: "group",
+            parentKey: "",
+            expandable: true,
+            expanded: page.completedExpanded
+        }
+    }
+
+    /// 追加一条顶层行；如果它就是当前展开的文件夹，紧接着插入子行。
+    function appendParent(wanted, item) {
+        wanted.push(page.normalizeParent(item))
+        if (page.expandedKey.length === 0 || item.key !== page.expandedKey
+                || !page.backend.transferDetailActive)
+            return
+        var children = page.backend.transferDetail || []
+        for (var child = 0; child < children.length; child++)
+            wanted.push(page.normalizeChild(children[child]))
+    }
+
     function wantedRows() {
         var source = page.backend ? page.backend.transfers || [] : []
         var expandedFolder = page.sourceFolder(page.expandedKey)
@@ -303,17 +343,36 @@ Item {
         }
 
         var wanted = []
+        var completed = []
         for (var i = 0; i < source.length; i++) {
             var item = source[i]
-            wanted.push(page.normalizeParent(item))
-            if (expandedFolder === null || item.key !== page.expandedKey)
-                continue
-            var children = page.backend.transferDetailActive
-                         ? page.backend.transferDetail || [] : []
-            for (var child = 0; child < children.length; child++)
-                wanted.push(page.normalizeChild(children[child]))
+            if (item.state === "done")
+                completed.push(item)
+            else
+                page.appendParent(wanted, item)
+        }
+        if (completed.length === 0)
+            return wanted
+
+        // 最新完成的一批留在列表里，打开位置不用先展开；更早的折进组头。
+        page.appendParent(wanted, completed[0])
+        if (completed.length > 1) {
+            wanted.push(page.normalizeGroup(completed.length - 1))
+            if (page.completedExpanded) {
+                for (var older = 1; older < completed.length; older++)
+                    page.appendParent(wanted, completed[older])
+            }
         }
         return wanted
+    }
+
+    function toggleRow(rowKey) {
+        if (rowKey === "group:done") {
+            page.completedExpanded = !page.completedExpanded
+            page.syncRows()
+            return
+        }
+        page.toggleFolder(rowKey)
     }
 
     /// 按 modelKey 就地增删 / 搬移 / 补字段，避免整表重灌冲回顶部。
@@ -441,8 +500,8 @@ Item {
     }
 
     readonly property string clearConfirmMessage: qsTr(
-        "将清空所有已结束的传输记录（完成 / 失败 / 取消）。\n"
-        + "进行中、排队与已中断的记录会保留。确定清空？")
+        "将清空所有已完成的传输记录。\n"
+        + "进行中、排队、暂停、失败与已中断的记录会保留。确定清空？")
     readonly property string cancelAllConfirmMessage: qsTr(
         "将取消所有进行中、排队和已暂停的传输。\n"
         + "未完成下载的断点会被删除；上传会停止并丢弃断点，之后只能从头重试。"
@@ -524,7 +583,7 @@ Item {
                     showRate: page.showRate
                     flash: key === page.highlightedKey
                     onToggleRequested: function(rowKey) {
-                        page.toggleFolder(rowKey)
+                        page.toggleRow(rowKey)
                     }
                     onPauseRequested: function(rowKey) {
                         page.backend.pauseTransfer(rowKey)
@@ -584,7 +643,7 @@ Item {
                 anchors.top: list.top
                 z: 2
                 onToggleRequested: function(rowKey) {
-                    page.toggleFolder(rowKey)
+                    page.toggleRow(rowKey)
                 }
                 onPauseRequested: function(rowKey) {
                     page.backend.pauseTransfer(rowKey)

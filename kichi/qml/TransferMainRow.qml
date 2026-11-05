@@ -54,6 +54,7 @@ ItemDelegate {
     bottomPadding: 0
 
     readonly property bool child: row.rowKind === "child"
+    readonly property bool group: row.rowKind === "group"
     readonly property bool notice: row.phase === "notice"
     readonly property bool failed: row.phase === "failed"
     readonly property bool interrupted: row.phase === "interrupted"
@@ -100,7 +101,7 @@ ItemDelegate {
     TapHandler {
         acceptedButtons: Qt.RightButton
         onTapped: function(point) {
-            if (row.notice)
+            if (row.notice || row.group)
                 return
             row.contextRequested(row.key,
                                  row.mapToItem(null, point.position.x, point.position.y))
@@ -187,7 +188,9 @@ ItemDelegate {
 
     background: Rectangle {
         radius: 0
-        color: row.notice ? theme.surface
+        color: row.group
+               ? (rowHover.hovered ? theme.surfaceHover : theme.surfaceClear)
+             : row.notice ? theme.surface
              : row.active || row.expanded
                ? (row.sticky ? Qt.tint(theme.surface, theme.accentGhost)
                              : theme.accentGhost)
@@ -247,7 +250,7 @@ ItemDelegate {
             NavIcon {
                 id: expandArrow
                 objectName: "openDetailsArrow"
-                visible: row.folder && row.expandable
+                visible: (row.folder || row.group) && row.expandable
                 width: 12
                 height: 12
                 x: 1
@@ -271,6 +274,7 @@ ItemDelegate {
 
             FileIcon {
                 objectName: "rowTypeIcon"
+                visible: !row.group
                 width: 18
                 height: 18
                 // 顶层普通文件也空出箭头槽，和文件夹图标落在同一竖线；
@@ -295,9 +299,11 @@ ItemDelegate {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 text: row.name
-                color: row.notice ? theme.textMuted : theme.textPrimary
+                color: row.notice ? theme.textMuted
+                     : row.group ? theme.textSecondary
+                     : theme.textPrimary
                 font.pixelSize: theme.fontBody
-                font.weight: row.folder ? Font.DemiBold : Font.Normal
+                font.weight: row.folder || row.group ? Font.DemiBold : Font.Normal
                 elide: Text.ElideMiddle
                 verticalAlignment: Text.AlignVCenter
                 externallyHovered: rowHover.hovered
@@ -321,6 +327,7 @@ ItemDelegate {
             Layout.preferredWidth: density.statusColumnWidth
             Layout.minimumWidth: density.statusColumnWidth
             Layout.fillHeight: true
+            visible: !row.group
 
             Rectangle {
                 width: density.statusColumnWidth - 8
@@ -352,6 +359,7 @@ ItemDelegate {
             Layout.preferredWidth: density.progressColumnWidth
             Layout.minimumWidth: density.progressColumnWidth
             Layout.fillHeight: true
+            visible: !row.group
 
             RowLayout {
                 anchors.fill: parent
@@ -392,9 +400,9 @@ ItemDelegate {
 
         ElidedLabel {
             objectName: "sizeText"
-            visible: row.showSize
-            Layout.preferredWidth: row.showSize ? density.sizeColumnWidth : 0
-            Layout.minimumWidth: row.showSize ? density.sizeColumnWidth : 0
+            visible: row.showSize && !row.group
+            Layout.preferredWidth: row.showSize && !row.group ? density.sizeColumnWidth : 0
+            Layout.minimumWidth: row.showSize && !row.group ? density.sizeColumnWidth : 0
             text: row.currentSizeText
             color: theme.textMuted
             font.pixelSize: theme.fontMeta
@@ -405,9 +413,9 @@ ItemDelegate {
 
         ElidedLabel {
             objectName: "rateText"
-            visible: row.showRate
-            Layout.preferredWidth: row.showRate ? density.rateColumnWidth : 0
-            Layout.minimumWidth: row.showRate ? density.rateColumnWidth : 0
+            visible: row.showRate && !row.group
+            Layout.preferredWidth: row.showRate && !row.group ? density.rateColumnWidth : 0
+            Layout.minimumWidth: row.showRate && !row.group ? density.rateColumnWidth : 0
             text: row.running && row.currentRateText.length > 0
                   ? row.currentRateText : "—"
             color: theme.textMuted
@@ -421,6 +429,7 @@ ItemDelegate {
             Layout.preferredWidth: density.actionColumnWidth
             Layout.minimumWidth: density.actionColumnWidth
             Layout.fillHeight: true
+            visible: !row.group
 
             RowLayout {
                 anchors.centerIn: parent

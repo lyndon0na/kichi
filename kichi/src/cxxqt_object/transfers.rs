@@ -1345,6 +1345,96 @@ pub(crate) fn cancel_paused_batch(batch: u64) {
     discard_batch_parts(batch);
 }
 
+/// 取消即删记录：整批取消的批次连子行一起删，文件夹里单个子文件取消只删该行。
+///
+/// 取消时下载断点已经删掉、上传也丢弃了断点，记录留着没有可恢复的东西。
+/// 还在调度器里的批次先不动：下载线程退出后还要按记录清掉剩余断点
+/// （`discard_batch_parts`），等它释放调度槽后的下一次同步再删。
+///
+/// 由 `sync_transfers()` 在重建模型前调用；返回是否删掉了行。
+pub(crate) fn prune_cancelled() -> bool {
+    // 先只读候选：不能在持有记录锁时再去拿调度锁（`queue::is_pending` 是反方向）。
+    let (cancelled_batches, has_cancelled_child, child_parts) = with_records(|records| {
+        let batches: BTreeSet<u64> = records
+            .iter()
+            .filter(|record| !record.child && record.state == TransferState::Cancelled)
+            .map(|record| record.batch)
+            .collect();
+        // 子文件单独取消且父行没取消：记录删掉后 `discard_batch_parts` 就找不到
+        // 它了，这里先把断点路径记下来，删完记录立刻清掉。
+        let has_child = records
+            .iter()
+            .any(|record| record.child && record.state == TransferState::Cancelled);
+        let parts: Vec<(String, PathBuf)> = records
+            .iter()
+            .filter(|record| {
+                record.child
+                    && record.state == TransferState::Cancelled
+                    && !batches.contains(&record.batch)
+                    && !record.job.is_upload()
+            })
+            .map(|record| (record.job.id.clone(), record.job.dir.clone()))
+            .collect();
+        (batches, has_child, parts)
+    });
+    if cancelled_batches.is_empty() && !has_cancelled_child {
+        return false;
+    }
+    let busy: BTreeSet<u64> = cancelled_batches
+        .iter()
+        .copied()
+        .filter(|batch| {
+            super::queue::is_batch_busy(*batch) || super::upload_queue::is_batch_busy(*batch)
+        })
+        .collect();
+    let removed = with_records(|records| prune_cancelled_in(records, &busy));
+    if removed {
+        prune_trees();
+        for (id, dir) in child_parts {
+            crate::session::partials::discard(&id, &dir);
+        }
+    }
+    removed
+}
+
+fn prune_cancelled_in(records: &mut Vec<Transfer>, busy: &BTreeSet<u64>) -> bool {
+    let cancelled_batches: BTreeSet<u64> = records
+        .iter()
+        .filter(|record| !record.child && record.state == TransferState::Cancelled)
+        .map(|record| record.batch)
+        .collect();
+    let removable: BTreeSet<u64> = cancelled_batches
+        .iter()
+        .copied()
+        .filter(|batch| !busy.contains(batch))
+        .collect();
+    let before = records.len();
+    let mut touched: BTreeSet<u64> = BTreeSet::new();
+    records.retain(|record| {
+        if removable.contains(&record.batch) {
+            return false;
+        }
+        // 子文件单独取消（父行没取消）：只删这一行，父行按剩余子文件重新聚合。
+        // 整批取消但线程还在收尾时要保留全部行，等 `discard_batch_parts` 清完。
+        if record.child
+            && record.state == TransferState::Cancelled
+            && !cancelled_batches.contains(&record.batch)
+        {
+            touched.insert(record.batch);
+            return false;
+        }
+        true
+    });
+    if records.len() == before {
+        return false;
+    }
+    rebuild_all_batch_stats(records);
+    for batch in touched {
+        refresh_parent_state(records, batch);
+    }
+    true
+}
+
 /// 删掉某一批里所有未完成文件行的断点；已完成文件没有 part，不受影响。
 pub(crate) fn discard_batch_parts(batch: u64) {
     discard_parts(batch, None);
@@ -1538,10 +1628,9 @@ pub(crate) fn interrupt_paused_for(direction: TransferDirection) {
     });
 }
 
-/// 「清空已完成记录」：清掉整张记录表里所有「所有行都已结束」的批次。
+/// 「清空已完成记录」：清掉整张记录表里所有整批都是 `Done` 的记录。
 ///
-/// 不能像 [`clear_finished_in`] 那样只满足 `is_finished()`：已中断的行不算结束，
-/// 留着它会让整批（连同里面的失败 / 完成行）一起留下，和按钮文案不符。
+/// 失败 / 已中断的批次是待重试项，暂停与进行中的批次更不能碰。
 pub(crate) fn clear_all() {
     with_records(clear_all_in);
     prune_trees();
@@ -2103,7 +2192,9 @@ pub(crate) fn has_done_child(records: &[Transfer], batch: u64) -> bool {
         .any(|record| record.batch == batch && record.child && record.state == TransferState::Done)
 }
 
-/// 所有行都已结束（完成 / 失败 / 取消）的批次号（升序）。
+/// 整批都已完成（`Done`）的批次号（升序）。
+///
+/// 失败与已中断的批次是「还要重试的东西」，不参与「清空已完成」。
 fn finished_batches(records: &[Transfer]) -> Vec<u64> {
     let mut batches: Vec<u64> = records.iter().map(|record| record.batch).collect();
     batches.sort_unstable();
@@ -2112,7 +2203,7 @@ fn finished_batches(records: &[Transfer]) -> Vec<u64> {
         records
             .iter()
             .filter(|record| record.batch == *batch)
-            .all(|record| record.state.is_finished())
+            .all(|record| record.state == TransferState::Done)
     });
     batches
 }
@@ -2133,7 +2224,7 @@ fn evictable_batches(records: &[Transfer]) -> Vec<u64> {
     batches
 }
 
-/// 清空已结束的**整批**：正在下载 / 排队 / 已中断的批次完整保留。
+/// 清空已完成的**整批**：正在下载 / 排队 / 暂停 / 失败 / 已中断的批次完整保留。
 fn clear_finished_in(records: &mut Vec<Transfer>) {
     let removable = finished_batches(records);
     if removable.is_empty() {
@@ -2142,10 +2233,9 @@ fn clear_finished_in(records: &mut Vec<Transfer>) {
     records.retain(|record| !removable.contains(&record.batch));
 }
 
-/// 「清空已完成记录」：清全部历史里所有「所有行都已结束」的整批。
+/// 「清空已完成记录」：只清全部行都 `Done` 的整批。
 ///
-/// 与 `clear_finished_in` 同一口径（进行中 / 排队 / 已中断保留）；分出来只是为了
-/// 在调用点说清楚清空口径。
+/// 与 `clear_finished_in` 同一口径；分出来只是为了让调用点说清口径。
 fn clear_all_in(records: &mut Vec<Transfer>) {
     clear_finished_in(records);
 }

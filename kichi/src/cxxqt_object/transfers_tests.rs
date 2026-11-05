@@ -3,6 +3,7 @@
 //! 拆出来只为守住行数软上限（实现本身约 350 行）。文件夹批次在统一列表
 //! 只占一条总账行，子行的字段与内联展开快照也在这里覆盖。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -167,7 +168,7 @@ fn finished_rows_are_newest_first() {
 }
 
 #[test]
-fn interrupted_rows_use_history_recency_order() {
+fn attention_rows_come_before_completed_rows() {
     let mut records = Vec::new();
     add_batch(&mut records, 1, &["old-interrupted"]);
     add_batch(&mut records, 2, &["new-done"]);
@@ -180,9 +181,26 @@ fn interrupted_rows_use_history_recency_order() {
     let names: Vec<String> = ordered.iter().map(|record| record.display_name()).collect();
     assert_eq!(
         names,
-        vec!["newest-cancelled", "new-done", "old-interrupted"],
-        "已中断不单独置顶，历史统一新 → 旧"
+        vec!["old-interrupted", "newest-cancelled", "new-done"],
+        "待处理（失败 / 已中断）在已完成之前，组内各自新 → 旧"
     );
+}
+
+#[test]
+fn paused_rows_sit_between_active_and_attention() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["paused"]);
+    add_batch(&mut records, 2, &["running"]);
+    add_batch(&mut records, 3, &["failed"]);
+    add_batch(&mut records, 4, &["done"]);
+    set(&mut records, 1, 0, TransferState::Paused);
+    set(&mut records, 2, 0, TransferState::Running);
+    set(&mut records, 3, 0, TransferState::Failed);
+    set(&mut records, 4, 0, TransferState::Done);
+
+    let ordered = ordered(&records);
+    let names: Vec<String> = ordered.iter().map(|record| record.display_name()).collect();
+    assert_eq!(names, vec!["running", "paused", "failed", "done"]);
 }
 
 #[test]
@@ -304,6 +322,93 @@ fn clear_finished_only_drops_finished_batches() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].state, TransferState::Queued);
     assert_eq!(records[0].batch, 2, "只清整批都结束的组");
+}
+
+#[test]
+fn clear_finished_keeps_failed_batches_for_retry() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["done"]);
+    add_batch(&mut records, 2, &["failed"]);
+    set(&mut records, 1, 0, TransferState::Done);
+    set(&mut records, 2, 0, TransferState::Failed);
+
+    clear_finished_in(&mut records);
+    assert_eq!(records.len(), 1, "只清已完成，失败要留给用户重试");
+    assert_eq!(records[0].batch, 2);
+}
+
+#[test]
+fn cancelling_a_single_file_drops_the_whole_batch_record() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["a"]);
+    cancel_active_in(&mut records, Some(1), "");
+
+    assert!(prune_cancelled_in(&mut records, &BTreeSet::new()));
+    assert!(records.is_empty(), "取消即删记录");
+}
+
+#[test]
+fn cancelling_one_child_drops_only_that_row() {
+    let mut records = Vec::new();
+    folder_batch(
+        &mut records,
+        1,
+        "剧集",
+        &[("a.mkv", 10), ("b.mkv", 10), ("c.mkv", 10)],
+    );
+    set_child(&mut records, 1, 0, TransferState::Done);
+    set_child(&mut records, 1, 1, TransferState::Running);
+    set_child(&mut records, 1, 2, TransferState::Queued);
+    rebuild_all_batch_stats(&mut records);
+    refresh_parent_state(&mut records, 1);
+
+    cancel_file_in(&mut records, 1, 2);
+    assert!(prune_cancelled_in(&mut records, &BTreeSet::new()));
+    assert_eq!(records.len(), 3, "父行 + 两个未取消子行");
+    assert_eq!(records[0].state, TransferState::Running, "父行仍在进行");
+    assert_eq!(records[0].batch_stats.total, 2);
+    assert_eq!(records[0].batch_stats.cancelled, 0);
+}
+
+#[test]
+fn cancelling_a_folder_parent_drops_the_whole_batch() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    set_child(&mut records, 1, 0, TransferState::Done);
+    set_child(&mut records, 1, 1, TransferState::Running);
+
+    cancel_active_in(&mut records, Some(1), "");
+    assert!(prune_cancelled_in(&mut records, &BTreeSet::new()));
+    assert!(records.is_empty(), "整批取消连已完成的子行记录一起删");
+}
+
+#[test]
+fn cancelled_batch_waiting_for_worker_keeps_its_rows() {
+    let mut records = Vec::new();
+    folder_batch(&mut records, 1, "剧集", &[("a.mkv", 10), ("b.mkv", 10)]);
+    set_child(&mut records, 1, 0, TransferState::Done);
+    set_child(&mut records, 1, 1, TransferState::Running);
+    cancel_active_in(&mut records, Some(1), "");
+
+    let busy = BTreeSet::from([1]);
+    assert!(
+        !prune_cancelled_in(&mut records, &busy),
+        "线程还在收尾，记录要留给 discard_batch_parts 清断点"
+    );
+    assert_eq!(records.len(), 3);
+
+    assert!(prune_cancelled_in(&mut records, &BTreeSet::new()));
+    assert!(records.is_empty(), "线程退出后的下一次同步再删");
+}
+
+#[test]
+fn prune_keeps_finished_batches_untouched() {
+    let mut records = Vec::new();
+    add_batch(&mut records, 1, &["done"]);
+    set(&mut records, 1, 0, TransferState::Done);
+
+    assert!(!prune_cancelled_in(&mut records, &BTreeSet::new()));
+    assert_eq!(records.len(), 1);
 }
 
 #[test]

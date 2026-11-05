@@ -328,6 +328,20 @@ pub(crate) fn is_pending(source_id: &str) -> bool {
     })
 }
 
+/// 批次是否还在排队 / 正在收尾。
+///
+/// 取消后的记录要等线程退出、清完剩余断点再删，否则 `discard_batch_parts`
+/// 找不到记录对应的文件了。
+pub(crate) fn is_batch_busy(batch: u64) -> bool {
+    with_scheduler(|scheduler| {
+        scheduler.queue.iter().any(|pending| pending.batch == batch)
+            || scheduler
+                .active
+                .iter()
+                .any(|pending| pending.batch == batch)
+    })
+}
+
 /// 线程真的起来了：从现在起，登出不能再直接丢掉这个批次。
 ///
 /// 只在 `spawn` 成功后调用（测试里的 `next_start` 不会置位，`reset` 仍会清掉）。

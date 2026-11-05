@@ -843,6 +843,8 @@ impl qobject::Kichi {
     /// 顺手按 2 秒节流写一次传输历史（`docs/adr/0014-download-history-on-disk.md`）。
     pub(crate) fn sync_transfers(mut self: Pin<&mut Self>) {
         let sync_generation = super::transfers_sync::generation();
+        // 取消即删记录：断点已经清掉，记录不再给用户留着（同步前先剪掉）。
+        transfers::prune_cancelled();
         let (list, active) = transfers_history::snapshot();
         let has_finished = transfers_history::has_finished();
         let has_retryable = transfers_actions::has_retryable_failed();

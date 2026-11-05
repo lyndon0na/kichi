@@ -533,6 +533,21 @@ pub(crate) fn halt_for_failure(reason: &str) {
     });
 }
 
+/// 批次是否还在排队 / 暂停 / 正在收尾（取消后的记录等 worker 退出再删）。
+pub(crate) fn is_batch_busy(batch: u64) -> bool {
+    with_scheduler(|scheduler| {
+        scheduler.queue.iter().any(|pending| pending.batch == batch)
+            || scheduler
+                .paused
+                .iter()
+                .any(|pending| pending.batch == batch)
+            || scheduler
+                .active
+                .iter()
+                .any(|pending| pending.batch == batch)
+    })
+}
+
 pub(crate) fn release(batch: u64) -> bool {
     with_scheduler(|scheduler| {
         if let Some(index) = scheduler
