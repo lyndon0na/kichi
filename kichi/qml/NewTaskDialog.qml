@@ -15,6 +15,12 @@ KDialog {
     readonly property bool saveToFolder: targetFolderId !== null
     property string torrentNotice: ""
     property bool torrentNoticeError: false
+    /// 第一行无法识别的输入（行号从 1 起）；0 表示没有或输入为空。
+    readonly property int invalidLine: dialog.firstInvalidLine(input.text)
+    readonly property int linkCount: dialog.countLinks(input.text)
+    readonly property bool canSubmit: dialog.backend !== null
+                                        && dialog.linkCount > 0
+                                        && dialog.invalidLine === 0
 
     objectName: "newTaskDialog"
     title: qsTr("新任务")
@@ -36,13 +42,17 @@ KDialog {
 
     footer: DialogFooter {
         outerMargin: dialog.padding
-        statusText: dialog.torrentNotice.length > 0
-                    ? dialog.torrentNotice
-                    : qsTr("支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
-        statusColor: dialog.torrentNoticeError ? theme.danger : theme.textMuted
+        statusText: dialog.invalidLine > 0
+                    ? qsTr("第 %1 行不是有效的磁力 / ed2k / HTTP 链接").arg(dialog.invalidLine)
+                    : dialog.torrentNotice.length > 0
+                      ? dialog.torrentNotice
+                      : qsTr("支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+        statusColor: dialog.invalidLine > 0 || dialog.torrentNoticeError
+                     ? theme.danger
+                     : theme.textMuted
         okText: qsTr("添加")
         okObjectName: "newTaskDialogOk"
-        okEnabled: input.text.trim().length > 0
+        okEnabled: dialog.canSubmit
         onOkClicked: dialog.submit()
         onCancelClicked: dialog.close()
     }
@@ -246,10 +256,57 @@ KDialog {
         }
     }
 
+    function countLinks(text) {
+        var lines = String(text || "").split("\n")
+        var count = 0
+        for (var i = 0; i < lines.length; i++) {
+            if (lines[i].trim().length > 0)
+                count += 1
+        }
+        return count
+    }
+
+    /// 第一行无法识别的输入（1 起）；全部有效或输入为空时返回 0。
+    function firstInvalidLine(text) {
+        var lines = String(text || "").split("\n")
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim()
+            if (line.length > 0 && !dialog.isTaskLink(line))
+                return i + 1
+        }
+        return 0
+    }
+
+    /// 与 kichi-core 的 is_supported_task_url 保持同一口径：磁力 / ed2k / HTTP(S)。
+    function isTaskLink(value) {
+        var line = String(value || "").trim()
+        var lower = line.toLowerCase()
+        if (lower.startsWith("magnet:?")) {
+            var parts = lower.substring(8).split("&")
+            for (var i = 0; i < parts.length; i++) {
+                if (parts[i].startsWith("xt=urn:bt"))
+                    return true
+            }
+            return false
+        }
+        if (lower.startsWith("ed2k://"))
+            return line.length > 7
+        if (lower.startsWith("https://"))
+            return dialog.hasHost(line.substring(8))
+        if (lower.startsWith("http://"))
+            return dialog.hasHost(line.substring(7))
+        return false
+    }
+
+    function hasHost(rest) {
+        var value = rest.trim()
+        return value.length > 0 && value.charAt(0) !== "/"
+    }
+
     function submit() {
-        var text = input.text.trim()
-        if (text.length === 0 || !dialog.backend)
+        if (!dialog.backend || !dialog.canSubmit)
             return
+        var text = input.text.trim()
         if (dialog.saveToFolder)
             dialog.backend.addTaskToFolder(text, String(dialog.targetFolderId))
         else

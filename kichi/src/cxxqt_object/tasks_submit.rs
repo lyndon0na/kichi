@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use kichi_core::torrent::parse_torrent_file;
-use kichi_core::OfflineTask;
+use kichi_core::{is_supported_task_url, OfflineTask};
 
 use crate::session::{Failure, Session};
 
@@ -20,13 +20,34 @@ pub(super) struct SubmitOutcome {
     pub auth_failure: Option<Failure>,
 }
 
+/// 多行输入拆出来的可用链接与无法识别的行号（1 起）。
+pub(super) struct ParsedInput {
+    pub urls: Vec<String>,
+    pub invalid_lines: Vec<usize>,
+}
+
 /// 每行一个链接；去掉首尾空白和空行，保留输入顺序。
-pub(super) fn parse_urls(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect()
+///
+/// 只把形态上像磁力 / ed2k / HTTP(S) 的行交给网络层，其余行记录行号，
+/// 既不发请求，也不静默吞掉。
+pub(super) fn parse_input(text: &str) -> ParsedInput {
+    let mut urls = Vec::new();
+    let mut invalid_lines = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if is_supported_task_url(line) {
+            urls.push(line.to_owned());
+        } else {
+            invalid_lines.push(index + 1);
+        }
+    }
+    ParsedInput {
+        urls,
+        invalid_lines,
+    }
 }
 
 pub(super) fn submit(session: &Session, urls: &[String], parent_id: Option<&str>) -> SubmitOutcome {
@@ -170,19 +191,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_one_url_per_non_empty_line() {
-        let urls = parse_urls(
+    fn parses_one_url_per_non_empty_line_and_keeps_input_order() {
+        let parsed = parse_input(
             "  magnet:?xt=urn:btih:abc  \r\n\
              \n\
              https://example.com/file.zip\n",
         );
         assert_eq!(
-            urls,
+            parsed.urls,
             vec![
                 "magnet:?xt=urn:btih:abc".to_owned(),
                 "https://example.com/file.zip".to_owned()
             ]
         );
+        assert!(parsed.invalid_lines.is_empty());
+    }
+
+    #[test]
+    fn unknown_lines_are_reported_and_never_submitted() {
+        let parsed = parse_input(
+            "随便写点什么\n\
+             magnet:?xt=urn:btih:abc\n\
+             ed2k://|file|a.mkv|1|HASH|/\n\
+             www.example.com/file.zip\n",
+        );
+        assert_eq!(
+            parsed.urls,
+            vec![
+                "magnet:?xt=urn:btih:abc".to_owned(),
+                "ed2k://|file|a.mkv|1|HASH|/".to_owned()
+            ]
+        );
+        assert_eq!(parsed.invalid_lines, vec![1, 4]);
     }
 
     #[test]

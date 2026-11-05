@@ -43,7 +43,7 @@ pub use normalize::{normalize_name, normalize_query};
 pub use search::FileHit;
 pub use search_rank::{match_tier, MatchTier, SearchMatcher};
 pub use share::{CreateShareOptions, CreatedShare, MyShare};
-pub use tasks::TaskStatus;
+pub use tasks::{is_supported_task_url, TaskStatus};
 pub use types::{
     EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TrashEntry,
 };

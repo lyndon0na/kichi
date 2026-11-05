@@ -62,6 +62,32 @@ struct TaskListResponse {
     next_page_token: String,
 }
 
+/// 单行输入是否像官方支持的离线下载链接（磁力 / ed2k / HTTP(S)）。
+///
+/// 只做宽松的形态判断，真正的可用性仍以官方创建接口为准；客户端用它拦住
+/// 明显不是链接的输入，避免为垃圾内容白发一轮请求。
+pub fn is_supported_task_url(line: &str) -> bool {
+    let line = line.trim();
+    if line.is_empty() {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    if let Some(query) = lower.strip_prefix("magnet:?") {
+        return query.split('&').any(|part| part.starts_with("xt=urn:bt"));
+    }
+    if let Some(rest) = lower.strip_prefix("ed2k://") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    {
+        let rest = rest.trim_start();
+        return !rest.is_empty() && !rest.starts_with('/');
+    }
+    false
+}
+
 /// 官方任务对象（只取界面与轮询需要的字段）。
 #[derive(Deserialize)]
 struct TaskDto {
@@ -382,6 +408,36 @@ mod tests {
         assert!(!tasks[2].video);
         assert!(tasks[3].media, "资源缺失时仍按产物后缀识别音频");
         assert!(!tasks[3].video);
+    }
+
+    #[test]
+    fn task_url_check_accepts_documented_forms() {
+        assert!(is_supported_task_url(
+            "magnet:?xt=urn:btih:0123456789abcdef"
+        ));
+        assert!(is_supported_task_url(
+            "  MAGNET:?dn=x&xt=urn:btmh:1220abc  "
+        ));
+        assert!(is_supported_task_url("ed2k://|file|a.mkv|1|HASH|/"));
+        assert!(is_supported_task_url("http://example.com/file.zip"));
+        assert!(is_supported_task_url("HTTPS://example.com"));
+    }
+
+    #[test]
+    fn task_url_check_rejects_arbitrary_text() {
+        for line in [
+            "",
+            "   ",
+            "hello world",
+            "magnet:?dn=no-hash",
+            "ed2k://",
+            "https://",
+            "https:///missing-host",
+            "ftp://example.com/file",
+            "www.example.com/file.zip",
+        ] {
+            assert!(!is_supported_task_url(line), "应拒绝：{line:?}");
+        }
     }
 
     #[test]

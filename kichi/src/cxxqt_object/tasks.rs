@@ -20,7 +20,7 @@ use kichi_core::{EntryKind, OfflineTask, TaskPhase, TaskStatus};
 
 use super::actions::{format_size, run_in_background};
 use super::qobject;
-use super::tasks_submit::{parse_urls, submit, submit_torrents, summary, torrent_summary};
+use super::tasks_submit::{parse_input, submit, submit_torrents, summary, torrent_summary};
 use super::QVariantList;
 use crate::session::{has_active, page_snapshot, thumbnail_cache, Failure, Session};
 
@@ -194,10 +194,17 @@ impl qobject::Kichi {
     }
 
     fn add_task_to_destination(mut self: Pin<&mut Self>, text: QString, parent_id: Option<String>) {
-        let urls = parse_urls(&text.to_string());
-        if urls.is_empty() {
+        let parsed = parse_input(&text.to_string());
+        if parsed.urls.is_empty() {
+            let message = match parsed.invalid_lines.first() {
+                Some(line) => format!("第 {line} 行不是有效的磁力 / ed2k / HTTP 链接"),
+                None => "没有可提交的链接：每行需要一个磁力 / ed2k / HTTP 地址".to_owned(),
+            };
+            self.as_mut().set_message(&message);
             return;
         }
+        let urls = parsed.urls;
+        let ignored = parsed.invalid_lines.len();
         let count = urls.len();
         let session = self.backend.session.clone();
         let destination = parent_id.clone();
@@ -217,15 +224,18 @@ impl qobject::Kichi {
                         return;
                     }
                 };
-                let text = summary(&outcome);
                 if let Some(failure) = outcome.auth_failure {
                     qichi.as_mut().on_tasks_failure(failure);
                     return;
                 }
-                if outcome.errors.is_empty() && !outcome.stopped_early {
+                if outcome.errors.is_empty() && !outcome.stopped_early && ignored == 0 {
                     qichi.as_mut().clear_status_message();
                 } else {
-                    qichi.as_mut().set_message(&text);
+                    let mut message = summary(&outcome);
+                    if ignored > 0 {
+                        message.push_str(&format!("；另有 {ignored} 行无法识别，已跳过"));
+                    }
+                    qichi.as_mut().set_message(&message);
                 }
                 qichi
                     .as_mut()

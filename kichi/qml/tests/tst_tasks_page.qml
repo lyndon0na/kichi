@@ -921,6 +921,45 @@ TestCase {
         compare(dialog.opened, false)
     }
 
+    function test_new_task_dialog_blocks_unrecognized_input() {
+        page.openNewTaskDialog()
+
+        var dialog = findChild(page, "newTaskDialog")
+        verify(dialog)
+        tryVerify(function () {
+            return dialog.opened
+        })
+
+        var input = findChild(dialog, "newTaskInput")
+        var ok = findChild(dialog, "newTaskDialogOk")
+        var status = findChild(dialog, "dialogFooterStatus")
+        verify(input && ok && status)
+
+        input.text = "随便写点什么"
+        tryCompare(dialog, "invalidLine", 1)
+        compare(dialog.canSubmit, false)
+        compare(ok.enabled, false, "无法识别的输入不能让「添加」可点")
+        tryCompare(status, "text", "第 1 行不是有效的磁力 / ed2k / HTTP 链接")
+        compare(status.color, dialog.theme.danger)
+
+        input.text = "magnet:?xt=urn:btih:ok\n不是链接"
+        tryCompare(dialog, "invalidLine", 2)
+        compare(ok.enabled, false, "一行无效就整体不能提交")
+
+        input.text = "magnet:?xt=urn:btih:ok\n\nhttps://example.com/a.zip"
+        tryCompare(dialog, "invalidLine", 0)
+        compare(dialog.linkCount, 2, "空行不计入链接数")
+        compare(dialog.canSubmit, true)
+        compare(ok.enabled, true)
+        tryCompare(status, "text", "支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+
+        input.text = "随便写点什么"
+        dialog.submit()
+        compare(backend.submitted, 0, "无效输入不能离开弹窗")
+        verify(dialog.opened)
+        dialog.close()
+    }
+
     function test_new_task_dialog_can_choose_and_preview_torrent() {
         page.openNewTaskDialog("folder-current", "全部文件 / 动画")
 
