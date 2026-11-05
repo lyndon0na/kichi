@@ -120,24 +120,13 @@ ItemDelegate {
                    ? theme.surfaceHover
                    : theme.surfaceClear
 
-        Rectangle {
-            objectName: "libraryRowAccent"
-            visible: row.highlighted
-            width: 3
-            height: Math.max(0, parent.height - 28)
-            radius: 1.5
-            anchors.left: parent.left
-            anchors.leftMargin: 1
-            anchors.verticalCenter: parent.verticalCenter
-            color: theme.accent
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: theme.divider
+        KRowChrome {
+            anchors.fill: parent
+            accentVisible: row.highlighted
+            accentInset: 28
+            accentObjectName: "libraryRowAccent"
+            accentColor: theme.accent
+            dividerColor: theme.divider
         }
     }
 

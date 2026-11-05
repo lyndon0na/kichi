@@ -194,23 +194,12 @@ ItemDelegate {
              : rowHover.hovered ? theme.surfaceHover
              : theme.surfaceClear
 
-        Rectangle {
-            visible: row.active && !row.child
-            width: 3
-            height: parent.height - 14
-            radius: 1.5
-            anchors.left: parent.left
-            anchors.leftMargin: 1
-            anchors.verticalCenter: parent.verticalCenter
-            color: theme.accent
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: row.sticky ? theme.hairline : theme.divider
+        KRowChrome {
+            anchors.fill: parent
+            accentVisible: row.active && !row.child
+            accentInset: 14
+            accentColor: theme.accent
+            dividerColor: row.sticky ? theme.hairline : theme.divider
         }
 
         Rectangle {
