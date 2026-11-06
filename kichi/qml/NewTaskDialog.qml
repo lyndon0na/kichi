@@ -21,6 +21,10 @@ KDialog {
     readonly property bool canSubmit: dialog.backend !== null
                                         && dialog.linkCount > 0
                                         && dialog.invalidLine === 0
+    /// 输入框里只有一条磁力链接时，添加前先解析文件清单。
+    readonly property string magnetLink: dialog.singleMagnet(input.text)
+    /// 单条磁链正在后台解析；期间锁定添加 / 取消，避免结果落到已关闭的弹窗。
+    property bool parsingMagnet: false
 
     objectName: "newTaskDialog"
     title: qsTr("新任务")
@@ -29,12 +33,13 @@ KDialog {
     anchors.centerIn: Overlay.overlay
     width: 520 + leftPadding + rightPadding
     spacing: theme.gapMd
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: dialog.parsingMagnet ? Popup.NoAutoClose : Popup.CloseOnEscape
 
     onOpened: dialog.resetForOpen()
 
     function resetForOpen() {
         input.text = ""
+        dialog.parsingMagnet = false
         dialog.torrentNotice = ""
         dialog.torrentNoticeError = false
         input.forceActiveFocus()
@@ -46,13 +51,15 @@ KDialog {
                     ? qsTr("第 %1 行不是有效的磁力 / ed2k / HTTP 链接").arg(dialog.invalidLine)
                     : dialog.torrentNotice.length > 0
                       ? dialog.torrentNotice
-                      : qsTr("支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+                      : qsTr("支持磁力 / infohash / ed2k / HTTP；可拖入或选择 .torrent 文件。")
         statusColor: dialog.invalidLine > 0 || dialog.torrentNoticeError
                      ? theme.danger
                      : theme.textMuted
-        okText: qsTr("添加")
+        okText: dialog.parsingMagnet ? qsTr("解析中…") : qsTr("添加")
         okObjectName: "newTaskDialogOk"
-        okEnabled: dialog.canSubmit
+        cancelObjectName: "newTaskDialogCancel"
+        okEnabled: dialog.canSubmit && !dialog.parsingMagnet
+        cancelEnabled: !dialog.parsingMagnet
         onOkClicked: dialog.submit()
         onCancelClicked: dialog.close()
     }
@@ -198,10 +205,11 @@ KDialog {
                                     contentWidth + leftPadding + rightPadding)
                     padding: 11
                     color: theme.textPrimary
-                    placeholderText: qsTr("magnet:?xt=...\nhttps://...")
+                    placeholderText: qsTr("magnet:?xt=...\n40 位 infohash\nhttps://...")
                     placeholderTextColor: theme.textMuted
                     font.pixelSize: theme.fontBody
                     selectByMouse: true
+                    readOnly: dialog.parsingMagnet
                     wrapMode: TextEdit.NoWrap
                     background: Rectangle { color: "transparent" }
                 }
@@ -256,6 +264,14 @@ KDialog {
         }
     }
 
+    MagnetFilesDialog {
+        id: magnetDialog
+        backend: dialog.backend
+        onSaved: function (message) {
+            dialog.close()
+        }
+    }
+
     function countLinks(text) {
         var lines = String(text || "").split("\n")
         var count = 0
@@ -277,9 +293,11 @@ KDialog {
         return 0
     }
 
-    /// 与 kichi-core 的 is_supported_task_url 保持同一口径：磁力 / ed2k / HTTP(S)。
+    /// 与 kichi-core 的 is_supported_task_url 保持同一口径：磁力 / 纯 infohash / ed2k / HTTP(S)。
     function isTaskLink(value) {
         var line = String(value || "").trim()
+        if (dialog.isBareInfohash(line))
+            return true
         var lower = line.toLowerCase()
         if (lower.startsWith("magnet:?")) {
             var parts = lower.substring(8).split("&")
@@ -303,10 +321,75 @@ KDialog {
         return value.length > 0 && value.charAt(0) !== "/"
     }
 
+    /// 输入里恰好一条磁力链接时返回它；否则返回空串。
+    function singleMagnet(text) {
+        var lines = String(text || "").split("\n")
+        var found = ""
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim()
+            if (line.length === 0)
+                continue
+            if (found.length > 0 || !dialog.isMagnetLink(line))
+                return ""
+            found = line
+        }
+        return found
+    }
+
+    function isMagnetLink(value) {
+        var line = String(value || "").trim()
+        if (dialog.isBareInfohash(line))
+            return true
+        var lower = line.toLowerCase()
+        if (!lower.startsWith("magnet:?"))
+            return false
+        var parts = lower.substring(8).split("&")
+        for (var i = 0; i < parts.length; i++) {
+            if (parts[i].startsWith("xt=urn:bt"))
+                return true
+        }
+        return false
+    }
+
+    /// 不带 magnet: 前缀的 BTIH：40 位十六进制或 32 位 base32。
+    function isBareInfohash(value) {
+        var line = String(value || "").trim()
+        return /^[0-9a-fA-F]{40}$/.test(line) || /^[a-zA-Z2-7]{32}$/.test(line)
+    }
+
+    /// 清单里可秒传（有 GCID）的文件数。
+    function availableMagnetCount() {
+        const rows = dialog.backend ? dialog.backend.magnetFiles : null
+        if (!rows || rows.length === undefined)
+            return 0
+        let count = 0
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i] && rows[i].available === true)
+                count += 1
+        }
+        return count
+    }
+
+    /// 单条磁链先解析，其余输入直接提交云下载。
     function submit() {
+        if (!dialog.backend || !dialog.canSubmit || dialog.parsingMagnet)
+            return
+        const magnet = dialog.magnetLink
+        if (magnet.length > 0) {
+            dialog.parsingMagnet = true
+            dialog.torrentNotice = qsTr("正在解析磁链……")
+            dialog.torrentNoticeError = false
+            dialog.backend.previewMagnetFiles(magnet)
+            return
+        }
+        dialog.submitTask()
+    }
+
+    /// 绕过磁链解析，直接创建普通云下载任务。
+    function submitTask() {
         if (!dialog.backend || !dialog.canSubmit)
             return
-        var text = input.text.trim()
+        const text = input.text.trim()
         if (dialog.saveToFolder)
             dialog.backend.addTaskToFolder(text, String(dialog.targetFolderId))
         else
@@ -366,6 +449,7 @@ KDialog {
 
     Connections {
         target: dialog.backend
+        ignoreUnknownSignals: true
 
         function onTorrentParsed(name, magnet, detail) {
             if (dialog.opened)
@@ -377,6 +461,37 @@ KDialog {
                 return
             dialog.torrentNotice = String(message || qsTr("无法解析 .torrent 文件"))
             dialog.torrentNoticeError = true
+        }
+
+        function onMagnetPreviewFinished(ok, message, canFallback) {
+            if (!dialog.opened || !dialog.parsingMagnet)
+                return
+            dialog.parsingMagnet = false
+            if (!ok) {
+                if (!canFallback) {
+                    dialog.torrentNotice = String(message || qsTr("无法解析磁链"))
+                    dialog.torrentNoticeError = true
+                    return
+                }
+                dialog.torrentNotice = qsTr("无法解析磁链，已改为普通云下载：%1")
+                        .arg(String(message || qsTr("未知原因")))
+                dialog.torrentNoticeError = false
+                dialog.submitTask()
+                return
+            }
+            if (dialog.availableMagnetCount() === 0) {
+                dialog.torrentNotice = qsTr("云端暂无缓存，已改为普通云下载。")
+                dialog.torrentNoticeError = false
+                dialog.submitTask()
+                return
+            }
+            dialog.torrentNotice = ""
+            dialog.torrentNoticeError = false
+            // 官方 My Pack 只是一个下载位置，没有目录 id；磁链秒传必须落到根目录。
+            magnetDialog.openFor(
+                dialog.targetFolderId === null ? "" : String(dialog.targetFolderId),
+                dialog.targetFolderId === null ? qsTr("全部文件") : dialog.targetFolderPath,
+                dialog.pickerStartPath)
         }
     }
 }

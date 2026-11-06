@@ -13,6 +13,7 @@ mod folder_trail;
 mod identity;
 pub(crate) mod library;
 pub(crate) mod limits;
+pub mod magnet;
 pub mod media;
 pub(crate) mod page_snapshot;
 pub mod partials;

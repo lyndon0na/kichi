@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use kichi_core::torrent::parse_torrent_file;
-use kichi_core::{is_supported_task_url, OfflineTask};
+use kichi_core::{is_supported_task_url, normalize_task_url, OfflineTask};
 
 use crate::session::{Failure, Session};
 
@@ -28,8 +28,8 @@ pub(super) struct ParsedInput {
 
 /// 每行一个链接；去掉首尾空白和空行，保留输入顺序。
 ///
-/// 只把形态上像磁力 / ed2k / HTTP(S) 的行交给网络层，其余行记录行号，
-/// 既不发请求，也不静默吞掉。
+/// 只把形态上像磁力 / 纯 infohash / ed2k / HTTP(S) 的行交给网络层，其余行
+/// 记录行号，既不发请求，也不静默吞掉。纯 infohash 在这里补成标准磁力链接。
 pub(super) fn parse_input(text: &str) -> ParsedInput {
     let mut urls = Vec::new();
     let mut invalid_lines = Vec::new();
@@ -39,7 +39,7 @@ pub(super) fn parse_input(text: &str) -> ParsedInput {
             continue;
         }
         if is_supported_task_url(line) {
-            urls.push(line.to_owned());
+            urls.push(normalize_task_url(line));
         } else {
             invalid_lines.push(index + 1);
         }
@@ -223,6 +223,22 @@ mod tests {
             ]
         );
         assert_eq!(parsed.invalid_lines, vec![1, 4]);
+    }
+
+    #[test]
+    fn bare_infohash_is_normalized_before_submission() {
+        let parsed = parse_input(
+            "0123456789ABCDEF0123456789ABCDEF01234567\n\
+             AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH\n",
+        );
+        assert_eq!(
+            parsed.urls,
+            vec![
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_owned(),
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_owned(),
+            ]
+        );
+        assert!(parsed.invalid_lines.is_empty());
     }
 
     #[test]

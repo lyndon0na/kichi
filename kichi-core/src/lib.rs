@@ -18,6 +18,7 @@ mod naming;
 pub mod normalize;
 mod normalize_table;
 pub mod rate_bucket;
+pub mod resource;
 pub mod search;
 mod search_rank;
 pub mod share;
@@ -40,10 +41,11 @@ pub use library::{LibraryEntry, LibraryKind};
 pub use manage::FolderCreateCache;
 pub use media::{FileInfo, NoLinkReason};
 pub use normalize::{normalize_name, normalize_query};
+pub use resource::{sanitize_drive_name, InstantSave, MagnetFile, MagnetListing};
 pub use search::FileHit;
 pub use search_rank::{match_tier, MatchTier, SearchMatcher};
 pub use share::{CreateShareOptions, CreatedShare, MyShare};
-pub use tasks::{is_supported_task_url, TaskStatus};
+pub use tasks::{infohash_magnet, is_supported_task_url, normalize_task_url, TaskStatus};
 pub use types::{
     EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TransferAllowance,
     TransferQuota, TrashEntry,

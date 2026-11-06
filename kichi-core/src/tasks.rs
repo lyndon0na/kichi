@@ -62,7 +62,7 @@ struct TaskListResponse {
     next_page_token: String,
 }
 
-/// 单行输入是否像官方支持的离线下载链接（磁力 / ed2k / HTTP(S)）。
+/// 单行输入是否像官方支持的离线下载链接（磁力 / 纯 infohash / ed2k / HTTP(S)）。
 ///
 /// 只做宽松的形态判断，真正的可用性仍以官方创建接口为准；客户端用它拦住
 /// 明显不是链接的输入，避免为垃圾内容白发一轮请求。
@@ -70,6 +70,9 @@ pub fn is_supported_task_url(line: &str) -> bool {
     let line = line.trim();
     if line.is_empty() {
         return false;
+    }
+    if infohash_magnet(line).is_some() {
+        return true;
     }
     let lower = line.to_ascii_lowercase();
     if let Some(query) = lower.strip_prefix("magnet:?") {
@@ -86,6 +89,54 @@ pub fn is_supported_task_url(line: &str) -> bool {
         return !rest.is_empty() && !rest.starts_with('/');
     }
     false
+}
+
+/// 把不带 `magnet:` 前缀的 BTIH 补成标准磁力链接。
+///
+/// 支持 40 位十六进制与 32 位 base32 两种写法；base32 统一转成小写十六进制，
+/// 避免服务端对两种编码的兼容差异。不是纯 infohash 时返回 `None`。
+pub fn infohash_magnet(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.len() == 40 && line.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Some(format!("magnet:?xt=urn:btih:{}", line.to_ascii_lowercase()));
+    }
+    if line.len() == 32 && line.bytes().all(is_base32_digit) {
+        let hex = base32_to_hex(line)?;
+        return Some(format!("magnet:?xt=urn:btih:{hex}"));
+    }
+    None
+}
+
+/// 单行输入转成可直接提交的链接：纯 infohash 补全，其余仅去首尾空白。
+pub fn normalize_task_url(line: &str) -> String {
+    infohash_magnet(line).unwrap_or_else(|| line.trim().to_owned())
+}
+
+fn is_base32_digit(byte: u8) -> bool {
+    matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'2'..=b'7')
+}
+
+fn base32_to_hex(value: &str) -> Option<String> {
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+    let mut hex = String::with_capacity(40);
+    for byte in value.bytes() {
+        let digit = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => return None,
+        };
+        buffer = (buffer << 5) | u32::from(digit);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            hex.push_str(&format!("{:02x}", (buffer >> bits) & 0xff));
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    // 160 位正好是 20 字节；剩余位说明长度不是 32。
+    (bits == 0).then_some(hex)
 }
 
 /// 官方任务对象（只取界面与轮询需要的字段）。
@@ -438,6 +489,31 @@ mod tests {
         ] {
             assert!(!is_supported_task_url(line), "应拒绝：{line:?}");
         }
+    }
+
+    #[test]
+    fn task_url_check_accepts_bare_infohash() {
+        assert!(is_supported_task_url(
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        ));
+        assert!(is_supported_task_url("AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH"));
+        assert_eq!(
+            normalize_task_url("0123456789ABCDEF0123456789ABCDEF01234567"),
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(
+            normalize_task_url("AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH"),
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            "base32 统一转成十六进制"
+        );
+        assert_eq!(
+            normalize_task_url("  https://example.com/a.zip  "),
+            "https://example.com/a.zip",
+            "非 infohash 只去掉首尾空白"
+        );
+        assert!(infohash_magnet("xyz").is_none());
+        assert!(infohash_magnet("0123456789abcdef0123456789abcdef0123456").is_none());
+        assert!(infohash_magnet("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0").is_none());
     }
 
     #[test]

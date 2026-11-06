@@ -209,6 +209,20 @@ pub mod qobject {
         /// 结果来源："index"（本地索引）/ "fallback"（只筛当前目录）/ "network"（全盘扫描）；
         /// 空串 = 没有搜索。只有 network 才显示扫描进度与停止按钮。
         #[qproperty(QString, search_source, cxx_name = "searchSource", READ, NOTIFY = changed)]
+        /// 磁链解析出的文件清单（QML 直接当 model 用）
+        #[qproperty(QVariantList, magnet_files, cxx_name = "magnetFiles", READ, NOTIFY = changed)]
+        /// 磁链解析在途
+        #[qproperty(bool, magnet_loading, cxx_name = "magnetFilesLoading", READ, NOTIFY = changed)]
+        /// 磁链解析失败原因；空串 = 没有错误
+        #[qproperty(QString, magnet_error, cxx_name = "magnetFilesError", READ, NOTIFY = changed)]
+        /// 单根目录名 / 磁链 `dn=`；多文件保存时用它当容器文件夹名
+        #[qproperty(QString, magnet_root_name, cxx_name = "magnetRootName", READ, NOTIFY = changed)]
+        /// 弹窗摘要：「N 个文件 · 大小；M 个可秒传」
+        #[qproperty(QString, magnet_summary, cxx_name = "magnetSummary", READ, NOTIFY = changed)]
+        /// 秒传请求在途
+        #[qproperty(bool, magnet_saving, cxx_name = "magnetSaving", READ, NOTIFY = changed)]
+        /// 秒传进度文字（「正在保存 3/10」）；空串 = 没有进行中的保存
+        #[qproperty(QString, magnet_save_status, cxx_name = "magnetSaveStatus", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -283,6 +297,28 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "torrentParseFailed"]
         fn torrent_parse_failed(self: Pin<&mut Self>, message: QString);
+
+        /// 磁链文件清单解析结束：成功后弹窗读取 `magnetFiles` 等属性。
+        /// `can_fallback` 为 false 时（登录态 / 验证 / 限流）不要自动改交云下载。
+        #[qsignal]
+        #[cxx_name = "magnetPreviewFinished"]
+        fn magnet_preview_finished(
+            self: Pin<&mut Self>,
+            ok: bool,
+            message: QString,
+            can_fallback: bool,
+        );
+
+        /// 秒传结束；`message` 是给弹窗 / 提示条的一句话结果。
+        #[qsignal]
+        #[cxx_name = "magnetSaveFinished"]
+        fn magnet_save_finished(
+            self: Pin<&mut Self>,
+            saved: i32,
+            unavailable: i32,
+            failed: i32,
+            message: QString,
+        );
 
         /// 资料库里的文件夹与内容已就绪，界面现在可以切到文件页。
         #[qsignal]
@@ -812,6 +848,21 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "searchRevealFolder"]
         fn search_reveal_folder(self: Pin<&mut Self>, id: QString);
+
+        /// 解析磁力链接的文件清单（不创建云下载任务）。
+        #[qinvokable]
+        #[cxx_name = "previewMagnetFiles"]
+        fn preview_magnet_files(self: Pin<&mut Self>, link: QString);
+
+        /// 秒传选中的文件；`indices` 是 `magnetFiles` 的下标，`folder_id` 空串 = 根目录。
+        #[qinvokable]
+        #[cxx_name = "saveMagnetFiles"]
+        fn save_magnet_files(
+            self: Pin<&mut Self>,
+            indices: QVariantList,
+            folder_id: QString,
+            keep_structure: bool,
+        );
     }
 }
 
@@ -836,6 +887,11 @@ unsafe impl cxx::ExternType for QVariantList {
 impl QVariantList {
     pub(crate) fn append(&mut self, value: QVariant) {
         self.0.append(value);
+    }
+
+    /// 逐项读取（invokable 参数解析用）。
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &QVariant> {
+        self.0.iter()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -870,6 +926,7 @@ mod files;
 mod files_cache;
 mod folder_picker;
 mod library;
+mod magnets;
 mod notifications;
 mod play;
 mod play_history;
@@ -1234,6 +1291,18 @@ pub struct KichiRust {
     pub(crate) search_local_running: bool,
     /// 在途期间用户又输入了关键词：只保留最后一个，完成后接着搜
     pub(crate) search_pending: Option<String>,
+    /// 磁链解析出的文件行（QML 直接当 model 用）
+    pub(crate) magnet_files: QVariantList,
+    /// 磁链解析结果（秒传按它建目录 / 取 GCID）
+    pub(crate) magnet_listing: Option<kichi_core::MagnetListing>,
+    pub(crate) magnet_root_name: QString,
+    pub(crate) magnet_summary: QString,
+    pub(crate) magnet_error: QString,
+    pub(crate) magnet_loading: bool,
+    pub(crate) magnet_saving: bool,
+    pub(crate) magnet_save_status: QString,
+    /// 磁链解析 / 秒传代数：重新解析或退出登录后旧结果作废
+    pub(crate) magnet_epoch: u64,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
     pub(crate) captcha_url: String,
     pub(crate) backend: Backend,
@@ -1441,6 +1510,15 @@ impl Default for KichiRust {
             search_source: QString::default(),
             search_local_running: false,
             search_pending: None,
+            magnet_files: QVariantList::default(),
+            magnet_listing: None,
+            magnet_root_name: QString::default(),
+            magnet_summary: QString::default(),
+            magnet_error: QString::default(),
+            magnet_loading: false,
+            magnet_saving: false,
+            magnet_save_status: QString::default(),
+            magnet_epoch: 0,
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path(), local_index_enabled),
         };

@@ -879,7 +879,7 @@ TestCase {
         var footerStatus = findChild(dialog, "dialogFooterStatus")
         verify(footerStatus.visible)
         compare(footerStatus.text,
-                "支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+                "支持磁力 / infohash / ed2k / HTTP；可拖入或选择 .torrent 文件。")
 
         var input = findChild(dialog, "newTaskInput")
         verify(input)
@@ -951,7 +951,7 @@ TestCase {
         compare(dialog.linkCount, 2, "空行不计入链接数")
         compare(dialog.canSubmit, true)
         compare(ok.enabled, true)
-        tryCompare(status, "text", "支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+        tryCompare(status, "text", "支持磁力 / infohash / ed2k / HTTP；可拖入或选择 .torrent 文件。")
 
         input.text = "随便写点什么"
         dialog.submit()
@@ -981,7 +981,7 @@ TestCase {
         mouseClick(choose)
         compare(backend.torrentPickerCalls, 1)
         compare(findChild(dialog, "dialogFooterStatus").text,
-                "支持磁力 / ed2k / HTTP；可拖入或选择 .torrent 文件。")
+                "支持磁力 / infohash / ed2k / HTTP；可拖入或选择 .torrent 文件。")
 
         backend.torrentParsed("示例合集", "magnet:?xt=urn:btih:abc", "3 个文件 · 2 MiB")
         tryCompare(findChild(dialog, "newTaskInput"), "text",
@@ -1046,11 +1046,12 @@ TestCase {
 
         var input = findChild(dialog, "newTaskInput")
         verify(input)
-        input.text = "magnet:?xt=urn:btih:target"
+        // 单条磁链会先走解析；这里只验证保存位置，用 HTTP 链接直接提交。
+        input.text = "https://example.com/target.zip"
         dialog.submit()
 
         compare(backend.submitted, 1)
-        compare(backend.submittedText, "magnet:?xt=urn:btih:target")
+        compare(backend.submittedText, "https://example.com/target.zip")
         compare(backend.submittedFolderId, "folder-current")
         compare(backend.submittedToFolder, true)
         compare(dialog.opened, false)
