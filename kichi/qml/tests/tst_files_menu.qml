@@ -2,7 +2,7 @@ import QtQuick
 import QtTest
 import ".."
 
-// 文件页写操作弹窗（重命名 / 新建文件夹 / 批量回收站）。
+// 文件页写操作弹窗（重命名 / 新建文件夹 / 删除）。
 //
 // 文件写入先乐观更新，Rust 接受请求后弹窗立即关闭；网络失败由底栏提示，
 // 不能因为等待响应继续挡住界面。这里同时锁住同步校验失败仍留在弹窗。
@@ -28,6 +28,7 @@ TestCase {
         property int folderCount: 0
         property string createdName: ""
         property var lastTrashIds: []
+        property var lastDeleteIds: []
 
         signal fileActionDone(string action, bool ok, string message, var ids)
         signal folderCreateStarted(string id)
@@ -47,6 +48,11 @@ TestCase {
         }
         function trashEntries(ids) {
             lastTrashIds = ids.slice()
+            fileActionIds = ids.slice()
+            return true
+        }
+        function deleteEntries(ids) {
+            lastDeleteIds = ids.slice()
             fileActionIds = ids.slice()
             return true
         }
@@ -72,6 +78,7 @@ TestCase {
         backend.folderCount = 0
         backend.createdName = ""
         backend.lastTrashIds = []
+        backend.lastDeleteIds = []
         menu = menuComponent.createObject(parent, {
             width: 600, height: 400, visible: true, backend: backend
         })
@@ -252,22 +259,64 @@ TestCase {
                 "标题和正文之间只保留一个 Dialog.spacing")
     }
 
-    function test_batch_trash_shows_count_and_closes_immediately() {
-        menu.openTrash({ id: "id-1", name: "a.mkv", kind: "file" },
-                       ["id-1", "id-2"])
+    function test_batch_delete_defaults_to_trash_and_closes_immediately() {
+        menu.openDelete({ id: "id-1", name: "a.mkv", kind: "file" },
+                        ["id-1", "id-2"])
         wait(60)
-        var dialog = findChild(menu, "trashDialog")
-        verify(dialog !== null && dialog.opened, "回收站确认框打开了")
-        verify(findChild(dialog, "trashMessage").text.indexOf("2 项") >= 0,
+        var dialog = findChild(menu, "deleteDialog")
+        verify(dialog !== null && dialog.opened, "删除确认框打开了")
+        verify(findChild(dialog, "deleteMessage").text.indexOf("2 项") >= 0,
                "多选要显示条数")
+        var check = findChild(dialog, "deletePermanentCheck")
+        verify(check !== null && !check.checked, "默认不彻底删除")
 
         mouseClick(findChild(dialog, "dialogFooterOk"))
         wait(40)
-        compare(backend.lastTrashIds.length, 2, "批量 id 一次交给后端")
+        compare(backend.lastTrashIds.length, 2, "默认走回收站，批量 id 一次交给后端")
+        compare(backend.lastDeleteIds.length, 0, "默认不调彻底删除")
         verify(!dialog.opened, "条目已从列表移除，确认框立即关闭")
 
         backend.finish("trash", false, "部分条目失败")
         wait(40)
         verify(!dialog.opened, "失败由底栏提示，不能把确认框重新弹出")
+    }
+
+    function test_permanent_delete_requires_the_checkbox() {
+        menu.openDelete({ id: "id-1", name: "a.mkv", kind: "file" },
+                        ["id-1", "id-2"])
+        wait(60)
+        var dialog = findChild(menu, "deleteDialog")
+        var check = findChild(dialog, "deletePermanentCheck")
+        var ok = findChild(dialog, "dialogFooterOk")
+        check.checked = true
+        wait(20)
+        compare(ok.text, qsTr("彻底删除"), "勾选后确定按钮改为彻底删除")
+        verify(findChild(dialog, "deleteMessage").text.indexOf("无法恢复") >= 0,
+               "彻底删除要写明不可恢复")
+
+        mouseClick(ok)
+        wait(40)
+        compare(backend.lastDeleteIds.length, 2, "勾选后走彻底删除")
+        compare(backend.lastTrashIds.length, 0, "不经过回收站")
+        verify(!dialog.opened, "请求被接受后立即关窗")
+
+        backend.finish("delete", true, "已彻底删除 2 项")
+        wait(40)
+        verify(!dialog.opened, "成功后保持关闭")
+    }
+
+    function test_permanent_checkbox_resets_each_open() {
+        menu.openDelete({ id: "id-1", name: "a.mkv", kind: "file" }, ["id-1"])
+        wait(60)
+        var dialog = findChild(menu, "deleteDialog")
+        var check = findChild(dialog, "deletePermanentCheck")
+        check.checked = true
+        wait(20)
+        dialog.close()
+        wait(20)
+
+        menu.openDelete({ id: "id-1", name: "a.mkv", kind: "file" }, ["id-1"])
+        wait(60)
+        verify(!check.checked, "每次打开都回到默认：移到回收站")
     }
 }

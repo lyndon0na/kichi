@@ -135,9 +135,9 @@ TestCase {
                          Qt.point(20, 20), ["a"], false)
         wait(60)
         var star = findChild(menu, "starItem")
-        var trash = findChild(menu, "trashItem")
+        var del = findChild(menu, "deleteItem")
         verify(star !== null && star.enabled, "别的条目在写，不应禁用当前条目的星标")
-        verify(trash !== null && trash.enabled, "别的条目在写，不应禁用当前条目的回收站")
+        verify(del !== null && del.enabled, "别的条目在写，不应禁用当前条目的删除")
     }
 
     function test_same_entry_action_disables_that_entry() {
@@ -149,15 +149,15 @@ TestCase {
         verify(star !== null && !star.enabled, "同一目标在写时只禁用这一项")
     }
 
-    function test_clear_in_progress_only_disables_move_to_trash() {
+    function test_clear_in_progress_only_disables_delete() {
         backend.trashClearing = true
         menu.openContext({ id: "a", name: "a.mkv", kind: "file", playable: false },
                          Qt.point(20, 20), ["a"], false)
         wait(60)
         var star = findChild(menu, "starItem")
-        var trash = findChild(menu, "trashItem")
+        var del = findChild(menu, "deleteItem")
         verify(star !== null && star.enabled, "清空回收站不应冻结文件页其它操作")
-        verify(trash !== null && !trash.enabled, "清空期间不能把新条目移入回收站")
+        verify(del !== null && !del.enabled, "清空期间不能把新条目移入回收站")
     }
 
     function test_play_label_does_not_name_the_player() {

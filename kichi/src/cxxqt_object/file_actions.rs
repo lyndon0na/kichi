@@ -1,4 +1,4 @@
-//! 文件的写操作：改名 / 新建文件夹 / 移动 / 复制 / 移入回收站。
+//! 文件的写操作：改名 / 新建文件夹 / 移动 / 复制 / 移入回收站 / 彻底删除。
 //!
 //! 从 `files.rs` 拆出来：那里只管浏览（目录栈、列表、排序），
 //! 这里是会改云端数据的入口，出错方式和浏览完全不同。
@@ -264,6 +264,85 @@ impl qobject::Kichi {
                 Err(err) => {
                     qichi.as_mut().rollback_file_mutation(action_id);
                     qichi.as_mut().fail_file_action(action_id, "trash", err);
+                }
+            },
+        );
+        true
+    }
+
+    /// 彻底删除（不经过回收站）。支持多选批量；请求被接受后立即更新列表，失败再回滚。
+    ///
+    /// 与移入回收站共用确认框：默认走回收站，用户主动勾选后才进这里。
+    /// 一次仍受 core 的批量上限约束（100 项），超限按失败回滚处理。
+    pub fn delete_entries(mut self: Pin<&mut Self>, ids: QStringList) -> bool {
+        let ids = clean_ids(ids);
+        let Some(action_id) = self
+            .as_mut()
+            .begin_file_action(&ids, FileActionDomain::Files)
+        else {
+            self.as_mut()
+                .set_message("相关条目正在处理中，请稍后再删除");
+            return false;
+        };
+        if self.as_ref().rust().listing {
+            self.as_mut().fail_file_action(
+                action_id,
+                "delete",
+                Failure::Other("文件列表正在刷新，请稍后再删除".into()),
+            );
+            return false;
+        }
+        if ids.is_empty() {
+            self.as_mut().fail_file_action(
+                action_id,
+                "delete",
+                Failure::Other("没有选中条目".into()),
+            );
+            return false;
+        }
+        if ids
+            .iter()
+            .any(|id| is_unconfirmed_create(self.as_ref().rust(), id))
+        {
+            self.as_mut().fail_file_action(
+                action_id,
+                "delete",
+                Failure::Other("文件夹正在同步真实 id，请稍后再删除".into()),
+            );
+            return false;
+        }
+        let subject = item_subject(&ids, self.as_ref().rust().entry_name(&ids[0]));
+        if !self.as_mut().optimistic_remove_entries(action_id, &ids) {
+            self.as_mut().fail_file_action(
+                action_id,
+                "delete",
+                Failure::Other("选中的条目已不在当前列表中".into()),
+            );
+            return false;
+        }
+        let session = self.backend.session.clone();
+        self.as_mut()
+            .set_file_action_message(action_id, &format!("正在彻底删除{subject}……"));
+        run_in_background(
+            move || {
+                let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+                session.delete_entries_permanently(&refs)?;
+                session.write_index(|index| index.apply_change(Change::Remove(&ids)));
+                Ok(())
+            },
+            move |mut qichi, result| match result {
+                Ok(()) => {
+                    qichi.as_mut().commit_file_mutation(action_id);
+                    qichi.as_mut().mark_trash_stale();
+                    qichi.as_mut().end_file_action(
+                        action_id,
+                        "delete",
+                        &format!("已彻底删除{subject}"),
+                    );
+                }
+                Err(err) => {
+                    qichi.as_mut().rollback_file_mutation(action_id);
+                    qichi.as_mut().fail_file_action(action_id, "delete", err);
                 }
             },
         );

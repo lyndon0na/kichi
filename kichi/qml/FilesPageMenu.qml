@@ -6,7 +6,7 @@ import QtQuick.Layouts
 
 // 文件条目的右键菜单 + 空白处右键菜单。
 //
-// 弹窗（重命名 / 新建 / 回收站）在 FileActionDialogs.qml：
+// 弹窗（重命名 / 新建 / 删除）在 FileActionDialogs.qml：
 // 菜单只管「点哪一项」，结果怎么显示由那边负责。
 //
 // 用法：放一个实例，调 openContext(entry, point, ids, fromSearch) 弹条目菜单；
@@ -208,15 +208,15 @@ Item {
         }
 
         MenuItem {
-            objectName: "trashItem"
+            objectName: "deleteItem"
             visible: !root.targetInTrash
             text: root.targetCount > 1
-                  ? qsTr("移至回收站…（%1 项）").arg(root.targetCount)
-                  : qsTr("移至回收站…")
+                  ? qsTr("删除…（%1 项）").arg(root.targetCount)
+                  : qsTr("删除…")
             enabled: root.backend !== null && !root.backend.filesLoading
                      && !locks.any(root.targetIds)
                      && root.backend.trashClearing !== true
-            onTriggered: dialogs.openTrash(root.target, root.targetIds)
+            onTriggered: dialogs.openDelete(root.target, root.targetIds)
         }
     }
 
@@ -287,8 +287,8 @@ Item {
         dialogs.openRename(entry)
     }
 
-    /// 快捷键 Delete：直接打开回收站确认（可多选）
-    function openTrashFor(entry, ids) {
+    /// 快捷键 Delete：直接打开删除确认（可多选）
+    function openDeleteFor(entry, ids) {
         if (!entry || entry.inTrash === true)
             return
         if (backend && backend.trashClearing === true)
@@ -298,7 +298,7 @@ Item {
         targetName = entry.name
         targetIsFolder = entry.kind === "folder"
         targetIds = ids && ids.length > 0 ? ids.slice() : [entry.id]
-        dialogs.openTrash(entry, root.targetIds)
+        dialogs.openDelete(entry, root.targetIds)
     }
 
     function openNewFolder() {

@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 文件页三个写操作弹窗：重命名 / 新建文件夹 / 批量移入回收站。
+// 文件页三个写操作弹窗：重命名 / 新建文件夹 / 删除。
 //
 // 从 FilesPageMenu.qml 拆出来（那里已超行数软上限）：
 // 菜单只管「点哪一项」，这里管「结果怎么显示」。
@@ -151,50 +151,62 @@ Item {
         }
     }
 
-    // —— 移入回收站（可恢复，批量）——
+    // —— 删除（默认移入回收站；勾选后彻底删除）——
     KDialog {
-        id: trashDialog
-        objectName: "trashDialog"
+        id: deleteDialog
+        objectName: "deleteDialog"
 
-        title: qsTr("移至回收站")
+        title: qsTr("删除")
         modal: true
         parent: Overlay.overlay
         anchors.centerIn: Overlay.overlay
         width: root.dialogWidth + leftPadding + rightPadding
 
         footer: DialogFooter {
-            outerMargin: trashDialog.padding
-            okText: qsTr("移入回收站")
+            outerMargin: deleteDialog.padding
+            okText: permanentCheck.checked ? qsTr("彻底删除") : qsTr("移到回收站")
+            okVariant: permanentCheck.checked ? "danger" : "primary"
             okEnabled: root.backend !== null && !root.backend.filesLoading
                        && !locks.any(root.targetIds)
-                       && root.backend.trashClearing !== true
-            onOkClicked: root.submitTrash()
-            onCancelClicked: trashDialog.close()
+                       && (permanentCheck.checked
+                           || root.backend.trashClearing !== true)
+            onOkClicked: root.submitDelete()
+            onCancelClicked: deleteDialog.close()
         }
 
         property string errorText: ""
 
-        onOpened: errorText = ""
+        onOpened: {
+            errorText = ""
+            permanentCheck.checked = false
+        }
 
         ColumnLayout {
             width: root.dialogWidth
             spacing: 8
 
             Label {
-                objectName: "trashMessage"
+                objectName: "deleteMessage"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                text: root.trashMessage()
+                color: permanentCheck.checked ? theme.danger : theme.textPrimary
+                text: root.deleteMessage(permanentCheck.checked)
+            }
+
+            CheckBox {
+                id: permanentCheck
+                objectName: "deletePermanentCheck"
+                text: qsTr("彻底删除")
             }
 
             Label {
-                objectName: "trashError"
+                objectName: "deleteError"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.pixelSize: 12
                 color: theme.danger
                 visible: text.length > 0
-                text: trashDialog.errorText
+                text: deleteDialog.errorText
             }
         }
     }
@@ -214,12 +226,12 @@ Item {
         folderDialog.open()
     }
 
-    function openTrash(entry, ids) {
+    function openDelete(entry, ids) {
         if (!entry || !root.backend)
             return
         const list = ids && ids.length > 0 ? ids.slice() : [entry.id]
         root.snapshot(entry, list)
-        trashDialog.open()
+        deleteDialog.open()
     }
 
     function snapshot(entry, ids) {
@@ -230,17 +242,22 @@ Item {
         targetIds = ids
     }
 
-    function trashMessage() {
+    function deleteMessage(permanent) {
         const count = root.targetIds.length
-        if (count > 1) {
-            return qsTr("确定把选中的 %1 项移入回收站吗？\n条目可以在 kichi 的回收站页恢复；文件夹里的内容会一起移走。")
-                .arg(count)
+        if (permanent) {
+            if (count > 1)
+                return qsTr("彻底删除选中的 %1 项？无法恢复。").arg(count)
+            return root.targetIsFolder
+                ? qsTr("彻底删除文件夹「%1」？内容一并删除，无法恢复。")
+                    .arg(root.targetName)
+                : qsTr("彻底删除「%1」？无法恢复。").arg(root.targetName)
         }
+        if (count > 1)
+            return qsTr("把选中的 %1 项移到回收站？").arg(count)
         return root.targetIsFolder
-            ? qsTr("确定把文件夹「%1」移入回收站吗？\n里面的所有文件和子文件夹都会一起移走。可以在 kichi 的回收站页恢复。")
+            ? qsTr("把文件夹「%1」移到回收站？内容会一并移走。")
                 .arg(root.targetName)
-            : qsTr("确定把「%1」移入回收站吗？\n可以在 kichi 的回收站页恢复。")
-                .arg(root.targetName)
+            : qsTr("把「%1」移到回收站？").arg(root.targetName)
     }
 
     function submitRename(text) {
@@ -263,12 +280,15 @@ Item {
             folderDialog.close()
     }
 
-    function submitTrash() {
+    function submitDelete() {
         if (!root.backend || root.targetIds.length === 0)
             return
-        trashDialog.errorText = ""
-        if (root.backend.trashEntries(root.targetIds) === true)
-            trashDialog.close()
+        deleteDialog.errorText = ""
+        const accepted = permanentCheck.checked
+                ? root.backend.deleteEntries(root.targetIds) === true
+                : root.backend.trashEntries(root.targetIds) === true
+        if (accepted)
+            deleteDialog.close()
     }
 
     // 本地校验失败会同步返回 false；网络结果回来时窗口通常已经关闭。
@@ -301,15 +321,16 @@ Item {
                 } else {
                     folderDialog.errorText = message
                 }
-            } else if (action === "trash" && trashDialog.visible) {
+            } else if ((action === "trash" || action === "delete")
+                       && deleteDialog.visible) {
                 if (ids && !ids.some(function (id) {
                         return root.targetIds.indexOf(id) >= 0
                     }))
                     return
                 if (ok) {
-                    trashDialog.close()
+                    deleteDialog.close()
                 } else {
-                    trashDialog.errorText = message
+                    deleteDialog.errorText = message
                 }
             }
         }

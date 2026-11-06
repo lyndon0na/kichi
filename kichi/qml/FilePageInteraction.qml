@@ -306,7 +306,7 @@ QtObject {
             ctl.clearCreatedFlash()
         if (!ok)
             return
-        if (action === "trash" || action === "move") {
+        if (action === "trash" || action === "delete" || action === "move") {
             if (ids && ids.length > 0)
                 ctl.selection.removeIds(ids)
             else
@@ -335,7 +335,7 @@ QtObject {
                 return
             const entry = ctl.entryForId(ids[0])
             if (entry) {
-                ctl.menu.openTrashFor(entry, ids)
+                ctl.menu.openDeleteFor(entry, ids)
                 event.accepted = true
             }
             return

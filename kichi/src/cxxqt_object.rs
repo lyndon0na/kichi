@@ -732,6 +732,11 @@ pub mod qobject {
         #[cxx_name = "trashEntries"]
         fn trash_entries(self: Pin<&mut Self>, ids: QStringList) -> bool;
 
+        /// 从文件页彻底删除条目（不经过回收站，确认框里主动勾选后才调用）
+        #[qinvokable]
+        #[cxx_name = "deleteEntries"]
+        fn delete_entries(self: Pin<&mut Self>, ids: QStringList) -> bool;
+
         /// 批量加星标 / 取消星标；当前列表先更新，失败自动回滚。
         #[qinvokable]
         #[cxx_name = "setStarred"]
