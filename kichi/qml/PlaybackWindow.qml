@@ -644,6 +644,11 @@ Window {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton
             hoverEnabled: true
+            // 控制条收起时连指针一起藏起来：视频画面上不需要光标。
+            // 控制条隐藏时 topBar / bottomBar 已 enabled=false，不会抢走光标；
+            // 一动鼠标 onPositionChanged → wake()，控制条和指针一起恢复。
+            cursorShape: win.visible && !win.chromeVisible
+                         ? Qt.BlankCursor : Qt.ArrowCursor
             onClicked: {
                 // 浮层开着时，点画面先收起浮层，不顺手把控制条也藏掉。
                 if (win.volumeOpen) {
