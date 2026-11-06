@@ -1,4 +1,5 @@
-//! kichi 自己的 mpv 配置：`embed-mpv.conf`（mpv.conf 的顶层选项子集）。
+//! kichi 自己的播放配置：`embed-mpv.conf`（mpv.conf 的顶层选项子集）
+//! 与 `embed-input.conf`（input.conf 语法，原样交给 mpv 解析）。
 //!
 //! 只解析顶层选项，`[profile]` 段整段跳过；`include` 递归读取，循环与
 //! 过深 include 只记警告。内嵌必需的选项在 [`RESERVED`] 里，用户文件里
@@ -64,6 +65,24 @@ pub(crate) const TEMPLATE: &str = r#"# kichi 内嵌播放器的 mpv 配置（mpv
 # deband=yes
 # tone-mapping=bt.2446a
 # glsl-shaders=~/.config/mpv/shaders/Anime4K_Clamp_Highlights.glsl:~/.config/mpv/shaders/Anime4K_Upscale_CNN_x2_M.glsl
+"#;
+
+/// 首次打开「编辑」时生成的键位模板；全部是注释，不会改变默认键位。
+pub(crate) const INPUT_TEMPLATE: &str = r#"# kichi 内嵌播放器的按键（mpv input.conf 语法）
+# 设置 → 播放 → 内嵌播放器 →「embed-input.conf」打开后生效，改动在下次开播时读取。
+#
+# 播放窗口里没被 kichi 接住的按键会转给 mpv，这里写了的绑定都会触发。
+# kichi 固定占用 Esc、单按 F、方向键；鼠标滚轮 / 点击不会转给 mpv。
+# 本文件不支持 include；想沿用桌面 mpv 的键位，把对应行复制过来即可。
+# 内嵌不加载脚本，uosc 等 script-binding 绑定不会生效。
+# 内嵌关闭了 mpv OSD，show-text 不会显示；效果直接看画面。
+#
+# Anime4K 开关示例（把路径换成你自己的 shader）：
+# Ctrl+Shift+1 no-osd change-list glsl-shaders set "~/.config/mpv/shaders/Anime4K_Clamp_Highlights.glsl:~/.config/mpv/shaders/Anime4K_Upscale_CNN_x2_M.glsl"
+# Ctrl+Shift+0 no-osd change-list glsl-shaders clr ""
+#
+# 其它常用示例：
+# Ctrl+s screenshot
 "#;
 
 /// 一次解析的结果。
@@ -187,6 +206,15 @@ fn include_path(value: &str, base: &Path) -> Option<PathBuf> {
 
 /// 文件不存在时写一份全注释模板；已存在则原样保留。
 pub(crate) fn ensure_file(path: &Path) -> Result<(), String> {
+    write_template(path, TEMPLATE, "embed-mpv.conf")
+}
+
+/// 键位文件不存在时写一份全注释模板；已存在则原样保留。
+pub(crate) fn ensure_input_file(path: &Path) -> Result<(), String> {
+    write_template(path, INPUT_TEMPLATE, "embed-input.conf")
+}
+
+fn write_template(path: &Path, template: &str, label: &str) -> Result<(), String> {
     if path.exists() {
         return Ok(());
     }
@@ -203,12 +231,12 @@ pub(crate) fn ensure_file(path: &Path) -> Result<(), String> {
     let mut file = match options.open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(err) => return Err(format!("创建 embed-mpv.conf 失败：{err}")),
+        Err(err) => return Err(format!("创建 {label} 失败：{err}")),
     };
     use std::io::Write;
-    file.write_all(TEMPLATE.as_bytes())
+    file.write_all(template.as_bytes())
         .and_then(|()| file.flush())
-        .map_err(|err| format!("写入 embed-mpv.conf 失败：{err}"))
+        .map_err(|err| format!("写入 {label} 失败：{err}"))
 }
 
 #[cfg(test)]
@@ -306,6 +334,28 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).expect("读回"),
             "scale=bilinear\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn input_template_is_commented_and_shows_shader_toggle() {
+        let dir = test_dir("input-template");
+        let path = dir.join("nested").join("embed-input.conf");
+        ensure_input_file(&path).expect("生成键位模板");
+        let body = std::fs::read_to_string(&path).expect("读模板");
+        assert!(body.contains("glsl-shaders"), "模板要给出 Anime4K 开关示例");
+        assert!(body.contains("Ctrl+Shift+1"));
+        assert!(
+            body.lines().all(|line| line.trim_start().starts_with('#')),
+            "模板必须全部注释，避免默认改变键位"
+        );
+
+        std::fs::write(&path, "Ctrl+s screenshot\n").expect("用户改写");
+        ensure_input_file(&path).expect("已存在时不应覆盖");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("读回"),
+            "Ctrl+s screenshot\n"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

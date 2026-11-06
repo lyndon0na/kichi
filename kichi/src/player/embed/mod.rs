@@ -162,6 +162,8 @@ pub struct SessionSettings {
     pub sub_name_tags: Vec<String>,
     /// kichi 自己的 `embed-mpv.conf`；`None` = 不读配置文件。
     pub conf: Option<std::path::PathBuf>,
+    /// kichi 自己的 `embed-input.conf`；`None` = 不加键位文件。
+    pub input_conf: Option<std::path::PathBuf>,
 }
 
 impl SessionSettings {
@@ -183,6 +185,7 @@ impl SessionSettings {
             sub_lang,
             sub_name_tags,
             conf: None,
+            input_conf: None,
         }
     }
 }

@@ -117,8 +117,38 @@ impl qobject::Kichi {
                 .set_message(&format!("无法创建 embed-mpv.conf：{err}"));
             return;
         }
+        self.open_in_editor(&path, "embed-mpv.conf");
+    }
+
+    /// 内嵌播放是否加载 embed-input.conf；打开时顺手生成模板，方便用户编辑。
+    pub fn set_player_input_conf(mut self: Pin<&mut Self>, enabled: bool) {
+        if enabled {
+            let path = crate::session::paths::embed_input_conf_path();
+            if let Err(err) = crate::player::embed::conf::ensure_input_file(&path) {
+                self.as_mut()
+                    .set_message(&format!("无法创建 embed-input.conf：{err}"));
+                return;
+            }
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_input_conf = enabled;
+        });
+    }
+
+    /// 用系统默认编辑器打开 embed-input.conf；文件不存在时先生成模板。
+    pub fn open_player_input_conf(mut self: Pin<&mut Self>) {
+        let path = crate::session::paths::embed_input_conf_path();
+        if let Err(err) = crate::player::embed::conf::ensure_input_file(&path) {
+            self.as_mut()
+                .set_message(&format!("无法创建 embed-input.conf：{err}"));
+            return;
+        }
+        self.open_in_editor(&path, "embed-input.conf");
+    }
+
+    fn open_in_editor(mut self: Pin<&mut Self>, path: &std::path::Path, label: &str) {
         let spawned = std::process::Command::new("xdg-open")
-            .arg(&path)
+            .arg(path)
             // 内嵌开播期间 arm 了一次性 WAYLAND_SOCKET：编辑器的 libwayland 不能继承。
             .env_remove("WAYLAND_SOCKET")
             .stdin(std::process::Stdio::null())
@@ -127,7 +157,7 @@ impl qobject::Kichi {
             .spawn();
         if let Err(err) = spawned {
             self.as_mut()
-                .set_message(&format!("打开 embed-mpv.conf 失败：{err}"));
+                .set_message(&format!("打开 {label} 失败：{err}"));
         }
     }
 
@@ -490,6 +520,7 @@ impl qobject::Kichi {
         rust.player_audio_lang = QString::from(snapshot.player_audio_lang.as_str());
         rust.player_sub_lang = QString::from(snapshot.player_sub_lang.as_str());
         rust.player_mpv_conf = snapshot.player_mpv_conf;
+        rust.player_input_conf = snapshot.player_input_conf;
         rust.embed_volume = snapshot.player_volume;
         rust.embed_muted = snapshot.player_muted;
         rust.embed_sub_font_size = i32::from(snapshot.player_sub_font_size);

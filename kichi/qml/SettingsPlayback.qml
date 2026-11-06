@@ -243,6 +243,38 @@ ColumnLayout {
                 }
             }
         }
+
+        KSettingsRow {
+            objectName: "settingsInputConf"
+            title: qsTr("embed-input.conf")
+            description: playback.backend
+                ? qsTr("读取键盘绑定；Esc / F / 方向键由 kichi 占用，下次开播生效。文件：%1").arg(playback.backend.embedInputConfPath)
+                : qsTr("读取键盘绑定；Esc / F / 方向键由 kichi 占用，下次开播生效。")
+
+            RowLayout {
+                spacing: theme.gapSm
+
+                KButton {
+                    objectName: "settingsInputConfEdit"
+                    text: qsTr("编辑")
+                    variant: "ghost"
+                    onClicked: {
+                        if (playback.backend)
+                            playback.backend.openPlayerInputConf()
+                    }
+                }
+
+                Switch {
+                    objectName: "settingsInputConfEnabled"
+                    checked: playback.backend ? playback.backend.playerInputConf : true
+                    Accessible.name: qsTr("使用 embed-input.conf")
+                    onToggled: function () {
+                        if (playback.backend)
+                            playback.backend.setPlayerInputConf(checked)
+                    }
+                }
+            }
+        }
     }
 
     function syncFromBackend() {

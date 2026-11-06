@@ -328,7 +328,7 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
             // 剪贴板只走 VO：默认的 wayland 后端会抢在 VO 之前用掉 WAYLAND_SOCKET。
             ("clipboard-backends", "vo"),
             // 默认键位始终加载：播放窗口把没被 kichi 接住的按键经 `keypress` 转给 mpv。
-            // 只加载内置默认键位，不读用户 input.conf / 脚本。
+            // kichi 自己的 embed-input.conf 叠加在上面；不读用户 input.conf / 脚本。
             ("input-default-bindings", "yes"),
             // 键盘事件由 kichi 的 Qt 窗口转发；mpv 自己的 VO 不直接抢焦点。
             ("input-vo-keyboard", "no"),
@@ -343,6 +343,13 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
             ("sub-auto", "no"),
         ] {
             init.set_option(name, value)?;
+        }
+        // 键位文件交给 mpv 解析；文件不存在时不设置，免得每次开播都报读文件失败。
+        if let Some(input_conf) = &settings.input_conf {
+            if input_conf.is_file() {
+                let path = input_conf.to_string_lossy();
+                init.set_option("input-conf", path.as_ref())?;
+            }
         }
         // 首选语言交给 mpv，加载文件时自动选轨；空串表示不指定，保持 mpv 默认。
         if !settings.audio_lang.is_empty() {

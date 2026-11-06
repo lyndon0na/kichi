@@ -51,6 +51,18 @@ pub fn embed_mpv_conf_path() -> PathBuf {
     config_dir().join("embed-mpv.conf")
 }
 
+/// 内嵌播放器的键位：`<配置目录>/embed-input.conf`。
+///
+/// 只加载 kichi 自己的文件，不读用户 `~/.config/mpv/input.conf`：桌面键位里
+/// 依赖 uosc 等脚本的绑定在内嵌播放器里无法工作（见 ADR 0031）。
+/// 可用 `KICHI_EMBED_INPUT_CONF` 覆盖。
+pub fn embed_input_conf_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("KICHI_EMBED_INPUT_CONF") {
+        return PathBuf::from(path);
+    }
+    config_dir().join("embed-input.conf")
+}
+
 /// 账号的本地索引库位置。可用 `KICHI_INDEX_FILE` 覆盖（测试 / 多实例）。
 ///
 /// 文件名只用 `user_id`，**不用邮箱**：`docs/` 与日志都不该出现账号信息，

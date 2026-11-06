@@ -402,6 +402,10 @@ impl qobject::Kichi {
                     if settings.player_mpv_conf {
                         session_settings.conf = Some(crate::session::paths::embed_mpv_conf_path());
                     }
+                    if settings.player_input_conf {
+                        session_settings.input_conf =
+                            Some(crate::session::paths::embed_input_conf_path());
+                    }
                     let started = crate::player::embed::start(
                         &option.url,
                         title,

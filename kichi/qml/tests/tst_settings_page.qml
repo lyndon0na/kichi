@@ -20,6 +20,8 @@ TestCase {
         property string playerSubLang: "auto"
         property bool playerMpvConf: true
         property string embedMpvConfPath: "/tmp/kichi/embed-mpv.conf"
+        property bool playerInputConf: true
+        property string embedInputConfPath: "/tmp/kichi/embed-input.conf"
         property string playerBackend: "mpv"
         property string playerDefaultCommand: "mpv"
         property string playerCommand: ""
@@ -49,6 +51,7 @@ TestCase {
         property int chooseDownloadDirCalls: 0
         property int openDownloadDirCalls: 0
         property int openMpvConfCalls: 0
+        property int openInputConfCalls: 0
 
         // SettingsPlayback / SettingsTransfers 监听后端的 `changed`
         signal changed()
@@ -59,6 +62,8 @@ TestCase {
         function setPlayerSubLang(value) { playerSubLang = value }
         function setPlayerMpvConf(value) { playerMpvConf = value }
         function openPlayerMpvConf() { openMpvConfCalls += 1 }
+        function setPlayerInputConf(value) { playerInputConf = value }
+        function openPlayerInputConf() { openInputConfCalls += 1 }
         function setPlayerBackend(value) { playerBackend = value }
         function setPlayer(command, args) {
             playerBackend = "custom"
@@ -95,6 +100,7 @@ TestCase {
         backend.playerAudioLang = "auto"
         backend.playerSubLang = "auto"
         backend.playerMpvConf = true
+        backend.playerInputConf = true
         backend.playerBackend = "mpv"
         backend.playerCommand = ""
         backend.playerArgs = ""
@@ -120,6 +126,7 @@ TestCase {
         backend.chooseDownloadDirCalls = 0
         backend.openDownloadDirCalls = 0
         backend.openMpvConfCalls = 0
+        backend.openInputConfCalls = 0
 
         page = pageComponent.createObject(parent, {
             width: 900, height: 640, backend: backend, visible: true
@@ -381,6 +388,25 @@ TestCase {
         edit.clicked()
         wait(40)
         compare(backend.openMpvConfCalls, 1, "编辑按钮调用后端打开文件")
+    }
+
+    function test_embed_input_conf_is_wired() {
+        openSection(page.playbackSection)
+
+        var toggle = findChild(page, "settingsInputConfEnabled")
+        var edit = findChild(page, "settingsInputConfEdit")
+        verify(toggle !== null, "有 embed-input.conf 开关")
+        verify(edit !== null, "有编辑 embed-input.conf 按钮")
+        compare(toggle.checked, true, "默认加载 embed-input.conf")
+
+        toggle.checked = false
+        toggle.toggled()
+        wait(40)
+        compare(backend.playerInputConf, false, "关掉后写回后端")
+
+        edit.clicked()
+        wait(40)
+        compare(backend.openInputConfCalls, 1, "编辑按钮调用后端打开文件")
     }
 
     function test_download_dir_commits_when_editing_finishes() {
