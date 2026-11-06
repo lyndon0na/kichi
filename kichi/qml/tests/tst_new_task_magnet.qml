@@ -22,7 +22,8 @@ TestCase {
         property string lastSubmittedFolder: ""
         property var lastSavedIndices: []
 
-        signal magnetPreviewFinished(bool ok, string message, bool canFallback)
+        signal magnetPreviewFinished(bool ok, string message, bool canFallback,
+                                     var fallbackLinks)
 
         function currentPath() {
             return [{ id: "", name: "全部文件" }]
@@ -33,9 +34,9 @@ TestCase {
             magnetFilesLoading = true
         }
 
-        function finishPreview(ok, message, canFallback) {
+        function finishPreview(ok, message, canFallback, fallbackLinks) {
             magnetFilesLoading = false
-            magnetPreviewFinished(ok, message, canFallback)
+            magnetPreviewFinished(ok, message, canFallback, fallbackLinks || [])
         }
 
         function addTask(text) {
@@ -136,14 +137,12 @@ TestCase {
     }
 
     function test_cloud_download_falls_back_when_nothing_cached() {
-        backend.magnetFiles = [
-            { index: 0, name: "第 1 集.mkv", path: "", folders: [], size: "1 GB",
-              note: "云端暂无缓存，无法秒传", available: false }
-        ]
+        backend.magnetFiles = []
         open()
         input.text = "magnet:?xt=urn:btih:abc"
         mouseClick(footerOk)
-        backend.finishPreview(true, "", false)
+        backend.finishPreview(false, "磁链里的文件暂不可秒传，请改用普通云下载", true,
+                              ["magnet:?xt=urn:btih:abc"])
 
         tryCompare(dialog, "visible", false)
         compare(backend.lastSubmitted, "magnet:?xt=urn:btih:abc")
@@ -154,7 +153,8 @@ TestCase {
         open()
         input.text = "magnet:?xt=urn:btih:abc"
         mouseClick(footerOk)
-        backend.finishPreview(false, "磁力链接无效或没有可用文件", true)
+        backend.finishPreview(false, "磁力链接无效或没有可用文件", true,
+                              ["magnet:?xt=urn:btih:abc"])
 
         tryCompare(dialog, "visible", false)
         compare(backend.lastSubmitted, "magnet:?xt=urn:btih:abc")
@@ -176,14 +176,40 @@ TestCase {
         compare(footerOk.enabled, true)
     }
 
-    function test_multiple_links_submit_without_parsing() {
+    function test_multiple_magnets_are_parsed_together() {
         open()
         input.text = "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def"
         mouseClick(footerOk)
 
+        compare(backend.lastLink, "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")
+        compare(backend.lastSubmitted, "", "解析期间不能直接提交云下载")
+        compare(dialog.parsingMagnet, true)
+        compare(dialog.torrentNotice, "正在解析 2 条磁链……")
+
+        backend.finishPreview(true, "", true, [])
+        tryCompare(magnetDialog, "visible", true)
+        compare(backend.lastSubmitted, "")
+    }
+
+    function test_failed_magnet_falls_back_while_others_open_dialog() {
+        open()
+        input.text = "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def"
+        mouseClick(footerOk)
+        backend.finishPreview(true, "", true, ["magnet:?xt=urn:btih:def"])
+
+        compare(backend.lastSubmitted, "magnet:?xt=urn:btih:def",
+                "只有失败的磁链改走普通云下载")
+        tryCompare(magnetDialog, "visible", true)
+    }
+
+    function test_mixed_links_submit_without_parsing() {
+        open()
+        input.text = "magnet:?xt=urn:btih:abc\nhttps://example.com/a.mkv"
+        mouseClick(footerOk)
+
         compare(backend.lastLink, "")
         compare(backend.lastSubmitted,
-                "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")
+                "magnet:?xt=urn:btih:abc\nhttps://example.com/a.mkv")
         tryCompare(dialog, "visible", false)
     }
 
@@ -203,7 +229,8 @@ TestCase {
         input.text = hash
 
         compare(dialog.canSubmit, true)
-        compare(dialog.magnetLink, hash)
+        compare(dialog.magnetLinks.length, 1)
+        compare(dialog.magnetLinks[0], hash)
         mouseClick(footerOk)
 
         compare(backend.lastLink, hash, "纯 hash 直接交给后端规范化")
@@ -221,7 +248,8 @@ TestCase {
         input.text = hash
 
         compare(dialog.canSubmit, true)
-        compare(dialog.magnetLink, hash)
+        compare(dialog.magnetLinks.length, 1)
+        compare(dialog.magnetLinks[0], hash)
         mouseClick(footerOk)
         compare(backend.lastLink, hash)
         compare(dialog.parsingMagnet, true)
@@ -232,7 +260,7 @@ TestCase {
         input.text = "0123456789abcdef"
         compare(dialog.canSubmit, false)
         compare(dialog.invalidLine, 1)
-        compare(dialog.magnetLink, "")
+        compare(dialog.magnetLinks.length, 0)
 
         input.text = "0123456789ABCDEF0123456789ABCDEF0123456"
         compare(dialog.canSubmit, false, "39 位十六进制也不接受")

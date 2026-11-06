@@ -41,6 +41,8 @@ TestCase {
         signal thumbnailReady(string id, string path)
         signal torrentParsed(string name, string magnet, string detail)
         signal torrentParseFailed(string message)
+        signal magnetPreviewFinished(bool ok, string message, bool canFallback,
+                                     var fallbackLinks)
 
         property int submitted: 0
         property string submittedText: ""
@@ -55,6 +57,8 @@ TestCase {
         property int torrentPickerCalls: 0
         property int torrentPreviewCalls: 0
         property var torrentPreviewUrls: []
+        property int magnetPreviewCalls: 0
+        property string magnetPreviewText: ""
 
         function addTask(url) {
             submitted += 1
@@ -82,6 +86,10 @@ TestCase {
         function previewTorrentFiles(urls) {
             torrentPreviewCalls += 1
             torrentPreviewUrls = urls.slice()
+        }
+        function previewMagnetFiles(links) {
+            magnetPreviewCalls += 1
+            magnetPreviewText = String(links)
         }
         function thumbnailPath(id) {
             return ""
@@ -164,6 +172,8 @@ TestCase {
         backend.torrentPickerCalls = 0
         backend.torrentPreviewCalls = 0
         backend.torrentPreviewUrls = []
+        backend.magnetPreviewCalls = 0
+        backend.magnetPreviewText = ""
         page.width = 800
         page.active = true
         backend.refreshCalls = 0
@@ -994,6 +1004,15 @@ TestCase {
                    "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")
 
         dialog.submit()
+        compare(backend.magnetPreviewCalls, 1,
+                "纯磁链输入先交给后端批量解析")
+        compare(backend.magnetPreviewText,
+                "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")
+        compare(backend.submitted, 0)
+        backend.magnetPreviewFinished(false, "", true, [
+            "magnet:?xt=urn:btih:abc",
+            "magnet:?xt=urn:btih:def"
+        ])
         compare(backend.submitted, 1)
         compare(backend.submittedText,
                 "magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")

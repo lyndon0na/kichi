@@ -1,30 +1,37 @@
 //! 磁链预览与秒传。
 //!
-//! 新任务弹窗提交单条磁链时，先只读 `resource/list` 拿到文件清单；用户勾选后
-//! 再逐个秒传。这里只负责桥接状态与线程回投，网络细节在 `session::magnet`。
+//! 新任务弹窗提交磁链时，先只读 `resource/list` 拿到文件清单；用户勾选后
+//! 再逐个秒传。多条磁链合并成一份清单，无法秒传的单条回落普通云下载。
+//! 这里只负责桥接状态与线程回投，网络细节在 `session::magnet`。
 
+use std::collections::BTreeSet;
 use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QMetaTypeType, QString, QVariant};
-use kichi_core::MagnetListing;
+use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QMetaTypeType, QString, QStringList, QVariant};
+use kichi_core::{normalize_task_url, MagnetListing};
 
 use super::actions::{enqueue_ui, format_size, run_in_background};
 use super::qobject;
 use super::QVariantList;
 use crate::session::magnet::MagnetSaveOutcome;
-use crate::session::{Failure, State};
+use crate::session::State;
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 impl qobject::Kichi {
-    /// 解析磁链文件清单。成功 / 失败都通过 `magnetPreviewFinished` 回投。
-    pub fn preview_magnet_files(mut self: Pin<&mut Self>, link: QString) {
+    /// 解析一条或多条磁链（换行分隔）的文件清单。成功 / 失败都通过
+    /// `magnetPreviewFinished` 回投；无法秒传的磁链单独列在回落链接里。
+    pub fn preview_magnet_files(mut self: Pin<&mut Self>, links: QString) {
         if self.backend.session.state() != State::SignedIn {
             let message = "请先登录再解析磁链";
             self.as_mut().set_message(message);
-            self.as_mut()
-                .magnet_preview_finished(false, QString::from(message), false);
+            self.as_mut().magnet_preview_finished(
+                false,
+                QString::from(message),
+                false,
+                QStringList::default(),
+            );
             return;
         }
         if self.magnet_loading {
@@ -32,13 +39,18 @@ impl qobject::Kichi {
                 false,
                 QString::from("正在解析上一条磁链，请稍候"),
                 false,
+                QStringList::default(),
             );
             return;
         }
-        let link = link.to_string().trim().to_owned();
-        if link.is_empty() {
-            self.as_mut()
-                .magnet_preview_finished(false, QString::from("磁力链接为空"), false);
+        let links = unique_links(&links.to_string());
+        if links.is_empty() {
+            self.as_mut().magnet_preview_finished(
+                false,
+                QString::from("磁力链接为空"),
+                false,
+                QStringList::default(),
+            );
             return;
         }
 
@@ -48,7 +60,7 @@ impl qobject::Kichi {
             rust.magnet_loading = true;
             rust.magnet_error = QString::default();
             rust.magnet_files = QVariantList::default();
-            rust.magnet_listing = None;
+            rust.magnet_listings = Vec::new();
             rust.magnet_root_name = QString::default();
             rust.magnet_summary = QString::default();
             rust.magnet_saving = false;
@@ -59,41 +71,62 @@ impl qobject::Kichi {
 
         let session = self.backend.session.clone();
         run_in_background(
-            move || session.resolve_magnet(&link),
+            move || session.resolve_magnets(&links),
             move |mut qichi, result| {
                 if qichi.as_ref().rust().magnet_epoch != epoch {
                     return;
                 }
                 qichi.as_mut().rust_mut().magnet_loading = false;
                 match result {
-                    Ok(listing) => {
-                        let rows = magnet_rows(&listing);
-                        let summary = listing_summary(&listing);
+                    Ok(batch) if !batch.listings.is_empty() => {
+                        let rows = magnet_rows(&batch.listings);
+                        let summary = listing_summary(&batch.listings, batch.fallback_links.len());
+                        let root_name = if batch.listings.len() == 1 {
+                            batch.listings[0].root_name.clone()
+                        } else {
+                            format!("{} 条磁链", batch.listings.len())
+                        };
                         {
                             let mut rust = qichi.as_mut().rust_mut();
                             rust.magnet_files = rows;
-                            rust.magnet_root_name = QString::from(listing.root_name.as_str());
+                            rust.magnet_root_name = QString::from(root_name.as_str());
                             rust.magnet_summary = QString::from(summary.as_str());
                             rust.magnet_error = QString::default();
-                            rust.magnet_listing = Some(listing);
+                            rust.magnet_listings = batch.listings;
                         }
                         qichi.as_mut().notify();
-                        qichi
-                            .as_mut()
-                            .magnet_preview_finished(true, QString::default(), false);
+                        qichi.as_mut().magnet_preview_finished(
+                            true,
+                            QString::default(),
+                            true,
+                            string_list(&batch.fallback_links),
+                        );
+                    }
+                    Ok(batch) => {
+                        // 一条可秒传的都没有：整批改走普通云下载。
+                        let message = "磁链里的文件暂不可秒传，请改用普通云下载";
+                        qichi.as_mut().rust_mut().magnet_error = QString::from(message);
+                        qichi.as_mut().notify();
+                        qichi.as_mut().magnet_preview_finished(
+                            false,
+                            QString::from(message),
+                            true,
+                            string_list(&batch.fallback_links),
+                        );
                     }
                     Err(err) => {
                         let message = err.to_string();
-                        let can_fallback = !is_session_failure(&err);
+                        let can_fallback = !err.is_session_failure();
                         qichi.as_mut().rust_mut().magnet_error = QString::from(message.as_str());
                         qichi.as_mut().notify();
-                        if is_session_failure(&err) {
+                        if err.is_session_failure() {
                             qichi.as_mut().on_failure(err);
                         }
                         qichi.as_mut().magnet_preview_finished(
                             false,
                             QString::from(message.as_str()),
                             can_fallback,
+                            QStringList::default(),
                         );
                     }
                 }
@@ -117,13 +150,19 @@ impl qobject::Kichi {
             self.as_mut().set_message("正在保存上一条磁链，请稍候");
             return;
         }
-        let Some(listing) = self.magnet_listing.clone() else {
+        if self.magnet_listings.is_empty() {
             self.as_mut().set_message("请先解析磁链");
             return;
-        };
+        }
         let selection: Vec<usize> = indices.iter().filter_map(variant_to_index).collect();
         if selection.is_empty() {
             self.as_mut().set_message("请至少选择一个文件");
+            return;
+        }
+        let listings = self.magnet_listings.clone();
+        let groups = split_selection(&listings, &selection);
+        if groups.is_empty() {
+            self.as_mut().set_message("请至少选择一个可秒传的文件");
             return;
         }
 
@@ -143,8 +182,8 @@ impl qobject::Kichi {
         run_in_background(
             move || {
                 session.save_magnet_files(
-                    &listing,
-                    &selection,
+                    &listings,
+                    &groups,
                     &folder,
                     keep_structure,
                     |done, total| {
@@ -190,14 +229,14 @@ impl qobject::Kichi {
                             }
                         }
                         if let Some(failure) = outcome.failure {
-                            if is_session_failure(&failure) {
+                            if failure.is_session_failure() {
                                 qichi.as_mut().on_failure(failure);
                             }
                         }
                         qichi.as_mut().set_message(&message);
                     }
                     Err(err) => {
-                        if is_session_failure(&err) {
+                        if err.is_session_failure() {
                             qichi.as_mut().on_failure(err);
                         } else {
                             qichi.as_mut().set_message(&err.to_string());
@@ -213,7 +252,7 @@ impl qobject::Kichi {
         let mut rust = self.as_mut().rust_mut();
         rust.magnet_epoch = rust.magnet_epoch.wrapping_add(1);
         rust.magnet_files = QVariantList::default();
-        rust.magnet_listing = None;
+        rust.magnet_listings.clear();
         rust.magnet_root_name = QString::default();
         rust.magnet_summary = QString::default();
         rust.magnet_error = QString::default();
@@ -223,55 +262,114 @@ impl qobject::Kichi {
     }
 }
 
-fn magnet_rows(listing: &MagnetListing) -> QVariantList {
+fn magnet_rows(listings: &[MagnetListing]) -> QVariantList {
+    let grouped = listings.len() > 1;
     let mut rows = QVariantList::default();
-    for (index, file) in listing.files.iter().enumerate() {
-        let text = |value: &str| QVariant::from(&QString::from(value));
-        let path = if file.folders.is_empty() {
-            String::new()
-        } else {
-            file.folders.join(" / ")
-        };
-        let note = if file.available() {
-            ""
-        } else {
-            "云端暂无缓存，无法秒传"
-        };
-        // 嵌套列表必须用 cxx-qt-lib 的 `QList<QVariant>` 才能转成 QVariant；
-        // QML 侧会拿到普通 JS 数组（见 MagnetFileTree::folderNames）。
-        let mut folder_list: cxx_qt_lib::QList<QVariant> = cxx_qt_lib::QList::default();
-        for folder in &file.folders {
-            folder_list.append(text(folder));
-        }
+    let mut index = 0usize;
+    for listing in listings {
+        // 单文件磁链的根名通常就是文件名，再套一层同名目录只是多余的壳。
+        let flat_single = listing.files.len() == 1 && listing.files[0].folders.is_empty();
+        let prefix_root = grouped && !flat_single;
+        for file in &listing.files {
+            let text = |value: &str| QVariant::from(&QString::from(value));
+            // 多条磁链共用一个选择框时，用磁链根目录当最外层分组。
+            let folders: Vec<&str> = if prefix_root {
+                std::iter::once(listing.root_name.as_str())
+                    .chain(file.folders.iter().map(String::as_str))
+                    .collect()
+            } else {
+                file.folders.iter().map(String::as_str).collect()
+            };
+            let path = folders.join(" / ");
+            let note = if file.available() {
+                ""
+            } else {
+                "云端暂无缓存，无法秒传"
+            };
+            // 嵌套列表必须用 cxx-qt-lib 的 `QList<QVariant>` 才能转成 QVariant；
+            // QML 侧会拿到普通 JS 数组（见 MagnetFileTree::folderNames）。
+            let mut folder_list: cxx_qt_lib::QList<QVariant> = cxx_qt_lib::QList::default();
+            for folder in &folders {
+                folder_list.append(text(folder));
+            }
 
-        let mut map = QVariantMap::default();
-        map.insert_clone(&QString::from("index"), &QVariant::from(&to_i32(index)));
-        map.insert_clone(&QString::from("name"), &text(&file.name));
-        map.insert_clone(&QString::from("path"), &text(&path));
-        map.insert_clone(&QString::from("folders"), &QVariant::from(&folder_list));
-        map.insert_clone(&QString::from("size"), &text(&format_size(file.size)));
-        map.insert_clone(&QString::from("note"), &text(note));
-        map.insert_clone(
-            &QString::from("available"),
-            &QVariant::from(&file.available()),
-        );
-        rows.append(QVariant::from(&map));
+            let mut map = QVariantMap::default();
+            map.insert_clone(&QString::from("index"), &QVariant::from(&to_i32(index)));
+            map.insert_clone(&QString::from("name"), &text(&file.name));
+            map.insert_clone(&QString::from("path"), &text(&path));
+            map.insert_clone(&QString::from("folders"), &QVariant::from(&folder_list));
+            map.insert_clone(&QString::from("size"), &text(&format_size(file.size)));
+            map.insert_clone(&QString::from("note"), &text(note));
+            map.insert_clone(
+                &QString::from("available"),
+                &QVariant::from(&file.available()),
+            );
+            rows.append(QVariant::from(&map));
+            index += 1;
+        }
     }
     rows
 }
 
-/// 弹窗顶部摘要：文件数、总大小、可秒传数量。
-fn listing_summary(listing: &MagnetListing) -> String {
-    let count = listing.files.len();
-    let available = listing.available_count();
-    let size = format_size(listing.total_size);
-    if available == 0 {
+/// 弹窗顶部摘要：文件数、总大小、可秒传数量、回落的磁链数。
+fn listing_summary(listings: &[MagnetListing], fallback_count: usize) -> String {
+    let count: usize = listings.iter().map(|listing| listing.files.len()).sum();
+    let available: usize = listings.iter().map(MagnetListing::available_count).sum();
+    let size = format_size(listings.iter().map(|listing| listing.total_size).sum());
+    let mut text = if available == 0 {
         format!("共 {count} 个文件 · {size}；这些文件暂不可秒传，请改用普通云下载")
     } else if available < count {
         format!("共 {count} 个文件 · {size}；{available} 个可秒传，其余暂不可秒传")
     } else {
         format!("共 {count} 个文件 · {size}；全部可秒传")
+    };
+    if fallback_count > 0 {
+        text.push_str(&format!("；{fallback_count} 条磁链已改为普通云下载"));
     }
+    text
+}
+
+/// 去掉空行，规范化裸 infohash，并按规范化后的链接去重。
+fn unique_links(text: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut links = Vec::new();
+    for line in text.lines() {
+        let link = normalize_task_url(line);
+        if link.is_empty() {
+            continue;
+        }
+        if seen.insert(link.clone()) {
+            links.push(link);
+        }
+    }
+    links
+}
+
+fn string_list(values: &[String]) -> QStringList {
+    let mut list = QStringList::default();
+    for value in values {
+        list.append(QString::from(value.as_str()));
+    }
+    list
+}
+
+/// 全局行下标 → 每份清单各自的文件下标。
+fn split_selection(listings: &[MagnetListing], selection: &[usize]) -> Vec<(usize, Vec<usize>)> {
+    let selected: BTreeSet<usize> = selection.iter().copied().collect();
+    let mut groups = Vec::new();
+    let mut offset = 0usize;
+    for (index, listing) in listings.iter().enumerate() {
+        let end = offset + listing.files.len();
+        let locals: Vec<usize> = selected
+            .range(offset..end)
+            .map(|global| global - offset)
+            .collect();
+        if !locals.is_empty() {
+            groups.push((index, locals));
+        }
+        offset = end;
+    }
+    groups
 }
 
 fn save_progress_text(done: usize, total: usize) -> String {
@@ -318,121 +416,9 @@ fn variant_to_index(value: &QVariant) -> Option<usize> {
     usize::try_from(number.round() as i32).ok()
 }
 
-fn is_session_failure(failure: &Failure) -> bool {
-    matches!(
-        failure,
-        Failure::Auth(_) | Failure::Captcha { .. } | Failure::RateLimited { .. }
-    )
-}
-
 fn to_i32(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        listing_summary, magnet_rows, save_outcome_text, save_progress_text, variant_to_index,
-    };
-    use crate::session::magnet::MagnetSaveOutcome;
-    use crate::session::Failure;
-    use cxx_qt_lib::{QString, QVariant};
-    use kichi_core::{MagnetFile, MagnetListing};
-
-    fn listing(available: usize, total: usize) -> MagnetListing {
-        let files = (0..total)
-            .map(|index| MagnetFile {
-                name: format!("文件{index}"),
-                folders: Vec::new(),
-                size: 1024,
-                gcid: (index < available).then(|| "HASH".to_owned()),
-            })
-            .collect();
-        MagnetListing {
-            root_name: "示例".to_owned(),
-            files,
-            total_size: 1024 * total as u64,
-        }
-    }
-
-    #[test]
-    fn summary_reports_unavailable_files() {
-        assert!(listing_summary(&listing(2, 2)).contains("全部可秒传"));
-        let partial = listing_summary(&listing(1, 3));
-        assert!(partial.contains("1 个可秒传"));
-        assert!(partial.contains("其余暂不可秒传"));
-        let none = listing_summary(&listing(0, 2));
-        assert!(none.contains("暂不可秒传"));
-    }
-
-    #[test]
-    fn progress_text_reports_position_in_batch() {
-        assert_eq!(save_progress_text(3, 12), "正在保存磁链文件 3/12");
-    }
-
-    #[test]
-    fn outcome_text_counts_every_group() {
-        let outcome = MagnetSaveOutcome {
-            saved: 2,
-            unavailable: 1,
-            failed: 3,
-            failure: Some(Failure::Other("网络错误".to_owned())),
-        };
-        let text = save_outcome_text(&outcome);
-        assert!(text.contains("已保存 2 个文件"));
-        assert!(text.contains("1 个暂不可秒传"));
-        assert!(text.contains("3 个保存失败"));
-        assert!(text.contains("网络错误"));
-    }
-
-    #[test]
-    fn rows_carry_folder_chain_for_tree_view() {
-        use cxx_qt_lib::{QList, QMap, QMapPair_QString_QVariant};
-
-        let listing = MagnetListing {
-            root_name: "示例".to_owned(),
-            files: vec![MagnetFile {
-                name: "第 1 集.mkv".to_owned(),
-                folders: vec!["动画".to_owned(), "第一季".to_owned()],
-                size: 1024,
-                gcid: Some("HASH".to_owned()),
-            }],
-            total_size: 1024,
-        };
-        let rows = magnet_rows(&listing);
-        let map = rows
-            .at(0)
-            .expect("应有一行")
-            .value::<QMap<QMapPair_QString_QVariant>>()
-            .expect("行应是 QVariantMap");
-        let folders = map
-            .get(&QString::from("folders"))
-            .and_then(|value| value.value::<QList<QVariant>>())
-            .expect("folders 应是数组");
-        let names: Vec<String> = folders
-            .iter()
-            .filter_map(|value| value.value::<QString>().map(|name| name.to_string()))
-            .collect();
-        assert_eq!(names, vec!["动画".to_owned(), "第一季".to_owned()]);
-        assert_eq!(
-            map.get(&QString::from("path"))
-                .and_then(|value| value.value::<QString>())
-                .map(|text| text.to_string()),
-            Some("动画 / 第一季".to_owned())
-        );
-    }
-
-    #[test]
-    fn indices_accept_both_int_and_double_variants() {
-        assert_eq!(variant_to_index(&QVariant::from(&1i32)), Some(1));
-        assert_eq!(variant_to_index(&QVariant::from(&2.0f64)), Some(2));
-        assert_eq!(variant_to_index(&QVariant::from(&2.4f64)), Some(2));
-        assert_eq!(variant_to_index(&QVariant::from(&-1i32)), None);
-        assert_eq!(variant_to_index(&QVariant::from(&f64::NAN)), None);
-        assert_eq!(
-            variant_to_index(&QVariant::from(&QString::from("0"))),
-            None,
-            "字符串不能被当成 0 号文件"
-        );
-    }
-}
+mod tests;

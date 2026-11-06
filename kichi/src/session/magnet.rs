@@ -28,6 +28,15 @@ impl MagnetSaveOutcome {
     }
 }
 
+/// 一批磁链的解析结果。
+#[derive(Debug, Default)]
+pub struct MagnetResolution {
+    /// 至少有一个可秒传文件的清单，保持输入顺序。
+    pub listings: Vec<MagnetListing>,
+    /// 解析失败或一个可秒传文件都没有的链接，交给普通云下载。
+    pub fallback_links: Vec<String>,
+}
+
 impl Session {
     /// 解析磁力链接里的文件清单。阻塞。
     pub fn resolve_magnet(&self, link: &str) -> Result<MagnetListing, Failure> {
@@ -35,111 +44,199 @@ impl Session {
         client.list_magnet_resources(link).map_err(Failure::from)
     }
 
+    /// 逐条解析一批磁链。阻塞。
+    ///
+    /// 解析失败或清单里没有可秒传文件的链接收进 `fallback_links`；登录态 /
+    /// 人机验证 / 限流会中止整批，剩余链接不再请求。
+    pub fn resolve_magnets(&self, links: &[String]) -> Result<MagnetResolution, Failure> {
+        let mut resolution = MagnetResolution::default();
+        for link in links {
+            match self.resolve_magnet(link) {
+                Ok(listing) if listing.available_count() > 0 => resolution.listings.push(listing),
+                Ok(_) => resolution.fallback_links.push(link.clone()),
+                Err(err) if err.is_session_failure() => return Err(err),
+                Err(_) => resolution.fallback_links.push(link.clone()),
+            }
+        }
+        Ok(resolution)
+    }
+
     /// 把选中的文件秒传到 `parent_id`（空串 = 根目录）。阻塞。
     ///
-    /// `selection` 是 `listing.files` 的下标；顺序不影响结果。
+    /// `groups` 的每个元素是「清单下标 + 该清单内的文件下标」，顺序不影响结果。
     /// `keep_structure` 为 false 时忽略磁链里的目录层级，所有文件直接放进
-    /// `parent_id`，也不建容器目录。
-    /// `progress(done, total)` 在每个文件处理完后调用。
+    /// `parent_id`，也不建容器目录。`progress(done, total)` 在每个文件处理完后调用。
     pub fn save_magnet_files(
         &self,
-        listing: &MagnetListing,
-        selection: &[usize],
+        listings: &[MagnetListing],
+        groups: &[(usize, Vec<usize>)],
         parent_id: &str,
         keep_structure: bool,
         mut progress: impl FnMut(usize, usize),
     ) -> Result<MagnetSaveOutcome, Failure> {
-        let chosen: Vec<&MagnetFile> = selected_files(listing, selection);
-        if chosen.is_empty() {
-            return Err(Failure::Other("没有选择要保存的文件".to_owned()));
-        }
-        let ready: Vec<&MagnetFile> = chosen
-            .iter()
-            .copied()
-            .filter(|file| file.available())
-            .collect();
-        if ready.is_empty() {
-            return Ok(MagnetSaveOutcome {
-                unavailable: chosen.len(),
-                ..MagnetSaveOutcome::default()
-            });
-        }
-
         let client = self.drive()?;
         let parent = parent_id.trim();
         let base = (!parent.is_empty()).then_some(parent);
         let mut cache = FolderCreateCache::new();
 
-        // 容器名沿用单根目录名 / 磁链 dn=；平铺模式不建容器与子目录。
-        let container_id = if needs_container(&ready, keep_structure) {
-            let name = sanitize_drive_name(&listing.root_name, "磁力任务");
-            Some(
-                client
-                    .create_folder_entry_cached(base, &name, &mut cache)
-                    .map_err(Failure::from)?,
-            )
-        } else {
-            None
-        };
-        let root_id = container_id.as_deref().unwrap_or(parent);
+        let total: usize = groups
+            .iter()
+            .filter_map(|(index, selection)| {
+                listings.get(*index).map(|listing| (listing, selection))
+            })
+            .map(|(listing, selection)| ready_count(listing, selection))
+            .sum();
 
-        let folder_ids = if keep_structure {
-            create_folders(&client, &ready, root_id, &mut cache)?
-        } else {
-            BTreeMap::new()
-        };
-
-        let total = ready.len();
-        let mut saved = 0;
-        let mut unavailable = chosen.len() - ready.len();
-        let mut failed = 0;
-        let mut failure: Option<Failure> = None;
-        for (index, file) in ready.iter().enumerate() {
-            let target = if keep_structure {
-                let path = file.folders.join("/");
-                folder_ids.get(&path).map(String::as_str).unwrap_or(root_id)
-            } else {
-                root_id
+        let mut outcome = MagnetSaveOutcome::default();
+        let mut done = 0usize;
+        let mut stopped = false;
+        for (index, selection) in groups {
+            let Some(listing) = listings.get(*index) else {
+                continue;
             };
-            match client.instant_save_file(target, file) {
-                Ok(InstantSave::Saved) => saved += 1,
-                Ok(InstantSave::Unavailable) => unavailable += 1,
-                Err(err) => {
-                    let current = Failure::from(err);
-                    failed += 1;
-                    if failure.is_none() {
-                        failure = Some(current);
-                    }
-                    // 登录态 / 验证 / 限流类错误继续发只会重复失败，剩余文件记为失败。
-                    if matches!(
-                        failure.as_ref(),
-                        Some(
-                            Failure::Auth(_)
-                                | Failure::Captcha { .. }
-                                | Failure::RateLimited { .. }
-                        )
-                    ) {
-                        failed += total - index - 1;
-                        break;
-                    }
+            let chosen = selected_files(listing, selection);
+            let ready: Vec<&MagnetFile> = chosen
+                .iter()
+                .copied()
+                .filter(|file| file.available())
+                .collect();
+            outcome.unavailable += chosen.len() - ready.len();
+            if stopped {
+                // 前面的清单遇到登录态 / 限流：剩余选中文件记为失败。
+                outcome.failed += ready.len();
+                continue;
+            }
+            if ready.is_empty() {
+                continue;
+            }
+            save_listing(
+                &client,
+                listing,
+                &ready,
+                base,
+                keep_structure,
+                &mut cache,
+                total,
+                &mut done,
+                &mut outcome,
+                &mut stopped,
+                &mut progress,
+            );
+        }
+
+        Ok(outcome)
+    }
+}
+
+fn ready_count(listing: &MagnetListing, selection: &[usize]) -> usize {
+    selected_files(listing, selection)
+        .iter()
+        .filter(|file| file.available())
+        .count()
+}
+
+/// 秒传一份清单里已确认可秒传的文件；成果累计进 `outcome`。
+#[allow(clippy::too_many_arguments)]
+fn save_listing(
+    client: &kichi_core::DriveClient,
+    listing: &MagnetListing,
+    ready: &[&MagnetFile],
+    base: Option<&str>,
+    keep_structure: bool,
+    cache: &mut FolderCreateCache,
+    total: usize,
+    done: &mut usize,
+    outcome: &mut MagnetSaveOutcome,
+    stopped: &mut bool,
+    progress: &mut impl FnMut(usize, usize),
+) {
+    // 容器名沿用单根目录名 / 磁链 dn=；平铺模式不建容器与子目录。
+    let container_id = if needs_container(ready, keep_structure) {
+        let name = sanitize_drive_name(&listing.root_name, "磁力任务");
+        match client.create_folder_entry_cached(base, &name, cache) {
+            Ok(id) => Some(id),
+            Err(err) => {
+                record_listing_failure(Failure::from(err), ready.len(), outcome, stopped);
+                *done += ready.len();
+                progress(*done, total);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let root_id = container_id.as_deref().or(base).unwrap_or("");
+
+    let folder_ids = if keep_structure {
+        match create_folders(client, ready, root_id, cache) {
+            Ok(ids) => ids,
+            Err(err) => {
+                record_listing_failure(err, ready.len(), outcome, stopped);
+                if let Some(id) = container_id.as_deref() {
+                    // 目录建到一半失败：别把半截空目录留在网盘里。
+                    let _ = client.trash(&[id]);
+                }
+                *done += ready.len();
+                progress(*done, total);
+                return;
+            }
+        }
+    } else {
+        BTreeMap::new()
+    };
+
+    let mut saved = 0;
+    for (index, file) in ready.iter().enumerate() {
+        *done += 1;
+        let target = if keep_structure {
+            let path = file.folders.join("/");
+            folder_ids.get(&path).map(String::as_str).unwrap_or(root_id)
+        } else {
+            root_id
+        };
+        match client.instant_save_file(target, file) {
+            Ok(InstantSave::Saved) => saved += 1,
+            Ok(InstantSave::Unavailable) => outcome.unavailable += 1,
+            Err(err) => {
+                let current = Failure::from(err);
+                let session_failure = current.is_session_failure();
+                outcome.failed += 1;
+                if outcome.failure.is_none() {
+                    outcome.failure = Some(current);
+                }
+                // 登录态 / 验证 / 限流类错误继续发只会重复失败，剩余文件记为失败。
+                if session_failure {
+                    let remaining = ready.len() - index - 1;
+                    outcome.failed += remaining;
+                    *done += remaining;
+                    *stopped = true;
+                    progress(*done, total);
+                    break;
                 }
             }
-            progress(index + 1, total);
         }
+        progress(*done, total);
+    }
+    outcome.saved += saved;
 
-        if saved == 0 {
-            if let Some(id) = container_id.as_deref() {
-                // 整体失败时别留下一个空容器；清理失败不盖住真正的原因。
-                let _ = client.trash(&[id]);
-            }
+    if saved == 0 {
+        if let Some(id) = container_id.as_deref() {
+            // 整体失败时别留下一个空容器；清理失败不盖住真正的原因。
+            let _ = client.trash(&[id]);
         }
+    }
+}
 
-        Ok(MagnetSaveOutcome {
-            saved,
-            unavailable,
-            failed,
-            failure,
-        })
+fn record_listing_failure(
+    failure: Failure,
+    count: usize,
+    outcome: &mut MagnetSaveOutcome,
+    stopped: &mut bool,
+) {
+    *stopped = failure.is_session_failure();
+    outcome.failed += count;
+    if outcome.failure.is_none() {
+        outcome.failure = Some(failure);
     }
 }
 
@@ -258,5 +355,12 @@ mod tests {
         let third = file("c", &["合集", "第一季", "花絮"], Some("z"));
         let paths = folder_paths(&[&first, &second, &third]);
         assert_eq!(paths, vec!["合集", "合集/第一季", "合集/第一季/花絮"]);
+    }
+
+    #[test]
+    fn ready_count_only_counts_cached_files() {
+        let listing = listing(vec![file("a", &[], Some("x")), file("b", &[], None)]);
+        assert_eq!(ready_count(&listing, &[0, 1]), 1);
+        assert_eq!(ready_count(&listing, &[1]), 0);
     }
 }

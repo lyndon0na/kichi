@@ -36,6 +36,14 @@ impl Failure {
     pub fn is_rate_limited(&self) -> bool {
         matches!(self, Failure::RateLimited { .. })
     }
+
+    /// 登录态 / 验证 / 限流：继续发请求只会重复失败，批量操作应中止剩余请求。
+    pub fn is_session_failure(&self) -> bool {
+        matches!(
+            self,
+            Failure::Auth(_) | Failure::Captcha { .. } | Failure::RateLimited { .. }
+        )
+    }
 }
 
 /// 配额 / 限速类错误的完整解释。

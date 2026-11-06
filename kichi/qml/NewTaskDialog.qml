@@ -21,8 +21,8 @@ KDialog {
     readonly property bool canSubmit: dialog.backend !== null
                                         && dialog.linkCount > 0
                                         && dialog.invalidLine === 0
-    /// 输入框里只有一条磁力链接时，添加前先解析文件清单。
-    readonly property string magnetLink: dialog.singleMagnet(input.text)
+    /// 所有非空行都是磁力链接（或裸 infohash）时，添加前先批量解析文件清单。
+    readonly property var magnetLinks: dialog.allMagnetLinks(input.text)
     /// 单条磁链正在后台解析；期间锁定添加 / 取消，避免结果落到已关闭的弹窗。
     property bool parsingMagnet: false
 
@@ -320,19 +320,19 @@ KDialog {
         return value.length > 0 && value.charAt(0) !== "/"
     }
 
-    /// 输入里恰好一条磁力链接时返回它；否则返回空串。
-    function singleMagnet(text) {
+    /// 所有非空行都是磁力链接时返回链接数组；混有其他链接或无效行时返回空数组。
+    function allMagnetLinks(text) {
         var lines = String(text || "").split("\n")
-        var found = ""
+        var links = []
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i].trim()
             if (line.length === 0)
                 continue
-            if (found.length > 0 || !dialog.isMagnetLink(line))
-                return ""
-            found = line
+            if (!dialog.isMagnetLink(line))
+                return []
+            links.push(line)
         }
-        return found
+        return links
     }
 
     function isMagnetLink(value) {
@@ -373,12 +373,14 @@ KDialog {
     function submit() {
         if (!dialog.backend || !dialog.canSubmit || dialog.parsingMagnet)
             return
-        const magnet = dialog.magnetLink
-        if (magnet.length > 0) {
+        const links = dialog.magnetLinks
+        if (links.length > 0) {
             dialog.parsingMagnet = true
-            dialog.torrentNotice = qsTr("正在解析磁链……")
+            dialog.torrentNotice = links.length > 1
+                    ? qsTr("正在解析 %1 条磁链……").arg(links.length)
+                    : qsTr("正在解析磁链……")
             dialog.torrentNoticeError = false
-            dialog.backend.previewMagnetFiles(magnet)
+            dialog.backend.previewMagnetFiles(links.join("\n"))
             return
         }
         dialog.submitTask()
@@ -388,12 +390,32 @@ KDialog {
     function submitTask() {
         if (!dialog.backend || !dialog.canSubmit)
             return
-        const text = input.text.trim()
-        if (dialog.saveToFolder)
-            dialog.backend.addTaskToFolder(text, String(dialog.targetFolderId))
-        else
-            dialog.backend.addTask(text)
+        dialog.submitText(input.text.trim())
         dialog.close()
+    }
+
+    /// 把一批链接交给普通云下载；返回是否真的提交了内容。
+    function submitText(text) {
+        const value = String(text || "").trim()
+        if (!dialog.backend || value.length === 0)
+            return false
+        if (dialog.saveToFolder)
+            dialog.backend.addTaskToFolder(value, String(dialog.targetFolderId))
+        else
+            dialog.backend.addTask(value)
+        return true
+    }
+
+    function linksText(links) {
+        if (!links || links.length === undefined)
+            return ""
+        const values = []
+        for (let i = 0; i < links.length; i++) {
+            const value = String(links[i] || "").trim()
+            if (value.length > 0)
+                values.push(value)
+        }
+        return values.join("\n")
     }
 
     function previewTorrentUrls(urls) {
@@ -462,28 +484,32 @@ KDialog {
             dialog.torrentNoticeError = true
         }
 
-        function onMagnetPreviewFinished(ok, message, canFallback) {
+        function onMagnetPreviewFinished(ok, message, canFallback, fallbackLinks) {
             if (!dialog.opened || !dialog.parsingMagnet)
                 return
             dialog.parsingMagnet = false
-            if (!ok) {
-                if (!canFallback) {
-                    dialog.torrentNotice = String(message || qsTr("无法解析磁链"))
-                    dialog.torrentNoticeError = true
-                    return
-                }
-                dialog.torrentNotice = qsTr("无法解析磁链，已改为普通云下载：%1")
-                        .arg(String(message || qsTr("未知原因")))
-                dialog.torrentNoticeError = false
-                dialog.submitTask()
+
+            if (!ok && !canFallback) {
+                dialog.torrentNotice = String(message || qsTr("无法解析磁链"))
+                dialog.torrentNoticeError = true
                 return
             }
-            if (dialog.availableMagnetCount() === 0) {
-                dialog.torrentNotice = qsTr("云端暂无缓存，已改为普通云下载。")
+
+            // 解析失败或没有缓存的磁链单独回落普通云下载，其余进入同一个选择框。
+            const fallbackText = dialog.linksText(fallbackLinks)
+            const fallbackSubmitted = dialog.submitText(fallbackText)
+            if (!ok || dialog.availableMagnetCount() === 0) {
+                dialog.torrentNotice = !ok
+                        ? qsTr("磁链暂时无法秒传，已改为普通云下载。")
+                        : qsTr("云端暂无缓存，已改为普通云下载。")
                 dialog.torrentNoticeError = false
-                dialog.submitTask()
+                if (fallbackSubmitted)
+                    dialog.close()
+                else
+                    dialog.submitTask()
                 return
             }
+
             dialog.torrentNotice = ""
             dialog.torrentNoticeError = false
             // 官方 My Pack 只是一个下载位置，没有目录 id；磁链秒传必须落到根目录。

@@ -299,7 +299,8 @@ pub mod qobject {
         fn torrent_parse_failed(self: Pin<&mut Self>, message: QString);
 
         /// 磁链文件清单解析结束：成功后弹窗读取 `magnetFiles` 等属性。
-        /// `can_fallback` 为 false 时（登录态 / 验证 / 限流）不要自动改交云下载。
+        /// `can_fallback` 为 false 时（登录态 / 验证 / 限流）不要自动改交云下载；
+        /// `fallback_links` 是解析失败或没有可秒传文件的磁链，应单独回落为普通云下载。
         #[qsignal]
         #[cxx_name = "magnetPreviewFinished"]
         fn magnet_preview_finished(
@@ -307,6 +308,7 @@ pub mod qobject {
             ok: bool,
             message: QString,
             can_fallback: bool,
+            fallback_links: QStringList,
         );
 
         /// 资料库里的文件夹与内容已就绪，界面现在可以切到文件页。
@@ -1282,8 +1284,8 @@ pub struct KichiRust {
     pub(crate) search_pending: Option<String>,
     /// 磁链解析出的文件行（QML 直接当 model 用）
     pub(crate) magnet_files: QVariantList,
-    /// 磁链解析结果（秒传按它建目录 / 取 GCID）
-    pub(crate) magnet_listing: Option<kichi_core::MagnetListing>,
+    /// 本次解析出的磁链清单（秒传按它们建目录 / 取 GCID）
+    pub(crate) magnet_listings: Vec<kichi_core::MagnetListing>,
     pub(crate) magnet_root_name: QString,
     pub(crate) magnet_summary: QString,
     pub(crate) magnet_error: QString,
@@ -1500,7 +1502,7 @@ impl Default for KichiRust {
             search_local_running: false,
             search_pending: None,
             magnet_files: QVariantList::default(),
-            magnet_listing: None,
+            magnet_listings: Vec::new(),
             magnet_root_name: QString::default(),
             magnet_summary: QString::default(),
             magnet_error: QString::default(),
