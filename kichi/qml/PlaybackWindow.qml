@@ -45,10 +45,8 @@ Window {
     property int speedPercent: 100
     property bool speedOpen: false
     property bool subStyleOpen: false
-    // 按键交给 mpv：除 Esc / F 外，键盘事件原样转给 mpv 原生键位。
-    readonly property bool mpvKeys: backend !== null && backend.embedMpvKeys === true
     readonly property bool menuOpen: trackMenu.visible
-    // 任何浮层 / 菜单打开时，键盘归浮层，kichi 的播放快捷键暂停。
+    // 任何浮层 / 菜单打开时，键盘归浮层，kichi 快捷键暂停，也不下发给 mpv。
     readonly property bool overlayOpen: volumeOpen || subStyleOpen || speedOpen || menuOpen
     // 拖动松手后等 mpv 回报新位置，期间别让旧坐标把滑块拉回去。
     property real seekTarget: -1
@@ -159,14 +157,12 @@ Window {
             win.speedPercent = reportedSpeed
             backend.embedSetSpeed(reportedSpeed)
         }
-        // 按键交给 mpv 时，↑↓ / m 改的是 mpv 自己的音量：拉回界面并落盘。
-        if (win.mpvKeys) {
-            var actualVolume = backend.embedCurrentVolume()
-            var actualMuted = backend.embedCurrentMuted()
-            if (actualVolume !== win.volume || actualMuted !== win.muted) {
-                backend.embedSyncAudio(actualVolume, actualMuted)
-                audioSave.restart()
-            }
+        // mpv 键位（m / 9 / 0 等）改的是 mpv 自己的音量：拉回界面并落盘。
+        var actualVolume = backend.embedCurrentVolume()
+        var actualMuted = backend.embedCurrentMuted()
+        if (actualVolume !== win.volume || actualMuted !== win.muted) {
+            backend.embedSyncAudio(actualVolume, actualMuted)
+            audioSave.restart()
         }
     }
 
@@ -361,8 +357,6 @@ Window {
         }
         if (win.isFullScreen)
             win.showNormal()
-        else
-            win.requestClose()
     }
 
     // Qt 按键 → mpv 键名。可打印字符直接交原文（Shift 产生的符号 / 大写
@@ -414,17 +408,15 @@ Window {
         return prefix + name
     }
 
+    // kichi 的 Shortcut（Esc / F / 方向键）先接；这里只处理没接住的键，
+    // 原样交给 mpv 的 input 层。
     function handleKey(event) {
         if (!win.visible || win.overlayOpen)
             return false
         // Esc / 单按 F 永远归 kichi，mpv 也拿不到。
         if (event.key === Qt.Key_Escape)
             return false
-        if (event.key === Qt.Key_F && event.modifiers === Qt.NoModifier) {
-            win.toggleFullscreen()
-            return true
-        }
-        if (!win.mpvKeys)
+        if (event.key === Qt.Key_F && event.modifiers === Qt.NoModifier)
             return false
         var name = mpvKeyName(event)
         if (name.length === 0)
@@ -1121,11 +1113,11 @@ Window {
         }
 
         // 键盘优先级：
-        // - Esc 永远归 kichi：先收浮层，再退全屏，最后关窗；菜单自己处理 Esc。
+        // - Esc 永远归 kichi：先收浮层，再退全屏；不关窗，菜单自己处理 Esc。
         // - 单按 F 永远归 kichi（切换窗口全屏），mpv 的 f 不生效。
-        // - 「按键交给 mpv」关闭时：下面这些 kichi 快捷键生效，按键不下发。
-        // - 开启时：下面这些快捷键让位，除 Esc / F 外的按键原样交给 mpv。
-        // - 任何菜单 / 浮层打开时：键盘归浮层，播放快捷键暂停。
+        // - 方向键归 kichi：← → 前后 10 秒，↑ ↓ 音量 ±5%。
+        // - 其余按键（Space / m / i / [ ] / 数字等）全部交给 mpv 内置默认键位。
+        // - 任何菜单 / 浮层打开时：键盘归浮层，kichi 快捷键暂停，也不下发给 mpv。
         Shortcut {
             sequence: "Escape"
             enabled: win.visible && !win.menuOpen
@@ -1137,41 +1129,25 @@ Window {
             onActivated: win.toggleFullscreen()
         }
         Shortcut {
-            sequence: "Space"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
-            onActivated: win.togglePause()
-        }
-        Shortcut {
             sequence: "Left"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
+            enabled: win.visible && !win.overlayOpen
             onActivated: win.seekBy(-10)
         }
         Shortcut {
             sequence: "Right"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
+            enabled: win.visible && !win.overlayOpen
             onActivated: win.seekBy(10)
         }
-        // 音量：上下 ±5%，M 静音，滚轮同上。
+        // 音量：上下 ±5%，滚轮同上。
         Shortcut {
             sequence: "Up"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
+            enabled: win.visible && !win.overlayOpen
             onActivated: win.adjustVolume(5)
         }
         Shortcut {
             sequence: "Down"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
+            enabled: win.visible && !win.overlayOpen
             onActivated: win.adjustVolume(-5)
-        }
-        Shortcut {
-            sequence: "M"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
-            onActivated: win.toggleMute()
-        }
-        // 统计叠加层与外部 mpv 按 i 的效果一致（再按一次收起）。
-        Shortcut {
-            sequence: "I"
-            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
-            onActivated: if (win.backend !== null) win.backend.embedToggleStats()
         }
     }
 }

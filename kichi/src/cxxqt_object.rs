@@ -138,8 +138,6 @@ pub mod qobject {
         #[qproperty(i32, embed_volume, cxx_name = "embedVolume", READ, NOTIFY = changed)]
         /// 内嵌播放器是否静音（持久化）
         #[qproperty(bool, embed_muted, cxx_name = "embedMuted", READ, NOTIFY = changed)]
-        /// 播放窗口是否把按键交给 mpv（Esc / F 仍由 kichi 保留）
-        #[qproperty(bool, embed_mpv_keys, cxx_name = "embedMpvKeys", READ, NOTIFY = changed)]
         /// 字幕字号（持久化）
         #[qproperty(i32, embed_sub_font_size, cxx_name = "embedSubFontSize", READ, NOTIFY = changed)]
         /// 字幕垂直位置（0 顶部 / 100 底部）
@@ -585,11 +583,6 @@ pub mod qobject {
         #[cxx_name = "embedCommitAudio"]
         fn embed_commit_audio(self: Pin<&mut Self>);
 
-        /// 内嵌浮层：开关 mpv 统计叠加层（按 i 显示）
-        #[qinvokable]
-        #[cxx_name = "embedToggleStats"]
-        fn embed_toggle_stats(self: &Self);
-
         /// 内嵌浮层：关闭这次播放
         #[qinvokable]
         #[cxx_name = "embedStop"]
@@ -688,11 +681,6 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setAutoSubtitles"]
         fn set_auto_subtitles(self: Pin<&mut Self>, enabled: bool);
-
-        /// 播放窗口是否把按键交给 mpv
-        #[qinvokable]
-        #[cxx_name = "setMpvKeys"]
-        fn set_mpv_keys(self: Pin<&mut Self>, enabled: bool);
 
         #[qinvokable]
         #[cxx_name = "setSubtitleFontSize"]
@@ -1282,8 +1270,6 @@ pub struct KichiRust {
     pub(crate) embed_volume: i32,
     /// 内嵌播放器静音状态（随设置持久化）
     pub(crate) embed_muted: bool,
-    /// 播放窗口把按键交给 mpv（Esc / F 保留给 kichi）
-    pub(crate) embed_mpv_keys: bool,
     /// 字幕字号 / 位置 / 颜色 / 描边（随设置持久化）
     pub(crate) embed_sub_font_size: i32,
     pub(crate) embed_sub_pos: i32,
@@ -1577,7 +1563,6 @@ impl Default for KichiRust {
             embed_pending_epoch: None,
             embed_volume: 100,
             embed_muted: false,
-            embed_mpv_keys: false,
             embed_sub_font_size: i32::from(crate::settings::DEFAULT_SUB_FONT_SIZE),
             embed_sub_pos: i32::from(crate::settings::DEFAULT_SUB_POS),
             embed_sub_color: QString::from(crate::settings::DEFAULT_SUB_COLOR),
@@ -1763,7 +1748,6 @@ impl KichiRust {
         self.auto_subtitles = settings.auto_subtitles;
         self.embed_volume = settings.player_volume;
         self.embed_muted = settings.player_muted;
-        self.embed_mpv_keys = settings.player_mpv_keys;
         self.embed_sub_font_size = i32::from(settings.player_sub_font_size);
         self.embed_sub_pos = i32::from(settings.player_sub_pos);
         self.embed_sub_color = QString::from(settings.player_sub_color.as_str());

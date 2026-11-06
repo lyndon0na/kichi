@@ -250,8 +250,6 @@ pub struct Settings {
     pub player_muted: bool,
     /// 内嵌播放器倍速（百分比，50–300；跨视频 / 跨启动记住）
     pub player_speed_percent: u16,
-    /// 播放窗口把按键交给 mpv（mpv 原生键位生效；Esc / F 仍由 kichi 保留）
-    pub player_mpv_keys: bool,
     /// 字幕字号（mpv `sub-font-size`）
     pub player_sub_font_size: u16,
     /// 字幕垂直位置（mpv `sub-pos`：0 顶部 / 100 底部）
@@ -306,7 +304,6 @@ impl Default for Settings {
             player_volume: 100,
             player_muted: false,
             player_speed_percent: 100,
-            player_mpv_keys: false,
             player_sub_font_size: DEFAULT_SUB_FONT_SIZE,
             player_sub_pos: DEFAULT_SUB_POS,
             player_sub_color: DEFAULT_SUB_COLOR.to_owned(),
@@ -539,7 +536,6 @@ mod tests {
             player_volume: 65,
             player_muted: true,
             player_speed_percent: 125,
-            player_mpv_keys: true,
             player_sub_font_size: 44,
             player_sub_pos: 90,
             player_sub_color: "#FFFFFF00".into(),
@@ -617,7 +613,6 @@ mod tests {
         assert_eq!(settings.player_volume, 100, "旧设置没有音量字段时满音量");
         assert!(!settings.player_muted, "旧设置没有静音字段时不静音");
         assert_eq!(settings.player_speed_percent, 100, "旧设置没有倍速时原速");
-        assert!(!settings.player_mpv_keys, "旧设置不把按键交给 mpv");
         assert_eq!(settings.player_sub_font_size, DEFAULT_SUB_FONT_SIZE);
         assert_eq!(settings.player_sub_pos, DEFAULT_SUB_POS);
         assert_eq!(settings.player_sub_color, DEFAULT_SUB_COLOR);

@@ -124,12 +124,6 @@ pub(super) fn run(
                     session.set_tracks(track_snapshot(&mpv));
                 }
                 Control::SubtitleStyle(style) => apply_subtitle_style(&mpv, &style),
-                Control::ToggleStats => {
-                    if let Err(err) = mpv.command("script-binding", &["stats/display-stats-toggle"])
-                    {
-                        eprintln!("[kichi] 内嵌播放器切换统计信息失败：{err}");
-                    }
-                }
                 Control::Quit => {
                     let _ = mpv.command("quit", &[]);
                 }
@@ -309,7 +303,7 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
             ("msg-level", if cfg!(test) { "all=v" } else { "all=error" }),
             // 剪贴板只走 VO：默认的 wayland 后端会抢在 VO 之前用掉 WAYLAND_SOCKET。
             ("clipboard-backends", "vo"),
-            // 默认键位始终加载：播放窗口按需把按键经 `keypress` 转给 mpv。
+            // 默认键位始终加载：播放窗口把没被 kichi 接住的按键经 `keypress` 转给 mpv。
             // 只加载内置默认键位，不读用户 input.conf / 脚本。
             ("input-default-bindings", "yes"),
             // 键盘事件由 kichi 的 Qt 窗口转发；mpv 自己的 VO 不直接抢焦点。

@@ -75,8 +75,6 @@ pub(crate) enum Control {
     Keypress(String),
     /// 立即套用新的字幕样式（设置页 / 播放窗口调整时实时预览）。
     SubtitleStyle(SubtitleStyle),
-    /// mpv 内置 stats.lua 的统计叠加层开 / 关。
-    ToggleStats,
     Quit,
 }
 
@@ -593,13 +591,6 @@ pub fn set_subtitle_style(style: SubtitleStyle) {
 /// 当前会话的轨道列表；没有会话时为空。
 pub fn tracks() -> Vec<TrackInfo> {
     current().map_or_else(Vec::new, |session| session.tracks())
-}
-
-/// 开 / 关 mpv 自带的统计叠加层（stats.lua，和外部 mpv 按 `i` 一样）。
-pub fn toggle_stats() {
-    if let Some(session) = current() {
-        session.send(Control::ToggleStats);
-    }
 }
 
 pub fn seek_absolute(seconds: f64) {

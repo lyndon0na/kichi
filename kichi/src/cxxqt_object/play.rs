@@ -651,11 +651,6 @@ impl qobject::Kichi {
         });
     }
 
-    /// 内嵌浮层：开关 mpv 自带的统计叠加层（stats.lua）
-    pub fn embed_toggle_stats(&self) {
-        crate::player::embed::toggle_stats();
-    }
-
     /// 内嵌浮层：关闭这次播放（会话收尾后照常回投 Stopped）
     pub fn embed_stop(&self) {
         crate::player::embed::stop();

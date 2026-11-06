@@ -21,12 +21,6 @@ TestCase {
         property string playerCommand: ""
         property string playerDefaultArgs: "--no-border"
         property string playerArgs: ""
-        property bool embedMpvKeys: false
-        property int embedSubFontSize: 55
-        property int embedSubPos: 100
-        property string embedSubColor: "#FFFFFFFF"
-        property int embedSubOutlineSize: 2
-        property string embedSubOutlineColor: "#FF000000"
         property string downloadDir: ""
         property int downloadParallel: 3
         property int downloadConnections: 4
@@ -63,12 +57,6 @@ TestCase {
             playerArgs = args
         }
         function resetPlayer() {}
-        function setMpvKeys(value) { embedMpvKeys = value }
-        function setSubtitleFontSize(value) { embedSubFontSize = value }
-        function setSubtitlePosition(value) { embedSubPos = value }
-        function setSubtitleColor(value) { embedSubColor = value }
-        function setSubtitleOutlineSize(value) { embedSubOutlineSize = value }
-        function setSubtitleOutlineColor(value) { embedSubOutlineColor = value }
         function setDownloadDir(value) { downloadDir = value }
         function setDownloadParallel(value) { downloadParallel = value }
         function setDownloadConnections(value) { downloadConnections = value }

@@ -70,13 +70,6 @@ impl qobject::Kichi {
         });
     }
 
-    /// 播放窗口是否把按键交给 mpv；Esc / F 仍由 kichi 保留。
-    pub fn set_mpv_keys(mut self: Pin<&mut Self>, enabled: bool) {
-        self.as_mut().update_settings(|settings| {
-            settings.player_mpv_keys = enabled;
-        });
-    }
-
     /// 字幕字号；正在播放时立即预览。
     pub fn set_subtitle_font_size(mut self: Pin<&mut Self>, value: i32) {
         let value = clamp_u16(
@@ -435,7 +428,6 @@ impl qobject::Kichi {
         rust.auto_subtitles = auto_subs;
         rust.embed_volume = snapshot.player_volume;
         rust.embed_muted = snapshot.player_muted;
-        rust.embed_mpv_keys = snapshot.player_mpv_keys;
         rust.embed_sub_font_size = i32::from(snapshot.player_sub_font_size);
         rust.embed_sub_pos = i32::from(snapshot.player_sub_pos);
         rust.embed_sub_color = QString::from(snapshot.player_sub_color.as_str());
