@@ -26,6 +26,7 @@
 //! - [`session`]：播放会话登记表 + 监控线程 + 退出收尾。
 
 mod connection;
+pub(crate) mod embed;
 mod input;
 pub mod ipc;
 mod launch;
@@ -96,7 +97,7 @@ impl PlayerConfig {
         let mut config = match env_command {
             Some(command) => parse_command(command).unwrap_or_default(),
             None => match backend {
-                PlayerBackend::Mpv => Self::preset(PlayerBackend::Mpv),
+                PlayerBackend::Embedded | PlayerBackend::Mpv => Self::preset(PlayerBackend::Mpv),
                 PlayerBackend::Vlc => Self::preset(PlayerBackend::Vlc),
                 PlayerBackend::Custom => settings_command
                     .and_then(parse_command)
@@ -165,8 +166,10 @@ impl PlayerConfig {
             return (primary, None);
         }
         let alternative = match backend {
-            // 空的自定义命令等价于内置 mpv
-            PlayerBackend::Mpv | PlayerBackend::Custom => PlayerBackend::Vlc,
+            // 空的自定义命令等价于内置 mpv；内嵌不可用时也退回外部 mpv
+            PlayerBackend::Embedded | PlayerBackend::Mpv | PlayerBackend::Custom => {
+                PlayerBackend::Vlc
+            }
             PlayerBackend::Vlc => PlayerBackend::Mpv,
         };
         let fallback = Self::preset(alternative);
@@ -181,7 +184,9 @@ impl PlayerConfig {
     fn preset(backend: PlayerBackend) -> Self {
         let (command, args) = match backend {
             PlayerBackend::Vlc => (DEFAULT_VLC_PLAYER, DEFAULT_VLC_ARGS),
-            PlayerBackend::Mpv | PlayerBackend::Custom => (DEFAULT_PLAYER, DEFAULT_ARGS),
+            PlayerBackend::Embedded | PlayerBackend::Mpv | PlayerBackend::Custom => {
+                (DEFAULT_PLAYER, DEFAULT_ARGS)
+            }
         };
         let mut config = parse_command(command).unwrap_or_default();
         config.access_args = split_words(args);

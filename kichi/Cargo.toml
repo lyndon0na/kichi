@@ -15,12 +15,22 @@ cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
 keyring = "4"
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 kichi-core = { path = "../kichi-core" }
+libc = "0.2"
+libmpv2 = { version = "7", default-features = false }
+libmpv2-sys = "4"
 notify-rust = "4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 resvg = { version = "0.49.0", default-features = false }
+wl-proxy = { version = "0.1.5", default-features = false, features = [
+    "protocol-drm",
+    "protocol-fractional_scale_v1",
+    "protocol-linux_dmabuf_v1",
+    "protocol-viewporter",
+    "protocol-xdg_shell",
+] }
 
 [build-dependencies]
 cxx-qt-build = "0.10"

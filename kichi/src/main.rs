@@ -13,6 +13,11 @@ mod settings;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
+extern "C" {
+    /// `cpp/app_platform.cpp`：关闭「最后一个窗口关掉就退出」。
+    fn kichi_set_quit_on_last_window_closed(enabled: bool);
+}
+
 fn main() {
     // 单实例检查必须最先做：第二个进程连上已有实例的 socket 后直接退出，
     // 不能先跑缓存清理，更不能建第二个窗口。锁文件要活到进程结束。
@@ -40,6 +45,11 @@ fn main() {
     session::avatar_cache::sweep();
 
     let mut app = QGuiApplication::new();
+
+    // 播放窗口是独立的顶层窗口：主窗口缩到托盘后关掉播放窗口，不能连带结束整个
+    // 进程。真退出由 main.qml 的关窗 / 托盘逻辑显式调用 Qt.quit()。
+    unsafe { kichi_set_quit_on_last_window_closed(false) };
+
     let mut engine = QQmlApplicationEngine::new();
 
     if let Some(engine) = engine.as_mut() {

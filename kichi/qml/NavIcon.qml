@@ -12,7 +12,7 @@ Item {
     id: icon
 
     /// folder / clock / history / star / share / transfer / upload / download / trash / settings / logout
-    /// 设置对话框大纲：play / bell / user / info
+    /// 设置对话框大纲：play / bell / user / info；内嵌播放浮层：play / pause
     /// 以及文件类型：file / video / music / photo / pdf / document /
     /// spreadsheet / presentation / archive / code / subtitle / application / torrent
     property string name: ""
@@ -112,10 +112,16 @@ Item {
         "chevron-down": "M6 9l6 6l6 -6",
         "chevron-right": "M9 6l6 6l-6 6",
         "chevron-left": "M15 6l-6 6l6 6",
+        // 播放窗口：全屏 / 退出全屏（四个角向内、向外）
+        maximize: "M4 8v-2a2 2 0 0 1 2 -2h2 M4 16v2a2 2 0 0 0 2 2h2"
+                  + " M16 4h2a2 2 0 0 1 2 2v2 M16 20h2a2 2 0 0 0 2 -2v-2",
+        minimize: "M15 19v-2a2 2 0 0 1 2 -2h2 M15 5v2a2 2 0 0 0 2 2h2"
+                  + " M5 15h2a2 2 0 0 1 2 2v2 M5 9h2a2 2 0 0 0 2 -2v-2",
         // 资料库：三层叠加（最近保存 / 播放历史 / 已加星标共用的入口）
         library: "M4 6l8 -4l8 4l-8 4l-8 -4 M4 10l8 4l8 -4 M4 14l8 4l8 -4",
         // 设置对话框左侧大纲
         play: "M7 4v16l13 -8z",
+        pause: "M8 4h3v16h-3z M13 4h3v16h-3z",
         bell: "M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
               + " M9 17v1a3 3 0 0 0 6 0v-1",
         user: "M8 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"

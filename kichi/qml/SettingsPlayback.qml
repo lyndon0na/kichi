@@ -19,13 +19,14 @@ ColumnLayout {
 
         KSettingsRow {
             title: qsTr("播放器")
-            description: qsTr("需系统已安装；mpv 功能最完整，VLC 支持播放控制、续播和进度同步。缺少所选播放器时会自动改用另一个，两个都没有则提示安装。")
+            description: qsTr("在独立的 kichi 播放窗口里播放，主窗口可同时使用；支持暂停、拖动进度与字幕；也可改为外部 mpv / VLC。外部播放器需系统已安装，缺少时会自动改用另一个。")
 
             KComboBox {
                 id: playerBackendBox
                 objectName: "settingsPlayerBackend"
                 width: 240
                 model: [
+                    { "value": "embedded", "label": qsTr("内嵌（默认）") },
                     { "value": "mpv", "label": qsTr("mpv") },
                     { "value": "vlc", "label": qsTr("VLC") },
                     { "value": "custom", "label": qsTr("自定义") }
@@ -101,7 +102,7 @@ ColumnLayout {
 
         KSettingsRow {
             title: qsTr("自动加载同目录字幕")
-            description: qsTr("同名优先，最多等待 2 秒；仅 mpv 生效。")
+            description: qsTr("同名优先，最多等待 2 秒；内嵌 / mpv 生效。")
 
             Switch {
                 checked: playback.backend ? playback.backend.autoSubtitles : true

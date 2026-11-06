@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::session::private_fs;
 
 /// 设置文件格式版本（将来不兼容改动时据此迁移）。
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 
 /// 清晰度偏好（对应界面上的「默认清晰度」）。
 ///
@@ -166,9 +166,11 @@ impl<'de> Deserialize<'de> for ContentViewMode {
 ///
 /// `Custom` 继续使用 `player_command` / `player_args`；预设项忽略这两项，
 /// 避免界面选了 VLC 却被旧的自定义命令悄悄接管。
+/// `Embedded` 用进程内 libmpv 画在本窗口里；不可用时退回系统 mpv。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlayerBackend {
     #[default]
+    Embedded,
     Mpv,
     Vlc,
     Custom,
@@ -177,6 +179,7 @@ pub enum PlayerBackend {
 impl PlayerBackend {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Embedded => "embedded",
             Self::Mpv => "mpv",
             Self::Vlc => "vlc",
             Self::Custom => "custom",
@@ -185,6 +188,7 @@ impl PlayerBackend {
 
     pub fn parse(text: &str) -> Self {
         match text.trim().to_ascii_lowercase().as_str() {
+            "embedded" => Self::Embedded,
             "vlc" => Self::Vlc,
             "custom" => Self::Custom,
             _ => Self::Mpv,
@@ -212,7 +216,7 @@ pub struct Settings {
     /// 格式版本；读到的版本比当前新时不报错（只按已知字段解析）
     pub version: u32,
     pub preferred_quality: Quality,
-    /// 播放器预设：mpv / VLC / 自定义命令
+    /// 播放器预设：内嵌 / mpv / VLC / 自定义命令
     pub player_backend: PlayerBackend,
     /// 播放器整条命令；空串表示用内置默认
     pub player_command: String,
@@ -258,7 +262,7 @@ impl Default for Settings {
         Self {
             version: SETTINGS_VERSION,
             preferred_quality: Quality::Ask,
-            player_backend: PlayerBackend::Mpv,
+            player_backend: PlayerBackend::default(),
             player_command: String::new(),
             player_args: String::new(),
             notify_enabled: true,
@@ -376,6 +380,15 @@ impl Settings {
             && (self.player_command_override().is_some() || self.player_args_override().is_some())
         {
             self.player_backend = PlayerBackend::Custom;
+        }
+        // v2 及更早的「mpv」是外部播放器预设；v3 起默认内嵌。没填过自定义命令的
+        // 旧配置跟着升级，填过的（已在上一步变成 Custom）保持外部播放。
+        if self.version < 3
+            && self.player_backend == PlayerBackend::Mpv
+            && self.player_command_override().is_none()
+            && self.player_args_override().is_none()
+        {
+            self.player_backend = PlayerBackend::Embedded;
         }
         self.version = self.version.max(SETTINGS_VERSION);
         if self.window_width < 0 {
@@ -521,8 +534,8 @@ mod tests {
         assert_eq!(settings.preferred_quality, Quality::Original);
         assert_eq!(
             settings.player_backend,
-            PlayerBackend::Mpv,
-            "旧设置没有播放器预设字段时默认 mpv"
+            PlayerBackend::Embedded,
+            "旧设置没有播放器预设字段时默认内嵌"
         );
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");

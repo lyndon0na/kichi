@@ -12,6 +12,9 @@ kichi 自身以 `GPL-3.0-or-later` 发布，完整文本见 `LICENSE`。本文�
 | pikpak-kotlin | MIT | 部分接口字段与请求形状的行为参考 |
 | [Tabler Icons](https://github.com/tabler/tabler-icons) | MIT | `kichi/qml/NavIcon.qml` 中使用的路径数据 |
 
+内嵌播放器的「libmpv + Wayland 代理截帧」思路参考了 Mutsumi（MIT）；未复制其代码，
+因此不随本项目分发其源码或二进制。
+
 上述 MIT 内容使用以下许可文本：
 
 ```text
@@ -49,6 +52,20 @@ SOFTWARE.
 AppImage 或二进制包时，使用 `cargo-about` 或等价的许可证扫描工具生成完整的
 第三方许可证清单，并放入 `usr/share/licenses/kichi/`。
 
+内嵌播放直接依赖的主要 crate：`libmpv2`（LGPL-2.1，libmpv 绑定）与
+`wl-proxy`（MIT OR Apache-2.0，进程内 Wayland 代理）。
+
+## 内嵌播放的运行时组件
+
+| 组件 | 许可证 | 使用范围 |
+| --- | --- | --- |
+| libmpv（Fedora `mpv-libs`） | GPL-2.0-or-later（另含 LGPL-2.1-or-later、BSD-2-Clause、BSD-3-Clause、ISC、MIT 部分） | 进程内解码与渲染；AppImage 必须打包 |
+| FFmpeg、libass、libplacebo 等 libmpv 依赖 | 由 linuxdeploy 随 libmpv 递归打包，按各自项目许可 | 解码、字幕、渲染 |
+| libEGL / Mesa 用户态驱动 | 宿主提供，按发行版与驱动许可 | dmabuf → GL 纹理导入 |
+
+kichi 的 `GPL-3.0-or-later` 与 libmpv 的 `GPL-2.0-or-later` 兼容。发布 AppImage
+时必须随包收集 libmpv 及其依赖的许可证文本与对应源码获取方式。
+
 ## AppImage 中的 Qt / KDE 组件
 
 AppImage 会动态打包 Qt 6 和 KDE 运行时组件。按当前 Fedora 构建环境，主要包括：
@@ -65,5 +82,6 @@ AppImage 会动态打包 Qt 6 和 KDE 运行时组件。按当前 Fedora 构建�
 
 ## 系统服务与外部程序
 
-KWallet / Secret Service、XDG Desktop Portal、系统通知、系统托盘、mpv、VLC 和
-图形驱动不由本项目打包，仍由用户系统提供，并受其各自许可证约束。
+KWallet / Secret Service、XDG Desktop Portal、系统通知、系统托盘、外部 mpv / VLC
+（仅在用户选择对应预设时）和图形驱动不由本项目打包，仍由用户系统提供，并受其
+各自许可证约束。默认的内嵌播放使用随包分发的 libmpv，不需要宿主安装 mpv。

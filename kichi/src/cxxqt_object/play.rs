@@ -27,8 +27,32 @@ use crate::player::subtitles::{LateSubtitles, SubtitleAssets};
 use crate::player::{self, mask_url, PlaybackExtras, PlayerConfig, StartEvent};
 use crate::session::download::Cancel;
 use crate::session::subtitles::SubtitlePlan;
+use crate::settings::{PlayerBackend, Settings};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
+
+/// 设置要求内嵌播放，且没有用 `KICHI_PLAYER` 临时改走外部命令。
+fn wants_embedded(settings: &Settings) -> bool {
+    settings.player_backend == PlayerBackend::Embedded && std::env::var_os("KICHI_PLAYER").is_none()
+}
+
+/// 播放事件回投：切回界面线程，带上这次播放的代数与提示文案。
+fn event_notify(
+    playback_id: String,
+    event_notice: Option<String>,
+    epoch: u64,
+    report_history: bool,
+) -> impl Fn(StartEvent) + Send + Sync + 'static {
+    move |event| {
+        let playback_id = playback_id.clone();
+        let event_notice = event_notice.clone();
+        enqueue_ui(move |mut qichi| {
+            qichi
+                .as_mut()
+                .on_play_event(event, event_notice, &playback_id, epoch, report_history);
+        });
+    }
+}
 
 /// 不可用原因 → 界面文案。
 pub(crate) fn reason_text(reason: Option<&str>) -> String {
@@ -166,25 +190,34 @@ impl qobject::Kichi {
             settings.player_command_override(),
             settings.player_args_override(),
         );
-        // 先确认播放器存在，比取完直链再 spawn 失败省一次网络请求
-        if let Err(message) = config.check_available() {
-            self.as_mut().fail_play_loading(&message);
-            return;
+        // 内嵌路径不依赖系统 mpv；只有它不可用（没有 Wayland）时才回退外部，
+        // 那时才需要先确认外部播放器存在，比取完直链再 spawn 失败省一次网络请求。
+        let embedded_ok = wants_embedded(&settings) && crate::player::embed::available().is_ok();
+        if !embedded_ok {
+            if let Err(message) = config.check_available() {
+                self.as_mut().fail_play_loading(&message);
+                return;
+            }
         }
-        let wants_history = config.supports_history();
+        let wants_history = embedded_ok || config.supports_history();
         let plan = {
             let mut rust = self.as_mut().rust_mut();
             std::mem::take(&mut rust.play_subtitle_plan)
         };
-        let plan = if settings.auto_subtitles && config.is_mpv() {
+        let plan = if settings.auto_subtitles && (embedded_ok || config.is_mpv()) {
             plan
         } else {
             SubtitlePlan::None
         };
+        let player_label = if embedded_ok {
+            "内嵌播放器".to_owned()
+        } else {
+            format!("播放器「{}」", config.program())
+        };
         eprintln!(
-            "[kichi] 字幕：开关 {}，播放器「{}」→ {}",
+            "[kichi] 字幕：开关 {}，{} → {}",
             settings.auto_subtitles,
-            config.program(),
+            player_label,
             plan.summary()
         );
 
@@ -335,7 +368,59 @@ impl qobject::Kichi {
             eprintln!("[kichi] 字幕：把 {track_count} 条字幕交给播放器");
         }
         let playback_id = id.to_owned();
-        let event_notice = super::play_prepare::combine_notes(notice, player_notice);
+        let mut fallback_notice = None;
+        if wants_embedded(&settings) {
+            match crate::player::embed::available() {
+                Ok(()) => {
+                    let event_notice = super::play_prepare::combine_notes(notice, player_notice);
+                    let notify = event_notify(playback_id, event_notice, epoch, report_history);
+                    let started = crate::player::embed::start(
+                        &option.url,
+                        title,
+                        cancel,
+                        PlaybackExtras {
+                            subtitles,
+                            late,
+                            resume,
+                        },
+                        notify,
+                    );
+                    match started {
+                        Ok(_) => {
+                            {
+                                let mut rust = self.as_mut().rust_mut();
+                                // Ready 之后才点亮浮层：取链 / 打开阶段仍由提示条兜底
+                                rust.embed_active = false;
+                                rust.embed_title = QString::from(title);
+                                rust.embed_pending_epoch = Some(epoch);
+                            }
+                            self.as_mut().notify();
+                            eprintln!(
+                                "[kichi] 内嵌播放「{title}」{} → {}",
+                                option.label,
+                                mask_url(&option.url)
+                            );
+                        }
+                        Err(err) => {
+                            self.as_mut().stop_embed_and_clear();
+                            self.as_mut().fail_play_loading(&err);
+                        }
+                    }
+                    return;
+                }
+                Err(reason) => {
+                    self.as_mut().stop_embed_and_clear();
+                    fallback_notice = Some(format!("内嵌播放不可用（{reason}），已改用外部播放器"));
+                }
+            }
+        } else {
+            self.as_mut().stop_embed_and_clear();
+        }
+
+        let event_notice = super::play_prepare::combine_notes(
+            super::play_prepare::combine_notes(notice, player_notice),
+            fallback_notice,
+        );
         let started = player::start(
             &config,
             &option.url,
@@ -346,19 +431,7 @@ impl qobject::Kichi {
                 late,
                 resume,
             },
-            move |event| {
-                let playback_id = playback_id.clone();
-                let event_notice = event_notice.clone();
-                enqueue_ui(move |mut qichi| {
-                    qichi.as_mut().on_play_event(
-                        event,
-                        event_notice,
-                        &playback_id,
-                        epoch,
-                        report_history,
-                    );
-                });
-            },
+            event_notify(playback_id, event_notice, epoch, report_history),
         );
         eprintln!(
             "[kichi] 播放「{title}」{} → {}",
@@ -405,6 +478,10 @@ impl qobject::Kichi {
                     rust.play_cancel = None;
                     rust.play_error = QString::default();
                     rust.play_notice = QString::from(notice.as_str());
+                    // 内嵌会话出图：这时才把整窗视频浮层亮出来
+                    if rust.embed_pending_epoch == Some(epoch) {
+                        rust.embed_active = true;
+                    }
                     // 成功后清掉旧提醒：不常驻「已用 … 播放…」
                     rust.status_message = QString::default();
                 }
@@ -419,16 +496,19 @@ impl qobject::Kichi {
                 if let Some(progress) = progress.filter(|_| report_history) {
                     self.as_mut().queue_play_progress(id, epoch, progress);
                 }
+                self.as_mut().clear_embed_state(epoch);
                 if self.as_mut().update_active_play_session(epoch, id, false) {
                     self.as_mut().notify();
                 }
             }
             StartEvent::Failed(reason) => {
+                self.as_mut().clear_embed_state(epoch);
                 self.as_mut().update_active_play_session(epoch, id, false);
                 // `reason` 已经带了播放器上下文（…未能播放「title」：…），直接显示
                 self.as_mut().fail_play_loading(&reason);
             }
             StartEvent::Cancelled => {
+                self.as_mut().clear_embed_state(epoch);
                 self.as_mut().update_active_play_session(epoch, id, false);
                 // 取消后不给任何文字反馈
                 self.as_mut().hide_play_loading();
@@ -481,9 +561,64 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 真退出 kichi：连同正在播放的 mpv 一起关掉（缩托盘不调）。
+    /// 真退出 kichi：连同正在播放的 mpv / 内嵌画面一起关掉（缩托盘不调）。
     pub fn shutdown_players(&self) {
         player::shutdown_all();
+        crate::player::embed::shutdown_all();
+    }
+
+    /// 改走外部播放器前彻底收掉内嵌：等 mpv 线程收尾，它才会恢复
+    /// `WAYLAND_SOCKET`；否则紧接着 spawn 的外部播放器会继承这个 fd，
+    /// 连到内嵌代理而不是桌面合成器。浮层状态一并清掉。
+    fn stop_embed_and_clear(mut self: Pin<&mut Self>) {
+        if !crate::player::embed::stop_and_wait(std::time::Duration::from_millis(1200)) {
+            eprintln!("[kichi] 内嵌播放器仍没收尾，外部播放器可能继承 WAYLAND_SOCKET");
+        }
+        let mut rust = self.as_mut().rust_mut();
+        rust.embed_active = false;
+        rust.embed_title = QString::default();
+        rust.embed_pending_epoch = None;
+    }
+
+    /// 只收起属于这次会话的内嵌浮层；新会话已经接管时不动它。
+    fn clear_embed_state(mut self: Pin<&mut Self>, epoch: u64) {
+        let mut rust = self.as_mut().rust_mut();
+        if rust.embed_pending_epoch != Some(epoch) {
+            return;
+        }
+        rust.embed_pending_epoch = None;
+        rust.embed_active = false;
+        rust.embed_title = QString::default();
+    }
+
+    /// 内嵌浮层：暂停 / 继续
+    pub fn embed_toggle_pause(&self) {
+        crate::player::embed::toggle_pause();
+    }
+
+    /// 内嵌浮层：跳到某个秒数
+    pub fn embed_seek(&self, seconds: f64) {
+        crate::player::embed::seek_absolute(seconds);
+    }
+
+    /// 内嵌浮层：关闭这次播放（会话收尾后照常回投 Stopped）
+    pub fn embed_stop(&self) {
+        crate::player::embed::stop();
+    }
+
+    /// 当前播放位置（秒）
+    pub fn embed_position(&self) -> f64 {
+        crate::player::embed::position().unwrap_or(0.0)
+    }
+
+    /// 片长（秒）
+    pub fn embed_duration(&self) -> f64 {
+        crate::player::embed::duration().unwrap_or(0.0)
+    }
+
+    /// 是否处于暂停
+    pub fn embed_paused(&self) -> bool {
+        crate::player::embed::is_paused()
     }
 
     /// 只收起加载态（错误 / 取消的分支共用），不动底栏。
@@ -587,8 +722,10 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 退出登录时清干净（连同在途请求作废）。已经在播的 mpv 不动。
+    /// 退出登录时清干净（连同在途请求作废）。外部播放器不动；
+    /// 内嵌画面在窗口里，登出后必须一起收起。
     pub(crate) fn reset_play(mut self: Pin<&mut Self>) {
+        crate::player::embed::stop();
         {
             let mut rust = self.as_mut().rust_mut();
             if let Some(cancel) = rust.play_cancel.take() {
@@ -609,6 +746,9 @@ impl qobject::Kichi {
             rust.play_error = QString::default();
             rust.play_notice = QString::default();
             rust.play_subtitle_plan = SubtitlePlan::None;
+            rust.embed_active = false;
+            rust.embed_title = QString::default();
+            rust.embed_pending_epoch = None;
         }
     }
 }

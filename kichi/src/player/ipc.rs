@@ -352,15 +352,27 @@ fn http_failure_from_log(value: &Value) -> Option<String> {
     if value.get("event").and_then(Value::as_str) != Some("log-message") {
         return None;
     }
-    let text = value.get("text").and_then(Value::as_str)?.trim();
-    let rest = text.split_once("HTTP error ")?.1;
-    // 只留状态码与短语（"403 Forbidden"），后面的 URL 一律丢掉
-    let reason = rest
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!reason.is_empty()).then_some(reason)
+    http_failure_from_text(value.get("text").and_then(Value::as_str)?)
+}
+
+/// 从一行 mpv 日志里取 HTTP 状态（如 `403 Forbidden`）；后面的 URL 一律丢掉。
+///
+/// 只收「状态码 + 纯字母状态短语」，碰到带 `/`、`.`、`:` 的词就停，
+/// 因此既不会漏掉 `Internal Server Error`，也不会把签名直链带进界面。
+pub(crate) fn http_failure_from_text(text: &str) -> Option<String> {
+    let rest = text.trim().split_once("HTTP error ")?.1;
+    let mut parts = Vec::new();
+    for word in rest.split_whitespace().take(5) {
+        let clean = word.trim_end_matches([',', '.', ';', ':']);
+        let plain = clean
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+        if clean.is_empty() || !plain {
+            break;
+        }
+        parts.push(clean);
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 /// `end-file(reason=error)` + 已知 HTTP 原因 → 给用户看的文案。
@@ -444,6 +456,9 @@ pub fn build_command(config: &PlayerConfig, socket: &Path, title: &str) -> std::
     command
         .arg("--idle=yes")
         .arg(format!("--input-ipc-server={}", socket.display()))
+        // 内嵌播放器 arm 了进程级 WAYLAND_SOCKET（一次性 fd）：子进程不能继承，
+        // 否则外部 mpv 会去抢那条已经被 libmpv 用掉的连接。
+        .env_remove("WAYLAND_SOCKET")
         .stdin(Stdio::null())
         // 播放器输出一律丢弃：mpv 默认会把直链打到 stderr
         .stdout(Stdio::null())
@@ -662,6 +677,21 @@ mod tests {
             http_failure_from_log(&json!({"event": "end-file", "text": "HTTP error 500"})),
             None
         );
+    }
+
+    #[test]
+    fn http_status_text_drops_everything_after_the_phrase() {
+        assert_eq!(
+            http_failure_from_text(
+                "ffmpeg/demuxer: HTTP error 403 Forbidden https://cdn.invalid/x?sign=abc"
+            ),
+            Some("403 Forbidden".to_owned())
+        );
+        assert_eq!(
+            http_failure_from_text("HTTP error 404 Not Found"),
+            Some("404 Not Found".to_owned())
+        );
+        assert_eq!(http_failure_from_text("no status here"), None);
     }
 
     #[test]

@@ -38,6 +38,8 @@ pub fn build_command(
         }
     }
     command.stdin(Stdio::null());
+    // 内嵌播放器 arm 了进程级 WAYLAND_SOCKET（一次性 fd）：外部播放器不能继承。
+    command.env_remove("WAYLAND_SOCKET");
     // 播放器自己的输出一律丢弃：mpv 默认会把直链打到 stderr，
     // 继承过来就会进 kichi 的日志。
     command.stdout(Stdio::null());

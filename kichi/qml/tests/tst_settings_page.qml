@@ -285,11 +285,12 @@ TestCase {
 
         var box = findChild(page, "settingsPlayerBackend")
         verify(box !== null, "有播放器选择下拉框")
-        compare(box.textAt(0), "mpv")
-        compare(box.textAt(1), "VLC")
+        compare(box.textAt(0), "内嵌（默认）")
+        compare(box.textAt(1), "mpv")
+        compare(box.textAt(2), "VLC")
 
-        box.currentIndex = 1
-        box.activated(1)
+        box.currentIndex = 2
+        box.activated(2)
         wait(40)
         compare(backend.playerBackend, "vlc", "选择 VLC 后应写回播放器预设")
     }

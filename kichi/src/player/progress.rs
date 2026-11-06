@@ -106,6 +106,11 @@ impl ProgressTracker {
         self.current()
     }
 
+    /// 内嵌播放的 `end-file` 事件不走 JSON，由调用方直接告知「自然播完」。
+    pub(super) fn mark_reached_end(&mut self) {
+        self.reached_end = true;
+    }
+
     fn current(&self) -> Option<PlaybackProgress> {
         let duration = self.duration?;
         let duration = duration.floor();

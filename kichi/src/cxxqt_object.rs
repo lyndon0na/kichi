@@ -130,8 +130,12 @@ pub mod qobject {
         #[qproperty(QString, play_error, cxx_name = "playError", READ, NOTIFY = changed)]
         /// 非空 = 提示条短提示（档位回退说明），几秒后由界面自动收起
         #[qproperty(QString, play_notice, cxx_name = "playNotice", READ, NOTIFY = changed)]
+        /// 内嵌播放画面已出图：界面据此显示整窗视频浮层
+        #[qproperty(bool, embed_active, cxx_name = "embedActive", READ, NOTIFY = changed)]
+        /// 当前内嵌播放的标题（浮层文字）
+        #[qproperty(QString, embed_title, cxx_name = "embedTitle", READ, NOTIFY = changed)]
         #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
-        /// 播放器预设："mpv" / "vlc" / "custom"
+        /// 播放器预设："embedded" / "mpv" / "vlc" / "custom"
         #[qproperty(QString, player_backend, cxx_name = "playerBackend", READ, NOTIFY = changed)]
         #[qproperty(QString, player_command, cxx_name = "playerCommand", READ, NOTIFY = changed)]
         #[qproperty(QString, player_args, cxx_name = "playerArgs", READ, NOTIFY = changed)]
@@ -539,6 +543,36 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "dismissPlayNotice"]
         fn dismiss_play_notice(self: Pin<&mut Self>);
+
+        /// 内嵌浮层：暂停 / 继续
+        #[qinvokable]
+        #[cxx_name = "embedTogglePause"]
+        fn embed_toggle_pause(self: &Self);
+
+        /// 内嵌浮层：跳到某个秒数
+        #[qinvokable]
+        #[cxx_name = "embedSeek"]
+        fn embed_seek(self: &Self, seconds: f64);
+
+        /// 内嵌浮层：关闭这次播放
+        #[qinvokable]
+        #[cxx_name = "embedStop"]
+        fn embed_stop(self: &Self);
+
+        /// 当前播放位置（秒）；没有会话时为 0。界面按固定节拍主动读取。
+        #[qinvokable]
+        #[cxx_name = "embedPosition"]
+        fn embed_position(self: &Self) -> f64;
+
+        /// 片长（秒）；还不知道时为 0
+        #[qinvokable]
+        #[cxx_name = "embedDuration"]
+        fn embed_duration(self: &Self) -> f64;
+
+        /// 是否处于暂停
+        #[qinvokable]
+        #[cxx_name = "embedPaused"]
+        fn embed_paused(self: &Self) -> bool;
 
         /// 真退出前调用：关闭所有还在播的 mpv / VLC（缩托盘不调）
         #[qinvokable]
@@ -1131,6 +1165,12 @@ pub struct KichiRust {
     pub(crate) play_error: QString,
     /// 非空 = 提示条短提示（档位回退说明），界面几秒后自动收起
     pub(crate) play_notice: QString,
+    /// 内嵌画面已经出图（Ready 后为 true；停止 / 失败 / 取消后收起）
+    pub(crate) embed_active: bool,
+    /// 当前内嵌播放的标题
+    pub(crate) embed_title: QString,
+    /// 等待 Ready 的内嵌会话代数：只有它的 Ready 能点亮浮层
+    pub(crate) embed_pending_epoch: Option<u64>,
     /// 本次加载的取消信号（取链 + 等窗口共用；取消即中止）
     ///
     /// 不额外记「窗口是否已经出现」：监控线程自己知道，`Cancel` 置真即中止，
@@ -1160,7 +1200,7 @@ pub struct KichiRust {
     pub(crate) settings: crate::settings::Settings,
     /// 清晰度偏好（"ask" / "original" / "transcode"，QML 展示用）
     pub(crate) preferred_quality: QString,
-    /// 播放器预设（"mpv" / "vlc" / "custom"）
+    /// 播放器预设（"embedded" / "mpv" / "vlc" / "custom"）
     pub(crate) player_backend: QString,
     /// 自定义播放器命令 / 参数（空串 = 用默认）
     pub(crate) player_command: QString,
@@ -1413,6 +1453,9 @@ impl Default for KichiRust {
             playing_ids: QStringList::default(),
             play_error: QString::default(),
             play_notice: QString::default(),
+            embed_active: false,
+            embed_title: QString::default(),
+            embed_pending_epoch: None,
             play_cancel: None,
             play_epoch: 0,
             play_progress: play_history::ProgressReporter::default(),
@@ -1426,7 +1469,7 @@ impl Default for KichiRust {
             index_probe_cancel: None,
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),
-            player_backend: QString::from("mpv"),
+            player_backend: QString::from("embedded"),
             player_command: QString::default(),
             player_args: QString::default(),
             player_default_command: QString::from(crate::player::DEFAULT_PLAYER),

@@ -113,9 +113,13 @@ ApplicationWindow {
             root.hide()
         } else {
             // 真退出：注销托盘，否则 KDE 面板留下点不动的僵尸图标；
-            // 连同正在播放的 mpv / VLC 一起关（缩托盘时不关，见 ADR 0007）
+            // 连同正在播放的 mpv / VLC / 内嵌播放一起关（缩托盘时不关，见 ADR 0007）。
+            // main.rs 关掉了 quitOnLastWindowClosed（播放窗口是独立顶层窗口），
+            // 所以这里必须显式退出，不能指望「最后一个窗口关掉自动结束进程」。
+            root.reallyQuitting = true
             backend.shutdownTray()
             backend.shutdownPlayers()
+            Qt.quit()
         }
     }
 
@@ -137,9 +141,12 @@ ApplicationWindow {
                 root.restoreFromTray()
             }
             // 退出：托盘「退出」，真退出而不是缩回托盘。
-            // 必须先注销托盘，否则 KDE 面板会留下点不动的僵尸图标
+            // 必须先注销托盘，否则 KDE 面板会留下点不动的僵尸图标；
+            // 停播要在这里显式做一次，主窗口可能已经缩在托盘里。
             if (backend.quitRequested) {
                 root.reallyQuitting = true
+                backend.shutdownTray()
+                backend.shutdownPlayers()
                 Qt.quit()
             }
         }
@@ -709,6 +716,13 @@ ApplicationWindow {
         }
     }
 
+    // 内嵌播放：独立的顶层播放窗口，Ready 后由 embedActive 拉起；
+    // 主窗口照常可以浏览文件。关闭 / 播完自动收起（见 PlaybackWindow.qml）。
+    PlaybackWindow {
+        id: playbackWindow
+        backend: backend
+    }
+
     // 底栏：左侧单槽消息 + 右侧容量指示。消息默认显示当前页面 / 目录上下文，
     // 进度、错误和需要留意的结果临时覆盖它，结束后自动回到上下文。
     // 登录页只在本就有错误时出现，此时容量指示隐藏。
@@ -723,7 +737,7 @@ ApplicationWindow {
                 && String(backend.taskFolderLoadingId || "").length > 0
 
         implicitHeight: visible ? barHeight : 0
-        visible: root.signedIn || message.length > 0
+        visible: (root.signedIn || message.length > 0)
 
         Rectangle {
             anchors.fill: parent

@@ -10,6 +10,8 @@ ToolButton {
     id: control
 
     property string iconName: ""
+    /// 实心图标（播放 / 暂停这类媒体控制）
+    property bool iconFilled: false
     property int iconSize: 14
     /// 图标透明度：工具条图标默认不抢正文，传 0.65
     property real iconOpacity: 0.65
@@ -39,6 +41,7 @@ ToolButton {
             width: control.iconSize
             height: control.iconSize
             name: control.iconName
+            filled: control.iconFilled
             color: control.checked ? theme.accent : control.iconColor
             opacity: control.enabled ? (control.checked ? 1 : control.iconOpacity)
                                      : control.iconOpacity * 0.4

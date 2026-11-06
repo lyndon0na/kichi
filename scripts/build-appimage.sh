@@ -289,7 +289,8 @@ for required in \
     usr/plugins/platforms/libqwayland.so \
     usr/plugins/platforms/libqxcb.so \
     usr/plugins/wayland-shell-integration/libxdg-shell.so \
-    usr/lib/libQt6Quick.so.6; do
+    usr/lib/libQt6Quick.so.6 \
+    usr/lib/libmpv.so.2; do
     [[ -f "$APPDIR/$required" ]] || {
         echo "build-appimage: AppDir 缺少必需文件：$required" >&2
         exit 1
@@ -299,7 +300,7 @@ done
 echo "==> 收集许可证与项目声明"
 install -m644 LICENSE "$APPDIR/usr/share/licenses/kichi/LICENSE"
 install -m644 THIRD_PARTY_NOTICES.md "$APPDIR/usr/share/licenses/kichi/THIRD_PARTY_NOTICES.md"
-for pkg in qt6-qtbase qt6-qtdeclarative qt6-qtwayland kf6-kirigami kf6-qqc2-desktop-style; do
+for pkg in qt6-qtbase qt6-qtdeclarative qt6-qtwayland kf6-kirigami kf6-qqc2-desktop-style mpv-libs; do
     if [[ -d "/usr/share/licenses/$pkg" ]]; then
         mkdir -p "$APPDIR/usr/share/licenses/kichi/$pkg"
         cp -a "/usr/share/licenses/$pkg/." "$APPDIR/usr/share/licenses/kichi/$pkg/"

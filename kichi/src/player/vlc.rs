@@ -151,6 +151,8 @@ pub fn build_command(
     for arg in &config.access_args {
         command.arg(expand(arg, title));
     }
+    // 内嵌播放器 arm 了进程级 WAYLAND_SOCKET（一次性 fd）：VLC 不能继承。
+    command.env_remove("WAYLAND_SOCKET");
     command
         .arg("--extraintf")
         .arg("oldrc")
