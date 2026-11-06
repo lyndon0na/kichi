@@ -13,7 +13,6 @@ Item {
     id: tree
 
     property var rows: []
-    property bool saving: false
 
     property int checkedCount: 0
     property int availableCount: 0
@@ -43,7 +42,6 @@ Item {
         ScrollBar.vertical: KScrollBar {}
 
         delegate: MagnetFileRow {
-            saving: tree.saving
             onToggleRequested: function (rowIndex) {
                 tree.toggleRow(rowIndex)
             }

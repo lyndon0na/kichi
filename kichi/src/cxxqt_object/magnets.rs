@@ -52,7 +52,7 @@ impl qobject::Kichi {
             rust.magnet_root_name = QString::default();
             rust.magnet_summary = QString::default();
             rust.magnet_saving = false;
-            rust.magnet_save_status = QString::default();
+            rust.magnet_save_progress = 0.0;
             rust.magnet_epoch
         };
         self.as_mut().notify();
@@ -114,17 +114,16 @@ impl qobject::Kichi {
             return;
         }
         if self.magnet_saving {
+            self.as_mut().set_message("正在保存上一条磁链，请稍候");
             return;
         }
         let Some(listing) = self.magnet_listing.clone() else {
-            self.as_mut()
-                .magnet_save_finished(0, 0, 0, QString::from("请先解析磁链"));
+            self.as_mut().set_message("请先解析磁链");
             return;
         };
         let selection: Vec<usize> = indices.iter().filter_map(variant_to_index).collect();
         if selection.is_empty() {
-            self.as_mut()
-                .magnet_save_finished(0, 0, 0, QString::from("请至少选择一个文件"));
+            self.as_mut().set_message("请至少选择一个文件");
             return;
         }
 
@@ -134,8 +133,9 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.magnet_saving = true;
-            rust.magnet_save_status = QString::from("正在保存……");
+            rust.magnet_save_progress = 0.0;
             rust.magnet_error = QString::default();
+            rust.status_message = QString::from("正在保存磁链文件…");
         }
         self.as_mut().notify();
 
@@ -148,12 +148,21 @@ impl qobject::Kichi {
                     &folder,
                     keep_structure,
                     |done, total| {
+                        let text = save_progress_text(done, total);
+                        let ratio = if total == 0 {
+                            0.0
+                        } else {
+                            done as f64 / total as f64
+                        };
                         enqueue_ui(move |mut qichi| {
                             if qichi.as_ref().rust().magnet_epoch != epoch {
                                 return;
                             }
-                            qichi.as_mut().rust_mut().magnet_save_status =
-                                QString::from(format!("正在保存 {done}/{total}").as_str());
+                            {
+                                let mut rust = qichi.as_mut().rust_mut();
+                                rust.magnet_save_progress = ratio;
+                                rust.status_message = QString::from(text.as_str());
+                            }
                             qichi.as_mut().notify();
                         });
                     },
@@ -166,7 +175,7 @@ impl qobject::Kichi {
                 {
                     let mut rust = qichi.as_mut().rust_mut();
                     rust.magnet_saving = false;
-                    rust.magnet_save_status = QString::default();
+                    rust.magnet_save_progress = 0.0;
                 }
                 match result {
                     Ok(outcome) => {
@@ -185,26 +194,14 @@ impl qobject::Kichi {
                                 qichi.as_mut().on_failure(failure);
                             }
                         }
-                        qichi.as_mut().notify();
-                        qichi.as_mut().magnet_save_finished(
-                            to_i32(outcome.saved),
-                            to_i32(outcome.unavailable),
-                            to_i32(outcome.failed),
-                            QString::from(message.as_str()),
-                        );
+                        qichi.as_mut().set_message(&message);
                     }
                     Err(err) => {
-                        let message = err.to_string();
                         if is_session_failure(&err) {
                             qichi.as_mut().on_failure(err);
+                        } else {
+                            qichi.as_mut().set_message(&err.to_string());
                         }
-                        qichi.as_mut().notify();
-                        qichi.as_mut().magnet_save_finished(
-                            0,
-                            0,
-                            0,
-                            QString::from(message.as_str()),
-                        );
                     }
                 }
             },
@@ -222,7 +219,7 @@ impl qobject::Kichi {
         rust.magnet_error = QString::default();
         rust.magnet_loading = false;
         rust.magnet_saving = false;
-        rust.magnet_save_status = QString::default();
+        rust.magnet_save_progress = 0.0;
     }
 }
 
@@ -275,6 +272,10 @@ fn listing_summary(listing: &MagnetListing) -> String {
     } else {
         format!("共 {count} 个文件 · {size}；全部可秒传")
     }
+}
+
+fn save_progress_text(done: usize, total: usize) -> String {
+    format!("正在保存磁链文件 {done}/{total}")
 }
 
 fn save_outcome_text(outcome: &MagnetSaveOutcome) -> String {
@@ -330,7 +331,9 @@ fn to_i32(value: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{listing_summary, magnet_rows, save_outcome_text, variant_to_index};
+    use super::{
+        listing_summary, magnet_rows, save_outcome_text, save_progress_text, variant_to_index,
+    };
     use crate::session::magnet::MagnetSaveOutcome;
     use crate::session::Failure;
     use cxx_qt_lib::{QString, QVariant};
@@ -360,6 +363,11 @@ mod tests {
         assert!(partial.contains("其余暂不可秒传"));
         let none = listing_summary(&listing(0, 2));
         assert!(none.contains("暂不可秒传"));
+    }
+
+    #[test]
+    fn progress_text_reports_position_in_batch() {
+        assert_eq!(save_progress_text(3, 12), "正在保存磁链文件 3/12");
     }
 
     #[test]

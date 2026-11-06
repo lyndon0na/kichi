@@ -27,8 +27,6 @@ ItemDelegate {
     required property bool shown
     required property int fileIndex
 
-    property bool saving: false
-
     signal toggleRequested(int rowIndex)
     signal expandRequested(int rowIndex)
 
@@ -39,7 +37,7 @@ ItemDelegate {
     visible: shown
     // ListView 会接管 delegate 的 visible；折叠行靠高度归零 + 透明双保险。
     opacity: shown ? 1 : 0
-    enabled: (row.isFolder || row.available) && !row.saving
+    enabled: row.isFolder || row.available
     hoverEnabled: true
     onClicked: row.toggleRequested(row.index)
 

@@ -267,9 +267,8 @@ KDialog {
     MagnetFilesDialog {
         id: magnetDialog
         backend: dialog.backend
-        onSaved: function (message) {
-            dialog.close()
-        }
+        // 保存已交给后台，选择框收起时连新任务弹窗一起关掉。
+        onSaved: dialog.close()
     }
 
     function countLinks(text) {

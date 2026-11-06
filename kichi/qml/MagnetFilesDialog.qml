@@ -6,8 +6,8 @@ import QtQuick.Layouts
 
 // 磁链解析结果：勾选要秒传的文件，并选择保存位置。
 //
-// 清单由 backend 的 resource/list 提供；这里只负责选择与进度显示。
-// 保存成功后停在结果态，点「完成」才关闭并通知添加任务弹窗一起收起。
+// 清单由 backend 的 resource/list 提供；这里只负责选择。点「保存选中」后
+// 立即关闭弹窗，秒传在后台继续，进度与结果都显示在底栏。
 KDialog {
     id: dialog
 
@@ -17,66 +17,44 @@ KDialog {
     property string targetFolderId: ""
     property string targetFolderPath: ""
     property var pickerStartPath: []
-    /// select：勾选文件；result：保存结束后的结果页。
-    property string stage: "select"
-    property string resultText: ""
-    property bool resultHasError: false
     /// 按磁链里的目录层级保存；关闭后所有选中文件直接平铺到目标目录。
     property bool keepStructure: true
+    /// 本次关闭由「保存选中」触发：关闭后要同时收起新任务弹窗。
+    property bool saveRequested: false
     readonly property int checkedCount: fileTree.checkedCount
     readonly property int availableCount: fileTree.availableCount
     readonly property int totalFiles: fileTree.totalFiles
 
-    signal saved(string message)
+    signal saved()
 
     readonly property int listHeight: 300
-    readonly property bool saving: backend !== null && backend.magnetSaving === true
     readonly property bool allChecked: fileTree.allChecked
-    readonly property bool canSave: backend !== null && stage === "select"
-                                      && !saving && fileTree.checkedCount > 0
+    readonly property bool canSave: backend !== null && backend.magnetSaving !== true
+                                    && fileTree.checkedCount > 0
     readonly property string destinationText: targetFolderPath.length > 0
                                               ? targetFolderPath : qsTr("全部文件")
     readonly property string summaryText: backend !== null
                                           ? String(backend.magnetSummary || "") : ""
-    readonly property string progressText: saving && backend !== null
-                                           ? String(backend.magnetSaveStatus || "") : ""
 
     title: qsTr("选择要保存的文件")
     modal: true
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
     width: 560 + leftPadding + rightPadding
-    closePolicy: saving ? Popup.NoAutoClose : Popup.CloseOnEscape
 
     onClosed: {
-        const message = resultText
-        const completed = stage === "result"
-        stage = "select"
-        resultText = ""
-        resultHasError = false
+        const requested = saveRequested
+        saveRequested = false
         fileTree.clear()
-        if (completed)
-            saved(message)
+        if (requested)
+            saved()
     }
 
     footer: DialogFooter {
         outerMargin: dialog.padding
-        statusText: dialog.stage === "result"
-                    ? ""
-                    : dialog.saving
-                      ? dialog.progressText
-                      : dialog.resultHasError ? dialog.resultText : ""
-        statusColor: dialog.resultHasError ? theme.danger : theme.textMuted
-        okText: dialog.stage === "result" ? qsTr("完成") : qsTr("保存选中")
-        okEnabled: dialog.stage === "result" ? true : dialog.canSave
-        cancelVisible: dialog.stage !== "result"
-        cancelEnabled: !dialog.saving
-        onOkClicked: {
-            if (dialog.stage === "result")
-                dialog.close()
-            else
-                dialog.save()
-        }
+        okText: qsTr("保存选中")
+        okEnabled: dialog.canSave
+        onOkClicked: dialog.save()
         onCancelClicked: dialog.close()
     }
 
@@ -109,7 +87,6 @@ KDialog {
         // —— 选择态 ——
         RowLayout {
             Layout.fillWidth: true
-            visible: dialog.stage === "select"
             spacing: theme.gapSm
 
             NavIcon {
@@ -136,14 +113,12 @@ KDialog {
                 variant: "ghost"
                 implicitHeight: 28
                 showTextToolTip: false
-                enabled: !dialog.saving
                 onClicked: folderPicker.openPicker(dialog.pickerStartPath)
             }
         }
 
         RowLayout {
             Layout.fillWidth: true
-            visible: dialog.stage === "select"
             spacing: theme.gapSm
 
             KButton {
@@ -153,7 +128,7 @@ KDialog {
                 implicitHeight: 24
                 leftPadding: 8
                 rightPadding: 8
-                enabled: dialog.availableCount > 0 && !dialog.saving
+                enabled: dialog.availableCount > 0
                 onClicked: fileTree.setAllChecked(!fileTree.allChecked)
             }
 
@@ -171,7 +146,6 @@ KDialog {
                 objectName: "magnetKeepStructure"
                 text: qsTr("保持目录结构")
                 checked: true
-                enabled: !dialog.saving
                 font.pixelSize: theme.fontMeta
                 // 用 checkedChanged 而不是 toggled：toggled 只在用户点击时发出，
                 // 代码里改 checked（重开弹窗重置）不会同步到 keepStructure。
@@ -182,7 +156,6 @@ KDialog {
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: dialog.listHeight
-            visible: dialog.stage === "select"
 
             Rectangle {
                 anchors.fill: parent
@@ -197,47 +170,7 @@ KDialog {
                 objectName: "magnetFilesTree"
                 anchors.fill: parent
                 anchors.margins: 1
-                saving: dialog.saving
             }
-        }
-
-        // —— 结果态：占住同样的高度，关闭前不抖窗口 ——
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.preferredHeight: dialog.listHeight
-            visible: dialog.stage === "result"
-            spacing: theme.gapSm
-
-            Item { Layout.fillHeight: true }
-
-            NavIcon {
-                Layout.alignment: Qt.AlignHCenter
-                implicitWidth: 32
-                implicitHeight: 32
-                name: "download"
-                color: theme.accent
-            }
-
-            Label {
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                text: qsTr("已保存到云端")
-                color: theme.textPrimary
-                font.pixelSize: theme.fontSection
-                font.weight: Font.DemiBold
-            }
-
-            Label {
-                objectName: "magnetSaveResult"
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.Wrap
-                text: dialog.resultText
-                color: theme.textSecondary
-                font.pixelSize: theme.fontMeta
-            }
-
-            Item { Layout.fillHeight: true }
         }
     }
 
@@ -251,23 +184,6 @@ KDialog {
         }
     }
 
-    Connections {
-        target: dialog.backend
-        ignoreUnknownSignals: true
-
-        function onMagnetSaveFinished(savedCount, unavailableCount, failedCount, message) {
-            if (!dialog.opened || dialog.stage !== "select")
-                return
-            dialog.resultText = String(message || "")
-            if (savedCount > 0) {
-                dialog.stage = "result"
-                dialog.resultHasError = false
-            } else {
-                dialog.resultHasError = true
-            }
-        }
-    }
-
     function openFor(folderId, folderPath, startPath) {
         if (!dialog.backend)
             return
@@ -275,9 +191,7 @@ KDialog {
                                 ? String(folderId) : ""
         dialog.targetFolderPath = folderPath ? String(folderPath) : ""
         dialog.pickerStartPath = startPath ? startPath.slice() : []
-        dialog.stage = "select"
-        dialog.resultText = ""
-        dialog.resultHasError = false
+        dialog.saveRequested = false
         dialog.keepStructure = true
         keepStructureCheck.checked = true
         fileTree.rows = dialog.backend.magnetFiles || []
@@ -285,14 +199,15 @@ KDialog {
         dialog.open()
     }
 
+    /// 提交后立即收起：进度与结果由底栏接管，用户不用守着弹窗。
     function save() {
         if (!dialog.canSave)
             return
         const indices = fileTree.selectedIndices()
         if (indices.length === 0)
             return
-        dialog.resultText = ""
-        dialog.resultHasError = false
         dialog.backend.saveMagnetFiles(indices, dialog.targetFolderId, dialog.keepStructure)
+        dialog.saveRequested = true
+        dialog.close()
     }
 }

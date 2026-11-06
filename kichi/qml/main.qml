@@ -739,6 +739,22 @@ ApplicationWindow {
             color: theme.hairline
         }
 
+        // 磁链秒传进度：顶边细线按完成比例推进，结束后由后端归零隐藏。
+        Rectangle {
+            objectName: "statusBarSaveProgress"
+            anchors.top: parent.top
+            anchors.left: parent.left
+            height: 2
+            visible: backend !== null && backend.magnetSaving === true
+            width: parent.width * (backend !== null
+                                   ? Math.max(0, Math.min(1, backend.magnetSaveProgress))
+                                   : 0)
+            color: theme.accent
+            Behavior on width {
+                NumberAnimation { duration: theme.motionFast }
+            }
+        }
+
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: metrics.pageMargin
@@ -869,7 +885,8 @@ ApplicationWindow {
     }
 
     function navigateTo(pageIndex) {
-        if (root.currentPage !== pageIndex)
+        // 秒传在后台跑时保留进度文案，切页不能把「正在保存 x/y」清掉。
+        if (root.currentPage !== pageIndex && !(backend !== null && backend.magnetSaving))
             backend.clearStatusMessage()
         root.currentPage = pageIndex
     }

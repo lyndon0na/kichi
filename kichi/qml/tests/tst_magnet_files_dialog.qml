@@ -16,14 +16,10 @@ TestCase {
         property string magnetSummary: ""
         property string magnetFilesError: ""
         property bool magnetFilesLoading: false
-        property bool magnetSaving: false
-        property string magnetSaveStatus: ""
 
         property var lastIndices: []
         property string lastFolderId: ""
         property var lastKeepStructure: undefined
-
-        signal magnetSaveFinished(int saved, int unavailable, int failed, string message)
 
         function currentPath() {
             return [{ id: "", name: "全部文件" }]
@@ -33,14 +29,6 @@ TestCase {
             lastIndices = indices.slice()
             lastFolderId = folderId
             lastKeepStructure = keepStructure
-            magnetSaving = true
-            magnetSaveStatus = "正在保存……"
-        }
-
-        function finishSave(saved, unavailable, failed, message) {
-            magnetSaving = false
-            magnetSaveStatus = ""
-            magnetSaveFinished(saved, unavailable, failed, message)
         }
     }
 
@@ -59,11 +47,9 @@ TestCase {
     property var tree: null
     property var countLabel: null
     property var destinationLabel: null
-    property var resultLabel: null
     property var emptyLabel: null
     property var footerOk: null
     property var footerCancel: null
-    property var footerStatus: null
 
     readonly property var sampleRows: [
         { index: 0, name: "第 1 集.mkv", path: "Season 1", folders: ["Season 1"],
@@ -80,8 +66,6 @@ TestCase {
         backend.magnetSummary = "共 3 个文件 · 2.4 GB；2 个可秒传，其余暂不可秒传"
         backend.magnetFilesError = ""
         backend.magnetFilesLoading = false
-        backend.magnetSaving = false
-        backend.magnetSaveStatus = ""
         backend.lastIndices = []
         backend.lastFolderId = ""
         backend.lastKeepStructure = undefined
@@ -102,11 +86,9 @@ TestCase {
         list = findChild(dialog, "magnetFilesList")
         countLabel = findChild(dialog, "magnetSelectionCount")
         destinationLabel = findChild(dialog, "magnetDestinationPath")
-        resultLabel = findChild(dialog, "magnetSaveResult")
         emptyLabel = findChild(dialog, "magnetFilesEmpty")
         footerOk = findChild(dialog, "dialogFooterOk")
         footerCancel = findChild(dialog, "dialogFooterCancel")
-        footerStatus = findChild(dialog, "dialogFooterStatus")
     }
 
     function rowFor(key) {
@@ -252,6 +234,8 @@ TestCase {
         compare(backend.lastIndices[1], 2)
         compare(backend.lastFolderId, "folder-1")
         compare(backend.lastKeepStructure, true, "默认保留目录结构")
+        compare(dialog.visible, false, "提交后立即收起，进度交给底栏")
+        compare(savedSpy.count, 1, "收起时通知新任务弹窗一起关闭")
     }
 
     function test_keep_structure_can_be_turned_off() {
@@ -270,44 +254,21 @@ TestCase {
         compare(backend.lastIndices.length, 2)
     }
 
-    function test_saving_shows_progress_and_locks_buttons() {
+    function test_cancel_closes_without_saving() {
         open()
-        dialog.save()
-        compare(backend.magnetSaving, true)
-        backend.magnetSaveStatus = "正在保存 1/2"
-        compare(footerStatus.text, "正在保存 1/2")
-        compare(footerOk.enabled, false)
-        compare(footerCancel.enabled, false)
-        const keepCheck = findChild(dialog, "magnetKeepStructure")
-        verify(keepCheck !== null)
-        compare(keepCheck.enabled, false)
-    }
-
-    function test_success_switches_to_result_then_reports_saved() {
-        open()
-        dialog.save()
-        backend.finishSave(2, 0, 0, "已保存 2 个文件")
-
-        tryCompare(dialog, "stage", "result")
-        compare(resultLabel.text, "已保存 2 个文件")
-        compare(footerOk.text, "完成")
-        compare(footerCancel.visible, false)
-
-        mouseClick(footerOk)
+        mouseClick(footerCancel)
         tryCompare(dialog, "visible", false)
-        compare(savedSpy.count, 1)
-        compare(savedSpy.signalArguments[0][0], "已保存 2 个文件")
+        compare(backend.lastIndices.length, 0)
+        compare(savedSpy.count, 0, "取消不关新任务弹窗")
     }
 
-    function test_nothing_saved_stays_in_selection_with_reason() {
+    function test_no_selection_does_nothing() {
         open()
+        tree.setAllChecked(false)
+        compare(footerOk.enabled, false)
         dialog.save()
-        backend.finishSave(0, 1, 0, "没有文件被保存；1 个暂不可秒传")
-
-        compare(dialog.stage, "select")
-        compare(dialog.resultHasError, true)
-        compare(footerStatus.text, "没有文件被保存；1 个暂不可秒传")
         compare(dialog.visible, true)
+        compare(backend.lastIndices.length, 0)
         compare(savedSpy.count, 0)
     }
 

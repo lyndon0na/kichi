@@ -16,15 +16,13 @@ TestCase {
         property string magnetSummary: "共 1 个文件 · 1 GB；全部可秒传"
         property string magnetFilesError: ""
         property bool magnetFilesLoading: false
-        property bool magnetSaving: false
-        property string magnetSaveStatus: ""
 
         property string lastLink: ""
         property string lastSubmitted: ""
         property string lastSubmittedFolder: ""
+        property var lastSavedIndices: []
 
         signal magnetPreviewFinished(bool ok, string message, bool canFallback)
-        signal magnetSaveFinished(int saved, int unavailable, int failed, string message)
 
         function currentPath() {
             return [{ id: "", name: "全部文件" }]
@@ -51,6 +49,7 @@ TestCase {
         }
 
         function saveMagnetFiles(indices, folderId, keepStructure) {
+            lastSavedIndices = indices.slice()
         }
     }
 
@@ -73,11 +72,10 @@ TestCase {
         backend.magnetSummary = "共 1 个文件 · 1 GB；全部可秒传"
         backend.magnetFilesError = ""
         backend.magnetFilesLoading = false
-        backend.magnetSaving = false
-        backend.magnetSaveStatus = ""
         backend.lastLink = ""
         backend.lastSubmitted = ""
         backend.lastSubmittedFolder = ""
+        backend.lastSavedIndices = []
         if (magnetDialog && magnetDialog.visible)
             magnetDialog.close()
         if (dialog.visible)
@@ -121,6 +119,20 @@ TestCase {
         compare(magnetDialog.targetFolderPath, "全部文件")
         compare(findChild(magnetDialog, "magnetFilesList").count, 1)
         compare(backend.lastSubmitted, "")
+    }
+
+    function test_saving_closes_both_dialogs() {
+        open()
+        input.text = "magnet:?xt=urn:btih:abc"
+        mouseClick(footerOk)
+        backend.finishPreview(true, "", false)
+        tryCompare(magnetDialog, "visible", true)
+
+        magnetDialog.save()
+        tryCompare(magnetDialog, "visible", false)
+        tryCompare(dialog, "visible", false)
+        verify(!dialog.visible, "保存交给后台后两个弹窗一起收起")
+        compare(backend.lastSavedIndices.length, 1)
     }
 
     function test_cloud_download_falls_back_when_nothing_cached() {

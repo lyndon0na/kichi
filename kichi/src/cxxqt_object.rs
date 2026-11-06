@@ -221,8 +221,8 @@ pub mod qobject {
         #[qproperty(QString, magnet_summary, cxx_name = "magnetSummary", READ, NOTIFY = changed)]
         /// 秒传请求在途
         #[qproperty(bool, magnet_saving, cxx_name = "magnetSaving", READ, NOTIFY = changed)]
-        /// 秒传进度文字（「正在保存 3/10」）；空串 = 没有进行中的保存
-        #[qproperty(QString, magnet_save_status, cxx_name = "magnetSaveStatus", READ, NOTIFY = changed)]
+        /// 秒传进度 0..1；`magnetSaving` 为 false 时归零
+        #[qproperty(f64, magnet_save_progress, cxx_name = "magnetSaveProgress", READ, NOTIFY = changed)]
         type Kichi = super::KichiRust;
 
         /// 统一变更通知：所有属性都挂这一个信号
@@ -307,17 +307,6 @@ pub mod qobject {
             ok: bool,
             message: QString,
             can_fallback: bool,
-        );
-
-        /// 秒传结束；`message` 是给弹窗 / 提示条的一句话结果。
-        #[qsignal]
-        #[cxx_name = "magnetSaveFinished"]
-        fn magnet_save_finished(
-            self: Pin<&mut Self>,
-            saved: i32,
-            unavailable: i32,
-            failed: i32,
-            message: QString,
         );
 
         /// 资料库里的文件夹与内容已就绪，界面现在可以切到文件页。
@@ -1300,7 +1289,7 @@ pub struct KichiRust {
     pub(crate) magnet_error: QString,
     pub(crate) magnet_loading: bool,
     pub(crate) magnet_saving: bool,
-    pub(crate) magnet_save_status: QString,
+    pub(crate) magnet_save_progress: f64,
     /// 磁链解析 / 秒传代数：重新解析或退出登录后旧结果作废
     pub(crate) magnet_epoch: u64,
     /// 人机验证地址（不做成属性：属性变化靠 QML 读状态消息）
@@ -1517,7 +1506,7 @@ impl Default for KichiRust {
             magnet_error: QString::default(),
             magnet_loading: false,
             magnet_saving: false,
-            magnet_save_status: QString::default(),
+            magnet_save_progress: 0.0,
             magnet_epoch: 0,
             captcha_url: String::new(),
             backend: Backend::new(crate::session::store_path(), local_index_enabled),
