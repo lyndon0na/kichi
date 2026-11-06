@@ -47,6 +47,8 @@ pub(crate) struct Session {
     speed: Mutex<f64>,
     /// 最近一次从 mpv 读到的轨道列表（切换 / 加载后刷新）。
     tracks: Mutex<Vec<TrackInfo>>,
+    /// 章节起点（秒），加载时读一次；进度条据此画刻度。
+    chapters: Mutex<Vec<ChapterInfo>>,
     /// 代理线程的失败原因；播放失败要把它带给界面，不能只打 stderr。
     proxy_error: Mutex<Option<String>>,
     /// mpv 的 Wayland 客户端已经发来第一个请求：这时恢复 `WAYLAND_SOCKET` 才安全。
@@ -89,6 +91,15 @@ pub struct TrackInfo {
     /// 轨道语言标记（mpv 的 `track-list/N/lang`，可能为空）
     pub lang: String,
     pub selected: bool,
+}
+
+/// 一个章节的起点与标题。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChapterInfo {
+    /// 章节起点（秒）
+    pub time: f64,
+    /// 容器里的章节名；可能为空
+    pub title: String,
 }
 
 /// 字幕样式（对应 mpv 的 `sub-*` 选项）。
@@ -215,6 +226,7 @@ impl Session {
             duration: Mutex::new(None),
             speed: Mutex::new(1.0),
             tracks: Mutex::new(Vec::new()),
+            chapters: Mutex::new(Vec::new()),
             proxy_error: Mutex::new(None),
             wayland_connected: AtomicBool::new(false),
         }
@@ -316,6 +328,20 @@ impl Session {
 
     fn tracks(&self) -> Vec<TrackInfo> {
         self.tracks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn set_chapters(&self, chapters: Vec<ChapterInfo>) {
+        *self
+            .chapters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = chapters;
+    }
+
+    fn chapters(&self) -> Vec<ChapterInfo> {
+        self.chapters
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -617,6 +643,11 @@ pub fn set_subtitle_style(style: SubtitleStyle) {
 /// 当前会话的轨道列表；没有会话时为空。
 pub fn tracks() -> Vec<TrackInfo> {
     current().map_or_else(Vec::new, |session| session.tracks())
+}
+
+/// 当前会话的章节（起点 + 标题）；没有会话或文件没有章节时为空。
+pub fn chapters() -> Vec<ChapterInfo> {
+    current().map_or_else(Vec::new, |session| session.chapters())
 }
 
 pub fn seek_absolute(seconds: f64) {

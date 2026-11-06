@@ -715,6 +715,21 @@ impl qobject::Kichi {
         list
     }
 
+    /// 章节列表：`{ time: 起点秒数, title }`；进度条画刻度 / 悬停提示用。
+    pub fn embed_chapters(&self) -> QVariantList {
+        let mut list = QVariantList::default();
+        for chapter in crate::player::embed::chapters() {
+            let mut map = QVariantMap::default();
+            map.insert_clone(&QString::from("time"), &QVariant::from(&chapter.time));
+            map.insert_clone(
+                &QString::from("title"),
+                &QVariant::from(&QString::from(chapter.title.as_str())),
+            );
+            list.append(QVariant::from(&map));
+        }
+        list
+    }
+
     /// 切换音轨 / 字幕轨；`id < 0` 表示关闭字幕。
     pub fn embed_select_track(&self, kind: QString, id: i32) {
         crate::player::embed::select_track(kind.to_string() == "audio", i64::from(id));

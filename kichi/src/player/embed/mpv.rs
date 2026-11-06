@@ -11,7 +11,8 @@ use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
 
 use super::{
-    conf, Control, Session, SessionSettings, SubtitleStyle, TrackInfo, WaylandSocketGuard,
+    conf, ChapterInfo, Control, Session, SessionSettings, SubtitleStyle, TrackInfo,
+    WaylandSocketGuard,
 };
 use crate::player::progress::ProgressTracker;
 use crate::player::subtitles::{take_slot, SubtitleAssets};
@@ -183,6 +184,7 @@ pub(super) fn run(
                     }
                 }
                 session.set_tracks(track_snapshot(&mpv));
+                session.set_chapters(chapter_snapshot(&mpv));
                 ready = true;
                 notify(StartEvent::Ready {
                     subtitle_note: note,
@@ -447,6 +449,24 @@ fn track_snapshot(mpv: &Mpv) -> Vec<TrackInfo> {
         });
     }
     tracks
+}
+
+/// 读一遍章节（起点 + 标题）。和轨道一样按 `chapter-list/N/<field>` 逐项查；
+/// 章节是容器元数据，文件加载完就不会变，读一次足够。
+fn chapter_snapshot(mpv: &Mpv) -> Vec<ChapterInfo> {
+    let count: i64 = mpv.get_property("chapter-list/count").unwrap_or(0);
+    (0..count)
+        .filter_map(|index| {
+            let time = mpv
+                .get_property::<f64>(&format!("chapter-list/{index}/time"))
+                .ok()
+                .and_then(valid_seconds)?;
+            let title: String = mpv
+                .get_property(&format!("chapter-list/{index}/title"))
+                .unwrap_or_default();
+            Some(ChapterInfo { time, title })
+        })
+        .collect()
 }
 
 /// 套用字幕样式；单个属性失败只记日志，其余继续。

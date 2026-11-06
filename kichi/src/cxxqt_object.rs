@@ -620,6 +620,11 @@ pub mod qobject {
         #[cxx_name = "embedTracks"]
         fn embed_tracks(self: &Self) -> QVariantList;
 
+        /// 章节列表：`{ time: 起点秒数, title }`；文件没有章节时为空
+        #[qinvokable]
+        #[cxx_name = "embedChapters"]
+        fn embed_chapters(self: &Self) -> QVariantList;
+
         /// 切换音轨 / 字幕轨；`id < 0` 表示关闭字幕
         #[qinvokable]
         #[cxx_name = "embedSelectTrack"]

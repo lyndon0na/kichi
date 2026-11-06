@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
 
 import io.kichi 1.0
 
@@ -43,6 +44,13 @@ Window {
     property bool volumeOpen: false
     // 倍速（百分比，跨视频记住）/ 字幕样式面板
     property int speedPercent: 100
+    // 章节起点（秒），只在开始播放时读一次
+    property var chapters: []
+    // 鼠标命中的章节下标（-1 = 不在任何刻度附近）/ 鼠标在窗口内的横坐标
+    property int hoveredChapter: -1
+    property real chapterHoverX: 0
+    // 进度条轨道中心的纵坐标：提示气泡贴在这条线上方，而不是控制条顶上
+    property real chapterTipY: 0
     property bool speedOpen: false
     property bool subStyleOpen: false
     readonly property bool menuOpen: trackMenu.visible
@@ -97,6 +105,7 @@ Window {
         // 倍速跨视频记住：先读会话里的值，避免首帧 syncPlayback 把同一值再写一次盘。
         if (backend !== null)
             speedPercent = Math.round(backend.embedSpeed() * 100)
+        chapters = backend !== null ? backend.embedChapters() : []
         win.show()
         win.raise()
         win.requestActivate()
@@ -450,6 +459,8 @@ Window {
         speedOpen = false
         closeMenus()
         speedPercent = 100
+        chapters = []
+        hoveredChapter = -1
         position = 0
         duration = 0
         paused = false
@@ -466,6 +477,43 @@ Window {
         var mm = (m < 10 ? "0" : "") + m
         var ss = (s < 10 ? "0" : "") + s
         return h > 0 ? h + ":" + mm + ":" + ss : mm + ":" + ss
+    }
+
+    // 鼠标横坐标（窗口坐标）离哪个章节刻度最近；6px 内才算命中。
+    function updateChapterHover(x) {
+        chapterHoverX = x
+        chapterTipY = seekSlider.mapToItem(
+                    surface, 0, seekSlider.topPadding + seekSlider.availableHeight / 2).y
+        if (x < 0 || duration <= 0 || seeking || overlayOpen || chapters.length === 0) {
+            hoveredChapter = -1
+            return
+        }
+        var usable = seekSlider.availableWidth
+        if (usable <= 0) {
+            hoveredChapter = -1
+            return
+        }
+        var left = seekSlider.mapToItem(surface, seekSlider.leftPadding, 0).x
+        var nearest = -1
+        var best = 6
+        for (var i = 0; i < chapters.length; ++i) {
+            var time = chapters[i].time
+            if (time <= 0.5 || time >= duration)
+                continue
+            var distance = Math.abs(left + time / duration * usable - x)
+            if (distance <= 6 && distance < best) {
+                best = distance
+                nearest = i
+            }
+        }
+        hoveredChapter = nearest
+    }
+
+    function chapterLabel(chapter, index) {
+        if (!chapter)
+            return ""
+        var title = chapter.title ? chapter.title.trim() : ""
+        return title.length > 0 ? title : qsTr("第 %1 章").arg(index + 1)
     }
 
     function wake() {
@@ -784,6 +832,17 @@ Window {
                         }
                     }
 
+                    // 被动 hover：只用来找最近的章节刻度，不影响点击和拖动。
+                    HoverHandler {
+                        onPointChanged: {
+                            var local = surface.mapFromItem(null,
+                                                            point.scenePosition.x,
+                                                            point.scenePosition.y)
+                            win.updateChapterHover(local.x)
+                        }
+                        onHoveredChanged: if (!hovered) win.updateChapterHover(-1)
+                    }
+
                     background: Rectangle {
                         x: seekSlider.leftPadding
                         y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
@@ -797,6 +856,33 @@ Window {
                             height: parent.height
                             radius: parent.radius
                             color: "white"
+                        }
+
+                        // 章节标记：轨道上方的小三角，悬停时变大变亮。
+                        // 只做视觉标记，不接鼠标；跳转仍由整条滑块负责。
+                        Repeater {
+                            model: win.chapters
+
+                            delegate: Shape {
+                                id: chapterMark
+                                readonly property bool active: index === win.hoveredChapter
+                                readonly property real fraction: modelData.time / Math.max(1, win.duration)
+                                x: Math.round(fraction * parent.width - width / 2)
+                                y: -height - 3
+                                width: active ? 9 : 7
+                                height: active ? 5 : 4
+                                visible: modelData.time > 0.5 && modelData.time < win.duration
+
+                                ShapePath {
+                                    fillColor: chapterMark.active ? "white" : "#D9FFFFFF"
+                                    strokeWidth: 0
+                                    startX: 0
+                                    startY: 0
+                                    PathLine { x: chapterMark.width; y: 0 }
+                                    PathLine { x: chapterMark.width / 2; y: chapterMark.height }
+                                    PathLine { x: 0; y: 0 }
+                                }
+                            }
                         }
                     }
 
@@ -1107,6 +1193,38 @@ Window {
                 id: osdLabel
                 anchors.centerIn: parent
                 text: win.osdText
+                color: "white"
+                font.pixelSize: theme.fontMeta
+            }
+        }
+
+        // 章节刻度悬停提示：跟随鼠标，只在命中刻度附近时出现。
+        Rectangle {
+            id: chapterTip
+
+            readonly property var chapter: win.hoveredChapter >= 0
+                                           && win.hoveredChapter < win.chapters.length
+                                           ? win.chapters[win.hoveredChapter] : null
+            readonly property bool shown: chapter !== null && !win.seeking
+                                          && !win.overlayOpen && win.osdText.length === 0
+            // 贴着进度条上方 12px（留出小三角的位置），跟着鼠标横移，不压住轨道。
+            y: Math.round(win.chapterTipY - height - theme.gapMd)
+            width: tipLabel.implicitWidth + theme.gapXl
+            height: 32
+            radius: theme.radiusControl
+            color: "#B3000000"
+            visible: shown
+            x: Math.max(theme.gapSm, Math.min(parent.width - width - theme.gapSm,
+                                              win.chapterHoverX - width / 2))
+
+            Label {
+                id: tipLabel
+
+                anchors.centerIn: parent
+                text: chapterTip.chapter
+                      ? win.chapterLabel(chapterTip.chapter, win.hoveredChapter) + " · "
+                        + win.formatTime(chapterTip.chapter.time)
+                      : ""
                 color: "white"
                 font.pixelSize: theme.fontMeta
             }
