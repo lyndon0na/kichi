@@ -15,6 +15,7 @@ use super::{
     WaylandSocketGuard,
 };
 use crate::player::progress::ProgressTracker;
+use crate::player::screensaver::ScreenInhibitor;
 use crate::player::subtitles::{take_slot, SubtitleAssets};
 use crate::player::{PlaybackExtras, StartEvent};
 
@@ -56,6 +57,7 @@ pub(super) fn run(
         terminate(mpv);
         return;
     }
+    let inhibitor = ScreenInhibitor::new();
 
     let fallback_duration = resume.map(|progress| progress.duration);
     let mut tracker = ProgressTracker::new(
@@ -186,6 +188,7 @@ pub(super) fn run(
                 session.set_tracks(track_snapshot(&mpv));
                 session.set_chapters(chapter_snapshot(&mpv));
                 ready = true;
+                inhibitor.set_active(!session.is_paused());
                 notify(StartEvent::Ready {
                     subtitle_note: note,
                 });
@@ -199,7 +202,13 @@ pub(super) fn run(
                     session.set_duration(valid_seconds(duration));
                     tracker.update_values(None, valid_seconds(duration));
                 }
-                ("pause", PropertyData::Flag(paused)) => session.set_paused(paused),
+                ("pause", PropertyData::Flag(paused)) => {
+                    session.set_paused(paused);
+                    // 和外部 mpv 的 stop-screensaver=yes 一致：暂停即放开抑制。
+                    if ready {
+                        inhibitor.set_active(!paused);
+                    }
+                }
                 // mpv 原生键位（↑↓ / m / `[` `]`）也能调音量、静音、倍速：
                 // 同步回会话，界面据此显示（键位交给 mpv 时尤其重要）。
                 ("volume", PropertyData::Double(volume)) => {
@@ -341,6 +350,9 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
             ("load-scripts", "no"),
             ("idle", "yes"),
             ("force-window", "yes"),
+            // 屏幕抑制由 kichi 自己持有：内嵌 mpv 的 surface 不交给合成器，
+            // 它的 idle-inhibit 建立不起来（见 player/screensaver.rs）。
+            ("stop-screensaver", "no"),
             ("ytdl", "no"),
             ("audio-display", "no"),
             ("sub-auto", "no"),

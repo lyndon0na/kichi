@@ -41,6 +41,8 @@ const RESERVED: &[&str] = &[
     "fs",
     "pause",
     "start",
+    // 屏幕抑制由 kichi 统一持有，不走 mpv 自己的 idle-inhibit
+    "stop-screensaver",
 ];
 
 /// include 的最大递归层级；超过只警告，不读取。
@@ -52,7 +54,8 @@ pub(crate) const TEMPLATE: &str = r#"# kichi 内嵌播放器的 mpv 配置（mpv
 #
 # 内嵌必需的选项由 kichi 固定，这里写了也不会生效：
 #   vo / gpu-context / gpu-api / clipboard-backends / input-* / osc / config /
-#   idle / force-window / ytdl / sub-auto / script* / fullscreen 等。
+#   idle / force-window / stop-screensaver / ytdl / sub-auto / script* /
+#   fullscreen 等。
 # 当前内嵌默认 Vulkan 渲染；设置页「内嵌播放器」→「Vulkan 渲染」可关闭回退 OpenGL。
 #
 # 可以复用已有的 mpv 配置；只读取顶层选项，profile 段与脚本不会加载：

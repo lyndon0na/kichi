@@ -31,6 +31,7 @@ mod input;
 pub mod ipc;
 mod launch;
 mod progress;
+pub(crate) mod screensaver;
 pub mod session;
 pub mod subtitles;
 pub mod vlc;
