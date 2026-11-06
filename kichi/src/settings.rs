@@ -416,6 +416,8 @@ pub struct Settings {
     pub player_audio_lang: PreferredLanguage,
     /// 内嵌播放器首选字幕语言
     pub player_sub_lang: PreferredLanguage,
+    /// 内嵌播放器读取自己的 `embed-mpv.conf`（文件不存在时无效果）
+    pub player_mpv_conf: bool,
     /// 内嵌播放器音量（0–100，跨视频 / 跨启动记住）
     pub player_volume: i32,
     /// 内嵌播放器静音状态
@@ -475,6 +477,7 @@ impl Default for Settings {
             auto_subtitles: true,
             player_audio_lang: PreferredLanguage::default(),
             player_sub_lang: PreferredLanguage::default(),
+            player_mpv_conf: true,
             player_volume: 100,
             player_muted: false,
             player_speed_percent: 100,
@@ -695,6 +698,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (settings, warning) = load(&path);
         assert_eq!(settings, Settings::default());
+        assert!(settings.player_mpv_conf, "embed-mpv.conf 默认开启");
         assert!(warning.is_none(), "文件不存在不算错误");
     }
 
@@ -709,6 +713,7 @@ mod tests {
             notify_enabled: false,
             player_audio_lang: PreferredLanguage::Japanese,
             player_sub_lang: PreferredLanguage::Chinese,
+            player_mpv_conf: false,
             player_volume: 65,
             player_muted: true,
             player_speed_percent: 125,
@@ -795,6 +800,10 @@ mod tests {
             settings.player_sub_lang,
             PreferredLanguage::Auto,
             "旧设置没有首选字幕语言时跟随系统"
+        );
+        assert!(
+            settings.player_mpv_conf,
+            "旧设置没有 embed-mpv.conf 字段时默认开"
         );
         assert_eq!(settings.player_volume, 100, "旧设置没有音量字段时满音量");
         assert!(!settings.player_muted, "旧设置没有静音字段时不静音");

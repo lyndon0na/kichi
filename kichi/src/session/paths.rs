@@ -39,6 +39,18 @@ pub fn transfers_path() -> PathBuf {
     config_dir().join("transfers.json")
 }
 
+/// 内嵌播放器的 mpv 配置：`<配置目录>/embed-mpv.conf`。
+///
+/// 用 kichi 自己的文件而不是用户 `~/.config/mpv/mpv.conf`：内嵌固定的
+/// `vo` / `gpu-*` / 输入配置不能被外部配置改掉（见 ADR 0030）。
+/// 可用 `KICHI_EMBED_MPV_CONF` 覆盖。
+pub fn embed_mpv_conf_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("KICHI_EMBED_MPV_CONF") {
+        return PathBuf::from(path);
+    }
+    config_dir().join("embed-mpv.conf")
+}
+
 /// 账号的本地索引库位置。可用 `KICHI_INDEX_FILE` 覆盖（测试 / 多实例）。
 ///
 /// 文件名只用 `user_id`，**不用邮箱**：`docs/` 与日志都不该出现账号信息，

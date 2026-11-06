@@ -384,6 +384,24 @@ impl qobject::Kichi {
                     let notify = event_notify(playback_id, event_notice, epoch, report_history);
                     let audio_tags = settings.player_audio_lang.tags();
                     let sub_tags = settings.player_sub_lang.tags();
+                    let mut session_settings = crate::player::embed::SessionSettings::new(
+                        settings.player_volume,
+                        settings.player_muted,
+                        f64::from(settings.player_speed_percent) / 100.0,
+                        crate::player::embed::SubtitleStyle::new(
+                            i32::from(settings.player_sub_font_size),
+                            i32::from(settings.player_sub_pos),
+                            &settings.player_sub_color,
+                            i32::from(settings.player_sub_outline_size),
+                            &settings.player_sub_outline_color,
+                        ),
+                        audio_tags.mpv_value().unwrap_or_default(),
+                        sub_tags.mpv_value().unwrap_or_default(),
+                        sub_tags.names,
+                    );
+                    if settings.player_mpv_conf {
+                        session_settings.conf = Some(crate::session::paths::embed_mpv_conf_path());
+                    }
                     let started = crate::player::embed::start(
                         &option.url,
                         title,
@@ -393,21 +411,7 @@ impl qobject::Kichi {
                             late,
                             resume,
                         },
-                        crate::player::embed::SessionSettings::new(
-                            settings.player_volume,
-                            settings.player_muted,
-                            f64::from(settings.player_speed_percent) / 100.0,
-                            crate::player::embed::SubtitleStyle::new(
-                                i32::from(settings.player_sub_font_size),
-                                i32::from(settings.player_sub_pos),
-                                &settings.player_sub_color,
-                                i32::from(settings.player_sub_outline_size),
-                                &settings.player_sub_outline_color,
-                            ),
-                            audio_tags.mpv_value().unwrap_or_default(),
-                            sub_tags.mpv_value().unwrap_or_default(),
-                            sub_tags.names,
-                        ),
+                        session_settings,
                         notify,
                     );
                     match started {

@@ -211,6 +211,38 @@ ColumnLayout {
             Layout.fillWidth: true
             backend: playback.backend
         }
+
+        KSettingsRow {
+            objectName: "settingsMpvConf"
+            title: qsTr("embed-mpv.conf")
+            description: playback.backend
+                ? qsTr("读取画质等选项；内嵌必需的选项会被覆盖，下次开播生效。文件：%1").arg(playback.backend.embedMpvConfPath)
+                : qsTr("读取画质等选项；内嵌必需的选项会被覆盖，下次开播生效。")
+
+            RowLayout {
+                spacing: theme.gapSm
+
+                KButton {
+                    objectName: "settingsMpvConfEdit"
+                    text: qsTr("编辑")
+                    variant: "ghost"
+                    onClicked: {
+                        if (playback.backend)
+                            playback.backend.openPlayerMpvConf()
+                    }
+                }
+
+                Switch {
+                    objectName: "settingsMpvConfEnabled"
+                    checked: playback.backend ? playback.backend.playerMpvConf : true
+                    Accessible.name: qsTr("使用 embed-mpv.conf")
+                    onToggled: function () {
+                        if (playback.backend)
+                            playback.backend.setPlayerMpvConf(checked)
+                    }
+                }
+            }
+        }
     }
 
     function syncFromBackend() {

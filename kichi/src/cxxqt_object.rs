@@ -162,6 +162,10 @@ pub mod qobject {
         #[qproperty(QString, player_audio_lang, cxx_name = "playerAudioLang", READ, NOTIFY = changed)]
         /// 内嵌播放首选字幕语言
         #[qproperty(QString, player_sub_lang, cxx_name = "playerSubLang", READ, NOTIFY = changed)]
+        /// 内嵌播放读取自己的 embed-mpv.conf
+        #[qproperty(bool, player_mpv_conf, cxx_name = "playerMpvConf", READ, NOTIFY = changed)]
+        /// embed-mpv.conf 的实际路径（可能被 KICHI_EMBED_MPV_CONF 覆盖）
+        #[qproperty(QString, embed_mpv_conf_path, cxx_name = "embedMpvConfPath", READ, NOTIFY = changed)]
         #[qproperty(bool, close_to_tray, cxx_name = "closeToTray", READ, NOTIFY = changed)]
         #[qproperty(bool, tray_available, cxx_name = "trayAvailable", READ, NOTIFY = changed)]
         #[qproperty(i32, tray_show_requested, cxx_name = "trayShowRequested", READ, NOTIFY = changed)]
@@ -693,6 +697,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setPlayerSubLang"]
         fn set_player_sub_lang(self: Pin<&mut Self>, value: QString);
+
+        #[qinvokable]
+        #[cxx_name = "setPlayerMpvConf"]
+        fn set_player_mpv_conf(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "openPlayerMpvConf"]
+        fn open_player_mpv_conf(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "setSubtitleFontSize"]
@@ -1331,6 +1343,9 @@ pub struct KichiRust {
     /// 内嵌播放首选语言（QML 展示用）
     pub(crate) player_audio_lang: QString,
     pub(crate) player_sub_lang: QString,
+    /// 内嵌播放读取自己的 embed-mpv.conf
+    pub(crate) player_mpv_conf: bool,
+    pub(crate) embed_mpv_conf_path: QString,
     pub(crate) close_to_tray: bool,
     /// 托盘是否真的起来了（失败时界面禁用「关闭到托盘」）
     pub(crate) tray_available: bool,
@@ -1605,6 +1620,12 @@ impl Default for KichiRust {
             auto_subtitles: true,
             player_audio_lang: QString::from("auto"),
             player_sub_lang: QString::from("auto"),
+            player_mpv_conf: true,
+            embed_mpv_conf_path: QString::from(
+                crate::session::paths::embed_mpv_conf_path()
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
             close_to_tray: false,
             tray_available: false,
             tray_show_requested: 0,
@@ -1765,6 +1786,7 @@ impl KichiRust {
         self.auto_subtitles = settings.auto_subtitles;
         self.player_audio_lang = QString::from(settings.player_audio_lang.as_str());
         self.player_sub_lang = QString::from(settings.player_sub_lang.as_str());
+        self.player_mpv_conf = settings.player_mpv_conf;
         self.embed_volume = settings.player_volume;
         self.embed_muted = settings.player_muted;
         self.embed_sub_font_size = i32::from(settings.player_sub_font_size);

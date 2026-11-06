@@ -9,6 +9,7 @@
 //! mpv 建连期间存在：客户端真的发出第一个请求后才恢复，避免 mpv 在慢网络上
 //! 等太久转而连上真实合成器、弹出第二个播放器窗口。
 
+pub(crate) mod conf;
 mod ffi;
 mod mpv;
 mod proxy;
@@ -159,6 +160,8 @@ pub struct SessionSettings {
     pub sub_lang: String,
     /// 外挂字幕文件名匹配用的首选语言标记；空 = 保持中文优先。
     pub sub_name_tags: Vec<String>,
+    /// kichi 自己的 `embed-mpv.conf`；`None` = 不读配置文件。
+    pub conf: Option<std::path::PathBuf>,
 }
 
 impl SessionSettings {
@@ -179,6 +182,7 @@ impl SessionSettings {
             audio_lang,
             sub_lang,
             sub_name_tags,
+            conf: None,
         }
     }
 }

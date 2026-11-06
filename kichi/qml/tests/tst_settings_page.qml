@@ -18,6 +18,8 @@ TestCase {
         property bool autoSubtitles: true
         property string playerAudioLang: "auto"
         property string playerSubLang: "auto"
+        property bool playerMpvConf: true
+        property string embedMpvConfPath: "/tmp/kichi/embed-mpv.conf"
         property string playerBackend: "mpv"
         property string playerDefaultCommand: "mpv"
         property string playerCommand: ""
@@ -46,6 +48,7 @@ TestCase {
         property string settingsPath: "/tmp/kichi-settings.toml"
         property int chooseDownloadDirCalls: 0
         property int openDownloadDirCalls: 0
+        property int openMpvConfCalls: 0
 
         // SettingsPlayback / SettingsTransfers 监听后端的 `changed`
         signal changed()
@@ -54,6 +57,8 @@ TestCase {
         function setAutoSubtitles(value) { autoSubtitles = value }
         function setPlayerAudioLang(value) { playerAudioLang = value }
         function setPlayerSubLang(value) { playerSubLang = value }
+        function setPlayerMpvConf(value) { playerMpvConf = value }
+        function openPlayerMpvConf() { openMpvConfCalls += 1 }
         function setPlayerBackend(value) { playerBackend = value }
         function setPlayer(command, args) {
             playerBackend = "custom"
@@ -89,6 +94,7 @@ TestCase {
         backend.autoSubtitles = true
         backend.playerAudioLang = "auto"
         backend.playerSubLang = "auto"
+        backend.playerMpvConf = true
         backend.playerBackend = "mpv"
         backend.playerCommand = ""
         backend.playerArgs = ""
@@ -113,6 +119,7 @@ TestCase {
         backend.closeToTray = false
         backend.chooseDownloadDirCalls = 0
         backend.openDownloadDirCalls = 0
+        backend.openMpvConfCalls = 0
 
         page = pageComponent.createObject(parent, {
             width: 900, height: 640, backend: backend, visible: true
@@ -355,6 +362,25 @@ TestCase {
         wait(40)
         compare(audio.currentValue, "ko", "后端变化时音轨下拉跟随")
         compare(subtitle.currentValue, "en", "后端变化时字幕下拉跟随")
+    }
+
+    function test_embed_mpv_conf_is_wired() {
+        openSection(page.playbackSection)
+
+        var toggle = findChild(page, "settingsMpvConfEnabled")
+        var edit = findChild(page, "settingsMpvConfEdit")
+        verify(toggle !== null, "有 embed-mpv.conf 开关")
+        verify(edit !== null, "有编辑 embed-mpv.conf 按钮")
+        compare(toggle.checked, true, "默认读取 embed-mpv.conf")
+
+        toggle.checked = false
+        toggle.toggled()
+        wait(40)
+        compare(backend.playerMpvConf, false, "关掉后写回后端")
+
+        edit.clicked()
+        wait(40)
+        compare(backend.openMpvConfCalls, 1, "编辑按钮调用后端打开文件")
     }
 
     function test_download_dir_commits_when_editing_finishes() {

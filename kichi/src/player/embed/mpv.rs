@@ -10,7 +10,9 @@ use std::time::Instant;
 use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
 
-use super::{Control, Session, SessionSettings, SubtitleStyle, TrackInfo, WaylandSocketGuard};
+use super::{
+    conf, Control, Session, SessionSettings, SubtitleStyle, TrackInfo, WaylandSocketGuard,
+};
 use crate::player::progress::ProgressTracker;
 use crate::player::subtitles::{take_slot, SubtitleAssets};
 use crate::player::{PlaybackExtras, StartEvent};
@@ -303,7 +305,17 @@ pub(super) fn run(
 }
 
 fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::Error> {
+    let user_conf = settings.conf.as_deref().map(conf::Parsed::load);
     let mpv = Mpv::with_initializer(|init| {
+        // 先应用用户配置，再写内嵌固定项：固定的 vo / gpu / 输入配置永远赢。
+        if let Some(parsed) = &user_conf {
+            for (name, value) in &parsed.options {
+                // 单条写错（未知选项 / 非法值）只跳过，不阻断播放。
+                if let Err(err) = init.set_option(name.as_str(), value.as_str()) {
+                    eprintln!("[kichi] embed-mpv.conf 忽略选项「{name}」：{err}");
+                }
+            }
+        }
         for (name, value) in [
             ("vo", "gpu-next"),
             ("gpu-context", "wayland"),
@@ -323,6 +335,7 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
             ("osc", "no"),
             ("osd-level", "0"),
             ("config", "no"),
+            ("load-scripts", "no"),
             ("idle", "yes"),
             ("force-window", "yes"),
             ("ytdl", "no"),
@@ -340,6 +353,16 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
         }
         Ok(())
     })?;
+    if let Some(parsed) = &user_conf {
+        eprintln!(
+            "[kichi] embed-mpv.conf 已读取 {} 项（忽略内嵌必需项 {} 项）",
+            parsed.options.len(),
+            parsed.ignored
+        );
+        for warning in &parsed.warnings {
+            eprintln!("[kichi] embed-mpv.conf：{warning}");
+        }
+    }
     mpv.set_property("force-media-title", title)?;
     // 音量 / 静音 / 倍速 / 字幕样式在建 mpv 时一次设好，避免首帧先按默认值闪一下。
     mpv.set_property("volume", i64::from(settings.volume))?;
