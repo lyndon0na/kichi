@@ -383,6 +383,10 @@ impl qobject::Kichi {
                             late,
                             resume,
                         },
+                        crate::player::embed::AudioSettings::new(
+                            settings.player_volume,
+                            settings.player_muted,
+                        ),
                         notify,
                     );
                     match started {
@@ -599,6 +603,49 @@ impl qobject::Kichi {
     /// 内嵌浮层：跳到某个秒数
     pub fn embed_seek(&self, seconds: f64) {
         crate::player::embed::seek_absolute(seconds);
+    }
+
+    /// 内嵌浮层：调音量（0–100）。只改内存并立刻作用到 mpv；
+    /// 拖动 / 连按结束后由界面调 `embedCommitAudio` 统一落盘，避免刷盘。
+    pub fn embed_set_volume(mut self: Pin<&mut Self>, volume: i32) {
+        let volume = volume.clamp(0, 100);
+        crate::player::embed::set_volume(volume);
+        if self.embed_volume == volume {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.embed_volume = volume;
+        }
+        self.as_mut().notify();
+    }
+
+    /// 内嵌浮层：静音 / 取消静音（同样等 `embedCommitAudio` 落盘）。
+    pub fn embed_toggle_mute(mut self: Pin<&mut Self>) {
+        let muted = !self.embed_muted;
+        crate::player::embed::set_muted(muted);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.embed_muted = muted;
+        }
+        self.as_mut().notify();
+    }
+
+    /// 把当前音量 / 静音写进设置（界面在停止调节 0.5 秒后调用）。
+    pub fn embed_commit_audio(mut self: Pin<&mut Self>) {
+        let (volume, muted) = (self.embed_volume, self.embed_muted);
+        if self.settings.player_volume == volume && self.settings.player_muted == muted {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_volume = volume;
+            settings.player_muted = muted;
+        });
+    }
+
+    /// 内嵌浮层：开关 mpv 自带的统计叠加层（stats.lua）
+    pub fn embed_toggle_stats(&self) {
+        crate::player::embed::toggle_stats();
     }
 
     /// 内嵌浮层：关闭这次播放（会话收尾后照常回投 Stopped）

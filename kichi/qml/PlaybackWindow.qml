@@ -34,6 +34,13 @@ Window {
     property bool paused: false
     property bool seeking: false
     property bool chromeVisible: true
+    // 音量 / 静音由 backend 持久化；这里只绑定展示。
+    readonly property int volume: backend !== null ? backend.embedVolume : 100
+    readonly property bool muted: backend !== null ? backend.embedMuted : false
+    // 调音量 / 静音的瞬时提示（不依赖控制条是否可见）
+    property string osdText: ""
+    // 点击喇叭打开的音量面板（滑块 + 静音）
+    property bool volumeOpen: false
     // 拖动松手后等 mpv 回报新位置，期间别让旧坐标把滑块拉回去。
     property real seekTarget: -1
 
@@ -92,6 +99,7 @@ Window {
         if (!win.visible)
             return
         dismissed = true
+        commitAudio()
         if (backend !== null)
             backend.embedStop()
         closePlayback()
@@ -102,6 +110,7 @@ Window {
         if (!win.playing) {
             if (win.visible)
                 closePlayback()
+            commitAudio()
             dismissed = false
             resetPlayback()
             return
@@ -119,6 +128,9 @@ Window {
             position = Math.max(0, backend.embedPosition())
             seekSlider.value = position
         }
+        // 面板开着时，键盘 / 滚轮改的音量也要同步到滑块（拖动中不抢）。
+        if (!volumeSlider.pressed)
+            volumeSlider.value = win.volume
     }
 
     function togglePause() {
@@ -161,6 +173,65 @@ Window {
         wake()
     }
 
+    function volumeIconName() {
+        if (win.muted || win.volume <= 0)
+            return "volume-x"
+        if (win.volume < 34)
+            return "volume"
+        if (win.volume < 67)
+            return "volume-2"
+        return "volume-3"
+    }
+
+    function setVolume(value) {
+        if (!win.playing || backend === null)
+            return
+        value = Math.max(0, Math.min(100, Math.round(value)))
+        // 静音时调音量顺手取消静音，否则按方向键看起来毫无反应。
+        if (win.muted)
+            backend.embedToggleMute()
+        backend.embedSetVolume(value)
+        audioSave.restart()
+        // 面板本来就显示百分比，别再叠一层 OSD。
+        if (!win.volumeOpen)
+            flashOsd(qsTr("音量 %1%").arg(value))
+    }
+
+    function adjustVolume(delta) {
+        setVolume(win.volume + delta)
+    }
+
+    function toggleMute() {
+        if (!win.playing || backend === null)
+            return
+        var muted = !win.muted
+        backend.embedToggleMute()
+        audioSave.restart()
+        if (!win.volumeOpen)
+            flashOsd(muted ? qsTr("静音") : qsTr("音量 %1%").arg(win.volume))
+    }
+
+    // 音量 / 静音在停止调节 0.5 秒后统一写盘，拖动滑块不会刷爆设置文件。
+    function commitAudio() {
+        audioSave.stop()
+        if (backend !== null)
+            backend.embedCommitAudio()
+    }
+
+    function toggleVolumePanel() {
+        if (!win.playing)
+            return
+        volumeOpen = !volumeOpen
+        if (volumeOpen)
+            volumeSlider.value = win.volume
+        wake()
+    }
+
+    function flashOsd(text) {
+        osdText = text
+        osdTimer.restart()
+    }
+
     function toggleFullscreen() {
         if (win.isFullScreen)
             win.showNormal()
@@ -172,6 +243,9 @@ Window {
     function resetPlayback() {
         hideTimer.stop()
         seekSettle.stop()
+        osdTimer.stop()
+        osdText = ""
+        volumeOpen = false
         position = 0
         duration = 0
         paused = false
@@ -195,7 +269,7 @@ Window {
             return
         chromeVisible = true
         // 暂停 / 拖动时控制条一直留着；播放中才按闲置时间收起。
-        if (paused || seeking)
+        if (paused || seeking || volumeOpen)
             hideTimer.stop()
         else
             hideTimer.restart()
@@ -216,6 +290,7 @@ Window {
     onClosing: function (close) {
         // 用户关窗 = 停播；Stopped 回投前保持 dismissed，别被 changed 拉回来。
         win.dismissed = true
+        win.commitAudio()
         if (win.backend !== null)
             win.backend.embedStop()
     }
@@ -250,7 +325,7 @@ Window {
         id: hideTimer
         interval: 2500
         onTriggered: {
-            if (win.paused || win.seeking
+            if (win.paused || win.seeking || win.volumeOpen
                     || topHover.hovered || bottomBarHover.hovered) {
                 restart()
                 return
@@ -266,6 +341,18 @@ Window {
             win.seekTarget = -1
             win.syncPlayback()
         }
+    }
+
+    Timer {
+        id: osdTimer
+        interval: 900
+        onTriggered: win.osdText = ""
+    }
+
+    Timer {
+        id: audioSave
+        interval: 500
+        onTriggered: win.commitAudio()
     }
 
     Rectangle {
@@ -301,7 +388,11 @@ Window {
             acceptedButtons: Qt.LeftButton
             hoverEnabled: true
             onClicked: {
-                if (win.chromeVisible) {
+                // 音量面板开着时，点画面先收起面板，不顺手把控制条也藏掉。
+                if (win.volumeOpen) {
+                    win.volumeOpen = false
+                    win.wake()
+                } else if (win.chromeVisible) {
                     hideTimer.stop()
                     win.chromeVisible = false
                 } else {
@@ -312,6 +403,16 @@ Window {
             // 鼠标在窗口里任何一次移动都唤醒控制条（收起状态下也一样）。
             onEntered: win.wake()
             onPositionChanged: win.wake()
+        }
+
+        // 滚轮调音量，与常见播放器一致；上下滚动一步 5%。
+        WheelHandler {
+            onWheel: function (event) {
+                if (event.angleDelta.y === 0)
+                    return
+                win.adjustVolume(event.angleDelta.y > 0 ? 5 : -5)
+                event.accepted = true
+            }
         }
 
         Rectangle {
@@ -360,20 +461,10 @@ Window {
                     font.weight: Font.Medium
                 }
 
-                KIconButton {
-                    objectName: "playbackWindowFullscreen"
-                    iconName: win.isFullScreen ? "minimize" : "maximize"
-                    iconSize: 18
-                    iconColor: "white"
-                    iconOpacity: 1
-                    Accessible.name: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
-                    ToolTip.visible: hovered
-                    ToolTip.text: Accessible.name
-                    onClicked: win.toggleFullscreen()
-                }
-
+                // 窗口态由窗管标题栏提供关闭；全屏时没有标题栏，才在控制条上留出口。
                 KIconButton {
                     objectName: "playbackWindowClose"
+                    visible: win.isFullScreen
                     iconName: "x"
                     iconSize: 18
                     iconColor: "white"
@@ -502,6 +593,162 @@ Window {
                     color: "white"
                     font.pixelSize: theme.fontMeta
                 }
+
+                KIconButton {
+                    objectName: "playbackWindowVolume"
+                    iconName: win.volumeIconName()
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 1
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    Accessible.name: qsTr("音量控制")
+                    ToolTip.visible: hovered
+                    ToolTip.text: win.muted
+                                  ? qsTr("已静音（点击调节音量）")
+                                  : qsTr("音量 %1%（点击调节，M 静音）").arg(win.volume)
+                    onClicked: win.toggleVolumePanel()
+                }
+
+                KIconButton {
+                    objectName: "playbackWindowFullscreen"
+                    iconName: win.isFullScreen ? "minimize" : "maximize"
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 1
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    Accessible.name: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
+                    ToolTip.visible: hovered
+                    ToolTip.text: Accessible.name
+                    onClicked: win.toggleFullscreen()
+                }
+            }
+        }
+
+        // 点击喇叭弹出的音量面板：静音开关 + 滑块 + 百分比。
+        Rectangle {
+            id: volumePanel
+
+            anchors.right: parent.right
+            anchors.rightMargin: theme.gapLg
+            anchors.bottom: bottomBar.top
+            anchors.bottomMargin: theme.gapSm
+            width: 212
+            height: 44
+            radius: theme.radiusControl
+            color: "#CC000000"
+            opacity: win.volumeOpen ? 1 : 0
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: theme.motionFast } }
+
+            HoverHandler {
+                onHoveredChanged: if (hovered) win.wake()
+            }
+
+            // 吃掉面板上的点击，别让它们穿透到画面去切换控制条。
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                hoverEnabled: true
+                onEntered: win.wake()
+                onClicked: win.wake()
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: theme.gapSm
+                anchors.rightMargin: theme.gapMd
+                spacing: theme.gapSm
+
+                KIconButton {
+                    objectName: "playbackWindowPanelMute"
+                    iconName: win.muted ? "volume-x" : "volume-2"
+                    iconSize: 16
+                    iconColor: "white"
+                    iconOpacity: 1
+                    implicitWidth: 28
+                    implicitHeight: 28
+                    Accessible.name: win.muted ? qsTr("取消静音") : qsTr("静音")
+                    ToolTip.visible: hovered
+                    ToolTip.text: Accessible.name
+                    onClicked: win.toggleMute()
+                }
+
+                Slider {
+                    id: volumeSlider
+                    objectName: "playbackWindowVolumeSlider"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    implicitHeight: 28
+                    // 方向键留给音量快捷键，滑块不抢焦点。
+                    focusPolicy: Qt.NoFocus
+                    from: 0
+                    to: 100
+                    stepSize: 5
+                    value: 0
+                    onMoved: win.setVolume(value)
+
+                    background: Rectangle {
+                        x: volumeSlider.leftPadding
+                        y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
+                        width: volumeSlider.availableWidth
+                        height: 3
+                        radius: height / 2
+                        color: "#55ffffff"
+
+                        Rectangle {
+                            width: volumeSlider.visualPosition * parent.width
+                            height: parent.height
+                            radius: parent.radius
+                            color: "white"
+                        }
+                    }
+
+                    handle: Rectangle {
+                        x: volumeSlider.leftPadding
+                           + volumeSlider.visualPosition * (volumeSlider.availableWidth - width)
+                        y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
+                        width: 10
+                        height: 10
+                        radius: 5
+                        color: "white"
+                        visible: volumeSlider.pressed || volumeSlider.hovered
+                                 || volumeSlider.value !== win.volume
+                    }
+                }
+
+                Label {
+                    Layout.preferredWidth: 30
+                    horizontalAlignment: Text.AlignRight
+                    text: win.volume + "%"
+                    color: "white"
+                    font.pixelSize: theme.fontCaption
+                }
+            }
+        }
+
+        // 音量 / 静音的瞬时反馈；控制条收起时也能看见。
+        Rectangle {
+            id: osd
+
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: bottomBar.top
+            anchors.bottomMargin: theme.gapMd
+            width: osdLabel.implicitWidth + theme.gapXl
+            height: 32
+            radius: theme.radiusControl
+            color: "#B3000000"
+            opacity: win.osdText.length > 0 ? 1 : 0
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: theme.motionFast } }
+
+            Label {
+                id: osdLabel
+                anchors.centerIn: parent
+                text: win.osdText
+                color: "white"
+                font.pixelSize: theme.fontMeta
             }
         }
 
@@ -510,7 +757,9 @@ Window {
             sequence: "Escape"
             enabled: win.visible
             onActivated: {
-                if (win.isFullScreen)
+                if (win.volumeOpen)
+                    win.volumeOpen = false
+                else if (win.isFullScreen)
                     win.showNormal()
                 else
                     win.requestClose()
@@ -530,6 +779,28 @@ Window {
             sequence: "Right"
             enabled: win.visible
             onActivated: win.seekBy(10)
+        }
+        // 音量：上下 ±5%，M 静音，滚轮同上。
+        Shortcut {
+            sequence: "Up"
+            enabled: win.visible
+            onActivated: win.adjustVolume(5)
+        }
+        Shortcut {
+            sequence: "Down"
+            enabled: win.visible
+            onActivated: win.adjustVolume(-5)
+        }
+        Shortcut {
+            sequence: "M"
+            enabled: win.visible
+            onActivated: win.toggleMute()
+        }
+        // 统计叠加层与外部 mpv 按 i 的效果一致（再按一次收起）。
+        Shortcut {
+            sequence: "I"
+            enabled: win.visible
+            onActivated: if (win.backend !== null) win.backend.embedToggleStats()
         }
     }
 }

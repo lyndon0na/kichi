@@ -56,7 +56,27 @@ pub(crate) struct Viewport {
 pub(crate) enum Control {
     TogglePause,
     SeekAbsolute(f64),
+    SetVolume(i64),
+    SetMuted(bool),
+    /// mpv 内置 stats.lua 的统计叠加层开 / 关。
+    ToggleStats,
     Quit,
+}
+
+/// 新会话的初始音频状态（音量随设置持久化，静音也一起记住）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioSettings {
+    pub volume: i32,
+    pub muted: bool,
+}
+
+impl AudioSettings {
+    pub fn new(volume: i32, muted: bool) -> Self {
+        Self {
+            volume: volume.clamp(0, 100),
+            muted,
+        }
+    }
 }
 
 impl Session {
@@ -214,6 +234,7 @@ pub fn start(
     title: &str,
     cancel: Arc<Cancel>,
     extras: PlaybackExtras,
+    audio: AudioSettings,
     notify: impl Fn(StartEvent) + Send + Sync + 'static,
 ) -> Result<u64, String> {
     if url.trim().is_empty() {
@@ -253,6 +274,7 @@ pub fn start(
                 &url,
                 &title,
                 extras,
+                audio,
                 notify,
                 control_rx,
                 guard,
@@ -349,6 +371,27 @@ pub fn set_viewport(width: i32, height: i32, scale: f64) {
 pub fn toggle_pause() {
     if let Some(session) = current() {
         session.send(Control::TogglePause);
+    }
+}
+
+/// 调音量（0–100）。没有会话时静默忽略：值由调用方持久化，下次开播生效。
+pub fn set_volume(percent: i32) {
+    let percent = percent.clamp(0, 100);
+    if let Some(session) = current() {
+        session.send(Control::SetVolume(i64::from(percent)));
+    }
+}
+
+pub fn set_muted(muted: bool) {
+    if let Some(session) = current() {
+        session.send(Control::SetMuted(muted));
+    }
+}
+
+/// 开 / 关 mpv 自带的统计叠加层（stats.lua，和外部 mpv 按 `i` 一样）。
+pub fn toggle_stats() {
+    if let Some(session) = current() {
+        session.send(Control::ToggleStats);
     }
 }
 

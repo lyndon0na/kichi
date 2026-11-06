@@ -371,6 +371,8 @@ impl qobject::Kichi {
         rust.player_args = QString::from(args);
         rust.notify_enabled = notify;
         rust.auto_subtitles = auto_subs;
+        rust.embed_volume = snapshot.player_volume;
+        rust.embed_muted = snapshot.player_muted;
         rust.close_to_tray = tray;
         rust.content_view = content_view;
         rust.content_view_text = QString::from(content_view.as_str());

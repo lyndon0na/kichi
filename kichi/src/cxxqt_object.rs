@@ -134,6 +134,10 @@ pub mod qobject {
         #[qproperty(bool, embed_active, cxx_name = "embedActive", READ, NOTIFY = changed)]
         /// 当前内嵌播放的标题（浮层文字）
         #[qproperty(QString, embed_title, cxx_name = "embedTitle", READ, NOTIFY = changed)]
+        /// 内嵌播放器音量（0–100，持久化）
+        #[qproperty(i32, embed_volume, cxx_name = "embedVolume", READ, NOTIFY = changed)]
+        /// 内嵌播放器是否静音（持久化）
+        #[qproperty(bool, embed_muted, cxx_name = "embedMuted", READ, NOTIFY = changed)]
         #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
         /// 播放器预设："embedded" / "mpv" / "vlc" / "custom"
         #[qproperty(QString, player_backend, cxx_name = "playerBackend", READ, NOTIFY = changed)]
@@ -553,6 +557,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "embedSeek"]
         fn embed_seek(self: &Self, seconds: f64);
+
+        /// 内嵌浮层：调音量（0–100）
+        #[qinvokable]
+        #[cxx_name = "embedSetVolume"]
+        fn embed_set_volume(self: Pin<&mut Self>, volume: i32);
+
+        /// 内嵌浮层：静音 / 取消静音
+        #[qinvokable]
+        #[cxx_name = "embedToggleMute"]
+        fn embed_toggle_mute(self: Pin<&mut Self>);
+
+        /// 把当前音量 / 静音写进设置（停止调节后调用）
+        #[qinvokable]
+        #[cxx_name = "embedCommitAudio"]
+        fn embed_commit_audio(self: Pin<&mut Self>);
+
+        /// 内嵌浮层：开关 mpv 统计叠加层（按 i 显示）
+        #[qinvokable]
+        #[cxx_name = "embedToggleStats"]
+        fn embed_toggle_stats(self: &Self);
 
         /// 内嵌浮层：关闭这次播放
         #[qinvokable]
@@ -1171,6 +1195,10 @@ pub struct KichiRust {
     pub(crate) embed_title: QString,
     /// 等待 Ready 的内嵌会话代数：只有它的 Ready 能点亮浮层
     pub(crate) embed_pending_epoch: Option<u64>,
+    /// 内嵌播放器音量（0–100；随设置持久化）
+    pub(crate) embed_volume: i32,
+    /// 内嵌播放器静音状态（随设置持久化）
+    pub(crate) embed_muted: bool,
     /// 本次加载的取消信号（取链 + 等窗口共用；取消即中止）
     ///
     /// 不额外记「窗口是否已经出现」：监控线程自己知道，`Cancel` 置真即中止，
@@ -1456,6 +1484,8 @@ impl Default for KichiRust {
             embed_active: false,
             embed_title: QString::default(),
             embed_pending_epoch: None,
+            embed_volume: 100,
+            embed_muted: false,
             play_cancel: None,
             play_epoch: 0,
             play_progress: play_history::ProgressReporter::default(),
@@ -1634,6 +1664,8 @@ impl KichiRust {
         self.player_args = QString::from(settings.player_args.as_str());
         self.notify_enabled = settings.notify_enabled;
         self.auto_subtitles = settings.auto_subtitles;
+        self.embed_volume = settings.player_volume;
+        self.embed_muted = settings.player_muted;
         self.close_to_tray = settings.close_to_tray;
         self.content_view = settings.content_view;
         self.content_view_text = QString::from(settings.content_view.as_str());

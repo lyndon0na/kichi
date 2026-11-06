@@ -9,7 +9,9 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{available, frame_pending, is_active, set_viewport, start, stop, take_frame};
+use super::{
+    available, frame_pending, is_active, set_viewport, start, stop, take_frame, AudioSettings,
+};
 use crate::player::{PlaybackExtras, StartEvent};
 use crate::session::download::Cancel;
 
@@ -53,6 +55,7 @@ fn embedded_pipeline_delivers_a_frame() {
         "embed-test",
         cancel.clone(),
         PlaybackExtras::default(),
+        AudioSettings::new(0, true),
         move |event| {
             let _ = tx.send(event);
         },

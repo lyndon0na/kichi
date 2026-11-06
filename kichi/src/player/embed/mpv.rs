@@ -10,7 +10,7 @@ use std::time::Instant;
 use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
 
-use super::{Control, Session, WaylandSocketGuard};
+use super::{AudioSettings, Control, Session, WaylandSocketGuard};
 use crate::player::progress::ProgressTracker;
 use crate::player::subtitles::{take_slot, SubtitleAssets};
 use crate::player::{PlaybackExtras, StartEvent};
@@ -18,11 +18,14 @@ use crate::player::{PlaybackExtras, StartEvent};
 /// 事件循环最长阻塞时间；界面控制命令靠它及时生效。
 const EVENT_TIMEOUT: f64 = 0.05;
 
+// 启动参数共同描述一次会话，拆结构只会让调用点来回打包。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     session: Arc<Session>,
     url: &str,
     title: &str,
     extras: PlaybackExtras,
+    audio: AudioSettings,
     notify: impl Fn(StartEvent),
     control_rx: Receiver<Control>,
     guard: WaylandSocketGuard,
@@ -34,7 +37,7 @@ pub(super) fn run(
         resume,
     } = extras;
 
-    let mpv = match create_mpv(title) {
+    let mpv = match create_mpv(title, audio) {
         Ok(mpv) => mpv,
         Err(err) => {
             eprintln!("[kichi] 内嵌播放器初始化失败：{err}");
@@ -83,6 +86,22 @@ pub(super) fn run(
                     let target = format!("{seconds:.3}");
                     if let Err(err) = mpv.command("seek", &[&target, "absolute"]) {
                         eprintln!("[kichi] 内嵌播放器跳转失败：{err}");
+                    }
+                }
+                Control::SetVolume(volume) => {
+                    if let Err(err) = mpv.set_property("volume", volume) {
+                        eprintln!("[kichi] 内嵌播放器调音量失败：{err}");
+                    }
+                }
+                Control::SetMuted(muted) => {
+                    if let Err(err) = mpv.set_property("mute", muted) {
+                        eprintln!("[kichi] 内嵌播放器切换静音失败：{err}");
+                    }
+                }
+                Control::ToggleStats => {
+                    if let Err(err) = mpv.command("script-binding", &["stats/display-stats-toggle"])
+                    {
+                        eprintln!("[kichi] 内嵌播放器切换统计信息失败：{err}");
                     }
                 }
                 Control::Quit => {
@@ -242,7 +261,7 @@ pub(super) fn run(
     terminate(mpv);
 }
 
-fn create_mpv(title: &str) -> Result<Mpv, libmpv2::Error> {
+fn create_mpv(title: &str, audio: AudioSettings) -> Result<Mpv, libmpv2::Error> {
     let mpv = Mpv::with_initializer(|init| {
         for (name, value) in [
             ("vo", "gpu-next"),
@@ -271,6 +290,9 @@ fn create_mpv(title: &str) -> Result<Mpv, libmpv2::Error> {
         Ok(())
     })?;
     mpv.set_property("force-media-title", title)?;
+    // 音量 / 静音在建 mpv 时一次设好，避免 loadfile 后先按 100% 出一声再被命令改掉。
+    mpv.set_property("volume", i64::from(audio.volume))?;
+    mpv.set_property("mute", audio.muted)?;
     // 自动重试与错误提示都要读 HTTP 状态码；请求错误级日志。
     // SAFETY: ctx 来自刚创建好的 libmpv2 句柄，字符串静态且以 NUL 结尾。
     unsafe {

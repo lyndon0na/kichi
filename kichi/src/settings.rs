@@ -226,6 +226,10 @@ pub struct Settings {
     pub notify_enabled: bool,
     /// 播放时自动加载同目录字幕（只对 mpv 生效）
     pub auto_subtitles: bool,
+    /// 内嵌播放器音量（0–100，跨视频 / 跨启动记住）
+    pub player_volume: i32,
+    /// 内嵌播放器静音状态
+    pub player_muted: bool,
     /// 关闭窗口时缩到托盘
     pub close_to_tray: bool,
     /// 文件类内容页共用显示方式：列表 / 网格
@@ -267,6 +271,8 @@ impl Default for Settings {
             player_args: String::new(),
             notify_enabled: true,
             auto_subtitles: true,
+            player_volume: 100,
+            player_muted: false,
             close_to_tray: false,
             content_view: ContentViewMode::List,
             sort_field: SortField::Name,
@@ -397,6 +403,7 @@ impl Settings {
         if self.window_height < 0 {
             self.window_height = 0;
         }
+        self.player_volume = self.player_volume.clamp(0, 100);
         self.download_parallel = self
             .download_parallel
             .clamp(1, crate::session::limits::MAX_PARALLEL);
@@ -470,6 +477,8 @@ mod tests {
             player_command: "mpv".into(),
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
+            player_volume: 65,
+            player_muted: true,
             close_to_tray: true,
             content_view: ContentViewMode::Grid,
             sort_field: SortField::Modified,
@@ -539,6 +548,8 @@ mod tests {
         );
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
+        assert_eq!(settings.player_volume, 100, "旧设置没有音量字段时满音量");
+        assert!(!settings.player_muted, "旧设置没有静音字段时不静音");
         assert_eq!(
             settings.content_view,
             ContentViewMode::List,
@@ -619,9 +630,20 @@ mod tests {
             download_rate_mib: u64::MAX,
             upload_parallel: 99,
             upload_rate_mib: u64::MAX,
+            player_volume: 300,
             ..Settings::default()
         }
         .normalized();
+        assert_eq!(normalized.player_volume, 100, "手改音量越界时收回 100");
+        assert_eq!(
+            Settings {
+                player_volume: -5,
+                ..Settings::default()
+            }
+            .normalized()
+            .player_volume,
+            0
+        );
         assert_eq!(
             normalized.download_parallel,
             crate::session::limits::MAX_PARALLEL
