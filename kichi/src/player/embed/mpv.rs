@@ -318,10 +318,11 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
                 }
             }
         }
+        let (gpu_context, gpu_api) = gpu_backend(settings.vulkan);
         for (name, value) in [
             ("vo", "gpu-next"),
-            ("gpu-context", "wayland"),
-            ("gpu-api", "opengl"),
+            ("gpu-context", gpu_context),
+            ("gpu-api", gpu_api),
             ("hwdec", "auto-safe"),
             // 测试自检时把 mpv 日志打到 stderr，方便排查链路；正式构建保持静默。
             ("terminal", if cfg!(test) { "yes" } else { "no" }),
@@ -398,6 +399,40 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
         mpv.observe_property(name, format, index as u64 + 1)?;
     }
     Ok(mpv)
+}
+
+/// 内嵌渲染后端（`gpu-context` + `gpu-api`）。
+///
+/// 默认跟随设置（Vulkan）；`KICHI_EMBED_GPU` 可强制覆盖，方便对比与排查。
+fn gpu_backend(use_vulkan: bool) -> (&'static str, &'static str) {
+    let override_value = std::env::var("KICHI_EMBED_GPU").ok();
+    let backend = parse_gpu_backend(override_value.as_deref(), use_vulkan);
+    if let Some(value) = override_value {
+        if !value.eq_ignore_ascii_case("vulkan") && !value.eq_ignore_ascii_case("opengl") {
+            eprintln!(
+                "[kichi] 无法识别 KICHI_EMBED_GPU={value}，按设置使用 {}",
+                backend.1
+            );
+        }
+    }
+    eprintln!("[kichi] 内嵌播放渲染后端：{}", backend.1);
+    backend
+}
+
+fn parse_gpu_backend(
+    override_value: Option<&str>,
+    use_vulkan: bool,
+) -> (&'static str, &'static str) {
+    let vulkan = match override_value {
+        Some(value) if value.eq_ignore_ascii_case("vulkan") => true,
+        Some(value) if value.eq_ignore_ascii_case("opengl") => false,
+        _ => use_vulkan,
+    };
+    if vulkan {
+        ("waylandvk", "vulkan")
+    } else {
+        ("wayland", "opengl")
+    }
 }
 
 /// 读一遍 mpv 的轨道列表（音轨 + 字幕轨）。
@@ -561,4 +596,27 @@ fn terminate(mpv: Mpv) {
     let ctx = mpv.ctx.as_ptr();
     unsafe { libmpv2_sys::mpv_terminate_destroy(ctx) };
     std::mem::forget(mpv);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_gpu_backend;
+
+    #[test]
+    fn gpu_backend_prefers_setting_and_env_override() {
+        assert_eq!(parse_gpu_backend(None, true), ("waylandvk", "vulkan"));
+        assert_eq!(parse_gpu_backend(None, false), ("wayland", "opengl"));
+        assert_eq!(
+            parse_gpu_backend(Some("opengl"), true),
+            ("wayland", "opengl")
+        );
+        assert_eq!(
+            parse_gpu_backend(Some("Vulkan"), false),
+            ("waylandvk", "vulkan")
+        );
+        assert_eq!(
+            parse_gpu_backend(Some("metal"), false),
+            ("wayland", "opengl")
+        );
+    }
 }

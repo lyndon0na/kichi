@@ -406,6 +406,7 @@ impl qobject::Kichi {
                         session_settings.input_conf =
                             Some(crate::session::paths::embed_input_conf_path());
                     }
+                    session_settings.vulkan = settings.player_vulkan;
                     let started = crate::player::embed::start(
                         &option.url,
                         title,

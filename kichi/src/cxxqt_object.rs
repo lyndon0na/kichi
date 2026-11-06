@@ -168,6 +168,8 @@ pub mod qobject {
         #[qproperty(QString, embed_mpv_conf_path, cxx_name = "embedMpvConfPath", READ, NOTIFY = changed)]
         /// 内嵌播放加载自己的 embed-input.conf
         #[qproperty(bool, player_input_conf, cxx_name = "playerInputConf", READ, NOTIFY = changed)]
+        /// 内嵌播放使用 Vulkan 渲染（关闭 = OpenGL）
+        #[qproperty(bool, player_vulkan, cxx_name = "playerVulkan", READ, NOTIFY = changed)]
         /// embed-input.conf 的实际路径（可能被 KICHI_EMBED_INPUT_CONF 覆盖）
         #[qproperty(QString, embed_input_conf_path, cxx_name = "embedInputConfPath", READ, NOTIFY = changed)]
         #[qproperty(bool, close_to_tray, cxx_name = "closeToTray", READ, NOTIFY = changed)]
@@ -722,6 +724,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "openPlayerInputConf"]
         fn open_player_input_conf(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "setPlayerVulkan"]
+        fn set_player_vulkan(self: Pin<&mut Self>, enabled: bool);
 
         #[qinvokable]
         #[cxx_name = "setSubtitleFontSize"]
@@ -1366,6 +1372,8 @@ pub struct KichiRust {
     /// 内嵌播放加载自己的 embed-input.conf
     pub(crate) player_input_conf: bool,
     pub(crate) embed_input_conf_path: QString,
+    /// 内嵌播放使用 Vulkan 渲染（关闭 = OpenGL）
+    pub(crate) player_vulkan: bool,
     pub(crate) close_to_tray: bool,
     /// 托盘是否真的起来了（失败时界面禁用「关闭到托盘」）
     pub(crate) tray_available: bool,
@@ -1652,6 +1660,7 @@ impl Default for KichiRust {
                     .to_string_lossy()
                     .as_ref(),
             ),
+            player_vulkan: true,
             close_to_tray: false,
             tray_available: false,
             tray_show_requested: 0,
@@ -1814,6 +1823,7 @@ impl KichiRust {
         self.player_sub_lang = QString::from(settings.player_sub_lang.as_str());
         self.player_mpv_conf = settings.player_mpv_conf;
         self.player_input_conf = settings.player_input_conf;
+        self.player_vulkan = settings.player_vulkan;
         self.embed_volume = settings.player_volume;
         self.embed_muted = settings.player_muted;
         self.embed_sub_font_size = i32::from(settings.player_sub_font_size);

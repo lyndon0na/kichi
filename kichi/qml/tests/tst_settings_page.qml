@@ -22,6 +22,7 @@ TestCase {
         property string embedMpvConfPath: "/tmp/kichi/embed-mpv.conf"
         property bool playerInputConf: true
         property string embedInputConfPath: "/tmp/kichi/embed-input.conf"
+        property bool playerVulkan: true
         property string playerBackend: "mpv"
         property string playerDefaultCommand: "mpv"
         property string playerCommand: ""
@@ -64,6 +65,7 @@ TestCase {
         function openPlayerMpvConf() { openMpvConfCalls += 1 }
         function setPlayerInputConf(value) { playerInputConf = value }
         function openPlayerInputConf() { openInputConfCalls += 1 }
+        function setPlayerVulkan(value) { playerVulkan = value }
         function setPlayerBackend(value) { playerBackend = value }
         function setPlayer(command, args) {
             playerBackend = "custom"
@@ -101,6 +103,7 @@ TestCase {
         backend.playerSubLang = "auto"
         backend.playerMpvConf = true
         backend.playerInputConf = true
+        backend.playerVulkan = true
         backend.playerBackend = "mpv"
         backend.playerCommand = ""
         backend.playerArgs = ""
@@ -407,6 +410,19 @@ TestCase {
         edit.clicked()
         wait(40)
         compare(backend.openInputConfCalls, 1, "编辑按钮调用后端打开文件")
+    }
+
+    function test_vulkan_toggle_is_wired() {
+        openSection(page.playbackSection)
+
+        var toggle = findChild(page, "settingsVulkanEnabled")
+        verify(toggle !== null, "有 Vulkan 渲染开关")
+        compare(toggle.checked, true, "内嵌默认使用 Vulkan")
+
+        toggle.checked = false
+        toggle.toggled()
+        wait(40)
+        compare(backend.playerVulkan, false, "关闭后回退 OpenGL")
     }
 
     function test_download_dir_commits_when_editing_finishes() {

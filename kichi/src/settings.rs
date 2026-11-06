@@ -420,6 +420,8 @@ pub struct Settings {
     pub player_mpv_conf: bool,
     /// 内嵌播放器加载自己的 `embed-input.conf`（文件不存在时无效果）
     pub player_input_conf: bool,
+    /// 内嵌播放器使用 Vulkan 渲染（关闭 = OpenGL）
+    pub player_vulkan: bool,
     /// 内嵌播放器音量（0–100，跨视频 / 跨启动记住）
     pub player_volume: i32,
     /// 内嵌播放器静音状态
@@ -481,6 +483,7 @@ impl Default for Settings {
             player_sub_lang: PreferredLanguage::default(),
             player_mpv_conf: true,
             player_input_conf: true,
+            player_vulkan: true,
             player_volume: 100,
             player_muted: false,
             player_speed_percent: 100,
@@ -703,6 +706,7 @@ mod tests {
         assert_eq!(settings, Settings::default());
         assert!(settings.player_mpv_conf, "embed-mpv.conf 默认开启");
         assert!(settings.player_input_conf, "embed-input.conf 默认开启");
+        assert!(settings.player_vulkan, "内嵌播放默认使用 Vulkan 渲染");
         assert!(warning.is_none(), "文件不存在不算错误");
     }
 
@@ -813,6 +817,10 @@ mod tests {
         assert!(
             settings.player_input_conf,
             "旧设置没有 embed-input.conf 字段时默认开"
+        );
+        assert!(
+            settings.player_vulkan,
+            "旧设置没有渲染后端字段时默认 Vulkan"
         );
         assert_eq!(settings.player_volume, 100, "旧设置没有音量字段时满音量");
         assert!(!settings.player_muted, "旧设置没有静音字段时不静音");

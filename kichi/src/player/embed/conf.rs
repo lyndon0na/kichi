@@ -53,7 +53,7 @@ pub(crate) const TEMPLATE: &str = r#"# kichi 内嵌播放器的 mpv 配置（mpv
 # 内嵌必需的选项由 kichi 固定，这里写了也不会生效：
 #   vo / gpu-context / gpu-api / clipboard-backends / input-* / osc / config /
 #   idle / force-window / ytdl / sub-auto / script* / fullscreen 等。
-# 当前内嵌固定 gpu-api=opengl，Vulkan 相关的 gpu-api / gpu-context 不生效。
+# 当前内嵌默认 Vulkan 渲染；设置页「内嵌播放器」→「Vulkan 渲染」可关闭回退 OpenGL。
 #
 # 可以复用已有的 mpv 配置；只读取顶层选项，profile 段与脚本不会加载：
 # include=~/.config/mpv/mpv.conf

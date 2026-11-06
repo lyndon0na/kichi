@@ -213,6 +213,22 @@ ColumnLayout {
         }
 
         KSettingsRow {
+            objectName: "settingsVulkan"
+            title: qsTr("Vulkan 渲染")
+            description: qsTr("默认开启；播放异常时可关闭，改用 OpenGL，下次开播生效。")
+
+            Switch {
+                objectName: "settingsVulkanEnabled"
+                checked: playback.backend ? playback.backend.playerVulkan : true
+                Accessible.name: qsTr("使用 Vulkan 渲染")
+                onToggled: function () {
+                    if (playback.backend)
+                        playback.backend.setPlayerVulkan(checked)
+                }
+            }
+        }
+
+        KSettingsRow {
             objectName: "settingsMpvConf"
             title: qsTr("embed-mpv.conf")
             description: playback.backend

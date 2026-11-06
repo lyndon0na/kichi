@@ -175,6 +175,8 @@ pub struct SessionSettings {
     pub conf: Option<std::path::PathBuf>,
     /// kichi 自己的 `embed-input.conf`；`None` = 不加键位文件。
     pub input_conf: Option<std::path::PathBuf>,
+    /// 是否使用 Vulkan 渲染后端（false = OpenGL）。
+    pub vulkan: bool,
 }
 
 impl SessionSettings {
@@ -197,6 +199,7 @@ impl SessionSettings {
             sub_name_tags,
             conf: None,
             input_conf: None,
+            vulkan: true,
         }
     }
 }

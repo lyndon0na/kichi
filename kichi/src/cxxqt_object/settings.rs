@@ -135,6 +135,13 @@ impl qobject::Kichi {
         });
     }
 
+    /// 内嵌播放是否使用 Vulkan 渲染；关闭后回退 OpenGL，下次开播生效。
+    pub fn set_player_vulkan(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().update_settings(|settings| {
+            settings.player_vulkan = enabled;
+        });
+    }
+
     /// 用系统默认编辑器打开 embed-input.conf；文件不存在时先生成模板。
     pub fn open_player_input_conf(mut self: Pin<&mut Self>) {
         let path = crate::session::paths::embed_input_conf_path();
@@ -521,6 +528,7 @@ impl qobject::Kichi {
         rust.player_sub_lang = QString::from(snapshot.player_sub_lang.as_str());
         rust.player_mpv_conf = snapshot.player_mpv_conf;
         rust.player_input_conf = snapshot.player_input_conf;
+        rust.player_vulkan = snapshot.player_vulkan;
         rust.embed_volume = snapshot.player_volume;
         rust.embed_muted = snapshot.player_muted;
         rust.embed_sub_font_size = i32::from(snapshot.player_sub_font_size);
