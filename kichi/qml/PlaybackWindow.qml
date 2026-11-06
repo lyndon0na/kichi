@@ -20,6 +20,11 @@ import io.kichi 1.0
 Window {
     id: win
 
+    // 显式断开主窗口的 transient 关系：否则 Qt 会把嵌套 Window 自动设成主窗口的
+    // 子窗口，KWin 永远把播放窗口压在 kichi 上面，主窗口就没法正常浏览。
+    // 代价是任务栏 / Alt-Tab 多一个独立条目（docs/adr/0027-embedded-mpv.md）。
+    transientParent: null
+
     property var backend: null
     readonly property bool playing: backend !== null && backend.embedActive === true
     readonly property bool isFullScreen: win.visibility === Window.FullScreen
