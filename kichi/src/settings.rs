@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use kichi_core::subtitles::{CHINESE_ASCII, CHINESE_TEXT};
 use kichi_core::types::Tier;
 use serde::{Deserialize, Serialize};
 
@@ -227,6 +228,173 @@ impl<'de> Deserialize<'de> for PlayerBackend {
     }
 }
 
+/// 内嵌播放器的首选语言。
+///
+/// `Auto` 每次开播时读取 Linux 系统语言（`LC_ALL` → `LC_MESSAGES` → `LANG` →
+/// `LANGUAGE`）；认不出（只有 `C` / `POSIX`）时退回中文优先。
+/// 设置里只存用户选的档位，不写系统语言，换系统语言后下次开播即生效。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreferredLanguage {
+    #[default]
+    Auto,
+    Chinese,
+    Cantonese,
+    English,
+    Japanese,
+    Korean,
+}
+
+/// 展开后的语言标记。
+///
+/// `mpv` 是给 `alang` / `slang` 的 IETF 标签（逗号列表），`names` 是外挂字幕
+/// 文件名匹配用的标记（可含「简体」「中字」这类非 ASCII 词）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LanguageTags {
+    pub mpv: Vec<String>,
+    pub names: Vec<String>,
+}
+
+impl LanguageTags {
+    fn new(mpv: &[&str], names: &[&str]) -> Self {
+        Self {
+            mpv: mpv.iter().map(|tag| (*tag).to_owned()).collect(),
+            names: names.iter().map(|tag| (*tag).to_owned()).collect(),
+        }
+    }
+
+    fn generic(code: &str) -> Self {
+        Self {
+            mpv: vec![code.to_owned()],
+            names: vec![code.to_owned()],
+        }
+    }
+
+    /// mpv 的逗号列表；空列表返回 `None`（不写选项，保持 mpv 默认）。
+    pub fn mpv_value(&self) -> Option<String> {
+        (!self.mpv.is_empty()).then(|| self.mpv.join(","))
+    }
+}
+
+impl PreferredLanguage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Chinese => "zh",
+            Self::Cantonese => "yue",
+            Self::English => "en",
+            Self::Japanese => "ja",
+            Self::Korean => "ko",
+        }
+    }
+
+    pub fn parse(text: &str) -> Self {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "zh" => Self::Chinese,
+            "yue" => Self::Cantonese,
+            "en" => Self::English,
+            "ja" => Self::Japanese,
+            "ko" => Self::Korean,
+            _ => Self::Auto,
+        }
+    }
+
+    /// 展开成语言标记；`Auto` 跟随系统语言，认不出时返回空。
+    pub fn tags(self) -> LanguageTags {
+        match self {
+            Self::Auto => system_language_tags().unwrap_or_default(),
+            Self::Chinese => chinese_tags(),
+            Self::Cantonese => LanguageTags::new(
+                &["yue", "zh-yue"],
+                &["yue", "cantonese", "粤语", "粵語", "粤", "粵"],
+            ),
+            Self::English => {
+                LanguageTags::new(&["en", "eng"], &["en", "eng", "english", "英语", "英文"])
+            }
+            Self::Japanese => LanguageTags::new(
+                &["ja", "jpn"],
+                &["ja", "jpn", "japanese", "日语", "日文", "日本語"],
+            ),
+            Self::Korean => LanguageTags::new(
+                &["ko", "kor"],
+                &[
+                    "ko",
+                    "kor",
+                    "korean",
+                    "韩语",
+                    "韓語",
+                    "韩文",
+                    "韓文",
+                    "한국어",
+                ],
+            ),
+        }
+    }
+}
+
+fn chinese_tags() -> LanguageTags {
+    let mut names = CHINESE_ASCII.to_vec();
+    names.extend_from_slice(CHINESE_TEXT);
+    LanguageTags::new(&["zh", "chi", "zho", "cmn"], &names)
+}
+
+/// 依次读 `LC_ALL` / `LC_MESSAGES` / `LANG` / `LANGUAGE`，取第一个认得出的语言。
+///
+/// `LANGUAGE` 是冒号分隔的候选列表；其它变量通常只有一个值，按同样方式切开无副作用。
+fn system_language_tags() -> Option<LanguageTags> {
+    for name in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
+        let Ok(value) = std::env::var(name) else {
+            continue;
+        };
+        for raw in value.split(':') {
+            if let Some(tags) = tags_for_locale(raw) {
+                return Some(tags);
+            }
+        }
+    }
+    None
+}
+
+fn tags_for_locale(raw: &str) -> Option<LanguageTags> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // zh_CN.UTF-8 / zh-TW / sr_RS@latin 都只取语言部分。
+    let base = raw
+        .split(['.', '@'])
+        .next()
+        .unwrap_or(raw)
+        .replace('-', "_");
+    let code = base.split('_').next().unwrap_or("").to_ascii_lowercase();
+    match code.as_str() {
+        "" | "c" | "posix" => None,
+        "zh" => Some(chinese_tags()),
+        "yue" => Some(PreferredLanguage::Cantonese.tags()),
+        "en" => Some(PreferredLanguage::English.tags()),
+        "ja" => Some(PreferredLanguage::Japanese.tags()),
+        "ko" => Some(PreferredLanguage::Korean.tags()),
+        other if is_language_code(other) => Some(LanguageTags::generic(other)),
+        _ => None,
+    }
+}
+
+fn is_language_code(code: &str) -> bool {
+    (2..=3).contains(&code.len()) && code.chars().all(|ch| ch.is_ascii_lowercase())
+}
+
+impl Serialize for PreferredLanguage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PreferredLanguage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Self::parse(&text))
+    }
+}
+
 /// 全部可持久化设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -244,6 +412,10 @@ pub struct Settings {
     pub notify_enabled: bool,
     /// 播放时自动加载同目录字幕（只对 mpv 生效）
     pub auto_subtitles: bool,
+    /// 内嵌播放器首选音轨语言（`auto` / `zh` / `yue` / `en` / `ja` / `ko`）
+    pub player_audio_lang: PreferredLanguage,
+    /// 内嵌播放器首选字幕语言
+    pub player_sub_lang: PreferredLanguage,
     /// 内嵌播放器音量（0–100，跨视频 / 跨启动记住）
     pub player_volume: i32,
     /// 内嵌播放器静音状态
@@ -301,6 +473,8 @@ impl Default for Settings {
             player_args: String::new(),
             notify_enabled: true,
             auto_subtitles: true,
+            player_audio_lang: PreferredLanguage::default(),
+            player_sub_lang: PreferredLanguage::default(),
             player_volume: 100,
             player_muted: false,
             player_speed_percent: 100,
@@ -533,6 +707,8 @@ mod tests {
             player_command: "mpv".into(),
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
+            player_audio_lang: PreferredLanguage::Japanese,
+            player_sub_lang: PreferredLanguage::Chinese,
             player_volume: 65,
             player_muted: true,
             player_speed_percent: 125,
@@ -610,6 +786,16 @@ mod tests {
         );
         assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
+        assert_eq!(
+            settings.player_audio_lang,
+            PreferredLanguage::Auto,
+            "旧设置没有首选音轨语言时跟随系统"
+        );
+        assert_eq!(
+            settings.player_sub_lang,
+            PreferredLanguage::Auto,
+            "旧设置没有首选字幕语言时跟随系统"
+        );
         assert_eq!(settings.player_volume, 100, "旧设置没有音量字段时满音量");
         assert!(!settings.player_muted, "旧设置没有静音字段时不静音");
         assert_eq!(settings.player_speed_percent, 100, "旧设置没有倍速时原速");
@@ -774,6 +960,70 @@ mod tests {
         assert_eq!(PlayerBackend::parse("vlc"), PlayerBackend::Vlc);
         assert_eq!(PlayerBackend::parse(" CUSTOM "), PlayerBackend::Custom);
         assert_eq!(PlayerBackend::parse("nonsense"), PlayerBackend::Mpv);
+        assert_eq!(
+            PreferredLanguage::parse(" JA "),
+            PreferredLanguage::Japanese
+        );
+        assert_eq!(
+            PreferredLanguage::parse("nonsense"),
+            PreferredLanguage::Auto
+        );
+        for language in [
+            PreferredLanguage::Auto,
+            PreferredLanguage::Chinese,
+            PreferredLanguage::Cantonese,
+            PreferredLanguage::English,
+            PreferredLanguage::Japanese,
+            PreferredLanguage::Korean,
+        ] {
+            assert_eq!(
+                PreferredLanguage::parse(language.as_str()),
+                language,
+                "{language:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn locale_language_aliases_and_fallbacks() {
+        let chinese = tags_for_locale("zh_CN.UTF-8").expect("简体中文");
+        assert!(chinese.mpv.contains(&"zh".to_owned()));
+        assert!(chinese.names.contains(&"简体".to_owned()));
+        assert!(tags_for_locale("zh_TW")
+            .expect("繁体中文")
+            .names
+            .contains(&"繁體".to_owned()));
+        assert_eq!(
+            tags_for_locale("ja_JP.UTF-8"),
+            Some(PreferredLanguage::Japanese.tags())
+        );
+        assert_eq!(
+            tags_for_locale("en_US"),
+            Some(PreferredLanguage::English.tags())
+        );
+        assert_eq!(
+            tags_for_locale("yue_HK"),
+            Some(PreferredLanguage::Cantonese.tags())
+        );
+        assert_eq!(
+            tags_for_locale("fr_FR.UTF-8").expect("其它语言"),
+            LanguageTags {
+                mpv: vec!["fr".to_owned()],
+                names: vec!["fr".to_owned()],
+            }
+        );
+        assert_eq!(tags_for_locale("C.UTF-8"), None);
+        assert_eq!(tags_for_locale("POSIX"), None);
+        assert_eq!(tags_for_locale(""), None);
+    }
+
+    #[test]
+    fn generic_locale_codes_are_two_or_three_ascii_letters() {
+        assert!(is_language_code("fr"));
+        assert!(is_language_code("fil"));
+        assert!(!is_language_code("f"));
+        assert!(!is_language_code("french"));
+        assert!(!is_language_code("f1"));
     }
 
     #[test]

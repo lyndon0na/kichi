@@ -10,7 +10,9 @@ use cxx_qt_lib::QString;
 
 use super::qobject;
 use crate::session::limits;
-use crate::settings::{self, ContentViewMode, PlayerBackend, Quality, Settings, SortField};
+use crate::settings::{
+    self, ContentViewMode, PlayerBackend, PreferredLanguage, Quality, Settings, SortField,
+};
 
 impl qobject::Kichi {
     /// 改清晰度偏好。
@@ -67,6 +69,28 @@ impl qobject::Kichi {
     pub fn set_auto_subtitles(mut self: Pin<&mut Self>, enabled: bool) {
         self.as_mut().update_settings(|settings| {
             settings.auto_subtitles = enabled;
+        });
+    }
+
+    /// 内嵌播放首选音轨语言（下次开播生效）。
+    pub fn set_player_audio_lang(mut self: Pin<&mut Self>, value: QString) {
+        let language = PreferredLanguage::parse(&value.to_string());
+        if self.settings.player_audio_lang == language {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_audio_lang = language;
+        });
+    }
+
+    /// 内嵌播放首选字幕语言（下次开播生效）。
+    pub fn set_player_sub_lang(mut self: Pin<&mut Self>, value: QString) {
+        let language = PreferredLanguage::parse(&value.to_string());
+        if self.settings.player_sub_lang == language {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_sub_lang = language;
         });
     }
 
@@ -426,6 +450,8 @@ impl qobject::Kichi {
         rust.player_args = QString::from(args);
         rust.notify_enabled = notify;
         rust.auto_subtitles = auto_subs;
+        rust.player_audio_lang = QString::from(snapshot.player_audio_lang.as_str());
+        rust.player_sub_lang = QString::from(snapshot.player_sub_lang.as_str());
         rust.embed_volume = snapshot.player_volume;
         rust.embed_muted = snapshot.player_muted;
         rust.embed_sub_font_size = i32::from(snapshot.player_sub_font_size);

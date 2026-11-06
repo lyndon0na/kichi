@@ -220,6 +220,13 @@ impl qobject::Kichi {
             player_label,
             plan.summary()
         );
+        // 首选字幕语言只作用于内嵌播放器：外部播放器有自己的语言配置，
+        // 这里连字幕排序都不动，保持原有中文优先。
+        let subtitle_languages = if embedded_ok {
+            settings.player_sub_lang.tags().names
+        } else {
+            Vec::new()
+        };
 
         run_in_background(
             {
@@ -231,6 +238,7 @@ impl qobject::Kichi {
                         cancel,
                         audit_flagged,
                         plan,
+                        subtitle_languages,
                         wants_history,
                     )
                 }
@@ -374,6 +382,8 @@ impl qobject::Kichi {
                 Ok(()) => {
                     let event_notice = super::play_prepare::combine_notes(notice, player_notice);
                     let notify = event_notify(playback_id, event_notice, epoch, report_history);
+                    let audio_tags = settings.player_audio_lang.tags();
+                    let sub_tags = settings.player_sub_lang.tags();
                     let started = crate::player::embed::start(
                         &option.url,
                         title,
@@ -394,6 +404,9 @@ impl qobject::Kichi {
                                 i32::from(settings.player_sub_outline_size),
                                 &settings.player_sub_outline_color,
                             ),
+                            audio_tags.mpv_value().unwrap_or_default(),
+                            sub_tags.mpv_value().unwrap_or_default(),
+                            sub_tags.names,
                         ),
                         notify,
                     );

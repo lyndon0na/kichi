@@ -85,6 +85,8 @@ pub struct TrackInfo {
     /// true = 音轨；false = 字幕轨
     pub audio: bool,
     pub label: String,
+    /// 轨道语言标记（mpv 的 `track-list/N/lang`，可能为空）
+    pub lang: String,
     pub selected: bool,
 }
 
@@ -151,15 +153,32 @@ pub struct SessionSettings {
     pub muted: bool,
     pub speed: f64,
     pub subtitles: SubtitleStyle,
+    /// mpv `alang` 的值；空串 = 不指定。
+    pub audio_lang: String,
+    /// mpv `slang` 的值；空串 = 不指定。
+    pub sub_lang: String,
+    /// 外挂字幕文件名匹配用的首选语言标记；空 = 保持中文优先。
+    pub sub_name_tags: Vec<String>,
 }
 
 impl SessionSettings {
-    pub fn new(volume: i32, muted: bool, speed: f64, subtitles: SubtitleStyle) -> Self {
+    pub fn new(
+        volume: i32,
+        muted: bool,
+        speed: f64,
+        subtitles: SubtitleStyle,
+        audio_lang: String,
+        sub_lang: String,
+        sub_name_tags: Vec<String>,
+    ) -> Self {
         Self {
             volume: volume.clamp(0, 100),
             muted,
             speed: sanitize_speed(speed),
             subtitles,
+            audio_lang,
+            sub_lang,
+            sub_name_tags,
         }
     }
 }

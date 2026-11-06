@@ -67,6 +67,7 @@ pub(super) fn run_work(
     cancel: Arc<Cancel>,
     audit_flagged: bool,
     plan: SubtitlePlan,
+    subtitle_languages: Vec<String>,
     wants_history: bool,
 ) -> Result<PlayWork, Failure> {
     let started = Instant::now();
@@ -93,12 +94,14 @@ pub(super) fn run_work(
         let subs_work = work_cancel.clone();
         let subs_plan = plan.clone();
         let subs_slot = slot.clone();
+        let subs_languages = subtitle_languages.clone();
         let spawned = std::thread::Builder::new()
             .name("kichi-subs".into())
             .spawn(move || {
                 let result = prepare(
                     &subs_session,
                     &subs_plan,
+                    &subs_languages,
                     &subs_cancel,
                     &subs_work,
                     &subs_slot,

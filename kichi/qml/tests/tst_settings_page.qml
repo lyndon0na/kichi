@@ -16,6 +16,8 @@ TestCase {
         id: backend
         property string preferredQuality: "ask"
         property bool autoSubtitles: true
+        property string playerAudioLang: "auto"
+        property string playerSubLang: "auto"
         property string playerBackend: "mpv"
         property string playerDefaultCommand: "mpv"
         property string playerCommand: ""
@@ -50,6 +52,8 @@ TestCase {
 
         function setPreferredQuality(value) { preferredQuality = value }
         function setAutoSubtitles(value) { autoSubtitles = value }
+        function setPlayerAudioLang(value) { playerAudioLang = value }
+        function setPlayerSubLang(value) { playerSubLang = value }
         function setPlayerBackend(value) { playerBackend = value }
         function setPlayer(command, args) {
             playerBackend = "custom"
@@ -83,6 +87,8 @@ TestCase {
         // 每个用例都从默认值开始：后面的用例会改写这些字段
         backend.preferredQuality = "ask"
         backend.autoSubtitles = true
+        backend.playerAudioLang = "auto"
+        backend.playerSubLang = "auto"
         backend.playerBackend = "mpv"
         backend.playerCommand = ""
         backend.playerArgs = ""
@@ -321,6 +327,34 @@ TestCase {
         compare(pressed, 1, "点击确实到达默认清晰度控件")
         verify(box.popup.visible, "点默认清晰度后弹层打开")
         box.popup.close()
+    }
+
+    function test_language_preference_combos_are_wired() {
+        openSection(page.playbackSection)
+
+        var audio = findChild(page, "settingsAudioLanguage")
+        var subtitle = findChild(page, "settingsSubtitleLanguage")
+        verify(audio !== null, "有首选音轨语言下拉框")
+        verify(subtitle !== null, "有首选字幕语言下拉框")
+        compare(audio.textAt(0), "自动（跟随系统语言）")
+        compare(subtitle.textAt(0), "自动（跟随系统语言）")
+
+        audio.currentIndex = 4
+        audio.activated(4)
+        wait(40)
+        compare(backend.playerAudioLang, "ja", "选择日语后写回首选音轨语言")
+
+        subtitle.currentIndex = 2
+        subtitle.activated(2)
+        wait(40)
+        compare(backend.playerSubLang, "yue", "选择粤语后写回首选字幕语言")
+
+        backend.playerAudioLang = "ko"
+        backend.playerSubLang = "en"
+        backend.changed()
+        wait(40)
+        compare(audio.currentValue, "ko", "后端变化时音轨下拉跟随")
+        compare(subtitle.currentValue, "en", "后端变化时字幕下拉跟随")
     }
 
     function test_download_dir_commits_when_editing_finishes() {

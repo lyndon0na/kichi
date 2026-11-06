@@ -140,7 +140,13 @@ pub(super) fn run(
             if let Some(late) = &late {
                 if let Some(assets) = take_slot(&late.slot) {
                     if !assets.is_empty() {
-                        match attach_subtitles(&mpv, &assets, &mut next_sub_id, &mut selected) {
+                        match attach_subtitles(
+                            &mpv,
+                            &assets,
+                            &mut next_sub_id,
+                            &settings.sub_name_tags,
+                            &mut selected,
+                        ) {
                             None => {
                                 eprintln!("[kichi] 字幕：播放中补挂 {} 条", assets.tracks().len())
                             }
@@ -160,7 +166,13 @@ pub(super) fn run(
                     continue;
                 }
                 let note = subtitles.as_ref().and_then(|assets| {
-                    attach_subtitles(&mpv, assets, &mut next_sub_id, &mut selected)
+                    attach_subtitles(
+                        &mpv,
+                        assets,
+                        &mut next_sub_id,
+                        &settings.sub_name_tags,
+                        &mut selected,
+                    )
                 });
                 if let Some(resume) = resume {
                     let target = format!("{:.3}", resume.seconds as f64);
@@ -319,6 +331,13 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
         ] {
             init.set_option(name, value)?;
         }
+        // 首选语言交给 mpv，加载文件时自动选轨；空串表示不指定，保持 mpv 默认。
+        if !settings.audio_lang.is_empty() {
+            init.set_option("alang", settings.audio_lang.as_str())?;
+        }
+        if !settings.sub_lang.is_empty() {
+            init.set_option("slang", settings.sub_lang.as_str())?;
+        }
         Ok(())
     })?;
     mpv.set_property("force-media-title", title)?;
@@ -383,7 +402,7 @@ fn track_snapshot(mpv: &Mpv) -> Vec<TrackInfo> {
         let label = if !title.trim().is_empty() {
             title
         } else if !lang.trim().is_empty() {
-            lang
+            lang.clone()
         } else if !codec.trim().is_empty() {
             codec
         } else {
@@ -393,6 +412,7 @@ fn track_snapshot(mpv: &Mpv) -> Vec<TrackInfo> {
             id,
             audio,
             label,
+            lang,
             selected,
         });
     }
@@ -426,20 +446,29 @@ fn apply_subtitle_style(mpv: &Mpv, style: &SubtitleStyle) {
 }
 
 /// 挂字幕；返回一句失败原因（成功 / 没有字幕时 `None`）。
+///
+/// 首选语言已在下载阶段排到最前；这里只在「当前没有选中任何字幕」时 `select`
+/// 第一条。若内封字幕已经选中且语言命中首选，外挂字幕只挂不选，避免抢掉用户
+/// 想要的内封字幕。
 fn attach_subtitles(
     mpv: &Mpv,
     assets: &SubtitleAssets,
     _next_sub_id: &mut u64,
+    preferred: &[String],
     selected: &mut bool,
 ) -> Option<String> {
+    let mut select_next = !*selected && !selected_subtitle_matches(mpv, preferred);
     for track in assets.tracks() {
         let path = track.path.to_string_lossy();
-        let flag = if *selected { "auto" } else { "select" };
+        let flag = if select_next { "select" } else { "auto" };
         if let Err(err) = mpv.command("sub-add", &[&path, flag, &track.title]) {
             eprintln!("[kichi] 字幕：sub-add 失败：{err}");
             return Some(format!("字幕未能加载：{err}"));
         }
-        *selected = true;
+        if select_next {
+            select_next = false;
+            *selected = true;
+        }
     }
     if assets.is_empty() {
         None
@@ -447,6 +476,17 @@ fn attach_subtitles(
         eprintln!("[kichi] 字幕：已挂载 {} 条", assets.tracks().len());
         None
     }
+}
+
+fn selected_subtitle_matches(mpv: &Mpv, preferred: &[String]) -> bool {
+    if preferred.is_empty() {
+        return false;
+    }
+    track_snapshot(mpv).into_iter().any(|track| {
+        !track.audio
+            && track.selected
+            && kichi_core::subtitles::matches_language(&track.lang, preferred)
+    })
 }
 
 fn valid_seconds(value: f64) -> Option<f64> {

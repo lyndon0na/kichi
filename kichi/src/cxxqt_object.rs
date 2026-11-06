@@ -158,6 +158,10 @@ pub mod qobject {
         #[qproperty(bool, notify_enabled, cxx_name = "notifyEnabled", READ, NOTIFY = changed)]
         /// 播放时自动加载同目录字幕（只对 mpv 生效）
         #[qproperty(bool, auto_subtitles, cxx_name = "autoSubtitles", READ, NOTIFY = changed)]
+        /// 内嵌播放首选音轨语言："auto" / "zh" / "yue" / "en" / "ja" / "ko"
+        #[qproperty(QString, player_audio_lang, cxx_name = "playerAudioLang", READ, NOTIFY = changed)]
+        /// 内嵌播放首选字幕语言
+        #[qproperty(QString, player_sub_lang, cxx_name = "playerSubLang", READ, NOTIFY = changed)]
         #[qproperty(bool, close_to_tray, cxx_name = "closeToTray", READ, NOTIFY = changed)]
         #[qproperty(bool, tray_available, cxx_name = "trayAvailable", READ, NOTIFY = changed)]
         #[qproperty(i32, tray_show_requested, cxx_name = "trayShowRequested", READ, NOTIFY = changed)]
@@ -681,6 +685,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setAutoSubtitles"]
         fn set_auto_subtitles(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "setPlayerAudioLang"]
+        fn set_player_audio_lang(self: Pin<&mut Self>, value: QString);
+
+        #[qinvokable]
+        #[cxx_name = "setPlayerSubLang"]
+        fn set_player_sub_lang(self: Pin<&mut Self>, value: QString);
 
         #[qinvokable]
         #[cxx_name = "setSubtitleFontSize"]
@@ -1316,6 +1328,9 @@ pub struct KichiRust {
     pub(crate) notify_enabled: bool,
     /// 播放时自动加载同目录字幕（只对 mpv 生效）
     pub(crate) auto_subtitles: bool,
+    /// 内嵌播放首选语言（QML 展示用）
+    pub(crate) player_audio_lang: QString,
+    pub(crate) player_sub_lang: QString,
     pub(crate) close_to_tray: bool,
     /// 托盘是否真的起来了（失败时界面禁用「关闭到托盘」）
     pub(crate) tray_available: bool,
@@ -1588,6 +1603,8 @@ impl Default for KichiRust {
             player_default_args: QString::from(crate::player::DEFAULT_ARGS),
             notify_enabled: true,
             auto_subtitles: true,
+            player_audio_lang: QString::from("auto"),
+            player_sub_lang: QString::from("auto"),
             close_to_tray: false,
             tray_available: false,
             tray_show_requested: 0,
@@ -1746,6 +1763,8 @@ impl KichiRust {
         self.player_args = QString::from(settings.player_args.as_str());
         self.notify_enabled = settings.notify_enabled;
         self.auto_subtitles = settings.auto_subtitles;
+        self.player_audio_lang = QString::from(settings.player_audio_lang.as_str());
+        self.player_sub_lang = QString::from(settings.player_sub_lang.as_str());
         self.embed_volume = settings.player_volume;
         self.embed_muted = settings.player_muted;
         self.embed_sub_font_size = i32::from(settings.player_sub_font_size);

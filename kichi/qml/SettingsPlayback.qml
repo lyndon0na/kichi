@@ -11,7 +11,7 @@ ColumnLayout {
 
     readonly property KTheme theme: KTheme { parent: playback }
 
-    spacing: 0
+    spacing: theme.gapXl
 
     KSettingsGroup {
         title: qsTr("播放")
@@ -200,6 +200,16 @@ ColumnLayout {
                     onClicked: playback.resetPlayer()
                 }
             }
+        }
+    }
+
+    KSettingsGroup {
+        title: qsTr("内嵌播放器")
+        Layout.fillWidth: true
+
+        SettingsPlaybackLanguage {
+            Layout.fillWidth: true
+            backend: playback.backend
         }
     }
 

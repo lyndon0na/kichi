@@ -138,6 +138,7 @@ const QML_FILES: &[&str] = &[
     "qml/SettingsAccount.qml",
     "qml/SettingsAbout.qml",
     "qml/SettingsPlayback.qml",
+    "qml/SettingsPlaybackLanguage.qml",
     "qml/PlayToast.qml",
     "qml/PlaybackWindow.qml",
     "qml/PlaybackTrackMenu.qml",

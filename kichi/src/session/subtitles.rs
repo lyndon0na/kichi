@@ -17,7 +17,10 @@ use std::io::Read;
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
-use kichi_core::subtitles::{is_video_name, matching_subtitles, subtitle_extension};
+use kichi_core::subtitles::{
+    is_video_name, matching_subtitles_with_preferred, sort_subtitles_by_preferred,
+    subtitle_extension,
+};
 use kichi_core::FileEntry;
 
 use crate::player::subtitles::{LateSubtitles, SubtitleAssets, SubtitleSlot};
@@ -99,7 +102,7 @@ pub fn plan_from_snapshot(video_name: &str, entries: &[FileEntry]) -> SubtitlePl
     if !is_video_name(video_name) {
         return SubtitlePlan::None;
     }
-    let matches: Vec<FileEntry> = matching_subtitles(video_name, entries)
+    let matches: Vec<FileEntry> = matching_subtitles_with_preferred(video_name, entries, &[])
         .into_iter()
         .cloned()
         .collect();
@@ -120,6 +123,7 @@ pub fn plan_from_snapshot(video_name: &str, entries: &[FileEntry]) -> SubtitlePl
 pub fn prepare(
     session: &Session,
     plan: &SubtitlePlan,
+    preferred: &[String],
     user_cancel: &Cancel,
     work_cancel: &Cancel,
     slot: &SubtitleSlot,
@@ -129,7 +133,15 @@ pub fn prepare(
 
     let mut candidates = match plan {
         SubtitlePlan::None => return Ok(None),
-        SubtitlePlan::Snapshot { matches, .. } => matches.clone(),
+        SubtitlePlan::Snapshot {
+            video_name,
+            matches,
+        } => {
+            let mut matches = matches.clone();
+            // 候选顺序决定谁先下、谁被 `select`：首选语言必须排到最前面。
+            sort_subtitles_by_preferred(video_name, &mut matches, preferred);
+            matches
+        }
         SubtitlePlan::Folder {
             video_name,
             folder_id,
@@ -150,7 +162,7 @@ pub fn prepare(
                     return Ok(Some("未能读取视频所在文件夹，已跳过字幕".to_owned()));
                 }
             };
-            matching_subtitles(video_name, &entries)
+            matching_subtitles_with_preferred(video_name, &entries, preferred)
                 .into_iter()
                 .cloned()
                 .collect()

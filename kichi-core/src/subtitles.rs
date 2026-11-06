@@ -11,12 +11,12 @@ pub const SUBTITLE_EXTENSIONS: &[&str] = &[
 ];
 
 /// 中文语言标记（ASCII token，按 `.` / `-` / `_` / 空格 / `&` / `+` 切分后精确匹配）。
-const CHINESE_ASCII: &[&str] = &[
+pub const CHINESE_ASCII: &[&str] = &[
     "zh", "zho", "chi", "chs", "cht", "sc", "tc", "cn", "hans", "hant", "chinese",
 ];
 
 /// 中文语言标记（非 ASCII，按后缀包含判断）。
-const CHINESE_TEXT: &[&str] = &[
+pub const CHINESE_TEXT: &[&str] = &[
     "简体", "簡體", "繁体", "繁體", "中文", "中字", "简中", "繁中", "简", "繁", "中",
 ];
 
@@ -58,23 +58,65 @@ pub fn matches(video_name: &str, subtitle_name: &str) -> bool {
 
 /// 语言优先级：0 = 中文，1 = 无语言标记，2 = 其它语言。
 pub fn language_rank(video_name: &str, subtitle_name: &str) -> u8 {
+    language_rank_with_preferred(video_name, subtitle_name, &[])
+}
+
+/// 带首选语言的语言优先级。
+///
+/// 命中首选语言排 0；其余仍按「中文 → 无语言标记 → 其它」兜底。
+/// `preferred` 为空时与 [`language_rank`] 完全一致。
+pub fn language_rank_with_preferred(
+    video_name: &str,
+    subtitle_name: &str,
+    preferred: &[String],
+) -> u8 {
     let Some(suffix) = subtitle_suffix(video_name, subtitle_name) else {
         return 2;
     };
-    if suffix.is_empty() {
-        return 1;
+    if !preferred.is_empty() && matches_language(suffix, preferred) {
+        return 0;
     }
+    if suffix.is_empty() {
+        return if preferred.is_empty() { 1 } else { 2 };
+    }
+    if is_chinese_suffix(suffix) {
+        return if preferred.is_empty() { 0 } else { 1 };
+    }
+    if preferred.is_empty() {
+        2
+    } else {
+        3
+    }
+}
+
+/// 文件名语言后缀（或 mpv 轨道语言）是否命中首选标记。
+///
+/// ASCII 标记按 `.` / `-` / `_` / 空格 / `&` / `+` 切分后精确匹配；
+/// 非 ASCII 标记（「简体」「中字」等）按包含判断。
+pub fn matches_language(value: &str, preferred: &[String]) -> bool {
+    if value.is_empty() || preferred.is_empty() {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(['.', '-', '_', ' ', '&', '+'])
+        .filter(|token| !token.is_empty())
+        .collect();
+    preferred.iter().any(|mark| {
+        if mark.is_ascii() {
+            tokens.iter().any(|token| token.eq_ignore_ascii_case(mark))
+        } else {
+            value.contains(mark.as_str())
+        }
+    })
+}
+
+fn is_chinese_suffix(suffix: &str) -> bool {
     let lower = suffix.to_ascii_lowercase();
-    if lower
+    lower
         .split(['.', '-', '_', ' ', '&', '+'])
         .any(|token| CHINESE_ASCII.contains(&token))
-    {
-        return 0;
-    }
-    if CHINESE_TEXT.iter().any(|mark| suffix.contains(mark)) {
-        return 0;
-    }
-    2
+        || CHINESE_TEXT.iter().any(|mark| suffix.contains(mark))
 }
 
 /// 选出这部电影的字幕。
@@ -82,6 +124,15 @@ pub fn language_rank(video_name: &str, subtitle_name: &str) -> u8 {
 /// 有同名匹配就返回全部（中文优先、再按文件名稳定排序）；没有同名匹配、
 /// 但目录里恰好只有一条字幕时也返回它（唯一兜底）；否则空。
 pub fn matching_subtitles<'a>(video_name: &str, entries: &'a [FileEntry]) -> Vec<&'a FileEntry> {
+    matching_subtitles_with_preferred(video_name, entries, &[])
+}
+
+/// 带首选语言的字幕匹配：命中首选语言的排最前，其余按中文优先兜底。
+pub fn matching_subtitles_with_preferred<'a>(
+    video_name: &str,
+    entries: &'a [FileEntry],
+    preferred: &[String],
+) -> Vec<&'a FileEntry> {
     let subtitles: Vec<&FileEntry> = entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::File && is_subtitle_name(&entry.name))
@@ -99,8 +150,12 @@ pub fn matching_subtitles<'a>(video_name: &str, entries: &'a [FileEntry]) -> Vec
         };
     }
     matched.sort_by(|left, right| {
-        language_rank(video_name, &left.name)
-            .cmp(&language_rank(video_name, &right.name))
+        language_rank_with_preferred(video_name, &left.name, preferred)
+            .cmp(&language_rank_with_preferred(
+                video_name,
+                &right.name,
+                preferred,
+            ))
             .then_with(|| {
                 left.name
                     .to_ascii_lowercase()
@@ -108,6 +163,27 @@ pub fn matching_subtitles<'a>(video_name: &str, entries: &'a [FileEntry]) -> Vec
             })
     });
     matched
+}
+
+/// 已匹配好的字幕按首选语言重排，规则与 [`matching_subtitles_with_preferred`] 相同。
+pub fn sort_subtitles_by_preferred(
+    video_name: &str,
+    subtitles: &mut [FileEntry],
+    preferred: &[String],
+) {
+    subtitles.sort_by(|left, right| {
+        language_rank_with_preferred(video_name, &left.name, preferred)
+            .cmp(&language_rank_with_preferred(
+                video_name,
+                &right.name,
+                preferred,
+            ))
+            .then_with(|| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            })
+    });
 }
 
 /// 字幕 stem 中「视频 stem 之后」的部分（去掉一个分隔点）。
@@ -226,6 +302,71 @@ mod tests {
                 "Show.srt",
                 "Show.en.srt"
             ]
+        );
+    }
+
+    #[test]
+    fn preferred_language_ranks_first_with_chinese_fallback() {
+        let preferred = vec!["en".to_owned()];
+        assert_eq!(
+            language_rank_with_preferred("Movie.mkv", "Movie.en.srt", &preferred),
+            0
+        );
+        assert_eq!(
+            language_rank_with_preferred("Movie.mkv", "Movie.zh.srt", &preferred),
+            1,
+            "首选语言缺失时中文仍是第一兜底"
+        );
+        assert_eq!(
+            language_rank_with_preferred("Movie.mkv", "Movie.srt", &preferred),
+            2
+        );
+        assert_eq!(
+            language_rank_with_preferred("Movie.mkv", "Movie.ja.srt", &preferred),
+            3
+        );
+
+        let entries = [
+            file("Show.en.srt"),
+            file("Show.zh-Hans.srt"),
+            file("Show.ja.srt"),
+            file("Show.srt"),
+            file("Show.mkv"),
+        ];
+        let got = matching_subtitles_with_preferred("Show.mkv", &entries, &preferred);
+        assert_eq!(
+            names(&got),
+            vec!["Show.en.srt", "Show.zh-Hans.srt", "Show.srt", "Show.ja.srt"]
+        );
+    }
+
+    #[test]
+    fn preferred_chinese_keeps_both_variants_first() {
+        let preferred = vec!["zh".to_owned(), "chi".to_owned(), "zho".to_owned()];
+        assert!(matches_language("zh-Hant", &preferred));
+        assert!(matches_language("chi", &preferred));
+        assert!(!matches_language("eng", &preferred));
+
+        let text = vec!["中字".to_owned()];
+        assert!(
+            matches_language("简体中字", &text),
+            "非 ASCII 标记按包含判断"
+        );
+        assert!(!matches_language("english", &text));
+    }
+
+    #[test]
+    fn sorting_already_matched_subtitles_uses_the_same_order() {
+        let mut matched = vec![
+            file("Show.zh.srt"),
+            file("Show.ja.srt"),
+            file("Show.en.srt"),
+            file("Show.srt"),
+        ];
+        sort_subtitles_by_preferred("Show.mkv", &mut matched, &["ja".to_owned()]);
+        assert_eq!(
+            names(&matched.iter().collect::<Vec<_>>()),
+            vec!["Show.ja.srt", "Show.zh.srt", "Show.srt", "Show.en.srt"]
         );
     }
 

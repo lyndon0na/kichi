@@ -56,7 +56,15 @@ fn embedded_pipeline_delivers_a_frame() {
         "embed-test",
         cancel.clone(),
         PlaybackExtras::default(),
-        SessionSettings::new(0, true, 1.0, SubtitleStyle::default()),
+        SessionSettings::new(
+            0,
+            true,
+            1.0,
+            SubtitleStyle::default(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+        ),
         move |event| {
             let _ = tx.send(event);
         },
