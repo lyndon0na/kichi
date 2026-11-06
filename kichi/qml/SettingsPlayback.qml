@@ -11,6 +11,22 @@ ColumnLayout {
 
     readonly property KTheme theme: KTheme { parent: playback }
 
+    readonly property var subTextColors: [
+        { "color": "#FFFFFFFF", "name": qsTr("白色"), "darkText": true },
+        { "color": "#FFFFFF00", "name": qsTr("黄色"), "darkText": true },
+        { "color": "#FF00FFFF", "name": qsTr("青色"), "darkText": true },
+        { "color": "#FF9BE37F", "name": qsTr("绿色"), "darkText": true },
+        { "color": "#FFFF9EC9", "name": qsTr("粉色"), "darkText": true },
+        { "color": "#FFFFA94D", "name": qsTr("橙色"), "darkText": true }
+    ]
+    readonly property var subOutlineColors: [
+        { "color": "#FF000000", "name": qsTr("黑色"), "darkText": false },
+        { "color": "#FFFFFFFF", "name": qsTr("白色"), "darkText": true },
+        { "color": "#FF404040", "name": qsTr("深灰"), "darkText": false },
+        { "color": "#FF1A2A4A", "name": qsTr("深蓝"), "darkText": false },
+        { "color": "#FF4A1A1A", "name": qsTr("深红"), "darkText": false }
+    ]
+
     spacing: 0
 
     KSettingsGroup {
@@ -115,6 +131,22 @@ ColumnLayout {
         }
 
         KSettingsRow {
+            title: qsTr("按键交给 mpv")
+            description: qsTr("播放窗口把键盘交给 mpv：空格暂停、方向键快进或调音量、m 静音等原生键位生效。Esc（收浮层 / 退全屏 / 关窗）和 F（全屏）始终由 kichi 处理；菜单或样式面板打开时键盘归浮层。关闭时使用 kichi 的快捷键，按键不下发。")
+
+            Switch {
+                id: mpvKeysSwitch
+                objectName: "settingsPlayerMpvKeys"
+                checked: playback.backend ? playback.backend.embedMpvKeys : false
+                Accessible.name: qsTr("按键交给 mpv")
+                onToggled: function () {
+                    if (playback.backend)
+                        playback.backend.setMpvKeys(checked)
+                }
+            }
+        }
+
+        KSettingsRow {
             objectName: "settingsAdvancedPlayer"
             interactive: true
             title: qsTr("自定义播放器命令")
@@ -203,6 +235,104 @@ ColumnLayout {
         }
     }
 
+    KSettingsGroup {
+        title: qsTr("字幕样式")
+        Layout.fillWidth: true
+
+        KSettingsRow {
+            title: qsTr("字号")
+            description: qsTr("内嵌播放时立即生效。")
+
+            SpinBox {
+                id: subFontBox
+                objectName: "settingsSubtitleFontSize"
+                from: 16
+                to: 100
+                stepSize: 1
+                editable: true
+                value: playback.backend ? playback.backend.embedSubFontSize : 55
+                Accessible.name: qsTr("字幕字号")
+                onValueModified: {
+                    if (playback.backend)
+                        playback.backend.setSubtitleFontSize(value)
+                }
+            }
+        }
+
+        KSettingsRow {
+            title: qsTr("位置")
+            description: qsTr("0 = 贴顶部，100 = 底部默认位置，150 = 更靠下。")
+
+            SpinBox {
+                id: subPosBox
+                objectName: "settingsSubtitlePosition"
+                from: 0
+                to: 150
+                stepSize: 1
+                editable: true
+                value: playback.backend ? playback.backend.embedSubPos : 100
+                Accessible.name: qsTr("字幕位置")
+                onValueModified: {
+                    if (playback.backend)
+                        playback.backend.setSubtitlePosition(value)
+                }
+            }
+        }
+
+        KSettingsRow {
+            title: qsTr("文字颜色")
+            description: qsTr("播放窗口的字幕菜单里也能随时调整。")
+
+            KColorSwatchRow {
+                objectName: "settingsSubtitleTextColor"
+                colors: playback.subTextColors
+                current: playback.backend ? playback.backend.embedSubColor : "#FFFFFFFF"
+                selectionColor: theme.accent
+                onColorPicked: function (color) {
+                    if (playback.backend)
+                        playback.backend.setSubtitleColor(color)
+                }
+            }
+        }
+
+        KSettingsRow {
+            title: qsTr("描边粗细")
+            description: qsTr("0 表示不描边。")
+
+            SpinBox {
+                id: subOutlineBox
+                objectName: "settingsSubtitleOutlineSize"
+                from: 0
+                to: 8
+                stepSize: 1
+                editable: true
+                value: playback.backend ? playback.backend.embedSubOutlineSize : 2
+                Accessible.name: qsTr("字幕描边粗细")
+                onValueModified: {
+                    if (playback.backend)
+                        playback.backend.setSubtitleOutlineSize(value)
+                }
+            }
+        }
+
+        KSettingsRow {
+            title: qsTr("描边颜色")
+            description: qsTr("深色描边在亮画面上更清楚。")
+
+            KColorSwatchRow {
+                objectName: "settingsSubtitleOutlineColor"
+                colors: playback.subOutlineColors
+                current: playback.backend ? playback.backend.embedSubOutlineColor
+                                          : "#FF000000"
+                selectionColor: theme.accent
+                onColorPicked: function (color) {
+                    if (playback.backend)
+                        playback.backend.setSubtitleOutlineColor(color)
+                }
+            }
+        }
+    }
+
     function syncFromBackend() {
         if (!playback.backend)
             return
@@ -212,6 +342,19 @@ ColumnLayout {
             commandField.text = playback.backend.playerCommand
         if (!argsField.activeFocus)
             argsField.text = playback.backend.playerArgs
+        if (!subFontBox.activeFocus)
+            subFontBox.value = playback.backend.embedSubFontSize
+        if (!subPosBox.activeFocus)
+            subPosBox.value = playback.backend.embedSubPos
+        if (!subOutlineBox.activeFocus)
+            subOutlineBox.value = playback.backend.embedSubOutlineSize
+        mpvKeysSwitch.checked = playback.backend.embedMpvKeys
+    }
+
+    // 播放窗口的字幕样式调整会改后端属性；设置页开着时同步到控件。
+    Connections {
+        target: playback.backend
+        function onChanged() { playback.syncFromBackend() }
     }
 
     function applyPlayer() {

@@ -41,12 +41,30 @@ Window {
     property string osdText: ""
     // 点击喇叭打开的音量面板（滑块 + 静音）
     property bool volumeOpen: false
+    // 倍速（百分比，跨视频记住）/ 字幕样式面板
+    property int speedPercent: 100
+    property bool speedOpen: false
+    property bool subStyleOpen: false
+    // 按键交给 mpv：除 Esc / F 外，键盘事件原样转给 mpv 原生键位。
+    readonly property bool mpvKeys: backend !== null && backend.embedMpvKeys === true
+    readonly property bool menuOpen: trackMenu.visible
+    // 任何浮层 / 菜单打开时，键盘归浮层，kichi 的播放快捷键暂停。
+    readonly property bool overlayOpen: volumeOpen || subStyleOpen || speedOpen || menuOpen
     // 拖动松手后等 mpv 回报新位置，期间别让旧坐标把滑块拉回去。
     property real seekTarget: -1
 
     title: backend !== null && backend.embedTitle.length > 0
            ? backend.embedTitle : "kichi"
     color: "black"
+    // 视频窗口固定深色：系统浅色主题下也不要出现白色 ToolTip / 悬停底 / 系统菜单。
+    palette.window: "#0A0A0A"
+    palette.windowText: "#F2FFFFFF"
+    palette.base: "#0A0A0A"
+    palette.text: "#F2FFFFFF"
+    palette.button: "#161616"
+    palette.buttonText: "#F2FFFFFF"
+    palette.placeholderText: "#99FFFFFF"
+    palette.mid: "#33FFFFFF"
     // 初始 1280×720，按屏幕可用区域等比限幅；最小 480×270。
     width: 1280
     height: 720
@@ -78,6 +96,9 @@ Window {
         applyInitialGeometry()
         dismissed = false
         resetPlayback()
+        // 倍速跨视频记住：先读会话里的值，避免首帧 syncPlayback 把同一值再写一次盘。
+        if (backend !== null)
+            speedPercent = Math.round(backend.embedSpeed() * 100)
         win.show()
         win.raise()
         win.requestActivate()
@@ -99,6 +120,7 @@ Window {
         if (!win.visible)
             return
         dismissed = true
+        commitSpeed()
         commitAudio()
         if (backend !== null)
             backend.embedStop()
@@ -131,6 +153,21 @@ Window {
         // 面板开着时，键盘 / 滚轮改的音量也要同步到滑块（拖动中不抢）。
         if (!volumeSlider.pressed)
             volumeSlider.value = win.volume
+        // 倍速：mpv 原生键位（`[` / `]`）改过时同步标签，并写回设置。
+        var reportedSpeed = Math.round(backend.embedSpeed() * 100)
+        if (reportedSpeed !== win.speedPercent) {
+            win.speedPercent = reportedSpeed
+            backend.embedSetSpeed(reportedSpeed)
+        }
+        // 按键交给 mpv 时，↑↓ / m 改的是 mpv 自己的音量：拉回界面并落盘。
+        if (win.mpvKeys) {
+            var actualVolume = backend.embedCurrentVolume()
+            var actualMuted = backend.embedCurrentMuted()
+            if (actualVolume !== win.volume || actualMuted !== win.muted) {
+                backend.embedSyncAudio(actualVolume, actualMuted)
+                audioSave.restart()
+            }
+        }
     }
 
     function togglePause() {
@@ -222,9 +259,180 @@ Window {
         if (!win.playing)
             return
         volumeOpen = !volumeOpen
-        if (volumeOpen)
+        if (volumeOpen) {
+            win.speedOpen = false
             volumeSlider.value = win.volume
+        }
         wake()
+    }
+
+    function formatSpeed(percent) {
+        return (Math.round(percent) / 100) + "×"
+    }
+
+    // 拖动中只改 mpv 与界面，不写设置；松手 / 收面板时再提交。
+    function previewSpeedPercent(percent) {
+        if (!win.playing || backend === null)
+            return
+        percent = Math.max(50, Math.min(300, Math.round(percent)))
+        win.speedPercent = percent
+        backend.embedPreviewSpeed(percent)
+        wake()
+    }
+
+    function commitSpeedPercent(percent) {
+        if (!win.playing || backend === null)
+            return
+        percent = Math.max(50, Math.min(300, Math.round(percent)))
+        win.speedPercent = percent
+        backend.embedSetSpeed(percent)
+        wake()
+    }
+
+    function commitSpeed() {
+        if (win.speedOpen)
+            commitSpeedPercent(win.speedPercent)
+    }
+
+    function toggleSpeedPanel() {
+        if (!win.playing)
+            return
+        if (win.speedOpen) {
+            win.speedOpen = false
+            wake()
+            return
+        }
+        win.volumeOpen = false
+        win.subStyleOpen = false
+        closeMenus()
+        win.speedOpen = true
+        wake()
+    }
+
+    function closeMenus() {
+        trackMenu.close()
+    }
+
+    function openTrackMenu(kind, anchor) {
+        if (!win.playing || backend === null)
+            return
+        win.volumeOpen = false
+        win.subStyleOpen = false
+        win.speedOpen = false
+        trackMenu.kind = kind
+        trackMenu.openAt(anchor)
+        wake()
+    }
+
+    function toggleSubtitleStyle() {
+        if (!win.playing)
+            return
+        if (win.subStyleOpen) {
+            win.subStyleOpen = false
+            surface.forceActiveFocus()
+            wake()
+            return
+        }
+        win.volumeOpen = false
+        win.speedOpen = false
+        closeMenus()
+        win.subStyleOpen = true
+        wake()
+    }
+
+    function handleEscape() {
+        if (win.menuOpen)
+            return
+        if (win.subStyleOpen) {
+            win.subStyleOpen = false
+            surface.forceActiveFocus()
+            wake()
+            return
+        }
+        if (win.volumeOpen) {
+            win.volumeOpen = false
+            wake()
+            return
+        }
+        if (win.speedOpen) {
+            win.speedOpen = false
+            wake()
+            return
+        }
+        if (win.isFullScreen)
+            win.showNormal()
+        else
+            win.requestClose()
+    }
+
+    // Qt 按键 → mpv 键名。可打印字符直接交原文（Shift 产生的符号 / 大写
+    // 已经在 text 里），特殊键映射成 mpv 的 LEFT / PGUP 这类名字。
+    function mpvKeyName(event) {
+        var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+        var alt = (event.modifiers & Qt.AltModifier) !== 0
+        var shift = (event.modifiers & Qt.ShiftModifier) !== 0
+        var key = event.key
+        var name = ""
+
+        switch (key) {
+        case Qt.Key_Space: name = "SPACE"; break
+        case Qt.Key_Left: name = "LEFT"; break
+        case Qt.Key_Right: name = "RIGHT"; break
+        case Qt.Key_Up: name = "UP"; break
+        case Qt.Key_Down: name = "DOWN"; break
+        case Qt.Key_Return:
+        case Qt.Key_Enter: name = "ENTER"; break
+        case Qt.Key_Tab: name = "TAB"; break
+        case Qt.Key_Backspace: name = "BS"; break
+        case Qt.Key_Home: name = "HOME"; break
+        case Qt.Key_End: name = "END"; break
+        case Qt.Key_PageUp: name = "PGUP"; break
+        case Qt.Key_PageDown: name = "PGDN"; break
+        case Qt.Key_Insert: name = "INS"; break
+        case Qt.Key_Delete: name = "DEL"; break
+        default:
+            if (!ctrl && !alt && event.text.length === 1
+                    && event.text.charCodeAt(0) >= 32)
+                return event.text
+            if (key >= Qt.Key_A && key <= Qt.Key_Z)
+                name = String.fromCharCode(97 + key - Qt.Key_A)
+            else if (key >= Qt.Key_0 && key <= Qt.Key_9)
+                name = String.fromCharCode(key)
+            else if (key >= Qt.Key_F1 && key <= Qt.Key_F12)
+                name = "F" + (key - Qt.Key_F1 + 1)
+            else
+                return ""
+        }
+
+        var prefix = ""
+        if (ctrl)
+            prefix += "Ctrl+"
+        if (alt)
+            prefix += "Alt+"
+        if (shift)
+            prefix += "Shift+"
+        return prefix + name
+    }
+
+    function handleKey(event) {
+        if (!win.visible || win.overlayOpen)
+            return false
+        // Esc / 单按 F 永远归 kichi，mpv 也拿不到。
+        if (event.key === Qt.Key_Escape)
+            return false
+        if (event.key === Qt.Key_F && event.modifiers === Qt.NoModifier) {
+            win.toggleFullscreen()
+            return true
+        }
+        if (!win.mpvKeys)
+            return false
+        var name = mpvKeyName(event)
+        if (name.length === 0)
+            return false
+        if (win.backend !== null)
+            win.backend.embedKeypress(name)
+        wake()
+        return true
     }
 
     function flashOsd(text) {
@@ -246,6 +454,10 @@ Window {
         osdTimer.stop()
         osdText = ""
         volumeOpen = false
+        subStyleOpen = false
+        speedOpen = false
+        closeMenus()
+        speedPercent = 100
         position = 0
         duration = 0
         paused = false
@@ -268,8 +480,8 @@ Window {
         if (!win.visible)
             return
         chromeVisible = true
-        // 暂停 / 拖动时控制条一直留着；播放中才按闲置时间收起。
-        if (paused || seeking || volumeOpen)
+        // 暂停 / 拖动 / 浮层打开时控制条一直留着；播放中才按闲置时间收起。
+        if (paused || seeking || overlayOpen)
             hideTimer.stop()
         else
             hideTimer.restart()
@@ -325,7 +537,7 @@ Window {
         id: hideTimer
         interval: 2500
         onTriggered: {
-            if (win.paused || win.seeking || win.volumeOpen
+            if (win.paused || win.seeking || win.overlayOpen
                     || topHover.hovered || bottomBarHover.hovered) {
                 restart()
                 return
@@ -362,6 +574,11 @@ Window {
         color: "black"
         focus: true
 
+        Keys.onPressed: function (event) {
+            if (win.handleKey(event))
+                event.accepted = true
+        }
+
         KTheme { id: theme }
 
         MpvVideo {
@@ -388,9 +605,15 @@ Window {
             acceptedButtons: Qt.LeftButton
             hoverEnabled: true
             onClicked: {
-                // 音量面板开着时，点画面先收起面板，不顺手把控制条也藏掉。
+                // 浮层开着时，点画面先收起浮层，不顺手把控制条也藏掉。
                 if (win.volumeOpen) {
                     win.volumeOpen = false
+                    win.wake()
+                } else if (win.subStyleOpen) {
+                    win.subStyleOpen = false
+                    win.wake()
+                } else if (win.speedOpen) {
+                    win.speedOpen = false
                     win.wake()
                 } else if (win.chromeVisible) {
                     hideTimer.stop()
@@ -398,6 +621,7 @@ Window {
                 } else {
                     win.wake()
                 }
+                surface.forceActiveFocus()
             }
             onDoubleClicked: win.toggleFullscreen()
             // 鼠标在窗口里任何一次移动都唤醒控制条（收起状态下也一样）。
@@ -408,7 +632,8 @@ Window {
         // 滚轮调音量，与常见播放器一致；上下滚动一步 5%。
         WheelHandler {
             onWheel: function (event) {
-                if (event.angleDelta.y === 0)
+                // 浮层 / 菜单开着时滚轮留给它们（例如样式面板滚动）。
+                if (event.angleDelta.y === 0 || win.overlayOpen)
                     return
                 win.adjustVolume(event.angleDelta.y > 0 ? 5 : -5)
                 event.accepted = true
@@ -469,9 +694,13 @@ Window {
                     iconSize: 18
                     iconColor: "white"
                     iconOpacity: 1
+                    onMedia: true
+                    focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("关闭播放")
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("关闭播放")
+                    KMediaToolTip {
+                        visible: hovered && !win.overlayOpen
+                        text: qsTr("关闭播放")
+                    }
                     onClicked: win.requestClose()
                 }
             }
@@ -521,11 +750,15 @@ Window {
                     iconSize: 20
                     iconColor: "white"
                     iconOpacity: 1
+                    onMedia: true
                     implicitWidth: 34
                     implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
                     Accessible.name: win.paused ? qsTr("继续播放") : qsTr("暂停")
-                    ToolTip.visible: hovered
-                    ToolTip.text: Accessible.name
+                    KMediaToolTip {
+                        visible: hovered && !win.overlayOpen
+                        text: win.paused ? qsTr("继续播放") : qsTr("暂停")
+                    }
                     onClicked: win.togglePause()
                 }
 
@@ -594,19 +827,95 @@ Window {
                     font.pixelSize: theme.fontMeta
                 }
 
+                // 倍速：文字按钮，非原速时加亮，一眼看出当前不是 1×。
+                Rectangle {
+                    id: speedButton
+                    objectName: "playbackWindowSpeed"
+                    implicitWidth: 44
+                    implicitHeight: 30
+                    radius: theme.radiusSmall
+                    color: speedHover.containsMouse ? theme.mediaHover : "transparent"
+                    Accessible.role: Accessible.Button
+                    Accessible.name: qsTr("播放速度 %1").arg(win.formatSpeed(win.speedPercent))
+                    KMediaToolTip {
+                        visible: speedHover.containsMouse && !win.overlayOpen
+                        text: qsTr("播放速度")
+                    }
+
+                    MouseArea {
+                        id: speedHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.toggleSpeedPanel()
+                    }
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: win.formatSpeed(win.speedPercent)
+                        color: "white"
+                        opacity: win.speedPercent === 100 ? 0.75 : 1
+                        font.pixelSize: theme.fontMeta
+                        font.weight: win.speedPercent === 100 ? Font.Normal : Font.Medium
+                    }
+                }
+
+                KIconButton {
+                    id: audioButton
+                    objectName: "playbackWindowAudio"
+                    iconName: "music"
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 0.9
+                    onMedia: true
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
+                    Accessible.name: qsTr("音轨")
+                    KMediaToolTip {
+                        visible: hovered && !win.overlayOpen
+                        text: qsTr("切换音轨")
+                    }
+                    onClicked: win.openTrackMenu("audio", audioButton)
+                }
+
+                KIconButton {
+                    id: subtitleButton
+                    objectName: "playbackWindowSubtitle"
+                    iconName: "subtitle"
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 0.9
+                    onMedia: true
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
+                    Accessible.name: qsTr("字幕")
+                    KMediaToolTip {
+                        visible: hovered && !win.overlayOpen
+                        text: qsTr("切换字幕 / 字幕样式")
+                    }
+                    onClicked: win.openTrackMenu("sub", subtitleButton)
+                }
+
                 KIconButton {
                     objectName: "playbackWindowVolume"
                     iconName: win.volumeIconName()
                     iconSize: 18
                     iconColor: "white"
                     iconOpacity: 1
+                    onMedia: true
                     implicitWidth: 34
                     implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("音量控制")
-                    ToolTip.visible: hovered
-                    ToolTip.text: win.muted
-                                  ? qsTr("已静音（点击调节音量）")
-                                  : qsTr("音量 %1%（点击调节，M 静音）").arg(win.volume)
+                    KMediaToolTip {
+                        visible: hovered && !win.overlayOpen
+                        text: win.muted
+                              ? qsTr("已静音（点击调节音量）")
+                              : qsTr("音量 %1%（点击调节，M 静音）").arg(win.volume)
+                    }
                     onClicked: win.toggleVolumePanel()
                 }
 
@@ -616,11 +925,15 @@ Window {
                     iconSize: 18
                     iconColor: "white"
                     iconOpacity: 1
+                    onMedia: true
                     implicitWidth: 34
                     implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
                     Accessible.name: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
-                    ToolTip.visible: hovered
-                    ToolTip.text: Accessible.name
+                    KMediaToolTip {
+                        visible: hovered && !win.overlayOpen
+                        text: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
+                    }
                     onClicked: win.toggleFullscreen()
                 }
             }
@@ -636,8 +949,10 @@ Window {
             anchors.bottomMargin: theme.gapSm
             width: 212
             height: 44
-            radius: theme.radiusControl
-            color: "#CC000000"
+            radius: theme.mediaRadius
+            color: theme.mediaSurface
+            border.width: 1
+            border.color: theme.mediaBorder
             opacity: win.volumeOpen ? 1 : 0
             visible: opacity > 0
             Behavior on opacity { NumberAnimation { duration: theme.motionFast } }
@@ -667,11 +982,11 @@ Window {
                     iconSize: 16
                     iconColor: "white"
                     iconOpacity: 1
+                    onMedia: true
                     implicitWidth: 28
                     implicitHeight: 28
+                    focusPolicy: Qt.NoFocus
                     Accessible.name: win.muted ? qsTr("取消静音") : qsTr("静音")
-                    ToolTip.visible: hovered
-                    ToolTip.text: Accessible.name
                     onClicked: win.toggleMute()
                 }
 
@@ -728,6 +1043,59 @@ Window {
             }
         }
 
+        // 音轨 / 字幕轨菜单（打开时现读轨道列表）。
+        PlaybackTrackMenu {
+            id: trackMenu
+
+            backend: win.backend
+            maxPopupHeight: Math.max(140, win.height - 180)
+
+            onTrackSelected: function (kind, id, label) {
+                if (win.backend !== null)
+                    win.backend.embedSelectTrack(kind, id)
+                if (kind === "audio")
+                    win.flashOsd(qsTr("音轨：%1").arg(label))
+                else if (id < 0)
+                    win.flashOsd(qsTr("字幕已关闭"))
+                else
+                    win.flashOsd(qsTr("字幕：%1").arg(label))
+                Qt.callLater(function () { surface.forceActiveFocus() })
+                win.wake()
+            }
+
+            onStyleRequested: {
+                win.closeMenus()
+                win.subStyleOpen = true
+                win.wake()
+            }
+
+            onClosed: surface.forceActiveFocus()
+        }
+
+        PlaybackSpeedPanel {
+            backend: win.backend
+            open: win.speedOpen
+            current: win.speedPercent
+            anchorItem: bottomBar
+
+            onSpeedEdited: function (percent) { win.previewSpeedPercent(percent) }
+            onSpeedCommitted: function (percent) { win.commitSpeedPercent(percent) }
+        }
+
+        PlaybackSubtitlePanel {
+            id: subtitlePanel
+
+            backend: win.backend
+            open: win.subStyleOpen
+            anchorItem: bottomBar
+
+            onCloseRequested: {
+                win.subStyleOpen = false
+                surface.forceActiveFocus()
+                win.wake()
+            }
+        }
+
         // 音量 / 静音的瞬时反馈；控制条收起时也能看见。
         Rectangle {
             id: osd
@@ -752,54 +1120,57 @@ Window {
             }
         }
 
-        // 全屏时 Esc 先退出全屏，否则关闭窗口；空格暂停 / 继续，左右 ±10 秒。
+        // 键盘优先级：
+        // - Esc 永远归 kichi：先收浮层，再退全屏，最后关窗；菜单自己处理 Esc。
+        // - 单按 F 永远归 kichi（切换窗口全屏），mpv 的 f 不生效。
+        // - 「按键交给 mpv」关闭时：下面这些 kichi 快捷键生效，按键不下发。
+        // - 开启时：下面这些快捷键让位，除 Esc / F 外的按键原样交给 mpv。
+        // - 任何菜单 / 浮层打开时：键盘归浮层，播放快捷键暂停。
         Shortcut {
             sequence: "Escape"
-            enabled: win.visible
-            onActivated: {
-                if (win.volumeOpen)
-                    win.volumeOpen = false
-                else if (win.isFullScreen)
-                    win.showNormal()
-                else
-                    win.requestClose()
-            }
+            enabled: win.visible && !win.menuOpen
+            onActivated: win.handleEscape()
+        }
+        Shortcut {
+            sequence: "F"
+            enabled: win.visible && !win.overlayOpen
+            onActivated: win.toggleFullscreen()
         }
         Shortcut {
             sequence: "Space"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: win.togglePause()
         }
         Shortcut {
             sequence: "Left"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: win.seekBy(-10)
         }
         Shortcut {
             sequence: "Right"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: win.seekBy(10)
         }
         // 音量：上下 ±5%，M 静音，滚轮同上。
         Shortcut {
             sequence: "Up"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: win.adjustVolume(5)
         }
         Shortcut {
             sequence: "Down"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: win.adjustVolume(-5)
         }
         Shortcut {
             sequence: "M"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: win.toggleMute()
         }
         // 统计叠加层与外部 mpv 按 i 的效果一致（再按一次收起）。
         Shortcut {
             sequence: "I"
-            enabled: win.visible
+            enabled: win.visible && !win.overlayOpen && !win.mpvKeys
             onActivated: if (win.backend !== null) win.backend.embedToggleStats()
         }
     }

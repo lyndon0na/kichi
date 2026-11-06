@@ -138,6 +138,18 @@ pub mod qobject {
         #[qproperty(i32, embed_volume, cxx_name = "embedVolume", READ, NOTIFY = changed)]
         /// 内嵌播放器是否静音（持久化）
         #[qproperty(bool, embed_muted, cxx_name = "embedMuted", READ, NOTIFY = changed)]
+        /// 播放窗口是否把按键交给 mpv（Esc / F 仍由 kichi 保留）
+        #[qproperty(bool, embed_mpv_keys, cxx_name = "embedMpvKeys", READ, NOTIFY = changed)]
+        /// 字幕字号（持久化）
+        #[qproperty(i32, embed_sub_font_size, cxx_name = "embedSubFontSize", READ, NOTIFY = changed)]
+        /// 字幕垂直位置（0 顶部 / 100 底部）
+        #[qproperty(i32, embed_sub_pos, cxx_name = "embedSubPos", READ, NOTIFY = changed)]
+        /// 字幕文字颜色（`#AARRGGBB`）
+        #[qproperty(QString, embed_sub_color, cxx_name = "embedSubColor", READ, NOTIFY = changed)]
+        /// 字幕描边粗细
+        #[qproperty(i32, embed_sub_outline_size, cxx_name = "embedSubOutlineSize", READ, NOTIFY = changed)]
+        /// 字幕描边 / 边框颜色
+        #[qproperty(QString, embed_sub_outline_color, cxx_name = "embedSubOutlineColor", READ, NOTIFY = changed)]
         #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
         /// 播放器预设："embedded" / "mpv" / "vlc" / "custom"
         #[qproperty(QString, player_backend, cxx_name = "playerBackend", READ, NOTIFY = changed)]
@@ -598,6 +610,51 @@ pub mod qobject {
         #[cxx_name = "embedPaused"]
         fn embed_paused(self: &Self) -> bool;
 
+        /// 当前轨道列表：`{ id, kind: "audio" / "sub", label, selected }`
+        #[qinvokable]
+        #[cxx_name = "embedTracks"]
+        fn embed_tracks(self: &Self) -> QVariantList;
+
+        /// 切换音轨 / 字幕轨；`id < 0` 表示关闭字幕
+        #[qinvokable]
+        #[cxx_name = "embedSelectTrack"]
+        fn embed_select_track(self: &Self, kind: QString, id: i32);
+
+        /// 内嵌会话当前音量（mpv 原生键位改过也读得到）
+        #[qinvokable]
+        #[cxx_name = "embedCurrentVolume"]
+        fn embed_current_volume(self: &Self) -> i32;
+
+        /// 内嵌会话当前是否静音
+        #[qinvokable]
+        #[cxx_name = "embedCurrentMuted"]
+        fn embed_current_muted(self: &Self) -> bool;
+
+        /// 把 mpv 原生键位改过的音量 / 静音同步到界面属性（不再下发给 mpv）
+        #[qinvokable]
+        #[cxx_name = "embedSyncAudio"]
+        fn embed_sync_audio(self: Pin<&mut Self>, volume: i32, muted: bool);
+
+        /// 当前倍速（1.0 = 原速）
+        #[qinvokable]
+        #[cxx_name = "embedSpeed"]
+        fn embed_speed(self: &Self) -> f64;
+
+        /// 改倍速（百分比，50–300）并写进设置
+        #[qinvokable]
+        #[cxx_name = "embedSetSpeed"]
+        fn embed_set_speed(self: Pin<&mut Self>, percent: i32);
+
+        /// 拖动倍速滑块时只改会话 / mpv，不写设置（松手后再由 embedSetSpeed 提交）
+        #[qinvokable]
+        #[cxx_name = "embedPreviewSpeed"]
+        fn embed_preview_speed(self: &Self, percent: i32);
+
+        /// 把播放窗口收到的按键交给 mpv（mpv 原生键位）
+        #[qinvokable]
+        #[cxx_name = "embedKeypress"]
+        fn embed_keypress(self: &Self, key: QString);
+
         /// 真退出前调用：关闭所有还在播的 mpv / VLC（缩托盘不调）
         #[qinvokable]
         #[cxx_name = "shutdownPlayers"]
@@ -631,6 +688,32 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "setAutoSubtitles"]
         fn set_auto_subtitles(self: Pin<&mut Self>, enabled: bool);
+
+        /// 播放窗口是否把按键交给 mpv
+        #[qinvokable]
+        #[cxx_name = "setMpvKeys"]
+        fn set_mpv_keys(self: Pin<&mut Self>, enabled: bool);
+
+        #[qinvokable]
+        #[cxx_name = "setSubtitleFontSize"]
+        fn set_subtitle_font_size(self: Pin<&mut Self>, value: i32);
+
+        /// 字幕垂直位置（0 顶部 / 100 底部）
+        #[qinvokable]
+        #[cxx_name = "setSubtitlePosition"]
+        fn set_subtitle_position(self: Pin<&mut Self>, value: i32);
+
+        #[qinvokable]
+        #[cxx_name = "setSubtitleColor"]
+        fn set_subtitle_color(self: Pin<&mut Self>, value: QString);
+
+        #[qinvokable]
+        #[cxx_name = "setSubtitleOutlineSize"]
+        fn set_subtitle_outline_size(self: Pin<&mut Self>, value: i32);
+
+        #[qinvokable]
+        #[cxx_name = "setSubtitleOutlineColor"]
+        fn set_subtitle_outline_color(self: Pin<&mut Self>, value: QString);
 
         #[qinvokable]
         #[cxx_name = "setCloseToTray"]
@@ -1199,6 +1282,14 @@ pub struct KichiRust {
     pub(crate) embed_volume: i32,
     /// 内嵌播放器静音状态（随设置持久化）
     pub(crate) embed_muted: bool,
+    /// 播放窗口把按键交给 mpv（Esc / F 保留给 kichi）
+    pub(crate) embed_mpv_keys: bool,
+    /// 字幕字号 / 位置 / 颜色 / 描边（随设置持久化）
+    pub(crate) embed_sub_font_size: i32,
+    pub(crate) embed_sub_pos: i32,
+    pub(crate) embed_sub_color: QString,
+    pub(crate) embed_sub_outline_size: i32,
+    pub(crate) embed_sub_outline_color: QString,
     /// 本次加载的取消信号（取链 + 等窗口共用；取消即中止）
     ///
     /// 不额外记「窗口是否已经出现」：监控线程自己知道，`Cancel` 置真即中止，
@@ -1486,6 +1577,12 @@ impl Default for KichiRust {
             embed_pending_epoch: None,
             embed_volume: 100,
             embed_muted: false,
+            embed_mpv_keys: false,
+            embed_sub_font_size: i32::from(crate::settings::DEFAULT_SUB_FONT_SIZE),
+            embed_sub_pos: i32::from(crate::settings::DEFAULT_SUB_POS),
+            embed_sub_color: QString::from(crate::settings::DEFAULT_SUB_COLOR),
+            embed_sub_outline_size: i32::from(crate::settings::DEFAULT_SUB_OUTLINE_SIZE),
+            embed_sub_outline_color: QString::from(crate::settings::DEFAULT_SUB_OUTLINE_COLOR),
             play_cancel: None,
             play_epoch: 0,
             play_progress: play_history::ProgressReporter::default(),
@@ -1666,6 +1763,12 @@ impl KichiRust {
         self.auto_subtitles = settings.auto_subtitles;
         self.embed_volume = settings.player_volume;
         self.embed_muted = settings.player_muted;
+        self.embed_mpv_keys = settings.player_mpv_keys;
+        self.embed_sub_font_size = i32::from(settings.player_sub_font_size);
+        self.embed_sub_pos = i32::from(settings.player_sub_pos);
+        self.embed_sub_color = QString::from(settings.player_sub_color.as_str());
+        self.embed_sub_outline_size = i32::from(settings.player_sub_outline_size);
+        self.embed_sub_outline_color = QString::from(settings.player_sub_outline_color.as_str());
         self.close_to_tray = settings.close_to_tray;
         self.content_view = settings.content_view;
         self.content_view_text = QString::from(settings.content_view.as_str());

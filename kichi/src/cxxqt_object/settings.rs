@@ -70,6 +70,68 @@ impl qobject::Kichi {
         });
     }
 
+    /// 播放窗口是否把按键交给 mpv；Esc / F 仍由 kichi 保留。
+    pub fn set_mpv_keys(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().update_settings(|settings| {
+            settings.player_mpv_keys = enabled;
+        });
+    }
+
+    /// 字幕字号；正在播放时立即预览。
+    pub fn set_subtitle_font_size(mut self: Pin<&mut Self>, value: i32) {
+        let value = clamp_u16(
+            value,
+            settings::SUB_FONT_SIZE_MIN,
+            settings::SUB_FONT_SIZE_MAX,
+        );
+        self.as_mut().update_settings(|settings| {
+            settings.player_sub_font_size = value;
+        });
+        apply_embed_subtitle_style(&self.settings);
+    }
+
+    /// 字幕垂直位置（0 顶部 / 100 底部）；正在播放时立即预览。
+    pub fn set_subtitle_position(mut self: Pin<&mut Self>, value: i32) {
+        let value = clamp_u16(value, 0, settings::SUB_POS_MAX);
+        self.as_mut().update_settings(|settings| {
+            settings.player_sub_pos = value;
+        });
+        apply_embed_subtitle_style(&self.settings);
+    }
+
+    /// 字幕文字颜色；非法值直接忽略（界面只给固定色板）。
+    pub fn set_subtitle_color(mut self: Pin<&mut Self>, value: QString) {
+        let value = value.to_string();
+        if !settings::valid_color(&value) {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_sub_color = value;
+        });
+        apply_embed_subtitle_style(&self.settings);
+    }
+
+    /// 字幕描边粗细；正在播放时立即预览。
+    pub fn set_subtitle_outline_size(mut self: Pin<&mut Self>, value: i32) {
+        let value = clamp_u16(value, 0, settings::SUB_OUTLINE_SIZE_MAX);
+        self.as_mut().update_settings(|settings| {
+            settings.player_sub_outline_size = value;
+        });
+        apply_embed_subtitle_style(&self.settings);
+    }
+
+    /// 字幕描边 / 边框颜色；正在播放时立即预览。
+    pub fn set_subtitle_outline_color(mut self: Pin<&mut Self>, value: QString) {
+        let value = value.to_string();
+        if !settings::valid_color(&value) {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_sub_outline_color = value;
+        });
+        apply_embed_subtitle_style(&self.settings);
+    }
+
     /// 关闭到托盘。
     ///
     /// 打开时立刻启托盘，起不来就**保持开关打开但取消勾选的假象**——
@@ -373,6 +435,12 @@ impl qobject::Kichi {
         rust.auto_subtitles = auto_subs;
         rust.embed_volume = snapshot.player_volume;
         rust.embed_muted = snapshot.player_muted;
+        rust.embed_mpv_keys = snapshot.player_mpv_keys;
+        rust.embed_sub_font_size = i32::from(snapshot.player_sub_font_size);
+        rust.embed_sub_pos = i32::from(snapshot.player_sub_pos);
+        rust.embed_sub_color = QString::from(snapshot.player_sub_color.as_str());
+        rust.embed_sub_outline_size = i32::from(snapshot.player_sub_outline_size);
+        rust.embed_sub_outline_color = QString::from(snapshot.player_sub_outline_color.as_str());
         rust.close_to_tray = tray;
         rust.content_view = content_view;
         rust.content_view_text = QString::from(content_view.as_str());
@@ -413,6 +481,21 @@ impl qobject::Kichi {
     pub(super) fn apply_upload_limits(&self) {
         limits::configure_uploads(self.settings.upload_parallel, self.settings.upload_rate_mib);
     }
+}
+
+fn clamp_u16(value: i32, min: u16, max: u16) -> u16 {
+    u16::try_from(value).unwrap_or(min).clamp(min, max)
+}
+
+/// 把设置里的字幕样式立刻交给正在播放的内嵌会话（没有会话时静默忽略）。
+fn apply_embed_subtitle_style(settings: &Settings) {
+    crate::player::embed::set_subtitle_style(crate::player::embed::SubtitleStyle::new(
+        i32::from(settings.player_sub_font_size),
+        i32::from(settings.player_sub_pos),
+        &settings.player_sub_color,
+        i32::from(settings.player_sub_outline_size),
+        &settings.player_sub_outline_color,
+    ));
 }
 
 /// 播放器命令的轻量校验（不执行、不联网）。

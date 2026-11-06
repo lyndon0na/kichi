@@ -18,7 +18,7 @@ mod tests;
 use std::ffi::OsStr;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -37,8 +37,15 @@ pub(crate) struct Session {
     pub(crate) frame_dirty: Arc<AtomicBool>,
     control: Mutex<Option<Sender<Control>>>,
     paused: AtomicBool,
+    /// 当前音量 / 静音：界面和 mpv 原生键位都会改它。
+    volume: AtomicI32,
+    muted: AtomicBool,
     position: Mutex<Option<f64>>,
     duration: Mutex<Option<f64>>,
+    /// 当前倍速（1.0 = 原速）；界面与 mpv 原生键位都会改它。
+    speed: Mutex<f64>,
+    /// 最近一次从 mpv 读到的轨道列表（切换 / 加载后刷新）。
+    tracks: Mutex<Vec<TrackInfo>>,
     /// 代理线程的失败原因；播放失败要把它带给界面，不能只打 stderr。
     proxy_error: Mutex<Option<String>>,
     /// mpv 的 Wayland 客户端已经发来第一个请求：这时恢复 `WAYLAND_SOCKET` 才安全。
@@ -58,24 +65,112 @@ pub(crate) enum Control {
     SeekAbsolute(f64),
     SetVolume(i64),
     SetMuted(bool),
+    SetSpeed(f64),
+    /// 切换音轨 / 字幕轨；`id < 0` 表示关闭字幕。
+    SelectTrack {
+        audio: bool,
+        id: i64,
+    },
+    /// 把界面收到的按键原样交给 mpv 的 input 层（mpv 原生键位）。
+    Keypress(String),
+    /// 立即套用新的字幕样式（设置页 / 播放窗口调整时实时预览）。
+    SubtitleStyle(SubtitleStyle),
     /// mpv 内置 stats.lua 的统计叠加层开 / 关。
     ToggleStats,
     Quit,
 }
 
-/// 新会话的初始音频状态（音量随设置持久化，静音也一起记住）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AudioSettings {
-    pub volume: i32,
-    pub muted: bool,
+/// 一条可切换的轨道（音轨或字幕轨）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackInfo {
+    pub id: i64,
+    /// true = 音轨；false = 字幕轨
+    pub audio: bool,
+    pub label: String,
+    pub selected: bool,
 }
 
-impl AudioSettings {
-    pub fn new(volume: i32, muted: bool) -> Self {
+/// 字幕样式（对应 mpv 的 `sub-*` 选项）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleStyle {
+    pub font_size: i64,
+    /// mpv `sub-pos`：0 = 顶部，100 = 底部
+    pub position: i64,
+    pub color: String,
+    pub outline_size: f64,
+    pub outline_color: String,
+}
+
+impl SubtitleStyle {
+    pub fn new(
+        font_size: i32,
+        position: i32,
+        color: &str,
+        outline_size: i32,
+        outline_color: &str,
+    ) -> Self {
+        Self {
+            font_size: i64::from(font_size).clamp(
+                i64::from(crate::settings::SUB_FONT_SIZE_MIN),
+                i64::from(crate::settings::SUB_FONT_SIZE_MAX),
+            ),
+            position: i64::from(position).clamp(0, i64::from(crate::settings::SUB_POS_MAX)),
+            color: sanitize_color(color, crate::settings::DEFAULT_SUB_COLOR),
+            outline_size: f64::from(outline_size)
+                .clamp(0.0, f64::from(crate::settings::SUB_OUTLINE_SIZE_MAX)),
+            outline_color: sanitize_color(
+                outline_color,
+                crate::settings::DEFAULT_SUB_OUTLINE_COLOR,
+            ),
+        }
+    }
+}
+
+impl Default for SubtitleStyle {
+    fn default() -> Self {
+        Self {
+            font_size: i64::from(crate::settings::DEFAULT_SUB_FONT_SIZE),
+            position: i64::from(crate::settings::DEFAULT_SUB_POS),
+            color: crate::settings::DEFAULT_SUB_COLOR.to_owned(),
+            outline_size: f64::from(crate::settings::DEFAULT_SUB_OUTLINE_SIZE),
+            outline_color: crate::settings::DEFAULT_SUB_OUTLINE_COLOR.to_owned(),
+        }
+    }
+}
+
+fn sanitize_color(value: &str, fallback: &str) -> String {
+    if crate::settings::valid_color(value) {
+        value.to_owned()
+    } else {
+        fallback.to_owned()
+    }
+}
+
+/// 新会话的初始状态（全部来自设置，跨视频 / 跨启动记住）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionSettings {
+    pub volume: i32,
+    pub muted: bool,
+    pub speed: f64,
+    pub subtitles: SubtitleStyle,
+}
+
+impl SessionSettings {
+    pub fn new(volume: i32, muted: bool, speed: f64, subtitles: SubtitleStyle) -> Self {
         Self {
             volume: volume.clamp(0, 100),
             muted,
+            speed: sanitize_speed(speed),
+            subtitles,
         }
+    }
+}
+
+fn sanitize_speed(speed: f64) -> f64 {
+    if speed.is_finite() {
+        speed.clamp(0.5, 3.0)
+    } else {
+        1.0
     }
 }
 
@@ -90,8 +185,12 @@ impl Session {
             frame_dirty: Arc::new(AtomicBool::new(false)),
             control: Mutex::new(None),
             paused: AtomicBool::new(false),
+            volume: AtomicI32::new(100),
+            muted: AtomicBool::new(false),
             position: Mutex::new(None),
             duration: Mutex::new(None),
+            speed: Mutex::new(1.0),
+            tracks: Mutex::new(Vec::new()),
             proxy_error: Mutex::new(None),
             wayland_connected: AtomicBool::new(false),
         }
@@ -126,6 +225,22 @@ impl Session {
         self.paused.load(Ordering::Acquire)
     }
 
+    pub(crate) fn set_volume(&self, volume: i32) {
+        self.volume.store(volume.clamp(0, 100), Ordering::Release);
+    }
+
+    pub(crate) fn volume(&self) -> i32 {
+        self.volume.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Release);
+    }
+
+    pub(crate) fn muted(&self) -> bool {
+        self.muted.load(Ordering::Acquire)
+    }
+
     pub(crate) fn set_position(&self, position: Option<f64>) {
         *self
             .position
@@ -152,6 +267,34 @@ impl Session {
             .duration
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn set_speed(&self, speed: f64) {
+        *self
+            .speed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sanitize_speed(speed);
+    }
+
+    fn speed(&self) -> f64 {
+        *self
+            .speed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn set_tracks(&self, tracks: Vec<TrackInfo>) {
+        *self
+            .tracks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = tracks;
+    }
+
+    fn tracks(&self) -> Vec<TrackInfo> {
+        self.tracks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// 代理线程失败：记下原因并让 mpv 线程收尾，最终由界面提示条显示。
@@ -234,7 +377,7 @@ pub fn start(
     title: &str,
     cancel: Arc<Cancel>,
     extras: PlaybackExtras,
-    audio: AudioSettings,
+    settings: SessionSettings,
     notify: impl Fn(StartEvent) + Send + Sync + 'static,
 ) -> Result<u64, String> {
     if url.trim().is_empty() {
@@ -253,6 +396,9 @@ pub fn start(
     let (client, server) =
         UnixStream::pair().map_err(|err| format!("内嵌播放代理创建失败：{err}"))?;
     let session = Arc::new(Session::new(Arc::clone(&cancel)));
+    session.set_volume(settings.volume);
+    session.set_muted(settings.muted);
+    session.set_speed(settings.speed);
     let proxy_handle = proxy::spawn(Arc::clone(&session), upstream, server)
         .map_err(|err| format!("内嵌播放代理线程启动失败：{err}"))?;
     let guard = WaylandSocketGuard::arm(client);
@@ -274,7 +420,7 @@ pub fn start(
                 &url,
                 &title,
                 extras,
-                audio,
+                settings,
                 notify,
                 control_rx,
                 guard,
@@ -378,14 +524,75 @@ pub fn toggle_pause() {
 pub fn set_volume(percent: i32) {
     let percent = percent.clamp(0, 100);
     if let Some(session) = current() {
+        // 先记下再下发：界面紧接着读 `volume()` 时能立刻看到新值。
+        session.set_volume(percent);
         session.send(Control::SetVolume(i64::from(percent)));
     }
 }
 
 pub fn set_muted(muted: bool) {
     if let Some(session) = current() {
+        session.set_muted(muted);
         session.send(Control::SetMuted(muted));
     }
+}
+
+/// 当前会话音量（没有会话时 100）。mpv 原生键位改的音量也从这里读。
+pub fn volume() -> i32 {
+    current().map_or(100, |session| session.volume())
+}
+
+/// 当前会话是否静音（没有会话时 false）。
+pub fn muted() -> bool {
+    current().is_some_and(|session| session.muted())
+}
+
+/// 改倍速（0.5–3.0）。没有会话时静默忽略：值由设置持久化，下次开播生效。
+pub fn set_speed(speed: f64) {
+    if !speed.is_finite() {
+        return;
+    }
+    let speed = sanitize_speed(speed);
+    if let Some(session) = current() {
+        // 先记下再下发：界面紧接着读 `speed()` 时能立刻看到新值。
+        session.set_speed(speed);
+        session.send(Control::SetSpeed(speed));
+    }
+}
+
+/// 当前倍速（会话不存在时按原速）。
+pub fn speed() -> f64 {
+    current().map_or(1.0, |session| session.speed())
+}
+
+/// 切换音轨 / 字幕轨；`id < 0` 表示关闭字幕。
+pub fn select_track(audio: bool, id: i64) {
+    if let Some(session) = current() {
+        session.send(Control::SelectTrack { audio, id });
+    }
+}
+
+/// 把界面按键交给 mpv 的 input 层。只接受短字符串，控制字符一律丢弃。
+pub fn keypress(key: &str) {
+    let key = key.trim();
+    if key.is_empty() || key.len() > 64 || key.chars().any(char::is_control) {
+        return;
+    }
+    if let Some(session) = current() {
+        session.send(Control::Keypress(key.to_owned()));
+    }
+}
+
+/// 立即套用字幕样式（实时预览；持久化由调用方负责）。
+pub fn set_subtitle_style(style: SubtitleStyle) {
+    if let Some(session) = current() {
+        session.send(Control::SubtitleStyle(style));
+    }
+}
+
+/// 当前会话的轨道列表；没有会话时为空。
+pub fn tracks() -> Vec<TrackInfo> {
+    current().map_or_else(Vec::new, |session| session.tracks())
 }
 
 /// 开 / 关 mpv 自带的统计叠加层（stats.lua，和外部 mpv 按 `i` 一样）。

@@ -140,6 +140,14 @@ const QML_FILES: &[&str] = &[
     "qml/SettingsPlayback.qml",
     "qml/PlayToast.qml",
     "qml/PlaybackWindow.qml",
+    "qml/PlaybackTrackMenu.qml",
+    "qml/PlaybackPopover.qml",
+    "qml/PlaybackPopoverRow.qml",
+    "qml/PlaybackSpeedPanel.qml",
+    "qml/PlaybackSubtitlePanel.qml",
+    "qml/KMediaToolTip.qml",
+    "qml/KStepper.qml",
+    "qml/KColorSwatchRow.qml",
 ];
 
 // 手写 C++：头文件交给 moc + qmltyperegistrar，

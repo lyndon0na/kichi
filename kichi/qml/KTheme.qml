@@ -141,6 +141,20 @@ Item {
     readonly property color mediaForeground: theme.darkMode ? palette.text
                                                             : palette.base
 
+    // —— 播放窗口浮层（视频界面固定深色，不跟系统明暗主题） ——
+    // 这些是刻意的字面量：视频画面上的菜单 / 面板必须在浅色桌面下也保持深色。
+    /// 轨道菜单、倍速 / 音量 / 字幕样式面板的统一底色
+    readonly property color mediaSurface: "#EE101010"
+    readonly property color mediaBorder: "#26FFFFFF"
+    readonly property color mediaHover: "#1FFFFFFF"
+    readonly property color mediaPressed: "#2EFFFFFF"
+    /// 当前选中行的极淡底
+    readonly property color mediaSelected: "#14FFFFFF"
+    readonly property color mediaText: "#F2FFFFFF"
+    readonly property color mediaTextMuted: "#99FFFFFF"
+    /// 播放窗口浮层圆角：比应用内弹窗再圆一档，和黑色画面协调
+    readonly property int mediaRadius: 10
+
     // —— 状态色（全应用仅存的字面量颜色，深色主题用浅一档的变体保证对比度） ——
     readonly property color danger: theme.darkMode ? "#f08c84" : "#c0392b"
     readonly property color dangerForeground: theme.darkMode ? "#221512" : "#ffffff"

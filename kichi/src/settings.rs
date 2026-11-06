@@ -20,6 +20,24 @@ use crate::session::private_fs;
 /// 设置文件格式版本（将来不兼容改动时据此迁移）。
 pub const SETTINGS_VERSION: u32 = 3;
 
+/// 内嵌播放器倍速范围（百分比；100 = 原速）。
+pub const PLAYER_SPEED_MIN: u16 = 50;
+pub const PLAYER_SPEED_MAX: u16 = 300;
+/// 字幕字号范围（mpv 的 `sub-font-size`）。
+pub const SUB_FONT_SIZE_MIN: u16 = 16;
+pub const SUB_FONT_SIZE_MAX: u16 = 100;
+/// mpv 的 `sub-pos`：0 = 顶部，100 = 底部，上限 150。
+pub const SUB_POS_MAX: u16 = 150;
+/// 描边粗细上限（mpv 的 `sub-outline-size`）。
+pub const SUB_OUTLINE_SIZE_MAX: u16 = 8;
+
+/// 与 mpv 的 `sub-font-size` 默认值一致：迁移到内嵌播放时字幕大小不变。
+pub const DEFAULT_SUB_FONT_SIZE: u16 = 55;
+pub const DEFAULT_SUB_POS: u16 = 100;
+pub const DEFAULT_SUB_OUTLINE_SIZE: u16 = 2;
+pub const DEFAULT_SUB_COLOR: &str = "#FFFFFFFF";
+pub const DEFAULT_SUB_OUTLINE_COLOR: &str = "#FF000000";
+
 /// 清晰度偏好（对应界面上的「默认清晰度」）。
 ///
 /// 转码档按**档位名**匹配（`"1080P"` 这样的字面量），不按高度范围：
@@ -230,6 +248,20 @@ pub struct Settings {
     pub player_volume: i32,
     /// 内嵌播放器静音状态
     pub player_muted: bool,
+    /// 内嵌播放器倍速（百分比，50–300；跨视频 / 跨启动记住）
+    pub player_speed_percent: u16,
+    /// 播放窗口把按键交给 mpv（mpv 原生键位生效；Esc / F 仍由 kichi 保留）
+    pub player_mpv_keys: bool,
+    /// 字幕字号（mpv `sub-font-size`）
+    pub player_sub_font_size: u16,
+    /// 字幕垂直位置（mpv `sub-pos`：0 顶部 / 100 底部）
+    pub player_sub_pos: u16,
+    /// 字幕文字颜色（`#AARRGGBB`）
+    pub player_sub_color: String,
+    /// 字幕描边粗细（mpv `sub-outline-size`）
+    pub player_sub_outline_size: u16,
+    /// 字幕描边 / 边框颜色（`#AARRGGBB`）
+    pub player_sub_outline_color: String,
     /// 关闭窗口时缩到托盘
     pub close_to_tray: bool,
     /// 文件类内容页共用显示方式：列表 / 网格
@@ -273,6 +305,13 @@ impl Default for Settings {
             auto_subtitles: true,
             player_volume: 100,
             player_muted: false,
+            player_speed_percent: 100,
+            player_mpv_keys: false,
+            player_sub_font_size: DEFAULT_SUB_FONT_SIZE,
+            player_sub_pos: DEFAULT_SUB_POS,
+            player_sub_color: DEFAULT_SUB_COLOR.to_owned(),
+            player_sub_outline_size: DEFAULT_SUB_OUTLINE_SIZE,
+            player_sub_outline_color: DEFAULT_SUB_OUTLINE_COLOR.to_owned(),
             close_to_tray: false,
             content_view: ContentViewMode::List,
             sort_field: SortField::Name,
@@ -341,6 +380,12 @@ fn non_empty(text: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+/// mpv 颜色只接受 `#RRGGBB` / `#AARRGGBB`。
+pub fn valid_color(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    matches!(bytes.len(), 7 | 9) && bytes[0] == b'#' && bytes[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
 /// 设置文件的默认位置：`<配置目录>/settings.json`。
 ///
 /// 优先 `KICHI_SETTINGS_FILE` 覆盖，与 [`crate::session::config_dir`] 同目录。
@@ -404,6 +449,20 @@ impl Settings {
             self.window_height = 0;
         }
         self.player_volume = self.player_volume.clamp(0, 100);
+        self.player_speed_percent = self
+            .player_speed_percent
+            .clamp(PLAYER_SPEED_MIN, PLAYER_SPEED_MAX);
+        self.player_sub_font_size = self
+            .player_sub_font_size
+            .clamp(SUB_FONT_SIZE_MIN, SUB_FONT_SIZE_MAX);
+        self.player_sub_pos = self.player_sub_pos.min(SUB_POS_MAX);
+        self.player_sub_outline_size = self.player_sub_outline_size.min(SUB_OUTLINE_SIZE_MAX);
+        if !valid_color(&self.player_sub_color) {
+            self.player_sub_color = DEFAULT_SUB_COLOR.to_owned();
+        }
+        if !valid_color(&self.player_sub_outline_color) {
+            self.player_sub_outline_color = DEFAULT_SUB_OUTLINE_COLOR.to_owned();
+        }
         self.download_parallel = self
             .download_parallel
             .clamp(1, crate::session::limits::MAX_PARALLEL);
@@ -479,6 +538,13 @@ mod tests {
             notify_enabled: false,
             player_volume: 65,
             player_muted: true,
+            player_speed_percent: 125,
+            player_mpv_keys: true,
+            player_sub_font_size: 44,
+            player_sub_pos: 90,
+            player_sub_color: "#FFFFFF00".into(),
+            player_sub_outline_size: 3,
+            player_sub_outline_color: "#FF3366CC".into(),
             close_to_tray: true,
             content_view: ContentViewMode::Grid,
             sort_field: SortField::Modified,
@@ -550,6 +616,13 @@ mod tests {
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
         assert_eq!(settings.player_volume, 100, "旧设置没有音量字段时满音量");
         assert!(!settings.player_muted, "旧设置没有静音字段时不静音");
+        assert_eq!(settings.player_speed_percent, 100, "旧设置没有倍速时原速");
+        assert!(!settings.player_mpv_keys, "旧设置不把按键交给 mpv");
+        assert_eq!(settings.player_sub_font_size, DEFAULT_SUB_FONT_SIZE);
+        assert_eq!(settings.player_sub_pos, DEFAULT_SUB_POS);
+        assert_eq!(settings.player_sub_color, DEFAULT_SUB_COLOR);
+        assert_eq!(settings.player_sub_outline_size, DEFAULT_SUB_OUTLINE_SIZE);
+        assert_eq!(settings.player_sub_outline_color, DEFAULT_SUB_OUTLINE_COLOR);
         assert_eq!(
             settings.content_view,
             ContentViewMode::List,
@@ -631,10 +704,25 @@ mod tests {
             upload_parallel: 99,
             upload_rate_mib: u64::MAX,
             player_volume: 300,
+            player_speed_percent: 999,
+            player_sub_font_size: 1,
+            player_sub_pos: 200,
+            player_sub_outline_size: 99,
+            player_sub_color: "white".into(),
+            player_sub_outline_color: "#12".into(),
             ..Settings::default()
         }
         .normalized();
         assert_eq!(normalized.player_volume, 100, "手改音量越界时收回 100");
+        assert_eq!(normalized.player_speed_percent, PLAYER_SPEED_MAX);
+        assert_eq!(normalized.player_sub_font_size, SUB_FONT_SIZE_MIN);
+        assert_eq!(normalized.player_sub_pos, SUB_POS_MAX);
+        assert_eq!(normalized.player_sub_outline_size, SUB_OUTLINE_SIZE_MAX);
+        assert_eq!(normalized.player_sub_color, DEFAULT_SUB_COLOR);
+        assert_eq!(
+            normalized.player_sub_outline_color,
+            DEFAULT_SUB_OUTLINE_COLOR
+        );
         assert_eq!(
             Settings {
                 player_volume: -5,
@@ -691,6 +779,28 @@ mod tests {
         assert_eq!(PlayerBackend::parse("vlc"), PlayerBackend::Vlc);
         assert_eq!(PlayerBackend::parse(" CUSTOM "), PlayerBackend::Custom);
         assert_eq!(PlayerBackend::parse("nonsense"), PlayerBackend::Mpv);
+    }
+
+    #[test]
+    fn subtitle_colors_must_be_hex_and_speed_is_clamped_both_ways() {
+        assert!(valid_color("#FFFFFFFF"));
+        assert!(valid_color("#123456"));
+        assert!(!valid_color("white"));
+        assert!(!valid_color("#FFF"));
+        assert!(!valid_color("#GGGGGG"));
+
+        let low = Settings {
+            player_speed_percent: 1,
+            ..Settings::default()
+        }
+        .normalized();
+        assert_eq!(low.player_speed_percent, PLAYER_SPEED_MIN);
+        let high = Settings {
+            player_speed_percent: 301,
+            ..Settings::default()
+        }
+        .normalized();
+        assert_eq!(high.player_speed_percent, PLAYER_SPEED_MAX);
     }
 
     #[test]

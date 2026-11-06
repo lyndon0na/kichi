@@ -10,7 +10,7 @@ use std::time::Instant;
 use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
 
-use super::{AudioSettings, Control, Session, WaylandSocketGuard};
+use super::{Control, Session, SessionSettings, SubtitleStyle, TrackInfo, WaylandSocketGuard};
 use crate::player::progress::ProgressTracker;
 use crate::player::subtitles::{take_slot, SubtitleAssets};
 use crate::player::{PlaybackExtras, StartEvent};
@@ -25,7 +25,7 @@ pub(super) fn run(
     url: &str,
     title: &str,
     extras: PlaybackExtras,
-    audio: AudioSettings,
+    settings: SessionSettings,
     notify: impl Fn(StartEvent),
     control_rx: Receiver<Control>,
     guard: WaylandSocketGuard,
@@ -37,7 +37,7 @@ pub(super) fn run(
         resume,
     } = extras;
 
-    let mpv = match create_mpv(title, audio) {
+    let mpv = match create_mpv(title, &settings) {
         Ok(mpv) => mpv,
         Err(err) => {
             eprintln!("[kichi] 内嵌播放器初始化失败：{err}");
@@ -98,6 +98,32 @@ pub(super) fn run(
                         eprintln!("[kichi] 内嵌播放器切换静音失败：{err}");
                     }
                 }
+                Control::SetSpeed(speed) => {
+                    if let Err(err) = mpv.set_property("speed", speed) {
+                        eprintln!("[kichi] 内嵌播放器改倍速失败：{err}");
+                    }
+                    session.set_speed(speed);
+                }
+                Control::SelectTrack { audio, id } => {
+                    let name = if audio { "aid" } else { "sid" };
+                    let result = if id < 0 {
+                        mpv.set_property(name, String::from("no"))
+                    } else {
+                        mpv.set_property(name, id)
+                    };
+                    if let Err(err) = result {
+                        eprintln!("[kichi] 内嵌播放器切换轨道失败（{name}={id}）：{err}");
+                    }
+                    session.set_tracks(track_snapshot(&mpv));
+                }
+                Control::Keypress(key) => {
+                    if let Err(err) = mpv.command("keypress", &[&key]) {
+                        eprintln!("[kichi] 内嵌播放器按键「{key}」失败：{err}");
+                    }
+                    // mpv 的键位可能切轨 / 改倍速：刷新快照，界面下次打开菜单就是新状态。
+                    session.set_tracks(track_snapshot(&mpv));
+                }
+                Control::SubtitleStyle(style) => apply_subtitle_style(&mpv, &style),
                 Control::ToggleStats => {
                     if let Err(err) = mpv.command("script-binding", &["stats/display-stats-toggle"])
                     {
@@ -126,6 +152,7 @@ pub(super) fn run(
                             }
                             Some(note) => eprintln!("[kichi] 字幕：播放中补挂失败：{note}"),
                         }
+                        session.set_tracks(track_snapshot(&mpv));
                     }
                     late_held.push(assets);
                 }
@@ -147,6 +174,7 @@ pub(super) fn run(
                         eprintln!("[kichi] 恢复播放进度失败（只记日志）：{err}");
                     }
                 }
+                session.set_tracks(track_snapshot(&mpv));
                 ready = true;
                 notify(StartEvent::Ready {
                     subtitle_note: note,
@@ -162,6 +190,13 @@ pub(super) fn run(
                     tracker.update_values(None, valid_seconds(duration));
                 }
                 ("pause", PropertyData::Flag(paused)) => session.set_paused(paused),
+                // mpv 原生键位（↑↓ / m / `[` `]`）也能调音量、静音、倍速：
+                // 同步回会话，界面据此显示（键位交给 mpv 时尤其重要）。
+                ("volume", PropertyData::Double(volume)) => {
+                    session.set_volume(volume.round().clamp(0.0, 100.0) as i32);
+                }
+                ("mute", PropertyData::Flag(muted)) => session.set_muted(muted),
+                ("speed", PropertyData::Double(speed)) => session.set_speed(speed),
                 ("vo-configured", PropertyData::Flag(true)) => {
                     if !session.wayland_connected() {
                         // VO 配置成功却没走过内嵌代理：mpv 连到了别的地方，
@@ -261,7 +296,7 @@ pub(super) fn run(
     terminate(mpv);
 }
 
-fn create_mpv(title: &str, audio: AudioSettings) -> Result<Mpv, libmpv2::Error> {
+fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::Error> {
     let mpv = Mpv::with_initializer(|init| {
         for (name, value) in [
             ("vo", "gpu-next"),
@@ -274,7 +309,10 @@ fn create_mpv(title: &str, audio: AudioSettings) -> Result<Mpv, libmpv2::Error> 
             ("msg-level", if cfg!(test) { "all=v" } else { "all=error" }),
             // 剪贴板只走 VO：默认的 wayland 后端会抢在 VO 之前用掉 WAYLAND_SOCKET。
             ("clipboard-backends", "vo"),
-            ("input-default-bindings", "no"),
+            // 默认键位始终加载：播放窗口按需把按键经 `keypress` 转给 mpv。
+            // 只加载内置默认键位，不读用户 input.conf / 脚本。
+            ("input-default-bindings", "yes"),
+            // 键盘事件由 kichi 的 Qt 窗口转发；mpv 自己的 VO 不直接抢焦点。
             ("input-vo-keyboard", "no"),
             ("osc", "no"),
             ("osd-level", "0"),
@@ -290,9 +328,11 @@ fn create_mpv(title: &str, audio: AudioSettings) -> Result<Mpv, libmpv2::Error> 
         Ok(())
     })?;
     mpv.set_property("force-media-title", title)?;
-    // 音量 / 静音在建 mpv 时一次设好，避免 loadfile 后先按 100% 出一声再被命令改掉。
-    mpv.set_property("volume", i64::from(audio.volume))?;
-    mpv.set_property("mute", audio.muted)?;
+    // 音量 / 静音 / 倍速 / 字幕样式在建 mpv 时一次设好，避免首帧先按默认值闪一下。
+    mpv.set_property("volume", i64::from(settings.volume))?;
+    mpv.set_property("mute", settings.muted)?;
+    mpv.set_property("speed", settings.speed)?;
+    apply_subtitle_style(&mpv, &settings.subtitles);
     // 自动重试与错误提示都要读 HTTP 状态码；请求错误级日志。
     // SAFETY: ctx 来自刚创建好的 libmpv2 句柄，字符串静态且以 NUL 结尾。
     unsafe {
@@ -302,6 +342,9 @@ fn create_mpv(title: &str, audio: AudioSettings) -> Result<Mpv, libmpv2::Error> 
         ("time-pos", Format::Double),
         ("duration", Format::Double),
         ("pause", Format::Flag),
+        ("volume", Format::Double),
+        ("mute", Format::Flag),
+        ("speed", Format::Double),
         ("vo-configured", Format::Flag),
     ]
     .into_iter()
@@ -310,6 +353,82 @@ fn create_mpv(title: &str, audio: AudioSettings) -> Result<Mpv, libmpv2::Error> 
         mpv.observe_property(name, format, index as u64 + 1)?;
     }
     Ok(mpv)
+}
+
+/// 读一遍 mpv 的轨道列表（音轨 + 字幕轨）。
+///
+/// libmpv 没有公开 node 取值接口，只能按 `track-list/N/<field>` 逐项查；
+/// 轨道数很少（个位数），在加载 / 切轨 / 按键之后刷新一次足够。
+fn track_snapshot(mpv: &Mpv) -> Vec<TrackInfo> {
+    let count: i64 = mpv.get_property("track-list/count").unwrap_or(0);
+    let mut tracks = Vec::new();
+    for index in 0..count {
+        let Ok(kind) = mpv.get_property::<String>(&format!("track-list/{index}/type")) else {
+            continue;
+        };
+        let audio = match kind.as_str() {
+            "audio" => true,
+            "sub" => false,
+            _ => continue,
+        };
+        let Ok(id) = mpv.get_property::<i64>(&format!("track-list/{index}/id")) else {
+            continue;
+        };
+        let title: String = mpv
+            .get_property(&format!("track-list/{index}/title"))
+            .unwrap_or_default();
+        let lang: String = mpv
+            .get_property(&format!("track-list/{index}/lang"))
+            .unwrap_or_default();
+        let codec: String = mpv
+            .get_property(&format!("track-list/{index}/codec"))
+            .unwrap_or_default();
+        let selected: bool = mpv
+            .get_property(&format!("track-list/{index}/selected"))
+            .unwrap_or(false);
+        let label = if !title.trim().is_empty() {
+            title
+        } else if !lang.trim().is_empty() {
+            lang
+        } else if !codec.trim().is_empty() {
+            codec
+        } else {
+            format!("{} {}", if audio { "音轨" } else { "字幕" }, index + 1)
+        };
+        tracks.push(TrackInfo {
+            id,
+            audio,
+            label,
+            selected,
+        });
+    }
+    tracks
+}
+
+/// 套用字幕样式；单个属性失败只记日志，其余继续。
+fn apply_subtitle_style(mpv: &Mpv, style: &SubtitleStyle) {
+    let set = |name: &str, result: Result<(), libmpv2::Error>| {
+        if let Err(err) = result {
+            eprintln!("[kichi] 内嵌播放器设置字幕 {name} 失败：{err}");
+        }
+    };
+    set(
+        "sub-font-size",
+        mpv.set_property("sub-font-size", style.font_size),
+    );
+    set("sub-pos", mpv.set_property("sub-pos", style.position));
+    set(
+        "sub-color",
+        mpv.set_property("sub-color", style.color.clone()),
+    );
+    set(
+        "sub-outline-size",
+        mpv.set_property("sub-outline-size", style.outline_size),
+    );
+    set(
+        "sub-outline-color",
+        mpv.set_property("sub-outline-color", style.outline_color.clone()),
+    );
 }
 
 /// 挂字幕；返回一句失败原因（成功 / 没有字幕时 `None`）。

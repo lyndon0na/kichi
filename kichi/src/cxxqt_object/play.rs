@@ -383,9 +383,17 @@ impl qobject::Kichi {
                             late,
                             resume,
                         },
-                        crate::player::embed::AudioSettings::new(
+                        crate::player::embed::SessionSettings::new(
                             settings.player_volume,
                             settings.player_muted,
+                            f64::from(settings.player_speed_percent) / 100.0,
+                            crate::player::embed::SubtitleStyle::new(
+                                i32::from(settings.player_sub_font_size),
+                                i32::from(settings.player_sub_pos),
+                                &settings.player_sub_color,
+                                i32::from(settings.player_sub_outline_size),
+                                &settings.player_sub_outline_color,
+                            ),
                         ),
                         notify,
                     );
@@ -666,6 +674,93 @@ impl qobject::Kichi {
     /// 是否处于暂停
     pub fn embed_paused(&self) -> bool {
         crate::player::embed::is_paused()
+    }
+
+    /// 当前可切换的轨道（音轨 + 字幕轨）；菜单打开时现取，保证勾选状态最新。
+    pub fn embed_tracks(&self) -> QVariantList {
+        let mut list = QVariantList::default();
+        for track in crate::player::embed::tracks() {
+            let mut map = QVariantMap::default();
+            map.insert_clone(
+                &QString::from("id"),
+                &QVariant::from(&i32::try_from(track.id).unwrap_or(0)),
+            );
+            map.insert_clone(
+                &QString::from("kind"),
+                &QVariant::from(&QString::from(if track.audio { "audio" } else { "sub" })),
+            );
+            map.insert_clone(
+                &QString::from("label"),
+                &QVariant::from(&QString::from(track.label.as_str())),
+            );
+            map.insert_clone(&QString::from("selected"), &QVariant::from(&track.selected));
+            list.append(QVariant::from(&map));
+        }
+        list
+    }
+
+    /// 切换音轨 / 字幕轨；`id < 0` 表示关闭字幕。
+    pub fn embed_select_track(&self, kind: QString, id: i32) {
+        crate::player::embed::select_track(kind.to_string() == "audio", i64::from(id));
+    }
+
+    /// 内嵌会话当前音量（mpv 原生键位改过也读得到）。
+    pub fn embed_current_volume(&self) -> i32 {
+        crate::player::embed::volume()
+    }
+
+    /// 内嵌会话当前是否静音。
+    pub fn embed_current_muted(&self) -> bool {
+        crate::player::embed::muted()
+    }
+
+    /// 把 mpv 原生键位改过的音量 / 静音同步到界面属性；落盘仍走 `embedCommitAudio`。
+    pub fn embed_sync_audio(mut self: Pin<&mut Self>, volume: i32, muted: bool) {
+        let volume = volume.clamp(0, 100);
+        if self.embed_volume == volume && self.embed_muted == muted {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.embed_volume = volume;
+            rust.embed_muted = muted;
+        }
+        self.as_mut().notify();
+    }
+
+    /// 当前倍速（1.0 = 原速）；没有会话时返回 1.0。
+    pub fn embed_speed(&self) -> f64 {
+        crate::player::embed::speed()
+    }
+
+    /// 改倍速（50–300%）并写进设置，下次开播继续沿用。
+    pub fn embed_set_speed(mut self: Pin<&mut Self>, percent: i32) {
+        let percent = percent.clamp(
+            i32::from(crate::settings::PLAYER_SPEED_MIN),
+            i32::from(crate::settings::PLAYER_SPEED_MAX),
+        );
+        crate::player::embed::set_speed(f64::from(percent) / 100.0);
+        let percent = u16::try_from(percent).unwrap_or(100);
+        if self.settings.player_speed_percent == percent {
+            return;
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.player_speed_percent = percent;
+        });
+    }
+
+    /// 拖动倍速滑块时的实时预览：只改会话 / mpv，不写设置。
+    pub fn embed_preview_speed(&self, percent: i32) {
+        let percent = percent.clamp(
+            i32::from(crate::settings::PLAYER_SPEED_MIN),
+            i32::from(crate::settings::PLAYER_SPEED_MAX),
+        );
+        crate::player::embed::set_speed(f64::from(percent) / 100.0);
+    }
+
+    /// 把播放窗口收到的按键交给 mpv（mpv 原生键位）。
+    pub fn embed_keypress(&self, key: QString) {
+        crate::player::embed::keypress(&key.to_string());
     }
 
     /// 只收起加载态（错误 / 取消的分支共用），不动底栏。
