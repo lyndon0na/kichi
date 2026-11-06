@@ -2,10 +2,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 设置页 / 分组区块的小标题：左侧一根 3px 强调色竖条 + 14px 半粗文字。
+// 设置页分组标题：小号灰字 + 一条拉满剩余宽度的极细分隔线。
 //
-// 以前各段只有一句 font.bold 的默认字号，标题和正文分不开；竖条让分组
-// 在长页面里扫起来有节奏，也不必再加一条横贯整页的分割线。
+// 卡片式设置里分组不再靠底色分区，这一行就是唯一的结构提示；
+// 字号比正文小一档，免得和行标题抢注意力（2026-11-06 用户指定卡片式样式）。
 RowLayout {
     id: title
 
@@ -13,24 +13,20 @@ RowLayout {
 
     KTheme { id: theme }
 
-    spacing: theme.gapSm
-
-    Rectangle {
-        Layout.alignment: Qt.AlignVCenter
-        implicitWidth: 3
-        implicitHeight: theme.fontSection
-        radius: 1.5
-        color: theme.accent
-    }
+    spacing: theme.gapMd
 
     Label {
         text: title.text
-        font.pixelSize: theme.fontSection
-        font.weight: Font.DemiBold
-        color: theme.textPrimary
+        font.pixelSize: theme.fontCaption
+        font.weight: Font.Medium
+        font.letterSpacing: 0.6
+        color: theme.textMuted
     }
 
-    Item {
+    Rectangle {
         Layout.fillWidth: true
+        Layout.alignment: Qt.AlignVCenter
+        implicitHeight: 1
+        color: theme.divider
     }
 }

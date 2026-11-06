@@ -2,160 +2,168 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 设置页：分组卡片 + 统一设置行。
+// 设置对话框的内容：左侧大纲 + 右侧单组设置。
 // 所有控件即时生效；文本框失焦或按回车时提交，不再单独放「应用」按钮。
+// 底色由宿主（SettingsDialog 的圆角面板）画，这里保持透明。
 Item {
     id: page
 
     property var backend: null
 
-    /// 退出登录：设置页只负责发信号，确认框与清令牌在 main.qml / backend 那边
+    /// 当前选中的分组，索引对应 sections
+    property int currentSection: 0
+
+    readonly property int accountSection: 0
+    readonly property int playbackSection: 1
+    readonly property int transfersSection: 2
+    readonly property int generalSection: 3
+    readonly property int aboutSection: 4
+
+    readonly property var sections: [
+        { label: qsTr("账号"), icon: "user", component: accountSectionComponent },
+        { label: qsTr("播放"), icon: "play", component: playbackSectionComponent },
+        { label: qsTr("传输"), icon: "transfer", component: transfersSectionComponent },
+        { label: qsTr("通知与后台"), icon: "bell", component: generalSectionComponent },
+        { label: qsTr("关于"), icon: "info", component: aboutSectionComponent }
+    ]
+
+    /// 退出登录：对话框只负责发信号，确认框在 SignOutDialog，清令牌在 backend
     signal signOutRequested()
 
-    UiMetrics {
-        id: metrics
+    readonly property KTheme theme: KTheme { parent: page }
+    readonly property UiMetrics metrics: UiMetrics {}
+
+    /// 内容区左右留白：比主窗口页边距宽一档，窗口里不显得贴边
+    readonly property int paneMargin: theme.gapXl
+
+    onCurrentSectionChanged: {
+        scroller.contentY = 0
+        sectionTransition.restart()
     }
 
-    KTheme { id: theme }
+    // 换分组：新内容淡入并轻微上移，和主界面换页同一套节奏。
+    // 动画挂在内容上，滚动条与滚动容器不动。
+    ParallelAnimation {
+        id: sectionTransition
 
-    Flickable {
-        id: scroller
-        objectName: "settingsScroller"
+        NumberAnimation {
+            target: bodyLoader
+            property: "opacity"
+            from: 0
+            to: 1
+            duration: page.theme.motionNormal
+            easing.type: Easing.OutCubic
+        }
+
+        NumberAnimation {
+            target: bodyLoader
+            property: "y"
+            from: page.theme.motionPageLift
+            to: 0
+            duration: page.theme.motionNormal
+            easing.type: Easing.OutCubic
+        }
+    }
+
+    RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: metrics.pageMargin
-        anchors.topMargin: metrics.pageMargin
-        anchors.bottomMargin: metrics.pageMargin
-        clip: true
-        contentWidth: width
-        contentHeight: body.implicitHeight
-        boundsBehavior: Flickable.StopAtBounds
+        spacing: 0
 
-        ScrollBar.vertical: KScrollBar {}
-
-        ColumnLayout {
-            id: body
-            // 卡片右缘收在页面边距上，把最右 12px 留给悬浮滚动条
-            width: Math.max(0, scroller.width - metrics.pageMargin)
-            spacing: 0
-
-            SettingsPlayback {
-                objectName: "settingsPlayback"
-                Layout.fillWidth: true
-                backend: page.backend
+        SettingsOutline {
+            Layout.preferredWidth: 216
+            Layout.fillHeight: true
+            sections: page.sections
+            currentIndex: page.currentSection
+            onSectionRequested: function (index) {
+                page.selectSection(index)
             }
+        }
 
-            SettingsDownloads {
-                objectName: "settingsDownloads"
-                Layout.fillWidth: true
-                Layout.topMargin: theme.gapXl
-                backend: page.backend
-            }
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
 
-            KSettingsGroup {
-                title: qsTr("通知与后台")
-                Layout.fillWidth: true
-                Layout.topMargin: theme.gapXl
+            Flickable {
+                id: scroller
+                objectName: "settingsScroller"
+                anchors.fill: parent
+                contentWidth: width
+                contentHeight: bodyLoader.implicitHeight + page.paneMargin
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
 
-                KSettingsRow {
-                    title: qsTr("本地目录索引")
-                    description: qsTr("在本机保存目录与页面快照，用于输入即搜、重启秒开与路径定位。关闭时不读写本地库，已保存的库文件保留。")
+                ScrollBar.vertical: KScrollBar {}
 
-                    CheckBox {
-                        objectName: "settingsLocalIndex"
-                        checked: page.backend ? page.backend.localIndexEnabled : false
-                        Accessible.name: qsTr("本地目录索引")
-                        onToggled: function () {
-                            if (page.backend)
-                                page.backend.setLocalIndexEnabled(checked)
-                        }
-                    }
-                }
-
-                KSettingsRow {
-                    divider: true
-                    title: qsTr("任务结束通知")
-                    description: qsTr("下载、上传或离线任务结束时通知。")
-
-                    CheckBox {
-                        objectName: "settingsNotify"
-                        checked: page.backend ? page.backend.notifyEnabled : true
-                        Accessible.name: qsTr("任务结束通知")
-                        onToggled: function () {
-                            if (page.backend)
-                                page.backend.setNotifyEnabled(checked)
-                        }
-                    }
-                }
-
-                KSettingsRow {
-                    divider: true
-                    title: qsTr("关闭窗口时最小化到托盘")
-                    description: qsTr("任务继续运行；托盘不可用时保持关闭。")
-
-                    CheckBox {
-                        objectName: "settingsCloseToTray"
-                        checked: page.backend ? page.backend.closeToTray : false
-                        Accessible.name: qsTr("关闭窗口时最小化到托盘")
-                        onToggled: function () {
-                            if (page.backend)
-                                page.backend.setCloseToTray(checked)
-                        }
-                    }
+                Loader {
+                    id: bodyLoader
+                    objectName: "settingsBodyLoader"
+                    x: page.paneMargin
+                    width: Math.max(0, scroller.width - page.paneMargin * 2)
+                    sourceComponent: page.sections[page.currentSection].component
                 }
             }
 
-            KSettingsGroup {
-                title: qsTr("账号与安全")
-                Layout.fillWidth: true
-                Layout.topMargin: theme.gapXl
-
-                KSettingsRow {
-                    title: qsTr("令牌存储")
-
-                    Label {
-                        text: page.backend ? page.backend.storageBackend : ""
-                        font.pixelSize: theme.fontMeta
-                        color: theme.textSecondary
-                    }
+            ScrollFirstClickArea {
+                id: firstClickArea
+                view: scroller
+                scrollBarSlot: metrics.scrollBarSlot
+                // 设置页没有模型下标；这里只借覆盖层接管惯性中的首击。
+                hitTest: function (x, y) {
+                    return 0
                 }
 
-                KSettingsRow {
-                    divider: true
-                    danger: true
-                    title: qsTr("退出登录")
-                    description: qsTr("清除本机令牌，下次需重新登录。")
-
-                    KButton {
-                        objectName: "settingsSignOut"
-                        text: qsTr("退出登录")
-                        variant: "dangerOutline"
-                        onClicked: page.signOutRequested()
-                    }
+                onClickedAt: function (index, modifiers, position) {
+                    page.activateAt(position.x, position.y)
                 }
             }
-
-            SettingsAbout {
-                Layout.fillWidth: true
-                Layout.topMargin: theme.gapXl
-                backend: page.backend
-            }
-
-            Item { Layout.fillHeight: true }
         }
     }
 
-    ScrollFirstClickArea {
-        id: firstClickArea
-        view: scroller
-        scrollBarSlot: metrics.scrollBarSlot
-        // 设置页没有模型下标；这里只借覆盖层接管惯性中的首击。
-        hitTest: function (x, y) {
-            return 0
-        }
+    Component {
+        id: playbackSectionComponent
 
-        onClickedAt: function (index, modifiers, position) {
-            page.activateAt(position.x, position.y)
+        SettingsPlayback {
+            backend: page.backend
         }
+    }
+
+    Component {
+        id: transfersSectionComponent
+
+        SettingsTransfers {
+            backend: page.backend
+        }
+    }
+
+    Component {
+        id: generalSectionComponent
+
+        SettingsGeneral {
+            backend: page.backend
+        }
+    }
+
+    Component {
+        id: accountSectionComponent
+
+        SettingsAccount {
+            backend: page.backend
+            onSignOutRequested: page.signOutRequested()
+        }
+    }
+
+    Component {
+        id: aboutSectionComponent
+
+        SettingsAbout {
+            backend: page.backend
+        }
+    }
+
+    function selectSection(index) {
+        if (index < 0 || index >= page.sections.length || index === page.currentSection)
+            return
+        page.currentSection = index
     }
 
     function pointerOver(item, x, y) {
@@ -236,5 +244,4 @@ Item {
             bestItem.cursorPosition = bestItem.positionAt(local.x, local.y)
         }
     }
-
 }

@@ -13,7 +13,7 @@ ColumnLayout {
     spacing: 0
 
     KSettingsGroup {
-        title: qsTr("关于 kichi")
+        title: qsTr("关于")
         Layout.fillWidth: true
 
         KSettingsRow {

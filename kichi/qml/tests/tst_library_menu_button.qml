@@ -16,6 +16,8 @@ TestCase {
         LibraryMenuButton {}
     }
 
+    PageIndex { id: pages }
+
     property var button: null
     property var menu: null
 
@@ -54,7 +56,7 @@ TestCase {
     function test_button_active_only_on_library_pages() {
         compare(button.pageActive, false)
 
-        button.currentPage = 5
+        button.currentPage = pages.playbackHistory
         compare(button.pageActive, true, "库页按钮应保持强调色")
 
         button.currentPage = 0
@@ -69,7 +71,7 @@ TestCase {
         menu.close()
         wait(20)
 
-        button.currentPage = 6
+        button.currentPage = pages.playbackHistory
         openMenu()
         verify(findChild(menu, "libraryMenuPlaybackHistory").checked,
                "播放历史应打勾")
@@ -80,9 +82,9 @@ TestCase {
     function test_items_request_the_matching_page() {
         openMenu()
         const cases = [
-            ["libraryMenuRecentSaved", 5],
-            ["libraryMenuPlaybackHistory", 6],
-            ["libraryMenuStarred", 7]
+            ["libraryMenuRecentSaved", pages.recentSaved],
+            ["libraryMenuPlaybackHistory", pages.playbackHistory],
+            ["libraryMenuStarred", pages.starred]
         ]
         for (const [name, page] of cases) {
             pageSpy.clear()

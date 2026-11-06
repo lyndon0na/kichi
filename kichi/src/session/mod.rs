@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 
 use client_cache::ClientCache;
 use kichi_core::{
-    auth, captcha, Config, DriveClient, FileEntry, Quota, TrashEntry, REFRESH_MARGIN,
+    auth, captcha, Config, DriveClient, FileEntry, Quota, TransferQuota, TrashEntry, REFRESH_MARGIN,
 };
 
 /// 目录最多翻 40 页（20,000 条），防止异常分页把内存打满。
@@ -568,6 +568,12 @@ impl Session {
     pub fn quota(&self) -> Result<Quota, Failure> {
         let client = self.drive()?;
         client.about().map_err(Failure::from)
+    }
+
+    /// 取月度传输配额（阻塞）。
+    pub fn transfer_quota(&self) -> Result<TransferQuota, Failure> {
+        let client = self.drive()?;
+        client.transfer_quota().map_err(Failure::from)
     }
 
     /// 读取一个目录的全部条目（自动翻页；阻塞）。

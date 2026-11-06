@@ -35,6 +35,8 @@ Item {
     readonly property int radiusCard: 6
     /// 弹窗 / 登录卡片这类大容器
     readonly property int radiusSurface: 8
+    /// 设置对话框：卡片式浮层，比普通弹窗再圆一档（2026-11-06 用户指定按 Omikuji 风格）
+    readonly property int radiusDialog: 16
 
     // —— 间距 ——
     readonly property int gapXs: 4

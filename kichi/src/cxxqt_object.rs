@@ -51,6 +51,18 @@ pub mod qobject {
         /// 容量占用比例 0..1；`-1` = 不限量 / 未知，QML 据此隐藏进度条
         #[qproperty(f64, quota_ratio, cxx_name = "quotaRatio", READ, NOTIFY = changed)]
         #[qproperty(bool, quota_vip, cxx_name = "quotaVip", READ, NOTIFY = changed)]
+        /// 当月云下载额度（离线保存）；服务端没下发时为空串
+        #[qproperty(QString, quota_transfer_cloud, cxx_name = "quotaTransferCloud", READ, NOTIFY = changed)]
+        /// 当月下行额度（播放 / 查看 / 下载）
+        #[qproperty(QString, quota_transfer_download, cxx_name = "quotaTransferDownload", READ, NOTIFY = changed)]
+        /// 当月上传额度
+        #[qproperty(QString, quota_transfer_upload, cxx_name = "quotaTransferUpload", READ, NOTIFY = changed)]
+        /// 额度重置时间（下月 1 日 00:00 SGT）
+        #[qproperty(QString, quota_transfer_reset, cxx_name = "quotaTransferReset", READ, NOTIFY = changed)]
+        /// 当月额度占用比例 0..1；`-1` = 没有上限，界面不画进度条
+        #[qproperty(f64, quota_transfer_cloud_ratio, cxx_name = "quotaTransferCloudRatio", READ, NOTIFY = changed)]
+        #[qproperty(f64, quota_transfer_download_ratio, cxx_name = "quotaTransferDownloadRatio", READ, NOTIFY = changed)]
+        #[qproperty(f64, quota_transfer_upload_ratio, cxx_name = "quotaTransferUploadRatio", READ, NOTIFY = changed)]
         #[qproperty(bool, captcha_required, cxx_name = "captchaRequired", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, files, READ, NOTIFY = changed)]
         /// 当前目录 id（根为空串）：界面按它记忆 / 恢复滚动位置
@@ -902,6 +914,13 @@ pub struct KichiRust {
     pub(crate) quota_loading: bool,
     pub(crate) quota_ratio: f64,
     pub(crate) quota_vip: bool,
+    pub(crate) quota_transfer_cloud: QString,
+    pub(crate) quota_transfer_download: QString,
+    pub(crate) quota_transfer_upload: QString,
+    pub(crate) quota_transfer_reset: QString,
+    pub(crate) quota_transfer_cloud_ratio: f64,
+    pub(crate) quota_transfer_download_ratio: f64,
+    pub(crate) quota_transfer_upload_ratio: f64,
     /// 当前目录的列表项（QML 直接当 model 用）
     pub(crate) files: QVariantList,
     /// 当前目录 id（根为空串）：滚动记忆按它做 key
@@ -1240,6 +1259,13 @@ impl Default for KichiRust {
             quota_loading: false,
             quota_ratio: -1.0,
             quota_vip: false,
+            quota_transfer_cloud: QString::default(),
+            quota_transfer_download: QString::default(),
+            quota_transfer_upload: QString::default(),
+            quota_transfer_reset: QString::default(),
+            quota_transfer_cloud_ratio: -1.0,
+            quota_transfer_download_ratio: -1.0,
+            quota_transfer_upload_ratio: -1.0,
             files: QVariantList::default(),
             current_dir_id: QString::default(),
             files_revision: 0,

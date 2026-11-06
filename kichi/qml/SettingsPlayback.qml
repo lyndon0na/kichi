@@ -59,7 +59,6 @@ ColumnLayout {
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("默认清晰度")
             description: qsTr("没有对应档位时播放原画。")
 
@@ -101,11 +100,10 @@ ColumnLayout {
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("自动加载同目录字幕")
             description: qsTr("同名优先，最多等待 2 秒；仅 mpv 生效。")
 
-            CheckBox {
+            Switch {
                 checked: playback.backend ? playback.backend.autoSubtitles : true
                 Accessible.name: qsTr("自动加载同目录字幕")
                 onToggled: function () {
@@ -117,7 +115,6 @@ ColumnLayout {
 
         KSettingsRow {
             objectName: "settingsAdvancedPlayer"
-            divider: true
             interactive: true
             title: qsTr("自定义播放器命令")
             description: qsTr("仅「自定义」模式使用；编辑后会自动切到自定义。")
@@ -135,7 +132,7 @@ ColumnLayout {
             objectName: "settingsPlayerAdvancedBody"
             visible: playback.advancedOpen
             Layout.fillWidth: true
-            Layout.margins: theme.gapLg
+            Layout.topMargin: theme.gapMd
             spacing: theme.gapSm
 
             RowLayout {

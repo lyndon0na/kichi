@@ -45,7 +45,8 @@ pub use search_rank::{match_tier, MatchTier, SearchMatcher};
 pub use share::{CreateShareOptions, CreatedShare, MyShare};
 pub use tasks::{is_supported_task_url, TaskStatus};
 pub use types::{
-    EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TrashEntry,
+    EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TransferAllowance,
+    TransferQuota, TrashEntry,
 };
 pub use upload::{UploadProgress, UploadResult, UploadStage};
 pub use upload_rate::UploadRateLimiter;

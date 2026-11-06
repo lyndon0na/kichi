@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::captcha::CaptchaSource;
 use crate::http::{Body, HttpClient, PublicImagePolicy};
-use crate::types::{EntryKind, FileEntry, Quota, TrashEntry};
+use crate::types::{EntryKind, FileEntry, Quota, TransferAllowance, TransferQuota, TrashEntry};
 use crate::{Config, Error};
 
 /// 单页最多返回的条目数（rclone 的 `ListLimit`）。
@@ -69,14 +69,46 @@ pub struct UserInfo {
 struct AboutResponse {
     #[serde(default)]
     quota: Option<AboutQuota>,
+}
+
+/// 官方「传输配额」接口（`/vip/v1/quantity/list?type=transfer`）。
+///
+/// 字节数在这里是 JSON number（容量接口是字符串），用宽容解析两种情况都收。
+#[derive(Deserialize)]
+struct TransferQuotaResponse {
     #[serde(default)]
-    quotas: Option<AboutQuotas>,
+    base: Option<TransferBase>,
 }
 
 #[derive(Deserialize, Default)]
-struct AboutQuotas {
+struct TransferBase {
     #[serde(default)]
-    cloud_download: Option<AboutQuota>,
+    offline: TransferAmount,
+    #[serde(default)]
+    download: TransferAmount,
+    #[serde(default)]
+    upload: TransferAmount,
+    #[serde(default)]
+    download_daily: TransferAmount,
+    #[serde(default)]
+    vip_status: String,
+}
+
+#[derive(Deserialize, Default)]
+struct TransferAmount {
+    #[serde(default, deserialize_with = "lenient_u64")]
+    total_assets: u64,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    assets: u64,
+}
+
+impl TransferAmount {
+    fn allowance(&self) -> TransferAllowance {
+        TransferAllowance {
+            limit: self.total_assets,
+            used: self.assets,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -318,26 +350,29 @@ impl DriveClient {
             .ok_or_else(|| Error::ApiChanged("about 响应缺少 quota".into()))?;
         // 会员状态只在成功时覆盖，失败按非会员处理（不让容量查询一起失败）
         let vip = self.is_vip().unwrap_or(false);
-        // 离线下载额度实测存在（quotas.cloud_download）；`limit` 为 "-1" 表示不限量，
-        // 因此这里用 lenient 的字符串解析，不能按无符号数直接读
-        let download = response.quotas.and_then(|quotas| quotas.cloud_download);
-        let (download_usage, download_limit) = match download {
-            Some(entry) => (
-                Some(entry.usage),
-                if entry.is_unlimited || entry.limit < 0 {
-                    Some(None)
-                } else {
-                    Some(Some(entry.limit as u64))
-                },
-            ),
-            None => (None, None),
-        };
         Ok(Quota {
             usage: quota.usage,
             limit: (!quota.is_unlimited && quota.limit > 0).then_some(quota.limit as u64),
             vip,
-            cloud_download_usage: download_usage,
-            cloud_download_limit: download_limit,
+        })
+    }
+
+    /// 月度传输配额（云下载 / 下行 / 上传）。
+    ///
+    /// 与 [`DriveClient::about`] 的网盘容量分开统计；官方 Web 客户端在
+    /// 「传输配额」弹窗里用的就是同一个接口。响应没有重置时间字段，
+    /// 界面按官方说明固定在每月 1 日 00:00 SGT 显示。
+    pub fn transfer_quota(&self) -> Result<TransferQuota, Error> {
+        let response: TransferQuotaResponse = self.get(&self.config.transfer_quota_url())?;
+        let base = response
+            .base
+            .ok_or_else(|| Error::ApiChanged("quantity/list 响应缺少 base".into()))?;
+        Ok(TransferQuota {
+            cloud_download: base.offline.allowance(),
+            download: base.download.allowance(),
+            upload: base.upload.allowance(),
+            download_daily: base.download_daily.allowance(),
+            premium: base.vip_status == "ok",
         })
     }
 
@@ -1118,7 +1153,7 @@ mod tests {
 
     /// 用 2026-10-26 真实账号抓到的 `about` 响应结构做样本。
     #[test]
-    fn about_parses_cloud_download_quota() {
+    fn about_ignores_the_transfer_quotas_it_does_not_use() {
         let raw = r#"{
             "kind": "drive#about",
             "quota": {"kind": "drive#quota", "limit": "10995116277760", "usage": "5230119883333",
@@ -1128,20 +1163,39 @@ mod tests {
             "user_type": 1
         }"#;
         let response: AboutResponse = serde_json::from_str(raw).expect("样本应能解析");
-        let download = response
-            .quotas
-            .and_then(|quotas| quotas.cloud_download)
-            .expect("cloud_download 应存在");
-        assert_eq!(download.usage, 0);
-        assert!(download.is_unlimited, "limit=-1 表示不限量");
-        assert_eq!(download.limit, -1, "-1 必须被宽容解析成负数而不是报错");
+        assert_eq!(response.quota.map(|q| q.usage), Some(5_230_119_883_333));
+    }
+
+    /// 2026-09-24 真实响应（来自 pikpak-kotlin 的 mock 测试，MIT），去掉标识字段。
+    #[test]
+    fn transfer_quota_parses_the_three_monthly_allowances() {
+        let raw = r#"{
+            "transfer":{"offline":{"info":"","total_assets":0,"assets":0}},"data":null,"has_more":false,
+            "base":{"info":"","vip_status":"ok","expire_time":"2027-04-17T02:40:40+08:00","assets":"10T","size":0,
+              "offline":{"total_assets":43980465111040,"assets":736368637030,"size":736368637030},
+              "download":{"total_assets":4398046511104,"assets":197410452763,"size":197410452763},
+              "upload":{"total_assets":1099511627776,"assets":162173574191,"size":162173574191},
+              "download_daily":{"total_assets":0,"assets":0,"size":0}},
+            "apps_summary":{"offline":{"total_assets":10995116277760,"assets":0,"size":0},
+              "download":{"total_assets":1099511627776,"assets":0,"size":0}}
+        }"#;
+        let response: TransferQuotaResponse = serde_json::from_str(raw).expect("样本应能解析");
+        let base = response.base.expect("base 应存在");
+        assert_eq!(base.offline.allowance().limit, 43_980_465_111_040);
+        assert_eq!(base.offline.allowance().used, 736_368_637_030);
+        assert_eq!(base.download.allowance().limit, 4_398_046_511_104);
+        assert_eq!(base.upload.allowance().limit, 1_099_511_627_776);
+        assert_eq!(base.download_daily.allowance().limit, 0);
+        assert_eq!(base.vip_status, "ok");
     }
 
     #[test]
-    fn about_without_quotas_still_parses() {
-        let raw = r#"{"quota": {"limit": "100", "usage": "50"}}"#;
-        let response: AboutResponse = serde_json::from_str(raw).expect("缺 quotas 也应能解析");
-        assert!(response.quotas.is_none());
-        assert_eq!(response.quota.map(|q| q.usage), Some(50));
+    fn transfer_quota_accepts_string_numbers_too() {
+        let raw = r#"{"base":{"offline":{"total_assets":"4096","assets":"1024"}}}"#;
+        let response: TransferQuotaResponse =
+            serde_json::from_str(raw).expect("字符串数字也应能解析");
+        let offline = response.base.expect("base 应存在").offline.allowance();
+        assert_eq!(offline.limit, 4096);
+        assert_eq!(offline.used, 1024);
     }
 }

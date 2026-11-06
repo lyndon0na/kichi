@@ -91,10 +91,9 @@ TestCase {
             wait(0)
         }
 
-        compare(navItem(4), null, "设置不占主导航")
-        compare(navItem(5), null, "最近保存不占主导航")
-        compare(navItem(6), null, "播放历史不占主导航")
-        compare(navItem(7), null, "已加星标不占主导航")
+        compare(navItem(4), null, "最近保存不占主导航")
+        compare(navItem(5), null, "播放历史不占主导航")
+        compare(navItem(6), null, "已加星标不占主导航")
     }
 
     function test_task_badge_only_shows_unfinished_count() {
@@ -183,7 +182,7 @@ TestCase {
         tryCompare(selectionBar, "y", tasksY, 1000)
 
         // 库页属于文件页：侧栏仍选中「我的文件」
-        sidebar.currentIndex = 5
+        sidebar.currentIndex = 4
         tryCompare(filesSurface, "opacity", 1, 1000)
         tryCompare(targetSurface, "opacity", 0, 1000)
         verify(navItem(0).navSelected, "最近保存页应选中我的文件")
@@ -192,13 +191,15 @@ TestCase {
             sidebar, 0, (filesTarget.height - selectionBar.height) / 2).y
         tryCompare(selectionBar, "y", filesY, 1000)
 
-        // 设置不在主导航：滑条隐藏，选中态由账号行的设置按钮承担
+        // 设置是独立窗口：不占页面索引，齿轮点亮只看 settingsActive
         const settingsButton = findChild(sidebar, "accountSettingsButton")
-        sidebar.currentIndex = 4
+        sidebar.settingsActive = true
         wait(0)
-        compare(selectionBar.visible, false, "设置页不应在主导航上出现选中竖条")
-        compare(settingsButton.checked, true, "设置页应点亮账号行的设置按钮")
+        compare(settingsButton.checked, true, "设置对话框打开时应点亮账号行设置按钮")
+        compare(selectionBar.visible, true, "主导航仍保持当前页的选中竖条")
+        verify(navItem(0).navSelected, "打开设置不应改变主导航选中项")
 
+        sidebar.settingsActive = false
         sidebar.currentIndex = 0
         wait(0)
         compare(settingsButton.checked, false)

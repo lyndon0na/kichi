@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 设置页标准行：左边是设置名和一句说明，右边是控件。
+// 卡片式设置里行直接铺在面板上，不加卡片、不画分隔线；上下各 16px 留白就是行距。
 // 需要整行可点的行（例如展开高级项）把 interactive 打开即可。
 Item {
     id: row
@@ -10,7 +11,6 @@ Item {
     property string title: ""
     property string description: ""
     property bool danger: false
-    property bool divider: false
     property bool interactive: false
 
     signal clicked()
@@ -28,22 +28,9 @@ Item {
         color: row.hovered ? theme.surfaceHover : theme.surfaceClear
     }
 
-    Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.leftMargin: theme.gapLg
-        anchors.rightMargin: theme.gapLg
-        height: 1
-        visible: row.divider
-        color: theme.divider
-    }
-
     RowLayout {
         id: content
         anchors.fill: parent
-        anchors.leftMargin: theme.gapLg
-        anchors.rightMargin: theme.gapLg
         anchors.topMargin: theme.gapLg
         anchors.bottomMargin: theme.gapLg
         spacing: theme.gapXl
@@ -56,7 +43,7 @@ Item {
             Label {
                 Layout.fillWidth: true
                 text: row.title
-                font.pixelSize: theme.fontBody
+                font.pixelSize: theme.fontSection
                 font.weight: Font.Medium
                 color: row.danger ? theme.danger : theme.textPrimary
                 wrapMode: Text.Wrap

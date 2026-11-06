@@ -17,6 +17,8 @@ Rectangle {
     property int currentIndex: 0
     property Item selectedNavItem: null
     property bool hasNavSelection: false
+    /// 设置对话框是否显示：账号行齿轮的点亮状态由窗口可见性决定
+    property bool settingsActive: false
     /// 本机进行中的下载 / 上传批次数与离线未结束任务数；「传输任务」徽标用
     property int localTaskCount: 0
     property int offlineTaskCount: 0
@@ -128,7 +130,7 @@ Rectangle {
             account: bar.backend ? String(bar.backend.account) : ""
             displayName: bar.backend ? String(bar.backend.displayName) : ""
             avatarPath: bar.backend ? String(bar.backend.avatarPath) : ""
-            settingsActive: bar.currentIndex === pages.settings
+            settingsActive: bar.settingsActive
             onSettingsRequested: bar.settingsRequested()
         }
     }

@@ -143,10 +143,30 @@ pub struct Quota {
     /// 总量；`None` 表示不限量
     pub limit: Option<u64>,
     pub vip: bool,
-    /// 离线下载额度：已用字节；`None` 表示官方没下发
-    pub cloud_download_usage: Option<u64>,
-    /// 离线下载额度：上限；`Some(None)` 表示不限量
-    pub cloud_download_limit: Option<Option<u64>>,
+}
+
+/// 一项月度传输额度（字节）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransferAllowance {
+    /// 上限为 0 表示官方没下发这一项
+    pub limit: u64,
+    pub used: u64,
+}
+
+/// 账号自己的月度传输额度，对应官方「传输配额」弹窗。
+///
+/// 与 [`Quota`] 分开统计：秒传 / 离线保存可能不改变网盘容量，但仍消耗传输额度。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransferQuota {
+    /// 云下载（离线保存成功文件的当月流量）
+    pub cloud_download: TransferAllowance,
+    /// 下行（播放 / 查看 / 下载的当月流量）
+    pub download: TransferAllowance,
+    /// 上传（当月上传文件的流量）
+    pub upload: TransferAllowance,
+    /// 非会员每日下行上限；会员为 0
+    pub download_daily: TransferAllowance,
+    pub premium: bool,
 }
 
 /// 串流链接类别。

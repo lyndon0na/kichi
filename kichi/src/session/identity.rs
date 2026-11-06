@@ -64,7 +64,6 @@ impl Session {
                 usage: saved.quota_usage?,
                 limit: (saved.quota_limit > 0).then_some(saved.quota_limit),
                 vip: saved.quota_vip,
-                ..Quota::default()
             })
         })
     }

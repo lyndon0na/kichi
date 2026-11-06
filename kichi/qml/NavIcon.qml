@@ -12,6 +12,7 @@ Item {
     id: icon
 
     /// folder / clock / history / star / share / transfer / upload / download / trash / settings / logout
+    /// 设置对话框大纲：play / bell / user / info
     /// 以及文件类型：file / video / music / photo / pdf / document /
     /// spreadsheet / presentation / archive / code / subtitle / application / torrent
     property string name: ""
@@ -112,7 +113,15 @@ Item {
         "chevron-right": "M9 6l6 6l-6 6",
         "chevron-left": "M15 6l-6 6l6 6",
         // 资料库：三层叠加（最近保存 / 播放历史 / 已加星标共用的入口）
-        library: "M4 6l8 -4l8 4l-8 4l-8 -4 M4 10l8 4l8 -4 M4 14l8 4l8 -4"
+        library: "M4 6l8 -4l8 4l-8 4l-8 -4 M4 10l8 4l8 -4 M4 14l8 4l8 -4",
+        // 设置对话框左侧大纲
+        play: "M7 4v16l13 -8z",
+        bell: "M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"
+              + " M9 17v1a3 3 0 0 0 6 0v-1",
+        user: "M8 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"
+              + " M6 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2",
+        info: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"
+              + " M12 9h.01 M11 12h1v4h1"
     })
 
     Shape {

@@ -40,6 +40,11 @@ ApplicationWindow {
     }
 
     property bool signedIn: backend.authState === "signedIn"
+    // 退出登录（或令牌失效）后设置对话框不能再留着
+    onSignedInChanged: {
+        if (!root.signedIn)
+            settingsDialog.close()
+    }
     /// 当前是否最大化（Wayland 下窗口状态由混成器管，这里跟踪自己的意图）
     property bool isMaximized: false
     /// 缩到托盘后窗口隐藏，这里记住「是托盘收起来的」，不是用户主动关
@@ -103,6 +108,7 @@ ApplicationWindow {
             var w = root.isMaximized ? backend.windowWidth : root.width
             var h = root.isMaximized ? backend.windowHeight : root.height
             backend.saveWindowGeometry(w, h, root.isMaximized)
+            settingsDialog.close()
             root.hiddenToTray = true
             root.hide()
         } else {
@@ -206,13 +212,14 @@ ApplicationWindow {
                 currentIndex: root.currentPage
                 localTaskCount: backend.downloadActive + backend.uploadActive
                 offlineTaskCount: taskCenterPage.offlineActiveCount
+                settingsActive: settingsDialog.visible
                 onPageRequested: function (index) {
                     if (index === pageIds.transfers)
                         root.openTaskCenter()
                     else
                         root.navigateTo(index)
                 }
-                onSettingsRequested: root.navigateTo(pageIds.settings)
+                onSettingsRequested: root.openSettings()
             }
 
             // 侧栏与内容之间的细线：两边的底色只差一点点，没有线就看不出边界
@@ -312,27 +319,6 @@ ApplicationWindow {
                         anchors.leftMargin: theme.gapSm
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    RowLayout {
-                        visible: root.currentPage === pageIds.settings
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: theme.gapXs
-
-                        NavIcon {
-                            implicitWidth: 14
-                            implicitHeight: 14
-                            name: "check"
-                            color: theme.textMuted
-                            opacity: 0.8
-                        }
-
-                        Label {
-                            text: qsTr("更改会自动保存")
-                            font.pixelSize: theme.fontMeta
-                            color: theme.textMuted
-                        }
                     }
 
                     FilesPageSearchBar {
@@ -678,11 +664,6 @@ ApplicationWindow {
                         backend: backend
                     }
 
-                    SettingsPage {
-                        backend: backend
-                        onSignOutRequested: signOutDialog.open()
-                    }
-
                     RecentSavedPage {
                         id: recentSavedPage
                         backend: backend
@@ -797,25 +778,18 @@ ApplicationWindow {
         }
     }
 
-    KDialog {
-        id: signOutDialog
-        title: qsTr("退出登录")
-        modal: true
-        anchors.centerIn: parent
-        width: 360 + leftPadding + rightPadding
-        footer: DialogFooter {
-            outerMargin: signOutDialog.padding
-            onOkClicked: {
-                backend.signOut()
-                signOutDialog.close()
-            }
-            onCancelClicked: signOutDialog.close()
-        }
+    // 设置是应用内模态浮层，不占页面栈；Ctrl+, 与侧栏齿轮都走 openSettings()
+    SettingsDialog {
+        id: settingsDialog
+        backend: backend
+        onSignOutRequested: signOutDialog.open()
+    }
 
-        Label {
-            text: qsTr("将清除本机保存的登录令牌，下次需要重新输入账号密码。确定退出？")
-            wrapMode: Text.Wrap
-            width: 360
+    SignOutDialog {
+        id: signOutDialog
+        onConfirmed: {
+            settingsDialog.close()
+            backend.signOut()
         }
     }
 
@@ -857,7 +831,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+,"
         enabled: root.signedIn
-        onActivated: root.navigateTo(pageIds.settings)
+        onActivated: root.openSettings()
     }
 
     /// 面包屑的各级目录名。模板里的 model / 长度 / 折叠判断都从这里取，
@@ -885,8 +859,6 @@ ApplicationWindow {
             return qsTr("传输任务")
         if (root.currentPage === pageIds.trash)
             return qsTr("回收站")
-        if (root.currentPage === pageIds.settings)
-            return qsTr("设置")
         if (root.currentPage === pageIds.recentSaved)
             return qsTr("最近保存")
         if (root.currentPage === pageIds.playbackHistory)
@@ -900,6 +872,14 @@ ApplicationWindow {
         if (root.currentPage !== pageIndex)
             backend.clearStatusMessage()
         root.currentPage = pageIndex
+    }
+
+    /// 设置对话框：已打开时保持原样，不重建，保留上次停留的分组。
+    function openSettings() {
+        if (!root.signedIn)
+            return
+        if (!settingsDialog.opened)
+            settingsDialog.open()
     }
 
     /// 侧栏「传输任务」入口：从其他页面进来时按任务状态选标签，
@@ -985,6 +965,6 @@ ApplicationWindow {
             }
             return title
         }
-        return qsTr("设置")
+        return ""
     }
 }

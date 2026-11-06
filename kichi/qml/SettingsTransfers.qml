@@ -2,13 +2,13 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 设置页「下载」段：目录与传输吞吐参数都在这里即时生效。
+// 设置对话框「传输」页：下载目录、下载 / 上传吞吐参数都在这里即时生效。
 ColumnLayout {
-    id: downloads
+    id: transfers
 
     property var backend: null
 
-    readonly property KTheme theme: KTheme { parent: downloads }
+    readonly property KTheme theme: KTheme { parent: transfers }
 
     spacing: theme.gapXl
 
@@ -19,7 +19,7 @@ ColumnLayout {
 
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.margins: theme.gapLg
+            Layout.topMargin: theme.gapSm
             spacing: theme.gapXs
 
             Label {
@@ -46,8 +46,8 @@ ColumnLayout {
                     Layout.fillWidth: true
                     selectByMouse: true
                     placeholderText: qsTr("留空使用 ~/Downloads")
-                    text: downloads.backend ? downloads.backend.downloadDir : ""
-                    onEditingFinished: downloads.applyDownloadDir()
+                    text: transfers.backend ? transfers.backend.downloadDir : ""
+                    onEditingFinished: transfers.applyDownloadDir()
                 }
 
                 KButton {
@@ -56,8 +56,8 @@ ColumnLayout {
                     variant: "secondary"
                     iconName: "folder"
                     onClicked: {
-                        if (downloads.backend)
-                            downloads.backend.chooseDownloadDir()
+                        if (transfers.backend)
+                            transfers.backend.chooseDownloadDir()
                     }
                 }
 
@@ -66,15 +66,14 @@ ColumnLayout {
                     text: qsTr("打开目录")
                     variant: "ghost"
                     onClicked: {
-                        if (downloads.backend)
-                            downloads.backend.openDownloadDir()
+                        if (transfers.backend)
+                            transfers.backend.openDownloadDir()
                     }
                 }
             }
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("同时下载任务数")
             description: qsTr("跨任务与文件夹内共用，范围 1–8。")
 
@@ -85,17 +84,16 @@ ColumnLayout {
                 to: 8
                 stepSize: 1
                 editable: true
-                value: downloads.backend ? downloads.backend.downloadParallel : 3
+                value: transfers.backend ? transfers.backend.downloadParallel : 3
                 Accessible.name: qsTr("同时下载任务数")
                 onValueModified: {
-                    if (downloads.backend)
-                        downloads.backend.setDownloadParallel(value)
+                    if (transfers.backend)
+                        transfers.backend.setDownloadParallel(value)
                 }
             }
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("单文件连接数")
             description: qsTr("大文件的分片连接数；1 表示不分片，范围 1–8。")
 
@@ -106,17 +104,16 @@ ColumnLayout {
                 to: 8
                 stepSize: 1
                 editable: true
-                value: downloads.backend ? downloads.backend.downloadConnections : 4
+                value: transfers.backend ? transfers.backend.downloadConnections : 4
                 Accessible.name: qsTr("单文件连接数")
                 onValueModified: {
-                    if (downloads.backend)
-                        downloads.backend.setDownloadConnections(value)
+                    if (transfers.backend)
+                        transfers.backend.setDownloadConnections(value)
                 }
             }
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("全局限速")
             description: qsTr("所有下载连接共享此上限，0 表示不限速。")
 
@@ -131,11 +128,11 @@ ColumnLayout {
                     stepSize: 1
                     editable: true
                     implicitWidth: 96
-                    value: downloads.backend ? downloads.backend.downloadRateMib : 0
+                    value: transfers.backend ? transfers.backend.downloadRateMib : 0
                     Accessible.name: qsTr("全局限速")
                     onValueModified: {
-                        if (downloads.backend)
-                            downloads.backend.setDownloadRateMib(value)
+                        if (transfers.backend)
+                            transfers.backend.setDownloadRateMib(value)
                     }
                 }
 
@@ -148,17 +145,16 @@ ColumnLayout {
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("正常退出后自动续跑")
             description: qsTr("下次恢复登录态时继续未完成任务；暂停、失败、取消和崩溃不自动续跑。")
 
-            CheckBox {
+            Switch {
                 objectName: "settingsAutoResumeDownloads"
-                checked: downloads.backend ? downloads.backend.autoResumeDownloads : true
+                checked: transfers.backend ? transfers.backend.autoResumeDownloads : true
                 Accessible.name: qsTr("正常退出后自动续跑")
                 onToggled: function () {
-                    if (downloads.backend)
-                        downloads.backend.setAutoResumeDownloads(checked)
+                    if (transfers.backend)
+                        transfers.backend.setAutoResumeDownloads(checked)
                 }
             }
         }
@@ -180,17 +176,16 @@ ColumnLayout {
                 to: 8
                 stepSize: 1
                 editable: true
-                value: downloads.backend ? downloads.backend.uploadParallel : 2
+                value: transfers.backend ? transfers.backend.uploadParallel : 2
                 Accessible.name: qsTr("同时上传任务数")
                 onValueModified: {
-                    if (downloads.backend)
-                        downloads.backend.setUploadParallel(value)
+                    if (transfers.backend)
+                        transfers.backend.setUploadParallel(value)
                 }
             }
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("全局限速")
             description: qsTr("所有上传连接共享此上限，0 表示不限速；只限制实际上传的字节。")
 
@@ -205,11 +200,11 @@ ColumnLayout {
                     stepSize: 1
                     editable: true
                     implicitWidth: 96
-                    value: downloads.backend ? downloads.backend.uploadRateMib : 0
+                    value: transfers.backend ? transfers.backend.uploadRateMib : 0
                     Accessible.name: qsTr("上传全局限速")
                     onValueModified: {
-                        if (downloads.backend)
-                            downloads.backend.setUploadRateMib(value)
+                        if (transfers.backend)
+                            transfers.backend.setUploadRateMib(value)
                     }
                 }
 
@@ -222,51 +217,50 @@ ColumnLayout {
         }
 
         KSettingsRow {
-            divider: true
             title: qsTr("正常退出后自动续传上传")
             description: qsTr("默认关闭。开启后只恢复正常退出时仍在进行的上传；暂停、失败、取消和崩溃不恢复。有断点的大文件接着传，5 MiB 以内的小文件会从头重传。")
 
-            CheckBox {
+            Switch {
                 objectName: "settingsAutoResumeUploads"
-                checked: downloads.backend ? downloads.backend.autoResumeUploads : false
+                checked: transfers.backend ? transfers.backend.autoResumeUploads : false
                 Accessible.name: qsTr("正常退出后自动续传上传")
                 onToggled: function () {
-                    if (downloads.backend)
-                        downloads.backend.setAutoResumeUploads(checked)
+                    if (transfers.backend)
+                        transfers.backend.setAutoResumeUploads(checked)
                 }
             }
         }
     }
 
     Connections {
-        target: downloads.backend
+        target: transfers.backend
         function onChanged() {
-            downloads.syncFromBackend()
+            transfers.syncFromBackend()
         }
     }
 
     function syncFromBackend() {
-        if (!downloads.backend)
+        if (!transfers.backend)
             return
         if (!downloadField.activeFocus)
-            downloadField.text = downloads.backend.downloadDir
+            downloadField.text = transfers.backend.downloadDir
         if (!parallelBox.activeFocus)
-            parallelBox.value = downloads.backend.downloadParallel
+            parallelBox.value = transfers.backend.downloadParallel
         if (!connectionsBox.activeFocus)
-            connectionsBox.value = downloads.backend.downloadConnections
+            connectionsBox.value = transfers.backend.downloadConnections
         if (!rateBox.activeFocus)
-            rateBox.value = downloads.backend.downloadRateMib
+            rateBox.value = transfers.backend.downloadRateMib
         if (!uploadParallelBox.activeFocus)
-            uploadParallelBox.value = downloads.backend.uploadParallel
+            uploadParallelBox.value = transfers.backend.uploadParallel
         if (!uploadRateBox.activeFocus)
-            uploadRateBox.value = downloads.backend.uploadRateMib
+            uploadRateBox.value = transfers.backend.uploadRateMib
     }
 
     function applyDownloadDir() {
-        if (!downloads.backend)
+        if (!transfers.backend)
             return
-        downloads.backend.setDownloadDir(downloadField.text)
+        transfers.backend.setDownloadDir(downloadField.text)
         // 后端可能拒绝非法路径；读回实际生效值。
-        downloadField.text = downloads.backend.downloadDir
+        downloadField.text = transfers.backend.downloadDir
     }
 }

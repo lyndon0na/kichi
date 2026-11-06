@@ -35,6 +35,8 @@ pub const PATH_USER_ME: &str = "/v1/user/me";
 pub const PATH_ABOUT: &str = "/drive/v1/about";
 /// 会员状态
 pub const PATH_VIP: &str = "/drive/v1/privilege/vip";
+/// 月度传输配额（云下载 / 下行 / 上传）
+pub const PATH_TRANSFER_QUOTA: &str = "/vip/v1/quantity/list";
 /// 文件列表 / 创建文件夹 / 创建离线任务
 pub const PATH_FILES: &str = "/drive/v1/files";
 /// 离线任务列表 / 删除任务
@@ -144,6 +146,13 @@ impl Config {
     pub fn vip_url(&self) -> String {
         join(&self.drive_base, PATH_VIP)
     }
+    /// 月度传输配额；`type=transfer` 是官方 Web 客户端的固定参数。
+    pub fn transfer_quota_url(&self) -> String {
+        format!(
+            "{}?type=transfer&limit=200",
+            join(&self.drive_base, PATH_TRANSFER_QUOTA)
+        )
+    }
     pub fn files_url(&self) -> String {
         join(&self.drive_base, PATH_FILES)
     }
@@ -252,6 +261,15 @@ mod tests {
         assert_eq!(cfg.signin_url(), "http://127.0.0.1:1/v1/auth/signin");
         assert_eq!(cfg.tasks_url(), "http://127.0.0.1:2/drive/v1/tasks");
         assert_eq!(cfg.upload_base, "https://mypikpak.com");
+    }
+
+    #[test]
+    fn transfer_quota_url_carries_the_official_query() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.transfer_quota_url(),
+            "https://api-drive.mypikpak.com/vip/v1/quantity/list?type=transfer&limit=200"
+        );
     }
 
     #[test]
