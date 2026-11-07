@@ -125,16 +125,32 @@ impl qobject::Kichi {
         let Some(&tier) = crate::settings::FIXED_TIERS.get(index) else {
             return;
         };
-        if self.as_ref().rust().play_target().is_none() {
+        let Some(id) = self.as_ref().rust().play_target() else {
             self.as_mut().set_message("播放选项已过期，请重新点播放");
             return;
-        }
+        };
         let name = self.play_title.to_string();
+        // 菜单可能开了一会儿：期间目录刷新 / 连播切集都可能改过快照，重新算一次。
+        let plan = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            super::play_prepare::plan_for(&id, &rust.entries, &rust.search_index)
+        };
+        self.as_mut().rust_mut().play_subtitle_plan = plan;
+        // 菜单选完才算真正开播：这时才快照连播队列，关掉菜单不会动当前队列。
+        self.as_mut().begin_play_queue(&id, &name);
         self.as_mut().fetch_and_play(tier, &name);
     }
 
     /// 记下这次播放的目标（id + 文件名），并作废之前的在途请求。
     fn prepare_play(mut self: Pin<&mut Self>, id: &str, name: &str) {
+        // 连播队列只在这里建一次快照：菜单开着时目录刷新不影响本次播放。
+        self.as_mut().begin_play_queue(id, name);
+        self.as_mut().prepare_play_state(id, name);
+    }
+
+    /// 只重置播放目标状态，不动连播队列（队列内切集走这里）。
+    pub(crate) fn prepare_play_state(mut self: Pin<&mut Self>, id: &str, name: &str) {
         let mut rust = self.as_mut().rust_mut();
         rust.play_epoch = rust.play_epoch.wrapping_add(1);
         rust.play_menu = QVariantList::default();
@@ -144,7 +160,7 @@ impl qobject::Kichi {
     }
 
     /// 发请求取档位，回来后按用户要的那一档开播。
-    fn fetch_and_play(mut self: Pin<&mut Self>, tier: Tier, name: &str) {
+    pub(crate) fn fetch_and_play(mut self: Pin<&mut Self>, tier: Tier, name: &str) {
         // 新的播放取消上一次「还在加载」的播放：已在播放的 mpv 不受影响
         // （提示条消失后那条会话已从登记表里移出，这里置标志不会波及它）
         self.as_mut().cancel_pending_play();
@@ -170,13 +186,28 @@ impl qobject::Kichi {
                 .fail_play_loading("播放选项已过期，请重新点播放");
             return;
         };
+        // 队列切集：片尾预取的链接命中就省掉这一次详情请求。
+        let prefetched = self.as_mut().take_prefetched(&id);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.play_queue_state.current_tier = Some(tier);
+        }
         // 列表里的审核标记只作为详情没下发 audit 时的兜底：
         // 播放列表刷新导致条目暂时找不到时按 false 处理，退回详情判断。
-        let audit_flagged = self
-            .as_ref()
-            .rust()
-            .find_entry(&id)
-            .is_some_and(|entry| entry.audit_flagged);
+        let audit_flagged = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            rust.find_entry(&id)
+                .or_else(|| {
+                    rust.play_queue_state
+                        .playlist
+                        .entries()
+                        .iter()
+                        .find(|entry| entry.id == id)
+                        .cloned()
+                })
+                .is_some_and(|entry| entry.audit_flagged)
+        };
         // 音乐不写官方播放历史：只让视频的样本进入上报队列
         let report_history = super::play_history::reports_progress(name);
         let name = name.to_owned();
@@ -240,6 +271,7 @@ impl qobject::Kichi {
                         plan,
                         subtitle_languages,
                         wants_history,
+                        prefetched,
                     )
                 }
             },
@@ -423,8 +455,10 @@ impl qobject::Kichi {
                         Ok(_) => {
                             {
                                 let mut rust = self.as_mut().rust_mut();
-                                // Ready 之后才点亮浮层：取链 / 打开阶段仍由提示条兜底
-                                rust.embed_active = false;
+                                // 队列切集保持窗口不关；普通新开播仍先收起，等 Ready。
+                                if !rust.play_queue_state.advancing {
+                                    rust.embed_active = false;
+                                }
                                 rust.embed_title = QString::from(title);
                                 rust.embed_pending_epoch = Some(epoch);
                             }
@@ -515,6 +549,9 @@ impl qobject::Kichi {
                     // 内嵌会话出图：这时才把整窗视频浮层亮出来
                     if rust.embed_pending_epoch == Some(epoch) {
                         rust.embed_active = true;
+                        rust.embed_live_epoch = Some(epoch);
+                        // 同一个播放窗口切下一集：QML 据此刷新章节 / 进度。
+                        rust.embed_serial = rust.embed_serial.wrapping_add(1);
                     }
                     // 成功后清掉旧提醒：不常驻「已用 … 播放…」
                     rust.status_message = QString::default();
@@ -525,24 +562,54 @@ impl qobject::Kichi {
                 if report_history {
                     self.as_mut().queue_play_progress(id, epoch, progress);
                 }
+                self.as_mut().maybe_prefetch_next(progress, epoch);
             }
-            StartEvent::Stopped { progress } => {
+            StartEvent::Stopped { progress, end } => {
                 if let Some(progress) = progress.filter(|_| report_history) {
                     self.as_mut().queue_play_progress(id, epoch, progress);
                 }
-                self.as_mut().clear_embed_state(epoch);
-                if self.as_mut().update_active_play_session(epoch, id, false) {
-                    self.as_mut().notify();
+                self.as_mut().update_active_play_session(epoch, id, false);
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    if rust.embed_live_epoch == Some(epoch) {
+                        rust.embed_live_epoch = None;
+                    }
                 }
+                let advance = self.as_ref().rust().play_epoch == epoch
+                    && super::playlist::should_auto_advance(
+                        end,
+                        self.as_ref().rust().auto_play_next,
+                        self.as_ref().rust().play_queue_state.playlist.has_next(),
+                    );
+                if advance {
+                    // 不收起内嵌窗口：下一集的 Ready 会把 embedSerial +1。
+                    self.as_mut().start_queue_offset(1);
+                    self.as_mut().notify();
+                    return;
+                }
+                self.as_mut().clear_embed_state(epoch);
+                self.as_mut().notify();
             }
             StartEvent::Failed(reason) => {
                 self.as_mut().clear_embed_state(epoch);
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    if rust.embed_live_epoch == Some(epoch) {
+                        rust.embed_live_epoch = None;
+                    }
+                }
                 self.as_mut().update_active_play_session(epoch, id, false);
                 // `reason` 已经带了播放器上下文（…未能播放「title」：…），直接显示
                 self.as_mut().fail_play_loading(&reason);
             }
             StartEvent::Cancelled => {
                 self.as_mut().clear_embed_state(epoch);
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    if rust.embed_live_epoch == Some(epoch) {
+                        rust.embed_live_epoch = None;
+                    }
+                }
                 self.as_mut().update_active_play_session(epoch, id, false);
                 // 取消后不给任何文字反馈
                 self.as_mut().hide_play_loading();
@@ -553,9 +620,18 @@ impl qobject::Kichi {
 
     /// 提示条上的「取消」：中止取链、关掉还没出窗口的 mpv，静默收尾。
     pub fn cancel_play_loading(mut self: Pin<&mut Self>) {
+        // 取消这次播放时，后台列目录 / 片尾预取也不再需要。
+        self.as_mut().cancel_queue_work();
+        self.as_mut().restore_queue_for_live_session();
         self.as_mut().cancel_pending_play();
         {
             let mut rust = self.as_mut().rust_mut();
+            // 片尾自动切集被取消：旧画面已经结束，空窗口一起收起。
+            if rust.play_queue_state.hide_on_failure {
+                rust.embed_active = false;
+                rust.embed_title = QString::default();
+                rust.embed_pending_epoch = None;
+            }
             rust.play_loading = false;
             rust.play_loading_id = QString::default();
             rust.play_loading_name = QString::default();
@@ -612,6 +688,7 @@ impl qobject::Kichi {
         rust.embed_active = false;
         rust.embed_title = QString::default();
         rust.embed_pending_epoch = None;
+        rust.embed_live_epoch = None;
     }
 
     /// 只收起属于这次会话的内嵌浮层；新会话已经接管时不动它。
@@ -621,6 +698,7 @@ impl qobject::Kichi {
             return;
         }
         rust.embed_pending_epoch = None;
+        rust.embed_live_epoch = None;
         rust.embed_active = false;
         rust.embed_title = QString::default();
     }
@@ -809,8 +887,15 @@ impl qobject::Kichi {
 
     /// 加载失败：收起加载态，错误进提示条，不碰底栏。
     fn fail_play_loading(mut self: Pin<&mut Self>, text: &str) {
+        self.as_mut().restore_queue_for_live_session();
         {
             let mut rust = self.as_mut().rust_mut();
+            // 片尾自动切集失败时，旧画面已经结束：把空窗口收起来。
+            if rust.play_queue_state.hide_on_failure {
+                rust.embed_active = false;
+                rust.embed_title = QString::default();
+                rust.embed_pending_epoch = None;
+            }
             rust.play_loading = false;
             rust.play_loading_id = QString::default();
             rust.play_loading_name = QString::default();
@@ -845,6 +930,9 @@ impl qobject::Kichi {
             rust.play_id.clear();
             rust.play_menu = QVariantList::default();
             rust.play_subtitle_plan = SubtitlePlan::None;
+            rust.play_queue_state.advancing = false;
+            rust.play_queue_state.hide_on_failure = false;
+            rust.queue_advancing = false;
         }
         self.as_mut().notify();
     }
@@ -923,12 +1011,14 @@ impl qobject::Kichi {
             rust.embed_active = false;
             rust.embed_title = QString::default();
             rust.embed_pending_epoch = None;
+            rust.embed_live_epoch = None;
         }
+        self.as_mut().reset_play_queue();
     }
 }
 
 /// 设置里的偏好 → 直接要播的固定档位（`Ask` 返回 None = 弹菜单）。
-fn fixed_tier_of(quality: crate::settings::Quality) -> Option<Tier> {
+pub(super) fn fixed_tier_of(quality: crate::settings::Quality) -> Option<Tier> {
     match quality {
         crate::settings::Quality::Ask => None,
         crate::settings::Quality::Original => Some(Tier::Original),

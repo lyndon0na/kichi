@@ -115,6 +115,22 @@ ColumnLayout {
         }
 
         KSettingsRow {
+            objectName: "settingsAutoPlayNext"
+            title: qsTr("播完自动播放下一集")
+            description: qsTr("同一文件夹内的视频 / 音频按列表顺序连播；内嵌 / mpv 生效，VLC 尽力。片尾前会预取下一集。")
+
+            Switch {
+                objectName: "settingsAutoPlayNextToggle"
+                checked: playback.backend ? playback.backend.autoPlayNext : true
+                Accessible.name: qsTr("播完自动播放下一集")
+                onToggled: function () {
+                    if (playback.backend)
+                        playback.backend.setAutoPlayNext(checked)
+                }
+            }
+        }
+
+        KSettingsRow {
             objectName: "settingsAdvancedPlayer"
             interactive: true
             title: qsTr("自定义播放器命令")

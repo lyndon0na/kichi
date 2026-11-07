@@ -412,6 +412,8 @@ pub struct Settings {
     pub notify_enabled: bool,
     /// 播放时自动加载同目录字幕（只对 mpv 生效）
     pub auto_subtitles: bool,
+    /// 播完自动播放同文件夹下一集（默认开启）
+    pub auto_play_next: bool,
     /// 内嵌播放器首选音轨语言（`auto` / `zh` / `yue` / `en` / `ja` / `ko`）
     pub player_audio_lang: PreferredLanguage,
     /// 内嵌播放器首选字幕语言
@@ -479,6 +481,7 @@ impl Default for Settings {
             player_args: String::new(),
             notify_enabled: true,
             auto_subtitles: true,
+            auto_play_next: true,
             player_audio_lang: PreferredLanguage::default(),
             player_sub_lang: PreferredLanguage::default(),
             player_mpv_conf: true,
@@ -719,6 +722,7 @@ mod tests {
             player_command: "mpv".into(),
             player_args: "--fs --vo=gpu".into(),
             notify_enabled: false,
+            auto_play_next: false,
             player_audio_lang: PreferredLanguage::Japanese,
             player_sub_lang: PreferredLanguage::Chinese,
             player_mpv_conf: false,

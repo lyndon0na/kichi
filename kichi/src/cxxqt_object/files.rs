@@ -814,15 +814,15 @@ impl qobject::Kichi {
 
 /// 排序：文件夹永远在前，同类按设置字段比较，方向由 `ascending` 决定。
 ///
-/// 名称比较用 lower-case（中文不受影响，英文大小写不打架）；大小相同时
-/// 回落到名称，保证同一目录多次刷新顺序稳定。
+/// 名称比较用自然排序（大小写不敏感、数字按数值），保证 `第2集` 排在
+/// `第10集` 前；大小 / 时间相同时回落到名称，保证同一目录多次刷新顺序稳定。
 pub(crate) fn sort_entries(
     entries: &mut [FileEntry],
     field: crate::settings::SortField,
     ascending: bool,
 ) {
     use crate::settings::SortField;
-    let name = |entry: &FileEntry| entry.name.to_lowercase();
+    let name = |a: &FileEntry, b: &FileEntry| kichi_core::natural::natural_cmp(&a.name, &b.name);
     let folder_first = |a: &FileEntry, b: &FileEntry| {
         (a.kind == EntryKind::Folder)
             .cmp(&(b.kind == EntryKind::Folder))
@@ -835,12 +835,12 @@ pub(crate) fn sort_entries(
             return group;
         }
         let order = match field {
-            SortField::Name => name(a).cmp(&name(b)),
-            SortField::Size => a.size.cmp(&b.size).then_with(|| name(a).cmp(&name(b))),
+            SortField::Name => name(a, b),
+            SortField::Size => a.size.cmp(&b.size).then_with(|| name(a, b)),
             SortField::Modified => {
                 let left = a.modified_at.map(|time| time.timestamp()).unwrap_or(0);
                 let right = b.modified_at.map(|time| time.timestamp()).unwrap_or(0);
-                left.cmp(&right).then_with(|| name(a).cmp(&name(b)))
+                left.cmp(&right).then_with(|| name(a, b))
             }
         };
         if ascending {
@@ -1024,6 +1024,20 @@ mod sort_tests {
         assert_eq!(
             names(&entries),
             vec!["Zeta", "Aaa", "Beta.mkv", "alpha.mkv"]
+        );
+    }
+
+    #[test]
+    fn name_sort_puts_episode_numbers_in_value_order() {
+        let mut entries = vec![
+            entry("第10集.mkv", EntryKind::File, 1, 1),
+            entry("第2集.mkv", EntryKind::File, 1, 1),
+            entry("第1集.mkv", EntryKind::File, 1, 1),
+        ];
+        sort_entries(&mut entries, SortField::Name, true);
+        assert_eq!(
+            names(&entries),
+            vec!["第1集.mkv", "第2集.mkv", "第10集.mkv"]
         );
     }
 

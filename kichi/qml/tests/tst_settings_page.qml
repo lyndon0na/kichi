@@ -16,6 +16,7 @@ TestCase {
         id: backend
         property string preferredQuality: "ask"
         property bool autoSubtitles: true
+        property bool autoPlayNext: true
         property string playerAudioLang: "auto"
         property string playerSubLang: "auto"
         property bool playerMpvConf: true
@@ -59,6 +60,7 @@ TestCase {
 
         function setPreferredQuality(value) { preferredQuality = value }
         function setAutoSubtitles(value) { autoSubtitles = value }
+        function setAutoPlayNext(value) { autoPlayNext = value }
         function setPlayerAudioLang(value) { playerAudioLang = value }
         function setPlayerSubLang(value) { playerSubLang = value }
         function setPlayerMpvConf(value) { playerMpvConf = value }
@@ -99,6 +101,7 @@ TestCase {
         // 每个用例都从默认值开始：后面的用例会改写这些字段
         backend.preferredQuality = "ask"
         backend.autoSubtitles = true
+        backend.autoPlayNext = true
         backend.playerAudioLang = "auto"
         backend.playerSubLang = "auto"
         backend.playerMpvConf = true
@@ -423,6 +426,19 @@ TestCase {
         toggle.toggled()
         wait(40)
         compare(backend.playerVulkan, false, "关闭后回退 OpenGL")
+    }
+
+    function test_auto_play_next_toggle_is_wired() {
+        openSection(page.playbackSection)
+
+        var toggle = findChild(page, "settingsAutoPlayNextToggle")
+        verify(toggle !== null, "有播完自动下一集开关")
+        compare(toggle.checked, true, "默认开启")
+
+        toggle.checked = false
+        toggle.toggled()
+        wait(40)
+        compare(backend.autoPlayNext, false, "关闭后不再自动连播")
     }
 
     function test_download_dir_commits_when_editing_finishes() {

@@ -69,6 +69,7 @@ pub(super) fn run(
     let mut guard = Some(guard);
     let mut ready = false;
     let mut failure: Option<String> = None;
+    let mut reached_eof = false;
     let mut next_sub_id = 0u64;
     let mut selected = false;
     let mut late_held: Vec<SubtitleAssets> = Vec::new();
@@ -237,6 +238,7 @@ pub(super) fn run(
             }
             Some(Ok(Event::EndFile(reason))) => {
                 if reason == libmpv2_sys::mpv_end_file_reason_MPV_END_FILE_REASON_EOF {
+                    reached_eof = true;
                     tracker.mark_reached_end();
                     break;
                 }
@@ -294,6 +296,13 @@ pub(super) fn run(
     if ready {
         notify(StartEvent::Stopped {
             progress: tracker.final_progress(),
+            end: if reached_eof {
+                crate::player::EndReason::Eof
+            } else if session.cancel().is_cancelled() {
+                crate::player::EndReason::Stopped
+            } else {
+                crate::player::EndReason::Unknown
+            },
         });
     } else if let Some(failure) = failure {
         notify(StartEvent::Failed(failure));

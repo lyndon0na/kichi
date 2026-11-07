@@ -43,7 +43,7 @@ use kichi_core::PlayOption;
 
 use crate::settings::PlayerBackend;
 pub(crate) use input::expand_play_arg;
-pub use session::{shutdown_all, start, PlaybackExtras, StartEvent};
+pub use session::{shutdown_all, start, EndReason, PlaybackExtras, StartEvent};
 
 /// 默认播放器命令：系统 `PATH` 里的 `mpv`。
 ///

@@ -111,6 +111,11 @@ impl ProgressTracker {
         self.reached_end = true;
     }
 
+    /// 播放器是否发过 `end-file(reason=eof)`（mpv / VLC 近似判断）。
+    pub(super) fn reached_end(&self) -> bool {
+        self.reached_end
+    }
+
     fn current(&self) -> Option<PlaybackProgress> {
         let duration = self.duration?;
         let duration = duration.floor();

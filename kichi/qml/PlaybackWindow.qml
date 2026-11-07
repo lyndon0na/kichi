@@ -58,11 +58,13 @@ Window {
     property real chapterTipY: 0
     property bool speedOpen: false
     property bool subStyleOpen: false
-    readonly property bool menuOpen: trackMenu.visible
+    readonly property bool menuOpen: trackMenu.visible || queuePanel.visible
     // 任何浮层 / 菜单打开时，键盘归浮层，kichi 快捷键暂停，也不下发给 mpv。
     readonly property bool overlayOpen: volumeOpen || subStyleOpen || speedOpen || menuOpen
     // 拖动松手后等 mpv 回报新位置，期间别让旧坐标把滑块拉回去。
     property real seekTarget: -1
+    // 同一个播放窗口切下一集时，backend.embedSerial 会 +1；据此刷新章节 / 进度。
+    property int embedSerialSeen: -1
 
     title: backend !== null && backend.embedTitle.length > 0
            ? backend.embedTitle : "kichi"
@@ -111,6 +113,7 @@ Window {
         if (backend !== null)
             speedPercent = Math.round(backend.embedSpeed() * 100)
         chapters = backend !== null ? backend.embedChapters() : []
+        embedSerialSeen = backend !== null ? backend.embedSerial : -1
         win.show()
         win.raise()
         win.requestActivate()
@@ -134,8 +137,11 @@ Window {
         dismissed = true
         commitSpeed()
         commitAudio()
-        if (backend !== null)
+        if (backend !== null) {
+            // 片尾自动切集可能还在取下一集：关窗时一并取消，别让声音在后台继续。
+            backend.cancelPlayLoading()
             backend.embedStop()
+        }
         closePlayback()
     }
 
@@ -156,6 +162,11 @@ Window {
     function syncPlayback() {
         if (!win.visible || backend === null)
             return
+        // 同一个窗口切下一集：标题由 embedTitle 绑定，这里刷新章节与进度。
+        if (backend.embedSerial !== embedSerialSeen) {
+            embedSerialSeen = backend.embedSerial
+            refreshSession()
+        }
         duration = Math.max(0, backend.embedDuration())
         paused = backend.embedPaused()
         if (!seeking && seekTarget < 0) {
@@ -321,6 +332,7 @@ Window {
 
     function closeMenus() {
         trackMenu.close()
+        queuePanel.close()
     }
 
     function openTrackMenu(kind, anchor) {
@@ -331,6 +343,23 @@ Window {
         win.speedOpen = false
         trackMenu.kind = kind
         trackMenu.openAt(anchor)
+        wake()
+    }
+
+    function toggleQueuePanel(anchor) {
+        if (!win.playing || backend === null)
+            return
+        if (queuePanel.visible) {
+            queuePanel.close()
+            surface.forceActiveFocus()
+            wake()
+            return
+        }
+        win.volumeOpen = false
+        win.subStyleOpen = false
+        win.speedOpen = false
+        trackMenu.close()
+        queuePanel.openAbove(anchor)
         wake()
     }
 
@@ -454,6 +483,20 @@ Window {
         wake()
     }
 
+    // 同一个播放窗口里的下一集：只重置进度与章节，不动窗口 / 全屏 / 音量面板。
+    function refreshSession() {
+        position = 0
+        duration = 0
+        paused = false
+        seeking = false
+        seekTarget = -1
+        seekSlider.value = 0
+        hoveredChapter = -1
+        chapters = backend !== null ? backend.embedChapters() : []
+        if (backend !== null)
+            speedPercent = Math.round(backend.embedSpeed() * 100)
+    }
+
     function resetPlayback() {
         hideTimer.stop()
         seekSettle.stop()
@@ -548,8 +591,10 @@ Window {
         // 用户关窗 = 停播；Stopped 回投前保持 dismissed，别被 changed 拉回来。
         win.dismissed = true
         win.commitAudio()
-        if (win.backend !== null)
+        if (win.backend !== null) {
+            win.backend.cancelPlayLoading()
             win.backend.embedStop()
+        }
     }
 
     onPausedChanged: {
@@ -690,6 +735,17 @@ Window {
             }
         }
 
+        // 队列切集：旧画面已经结束，新一集还在取链 / 等窗口时显示加载环。
+        VideoLoadingOverlay {
+            anchors.fill: parent
+            cornerRadius: 0
+            visible: win.playing && win.backend !== null && win.backend.queueAdvancing
+            onCancelRequested: {
+                if (win.backend !== null)
+                    win.backend.cancelPlayLoading()
+            }
+        }
+
         Rectangle {
             id: topBar
             anchors.top: parent.top
@@ -738,6 +794,7 @@ Window {
 
                 // 窗口态由窗管标题栏提供关闭；全屏时没有标题栏，才在控制条上留出口。
                 KIconButton {
+                    id: closeButton
                     objectName: "playbackWindowClose"
                     visible: win.isFullScreen
                     iconName: "x"
@@ -748,7 +805,7 @@ Window {
                     focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("关闭播放")
                     KMediaToolTip {
-                        visible: hovered && !win.overlayOpen
+                        visible: closeButton.hovered && !win.overlayOpen
                         text: qsTr("关闭播放")
                     }
                     onClicked: win.requestClose()
@@ -794,6 +851,31 @@ Window {
                 spacing: theme.gapMd
 
                 KIconButton {
+                    id: previousButton
+                    objectName: "playbackWindowPrevious"
+                    iconName: "skip-back"
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 0.9
+                    onMedia: true
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
+                    enabled: win.backend !== null && win.backend.playQueueIndex > 0
+                    Accessible.name: qsTr("上一集")
+                    KMediaToolTip {
+                        visible: previousButton.hovered && !win.overlayOpen
+                        text: qsTr("上一集")
+                    }
+                    onClicked: {
+                        if (win.backend !== null)
+                            win.backend.playPrevious()
+                        win.wake()
+                    }
+                }
+
+                KIconButton {
+                    id: pauseButton
                     objectName: "playbackWindowPause"
                     iconName: win.paused ? "play" : "pause"
                     iconFilled: true
@@ -806,10 +888,36 @@ Window {
                     focusPolicy: Qt.NoFocus
                     Accessible.name: win.paused ? qsTr("继续播放") : qsTr("暂停")
                     KMediaToolTip {
-                        visible: hovered && !win.overlayOpen
+                        visible: pauseButton.hovered && !win.overlayOpen
                         text: win.paused ? qsTr("继续播放") : qsTr("暂停")
                     }
                     onClicked: win.togglePause()
+                }
+
+                KIconButton {
+                    id: nextButton
+                    objectName: "playbackWindowNext"
+                    iconName: "skip-forward"
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 0.9
+                    onMedia: true
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
+                    enabled: win.backend !== null
+                             && win.backend.playQueueIndex >= 0
+                             && win.backend.playQueueIndex < win.backend.playQueue.length - 1
+                    Accessible.name: qsTr("下一集")
+                    KMediaToolTip {
+                        visible: nextButton.hovered && !win.overlayOpen
+                        text: qsTr("下一集")
+                    }
+                    onClicked: {
+                        if (win.backend !== null)
+                            win.backend.playNext()
+                        win.wake()
+                    }
                 }
 
                 Label {
@@ -962,7 +1070,7 @@ Window {
                     focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("音轨")
                     KMediaToolTip {
-                        visible: hovered && !win.overlayOpen
+                        visible: audioButton.hovered && !win.overlayOpen
                         text: qsTr("切换音轨")
                     }
                     onClicked: win.openTrackMenu("audio", audioButton)
@@ -981,13 +1089,34 @@ Window {
                     focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("字幕")
                     KMediaToolTip {
-                        visible: hovered && !win.overlayOpen
+                        visible: subtitleButton.hovered && !win.overlayOpen
                         text: qsTr("切换字幕 / 字幕样式")
                     }
                     onClicked: win.openTrackMenu("sub", subtitleButton)
                 }
 
                 KIconButton {
+                    id: queueButton
+                    objectName: "playbackWindowQueue"
+                    iconName: "playlist"
+                    iconSize: 18
+                    iconColor: "white"
+                    iconOpacity: 0.9
+                    onMedia: true
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    focusPolicy: Qt.NoFocus
+                    enabled: win.backend !== null && win.backend.playQueue.length > 1
+                    Accessible.name: qsTr("播放列表")
+                    KMediaToolTip {
+                        visible: queueButton.hovered && !win.overlayOpen
+                        text: qsTr("播放列表")
+                    }
+                    onClicked: win.toggleQueuePanel(queueButton)
+                }
+
+                KIconButton {
+                    id: volumeButton
                     objectName: "playbackWindowVolume"
                     iconName: win.volumeIconName()
                     iconSize: 18
@@ -999,7 +1128,7 @@ Window {
                     focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("音量控制")
                     KMediaToolTip {
-                        visible: hovered && !win.overlayOpen
+                        visible: volumeButton.hovered && !win.overlayOpen
                         text: win.muted
                               ? qsTr("已静音（点击调节音量）")
                               : qsTr("音量 %1%（点击调节，M 静音）").arg(win.volume)
@@ -1008,6 +1137,7 @@ Window {
                 }
 
                 KIconButton {
+                    id: fullscreenButton
                     objectName: "playbackWindowFullscreen"
                     iconName: win.isFullScreen ? "minimize" : "maximize"
                     iconSize: 18
@@ -1019,7 +1149,7 @@ Window {
                     focusPolicy: Qt.NoFocus
                     Accessible.name: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
                     KMediaToolTip {
-                        visible: hovered && !win.overlayOpen
+                        visible: fullscreenButton.hovered && !win.overlayOpen
                         text: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
                     }
                     onClicked: win.toggleFullscreen()
@@ -1158,6 +1288,19 @@ Window {
             }
 
             onClosed: surface.forceActiveFocus()
+        }
+
+        // 连播队列：当前文件夹的可播放条目，点一行直接跳过去。
+        PlaybackQueuePanel {
+            id: queuePanel
+
+            backend: win.backend
+            maxPopupHeight: Math.max(160, win.height - 180)
+
+            onClosed: {
+                surface.forceActiveFocus()
+                win.wake()
+            }
         }
 
         PlaybackSpeedPanel {

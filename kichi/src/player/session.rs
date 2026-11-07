@@ -40,6 +40,17 @@ const EXIT_EVENT_GRACE: Duration = Duration::from_millis(500);
 const VLC_POLL: Duration = Duration::from_millis(1000);
 #[cfg(test)]
 const VLC_POLL: Duration = Duration::from_millis(100);
+/// 一次播放结束的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndReason {
+    /// 播放器自然播到文件尾。
+    Eof,
+    /// 用户关闭窗口 / 主动停止播放。
+    Stopped,
+    /// 无法判断（通用播放器、异常退出等）。
+    Unknown,
+}
+
 /// 一次播放的结果（回投给界面层）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartEvent {
@@ -50,7 +61,10 @@ pub enum StartEvent {
     /// 播放中定期回投的官方历史进度。
     Progress { progress: PlaybackProgress },
     /// 播放器进程已退出；只有此前真的发过 `Ready` 才会出现。
-    Stopped { progress: Option<PlaybackProgress> },
+    Stopped {
+        progress: Option<PlaybackProgress>,
+        end: EndReason,
+    },
     /// 启动失败 / 播放器在出窗口前退出。文案已含文件名，界面直接显示
     Failed(String),
     /// 用户取消（界面不写任何文案）
@@ -125,7 +139,10 @@ pub fn start(
             // 极端情况下播放器可能在 Ready 回投前就退出。先对齐一次，
             // 保证界面总是收到 Ready → Stopped，而不是反过来留下永久标记。
             exit_ready.wait();
-            exit_notify(StartEvent::Stopped { progress: None });
+            exit_notify(StartEvent::Stopped {
+                progress: None,
+                end: EndReason::Unknown,
+            });
         })?;
         notify(StartEvent::Ready {
             subtitle_note: None,
@@ -272,6 +289,7 @@ fn start_vlc(
             if outcome.was_ready {
                 monitor_notify(StartEvent::Stopped {
                     progress: outcome.final_progress,
+                    end: outcome.end,
                 });
             }
             with_sessions(|map| map.remove(&id));
@@ -307,6 +325,7 @@ fn run_vlc_monitor(
             return MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             };
         }
         if child_exited(child) {
@@ -316,6 +335,7 @@ fn run_vlc_monitor(
             return MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             };
         }
         // 老版本 / 精简版 VLC 可能没有 oldrc。播放本身仍然成功时，
@@ -328,6 +348,7 @@ fn run_vlc_monitor(
         return MonitorOutcome {
             was_ready: true,
             final_progress: None,
+            end: EndReason::Unknown,
         };
     };
 
@@ -338,6 +359,7 @@ fn run_vlc_monitor(
             return MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             };
         }
         if child_exited(child) {
@@ -347,6 +369,7 @@ fn run_vlc_monitor(
             return MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             };
         }
         match conn.is_playing() {
@@ -360,6 +383,7 @@ fn run_vlc_monitor(
                     return MonitorOutcome {
                         was_ready: false,
                         final_progress: None,
+                        end: EndReason::Unknown,
                     };
                 }
                 eprintln!("[kichi] 读取 VLC 播放状态失败：{err}");
@@ -370,6 +394,7 @@ fn run_vlc_monitor(
                 return MonitorOutcome {
                     was_ready: true,
                     final_progress: None,
+                    end: EndReason::Unknown,
                 };
             }
         }
@@ -386,10 +411,35 @@ fn run_vlc_monitor(
     emit(StartEvent::Ready {
         subtitle_note: None,
     });
-    let final_progress = wait_vlc_playing(&mut conn, child, cancel, resume, &emit);
+    let (final_progress, end) = wait_vlc_playing(&mut conn, child, cancel, resume, &emit);
     MonitorOutcome {
         was_ready: true,
         final_progress,
+        end,
+    }
+}
+
+/// 根据跟踪器与取消标志判断 mpv 的结束原因。
+fn end_reason(tracker: &ProgressTracker, cancel: &Cancel) -> EndReason {
+    if tracker.reached_end() {
+        EndReason::Eof
+    } else if cancel.is_cancelled() {
+        EndReason::Stopped
+    } else {
+        EndReason::Unknown
+    }
+}
+
+/// VLC 没有 EOF 事件：只能按「位置接近片尾 + 进程退出」近似。
+fn vlc_end_reason(progress: Option<PlaybackProgress>, cancel: &Cancel) -> EndReason {
+    if cancel.is_cancelled() {
+        return EndReason::Stopped;
+    }
+    match progress {
+        Some(progress) if progress.duration > 0 && progress.seconds + 2 >= progress.duration => {
+            EndReason::Eof
+        }
+        _ => EndReason::Unknown,
     }
 }
 
@@ -399,7 +449,7 @@ fn wait_vlc_playing(
     cancel: &Cancel,
     resume: Option<PlaybackProgress>,
     emit: &impl Fn(StartEvent),
-) -> Option<PlaybackProgress> {
+) -> (Option<PlaybackProgress>, EndReason) {
     let mut tracker = ProgressTracker::new(
         None,
         None,
@@ -410,10 +460,11 @@ fn wait_vlc_playing(
     loop {
         if cancel.is_cancelled() {
             shut_down_vlc(conn, child);
-            return tracker.final_progress();
+            return (tracker.final_progress(), EndReason::Stopped);
         }
         if child_exited(child) {
-            return tracker.final_progress();
+            let progress = tracker.final_progress();
+            return (progress, vlc_end_reason(progress, cancel));
         }
         if Instant::now() >= next_poll {
             let position = conn.position();
@@ -455,6 +506,7 @@ fn run_monitor(
     if outcome.was_ready {
         emit(StartEvent::Stopped {
             progress: outcome.final_progress,
+            end: outcome.end,
         });
     }
 }
@@ -462,6 +514,7 @@ fn run_monitor(
 struct MonitorOutcome {
     was_ready: bool,
     final_progress: Option<PlaybackProgress>,
+    end: EndReason,
 }
 
 /// 跑到播放器就绪并等它退出；结果包含是否发过 `Ready` 与最后一次有效进度。
@@ -494,6 +547,7 @@ fn run_monitor_before_exit(
             return MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             };
         }
         // 连不上：如果进程已经退出（flatpak 起不来、参数被拒），那是真失败；
@@ -505,6 +559,7 @@ fn run_monitor_before_exit(
             return MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             };
         }
         eprintln!("[kichi] 连不上 mpv 的 IPC，无法观测播放状态（{program}）");
@@ -518,6 +573,7 @@ fn run_monitor_before_exit(
         return MonitorOutcome {
             was_ready: true,
             final_progress: None,
+            end: EndReason::Unknown,
         };
     };
     if let Err(err) = conn
@@ -534,6 +590,7 @@ fn run_monitor_before_exit(
         return MonitorOutcome {
             was_ready: false,
             final_progress: None,
+            end: EndReason::Unknown,
         };
     }
 
@@ -551,6 +608,7 @@ fn run_monitor_before_exit(
                 return MonitorOutcome {
                     was_ready: false,
                     final_progress: None,
+                    end: EndReason::Unknown,
                 };
             }
             StartOutcome::Failed(reason) => break (Some(reason), false),
@@ -569,6 +627,7 @@ fn run_monitor_before_exit(
                     return MonitorOutcome {
                         was_ready: false,
                         final_progress: None,
+                        end: EndReason::Unknown,
                     };
                 }
                 if let Err(err) = conn.loadfile(url) {
@@ -593,6 +652,7 @@ fn run_monitor_before_exit(
                 return MonitorOutcome {
                     was_ready: false,
                     final_progress: None,
+                    end: EndReason::Unknown,
                 };
             }
             // 请求 id 与「有没有 select 过」跨预挂 / 播放中补挂共用
@@ -630,10 +690,11 @@ fn run_monitor_before_exit(
                 fallback_duration: resume.map(|progress| progress.duration),
                 emit,
             };
-            let final_progress = wait_playing(&mut conn, child, cancel, hooks);
+            let (final_progress, end) = wait_playing(&mut conn, child, cancel, hooks);
             MonitorOutcome {
                 was_ready: true,
                 final_progress,
+                end,
             }
         }
         Some(reason) => {
@@ -651,6 +712,7 @@ fn run_monitor_before_exit(
             MonitorOutcome {
                 was_ready: false,
                 final_progress: None,
+                end: EndReason::Unknown,
             }
         }
     }
@@ -682,7 +744,7 @@ fn wait_playing(
     child: &Arc<Mutex<Option<Child>>>,
     cancel: &Cancel,
     hooks: PlayingHooks<'_, impl Fn(StartEvent)>,
-) -> Option<PlaybackProgress> {
+) -> (Option<PlaybackProgress>, EndReason) {
     let PlayingHooks {
         late,
         late_held,
@@ -701,7 +763,7 @@ fn wait_playing(
     loop {
         if cancel.is_cancelled() {
             shut_down(conn, child);
-            return tracker.final_progress();
+            return (tracker.final_progress(), EndReason::Stopped);
         }
         if child_exited(child) && exited_at.is_none() {
             exited_at = Some(Instant::now());
@@ -709,7 +771,7 @@ fn wait_playing(
         if exited_at
             .is_some_and(|at| Instant::now().saturating_duration_since(at) >= EXIT_EVENT_GRACE)
         {
-            return tracker.final_progress();
+            return (tracker.final_progress(), end_reason(&tracker, cancel));
         }
         if exited_at.is_none() {
             if let Some(late) = late {
@@ -734,7 +796,7 @@ fn wait_playing(
             Ok(ipc::PlaybackRead::Closed) => {
                 // 进程已退出时，把 socket 里最后几条事件（尤其 end-file eof）读完。
                 if exited_at.is_some() {
-                    return tracker.final_progress();
+                    return (tracker.final_progress(), end_reason(&tracker, cancel));
                 }
                 std::thread::sleep(POLL);
             }
@@ -1078,7 +1140,10 @@ mod tests {
         );
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(2)).ok(),
-            Some(StartEvent::Stopped { progress: None }),
+            Some(StartEvent::Stopped {
+                progress: None,
+                end: EndReason::Unknown,
+            }),
             "播放器进程退出后要清掉「播放中」"
         );
         assert_eq!(active_count(), 0);
@@ -1325,7 +1390,7 @@ while True:
         let final_progress = loop {
             match receiver.recv_timeout(Duration::from_secs(2)).ok() {
                 Some(StartEvent::Progress { .. }) => saw_progress = true,
-                Some(StartEvent::Stopped { progress }) => break progress,
+                Some(StartEvent::Stopped { progress, .. }) => break progress,
                 Some(other) => panic!("意外事件：{other:?}"),
                 None => break None,
             }
@@ -1398,7 +1463,10 @@ while True:
         shutdown_all();
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(3)).ok(),
-            Some(StartEvent::Stopped { progress: None }),
+            Some(StartEvent::Stopped {
+                progress: None,
+                end: EndReason::Stopped,
+            }),
             "主动关闭已经开播的播放器也要回投 Stopped"
         );
         assert_eq!(active_count(), 0, "退出收尾要把会话清干净");
@@ -1454,7 +1522,8 @@ while True:
                 progress: Some(PlaybackProgress {
                     seconds: 42,
                     duration: 120
-                })
+                }),
+                end: EndReason::Stopped,
             })
         );
         let text = std::fs::read_to_string(&log).unwrap_or_default();
@@ -1489,7 +1558,7 @@ while True:
         let final_progress = loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
                 Ok(StartEvent::Progress { .. }) => continue,
-                Ok(StartEvent::Stopped { progress }) => break progress,
+                Ok(StartEvent::Stopped { progress, .. }) => break progress,
                 other => panic!("意外的播放事件：{other:?}"),
             }
         };

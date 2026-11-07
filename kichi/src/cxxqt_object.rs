@@ -134,6 +134,16 @@ pub mod qobject {
         #[qproperty(bool, embed_active, cxx_name = "embedActive", READ, NOTIFY = changed)]
         /// 当前内嵌播放的标题（浮层文字）
         #[qproperty(QString, embed_title, cxx_name = "embedTitle", READ, NOTIFY = changed)]
+        /// 每次内嵌会话 Ready 后 +1：同一个窗口切下一集时刷新章节 / 进度
+        #[qproperty(i32, embed_serial, cxx_name = "embedSerial", READ, NOTIFY = changed)]
+        /// 本次播放的文件夹连播队列（QML 当 model 用：id / name / current）
+        #[qproperty(QVariantList, play_queue, cxx_name = "playQueue", READ, NOTIFY = changed)]
+        /// 当前集在队列里的位置；-1 = 没有队列或未定位
+        #[qproperty(i32, play_queue_index, cxx_name = "playQueueIndex", READ, NOTIFY = changed)]
+        /// 播完自动播放同文件夹下一集（设置页可关）
+        #[qproperty(bool, auto_play_next, cxx_name = "autoPlayNext", READ, NOTIFY = changed)]
+        /// 正在同一个播放窗口里切下一集（取链 / 等新画面）
+        #[qproperty(bool, queue_advancing, cxx_name = "queueAdvancing", READ, NOTIFY = changed)]
         /// 内嵌播放器音量（0–100，持久化）
         #[qproperty(i32, embed_volume, cxx_name = "embedVolume", READ, NOTIFY = changed)]
         /// 内嵌播放器是否静音（持久化）
@@ -552,6 +562,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "playSelected"]
         fn play_selected(self: Pin<&mut Self>, index: i32);
+
+        /// 播放窗口：上一集
+        #[qinvokable]
+        #[cxx_name = "playPrevious"]
+        fn play_previous(self: Pin<&mut Self>);
+
+        /// 播放窗口：下一集
+        #[qinvokable]
+        #[cxx_name = "playNext"]
+        fn play_next(self: Pin<&mut Self>);
+
+        /// 播放列表里点某一集（队列下标）
+        #[qinvokable]
+        #[cxx_name = "playQueueItem"]
+        fn play_queue_item(self: Pin<&mut Self>, index: i32);
+
+        /// 设置页：播完自动下一集
+        #[qinvokable]
+        #[cxx_name = "setAutoPlayNext"]
+        fn set_auto_play_next(self: Pin<&mut Self>, enabled: bool);
 
         #[qinvokable]
         #[cxx_name = "cancelPlay"]
@@ -1098,6 +1128,9 @@ mod notifications;
 mod play;
 mod play_history;
 mod play_prepare;
+mod playlist;
+mod playlist_prefetch;
+mod playlist_recovery;
 mod queue;
 mod queue_collect;
 mod queue_worker;
@@ -1311,8 +1344,22 @@ pub struct KichiRust {
     pub(crate) embed_active: bool,
     /// 当前内嵌播放的标题
     pub(crate) embed_title: QString,
+    /// 每次内嵌会话 Ready 后 +1：同一个窗口切下一集时刷新章节 / 进度
+    pub(crate) embed_serial: i32,
+    /// 本次播放的文件夹连播队列（QML 直接当 model 用）
+    pub(crate) play_queue: QVariantList,
+    /// 当前集在队列里的位置；-1 = 没有队列或未定位
+    pub(crate) play_queue_index: i32,
+    /// 播完自动播放同文件夹下一集
+    pub(crate) auto_play_next: bool,
+    /// 正在同一个播放窗口里切下一集（QML 加载遮罩据此显示）
+    pub(crate) queue_advancing: bool,
+    /// 队列 / 预取的内部状态
+    pub(crate) play_queue_state: playlist::PlayQueueState,
     /// 等待 Ready 的内嵌会话代数：只有它的 Ready 能点亮浮层
     pub(crate) embed_pending_epoch: Option<u64>,
+    /// 已经 Ready 且仍在播放的内嵌会话代数；切集失败时据此决定要不要收起空窗口
+    pub(crate) embed_live_epoch: Option<u64>,
     /// 内嵌播放器音量（0–100；随设置持久化）
     pub(crate) embed_volume: i32,
     /// 内嵌播放器静音状态（随设置持久化）
@@ -1618,7 +1665,14 @@ impl Default for KichiRust {
             play_notice: QString::default(),
             embed_active: false,
             embed_title: QString::default(),
+            embed_serial: 0,
+            play_queue: QVariantList::default(),
+            play_queue_index: -1,
+            auto_play_next: true,
+            queue_advancing: false,
+            play_queue_state: playlist::PlayQueueState::default(),
             embed_pending_epoch: None,
+            embed_live_epoch: None,
             embed_volume: 100,
             embed_muted: false,
             embed_sub_font_size: i32::from(crate::settings::DEFAULT_SUB_FONT_SIZE),
@@ -1819,6 +1873,7 @@ impl KichiRust {
         self.player_args = QString::from(settings.player_args.as_str());
         self.notify_enabled = settings.notify_enabled;
         self.auto_subtitles = settings.auto_subtitles;
+        self.auto_play_next = settings.auto_play_next;
         self.player_audio_lang = QString::from(settings.player_audio_lang.as_str());
         self.player_sub_lang = QString::from(settings.player_sub_lang.as_str());
         self.player_mpv_conf = settings.player_mpv_conf;

@@ -61,6 +61,8 @@ pub(super) fn plan_for(
 /// 2 秒内下完的轨直接交给播放器；没下完的让字幕线程继续（上限
 /// [`crate::session::subtitles::SUBTITLE_DOWNLOAD_CAP`]），返回 [`LateSubtitles`]
 /// 让播放器监控线程在播放中补挂。
+// 一次播放准备的所有输入；拆结构只会让调用点来回打包。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_work(
     session: Arc<Session>,
     id: String,
@@ -69,6 +71,7 @@ pub(super) fn run_work(
     plan: SubtitlePlan,
     subtitle_languages: Vec<String>,
     wants_history: bool,
+    prefetched: Option<Vec<PlayOption>>,
 ) -> Result<PlayWork, Failure> {
     let started = Instant::now();
     let work_cancel = Arc::new(Cancel::default());
@@ -133,14 +136,25 @@ pub(super) fn run_work(
         drop(history_sender);
     }
 
-    let options = match media::play_options(&session, &id, Some(&cancel), audit_flagged) {
-        Ok(options) => options,
-        Err(err) => {
-            eprintln!("[kichi] 字幕：取链失败，取消字幕准备");
-            work_cancel.cancel();
-            history_cancel.cancel();
-            return Err(err);
+    let options = match prefetched {
+        Some(options) => {
+            if cancel.is_cancelled() {
+                work_cancel.cancel();
+                history_cancel.cancel();
+                return Err(Failure::Other("下载已取消".to_owned()));
+            }
+            eprintln!("[kichi] 播放：使用片尾预取的直链（跳过详情请求）");
+            options
         }
+        None => match media::play_options(&session, &id, Some(&cancel), audit_flagged) {
+            Ok(options) => options,
+            Err(err) => {
+                eprintln!("[kichi] 字幕：取链失败，取消字幕准备");
+                work_cancel.cancel();
+                history_cancel.cancel();
+                return Err(err);
+            }
+        },
     };
     eprintln!(
         "[kichi] 字幕：取链用时 {} ms",

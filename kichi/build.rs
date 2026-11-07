@@ -142,6 +142,7 @@ const QML_FILES: &[&str] = &[
     "qml/PlayToast.qml",
     "qml/PlaybackWindow.qml",
     "qml/PlaybackTrackMenu.qml",
+    "qml/PlaybackQueuePanel.qml",
     "qml/PlaybackPopover.qml",
     "qml/PlaybackPopoverRow.qml",
     "qml/PlaybackSpeedPanel.qml",
