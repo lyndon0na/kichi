@@ -6,8 +6,8 @@
 # - org.freedesktop.Sdk.Extension.rust-stable//25.08
 #
 # 产物：
-# - dist/io.github.lyndon0na.kichi-<git describe>.flatpak
-# - dist/io.github.lyndon0na.kichi-<git describe>.flatpak.sha256
+# - dist/io.github.lyndon0na.kichi-<日期>.flatpak
+# - dist/io.github.lyndon0na.kichi-<日期>.flatpak.sha256
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ MANIFEST=packaging/flatpak/$APP_ID.yml
 BUILD_DIR="$ROOT/build-dir"
 REPO_DIR="$ROOT/dist/flatpak-repo"
 DIST_DIR="$ROOT/dist"
-VERSION="${KICHI_FLATPAK_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || printf '0.1.0')}"
+VERSION="${KICHI_FLATPAK_VERSION:-$(date +%Y%m%d)}"
 VERSION="${VERSION#v}"
 VERSION="${VERSION//\//-}"
 VERSION="${VERSION// /-}"

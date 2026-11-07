@@ -13,4 +13,3 @@ StartupNotify=true
 StartupWMClass=kichi
 Categories=Network;FileTransfer;KDE;Qt;
 Keywords=PikPak;cloud;download;KDE;
-X-AppImage-Version=@VERSION@

@@ -3,6 +3,7 @@ resolver = "2"
 members = ["kichi-core", "kichi"]
 
 [workspace.package]
-version = "0.1.0"
+# 未发布版本；Cargo 要求该字段存在，占位用 0.0.0，不在界面或包名中展示
+version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"

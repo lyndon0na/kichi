@@ -18,7 +18,7 @@ if [[ "$(uname -m)" != "$ARCH" ]]; then
     exit 1
 fi
 
-VERSION="${KICHI_APPIMAGE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || printf '0.1.0')}"
+VERSION="${KICHI_APPIMAGE_VERSION:-$(date +%Y%m%d)}"
 VERSION="${VERSION#v}"
 VERSION="${VERSION//\//-}"
 VERSION="${VERSION// /-}"
@@ -206,7 +206,7 @@ mkdir -p \
 # 已覆盖实际用到的 Qt Quick / Kirigami / 桌面风格模块。
 find kichi/qml -maxdepth 1 -type f -name '*.qml' ! -name 'main.qml' \
     -exec cp {} "$BUILD_DIR/qml-src/" \;
-sed "s/@VERSION@/$VERSION/g" packaging/appimage/kichi.desktop.in > "$BUILD_DIR/kichi.desktop"
+cp packaging/appimage/kichi.desktop.in "$BUILD_DIR/kichi.desktop"
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$BUILD_DIR/kichi.desktop"
