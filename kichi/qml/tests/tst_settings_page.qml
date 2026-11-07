@@ -40,7 +40,7 @@ TestCase {
         property bool localIndexEnabled: false
         property bool notifyEnabled: true
         property bool closeToTray: false
-        property string storageBackend: "KWallet"
+        property string storageBackend: "系统钥匙串"
         property string quotaTransferCloud: "已用 1.0 GB / 40.0 TB"
         property string quotaTransferDownload: "已用 0 B / 4.0 TB"
         property string quotaTransferUpload: "已用 512.0 MB / 1.0 TB"

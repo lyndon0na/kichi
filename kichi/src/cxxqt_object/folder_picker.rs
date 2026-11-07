@@ -30,7 +30,8 @@ pub(crate) fn choose(start: &Path) -> Result<Option<PathBuf>, String> {
             Err("系统目录选择器没有返回结果".to_owned())
         }
         Err(ashpd::Error::PortalNotFound(_)) => Err(
-            "系统未提供目录选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+            "系统未提供目录选择器（请确认 xdg-desktop-portal 及桌面门户后端已安装并运行）"
+                .to_owned(),
         ),
         Err(err) => Err(format!("无法打开系统目录选择器：{err}")),
     }
@@ -58,7 +59,8 @@ pub(crate) fn choose_files(start: &Path) -> Result<Vec<PathBuf>, String> {
             Err("系统文件选择器没有返回结果".to_owned())
         }
         Err(ashpd::Error::PortalNotFound(_)) => Err(
-            "系统未提供文件选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+            "系统未提供文件选择器（请确认 xdg-desktop-portal 及桌面门户后端已安装并运行）"
+                .to_owned(),
         ),
         Err(err) => Err(format!("无法打开系统文件选择器：{err}")),
     }
@@ -88,7 +90,8 @@ pub(crate) fn choose_torrent_files(start: &Path) -> Result<Vec<PathBuf>, String>
             Err("系统文件选择器没有返回结果".to_owned())
         }
         Err(ashpd::Error::PortalNotFound(_)) => Err(
-            "系统未提供文件选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+            "系统未提供文件选择器（请确认 xdg-desktop-portal 及桌面门户后端已安装并运行）"
+                .to_owned(),
         ),
         Err(err) => Err(format!("无法打开系统文件选择器：{err}")),
     }
@@ -116,7 +119,8 @@ pub(crate) fn choose_folders(start: &Path) -> Result<Vec<PathBuf>, String> {
             Err("系统目录选择器没有返回结果".to_owned())
         }
         Err(ashpd::Error::PortalNotFound(_)) => Err(
-            "系统未提供目录选择器（请确认 xdg-desktop-portal 和 KDE 后端已安装并运行）".to_owned(),
+            "系统未提供目录选择器（请确认 xdg-desktop-portal 及桌面门户后端已安装并运行）"
+                .to_owned(),
         ),
         Err(err) => Err(format!("无法打开系统目录选择器：{err}")),
     }

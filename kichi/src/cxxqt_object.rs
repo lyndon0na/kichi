@@ -1444,7 +1444,7 @@ pub struct KichiRust {
     pub(crate) window_height: i32,
     pub(crate) window_maximized: bool,
     pub(crate) settings_path: QString,
-    /// 令牌存储后端（KWallet / 降级文件），设置页只读展示
+    /// 令牌存储后端（系统钥匙串 / 降级文件），设置页只读展示
     pub(crate) storage_backend: QString,
     /// 传输任务记录（跨重启保留，见 `docs/adr/0014`；QML 直接当 model 用）
     pub(crate) transfers: QVariantList,
@@ -1915,7 +1915,7 @@ impl KichiRust {
         self.upload_rate_mib = i32::try_from(settings.upload_rate_mib).unwrap_or(i32::MAX);
         let backend = self.backend.restored_backend();
         self.storage_backend = QString::from(match backend {
-            Some(crate::session::Backend::Keychain) => "系统钥匙串（KWallet）",
+            Some(crate::session::Backend::Keychain) => "系统钥匙串",
             Some(crate::session::Backend::File) => "降级文件（钥匙串不可用）",
             None => "尚未使用",
         });

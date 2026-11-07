@@ -147,7 +147,7 @@ Item {
         Label {
             Layout.fillWidth: true
             Layout.topMargin: theme.gapMd
-            text: qsTr("登录令牌保存在系统钥匙串（KWallet）中，密码不会被保存。")
+            text: qsTr("登录令牌保存在系统钥匙串中，密码不会被保存。")
             color: theme.textMuted
             font.pixelSize: theme.fontMeta
             horizontalAlignment: Text.AlignHCenter

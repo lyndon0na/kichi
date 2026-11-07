@@ -35,7 +35,7 @@ impl Backend {
     pub(crate) fn storage(&self) -> String {
         match self.restored.backend {
             Some(crate::session::Backend::File) => {
-                "⚠ 系统钥匙串（KWallet）不可用，登录令牌存在本机 0600 权限文件中".to_owned()
+                "⚠ 系统钥匙串不可用，登录令牌存在本机 0600 权限文件中".to_owned()
             }
             _ => String::new(),
         }
