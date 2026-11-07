@@ -25,7 +25,11 @@ struct wl_surface;
 struct wp_color_management_surface_feedback_v1;
 struct wp_color_management_surface_v1;
 struct wp_color_manager_v1;
+struct wp_content_type_manager_v1;
+struct wp_content_type_v1;
 struct wp_image_description_v1;
+struct wp_presentation;
+struct wp_presentation_feedback;
 struct wp_viewport;
 struct wp_viewporter;
 struct zwp_linux_dmabuf_v1;
@@ -61,6 +65,10 @@ public:
     bool rememberPreferred(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
                            uint32_t maxLuminance, uint32_t referenceLuminance);
     void onBufferReleased(wl_buffer *buffer);
+    void onPresentationPresented(struct wp_presentation_feedback *feedback, uint32_t tvSecHi,
+                                 uint32_t tvSecLo, uint32_t tvNsec, uint32_t refresh,
+                                 uint32_t seqHi, uint32_t seqLo, uint32_t flags);
+    void onPresentationDiscarded(struct wp_presentation_feedback *feedback);
     void noteColorFeature(uint32_t feature);
     void noteTransfer(uint32_t transfer);
     void bindGlobal(wl_registry *registry, uint32_t name, const char *interface, uint32_t version);
@@ -102,6 +110,8 @@ private:
     zwp_linux_dmabuf_v1 *m_dmabuf = nullptr;
     wp_viewporter *m_viewporter = nullptr;
     wp_color_manager_v1 *m_colorManager = nullptr;
+    wp_presentation *m_presentation = nullptr;
+    wp_content_type_manager_v1 *m_contentTypeManager = nullptr;
 
     wl_surface *m_parent = nullptr;
     wl_surface *m_child = nullptr;
@@ -110,6 +120,9 @@ private:
     wp_color_management_surface_v1 *m_colorSurface = nullptr;
     wp_color_management_surface_feedback_v1 *m_childFeedback = nullptr;
     wp_color_management_surface_feedback_v1 *m_parentFeedback = nullptr;
+    wp_content_type_v1 *m_contentType = nullptr;
+    /// 真实 child surface 上还没兑现的 presentation feedback。
+    std::unordered_map<struct wp_presentation_feedback *, uint64_t> m_pendingFeedback;
     QScreen *m_screen = nullptr;
     quintptr m_parentId = 0;
     bool m_preferredDirty = false;

@@ -10,6 +10,7 @@
 //! `wl_shm` 仍作为软件兜底。
 
 mod dmabuf;
+mod presentation;
 mod shm;
 mod surface;
 mod xdg;
@@ -31,6 +32,7 @@ use wl_proxy::protocols::drm::wl_drm::WlDrm;
 use wl_proxy::protocols::fractional_scale_v1::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wl_proxy::protocols::fractional_scale_v1::wp_fractional_scale_v1::WpFractionalScaleV1;
 use wl_proxy::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
+use wl_proxy::protocols::presentation_time::wp_presentation::WpPresentation;
 use wl_proxy::protocols::viewporter::wp_viewporter::WpViewporter;
 use wl_proxy::protocols::wayland::wl_callback::WlCallback;
 use wl_proxy::protocols::wayland::wl_compositor::WlCompositor;
@@ -57,7 +59,13 @@ const POLL_MS: i32 = 8;
 
 pub(super) enum ProxyEvent {
     ReleaseBuffer(u64),
-    FrameDone { batch_id: u64, time_ms: u32 },
+    FrameDone {
+        batch_id: u64,
+        time_ms: u32,
+    },
+    /// 这一帧还没提交给合成器就被换掉：对应的 presentation feedback
+    /// 必须回 discarded，不能让它永远等下去。
+    PresentationDiscarded(u64),
 }
 
 /// 一帧视频。dmabuf 与 wl_shm 共用这一个结构。
@@ -74,6 +82,9 @@ pub(crate) struct Frame {
     buffer_id: Option<u64>,
     /// 这一帧提交时附带的 frame callback；显示后要回 `done`
     callback_batch: Option<u64>,
+    /// 对应 mpv 的 wp_presentation_feedback 序号；C++ 真正提交给合成器后
+    /// 由真实 presented/discarded 事件兑现。
+    presentation_token: Option<u64>,
     event_tx: Sender<ProxyEvent>,
     displayed: bool,
 }
@@ -101,6 +112,7 @@ impl Frame {
             pixels: Some(pixels),
             buffer_id: None,
             callback_batch: None,
+            presentation_token: None,
             event_tx,
             displayed: false,
         }
@@ -108,6 +120,14 @@ impl Frame {
 
     pub(crate) fn set_callback_batch(&mut self, batch_id: u64) {
         self.callback_batch = Some(batch_id);
+    }
+
+    pub(crate) fn set_presentation_token(&mut self, token: u64) {
+        self.presentation_token = Some(token);
+    }
+
+    pub(crate) fn presentation_token(&self) -> u64 {
+        self.presentation_token.unwrap_or(0)
     }
 
     /// 把 callback 挂到还没显示的帧上；已经有 callback 或已显示时返回 `false`。
@@ -124,6 +144,9 @@ impl Frame {
             return false;
         }
         self.displayed = true;
+        // C++ 已经拿这个 token 向真实 surface 请求过 feedback；之后由合成器的
+        // presented/discarded 兑现，Drop 时不再重复回 discarded。
+        self.presentation_token = None;
         if let Some(batch_id) = self.callback_batch.take() {
             let _ = self.event_tx.send(ProxyEvent::FrameDone {
                 batch_id,
@@ -145,6 +168,9 @@ impl Drop for Frame {
                 });
             }
         }
+        if let Some(token) = self.presentation_token.take() {
+            let _ = self.event_tx.send(ProxyEvent::PresentationDiscarded(token));
+        }
         if let Some(buffer_id) = self.buffer_id.take() {
             let _ = self.event_tx.send(ProxyEvent::ReleaseBuffer(buffer_id));
         }
@@ -165,6 +191,8 @@ pub(crate) struct SharedState {
     /// 最新一帧；Qt 侧取走后由它负责释放
     pub(crate) frame_slot: Arc<Mutex<Option<Frame>>>,
     pub(crate) frame_dirty: Arc<AtomicBool>,
+    /// mpv 请求的 wp_presentation_feedback 与真实 presented / discarded 的对照。
+    pub(crate) presentation: presentation::PresentationState,
 }
 
 impl SharedState {
@@ -275,10 +303,12 @@ fn run(session: Arc<Session>, upstream: String, server: UnixStream) {
         surfaces: Vec::new(),
         frame_slot: Arc::clone(&session.frame_slot),
         frame_dirty: Arc::clone(&session.frame_dirty),
+        presentation: presentation::PresentationState::new(),
     }));
     client.display().set_handler(DisplayHandler {
         state: Rc::clone(&shared),
         session: Arc::clone(&session),
+        presentation_advertised: false,
     });
 
     loop {
@@ -288,6 +318,9 @@ fn run(session: Arc<Session>, upstream: String, server: UnixStream) {
         while let Ok(event) = event_rx.try_recv() {
             handle_event(&shared, event);
         }
+        // C++ presenter 在真实 child surface 上收到的 presented / discarded：
+        // 按 token 兑现给 mpv。没有真实事件时什么都不发，绝不编时间戳。
+        presentation::drain(&shared);
         if session.viewport_dirty.swap(false, Ordering::AcqRel) {
             let viewport = *session.viewport.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(viewport) = viewport {
@@ -344,6 +377,9 @@ fn handle_event(shared: &Rc<RefCell<SharedState>>, event: ProxyEvent) {
                 }
             }
         }
+        ProxyEvent::PresentationDiscarded(token) => {
+            shared.borrow_mut().presentation.discard(token);
+        }
     }
 }
 
@@ -358,6 +394,10 @@ fn update_viewport(shared: &Rc<RefCell<SharedState>>, viewport: Viewport) {
 struct DisplayHandler {
     state: Rc<RefCell<SharedState>>,
     session: Arc<Session>,
+    /// 只给第一个 registry 广告合成的 wp_presentation。Vulkan WSI 之后创建的
+    /// 临时 registry 只拿它做 present-mode 查询，绑定后又不销毁代理对象，
+    /// 徒增 libwayland 的 “queue destroyed while proxies still attached” 噪音。
+    presentation_advertised: bool,
 }
 
 impl WlDisplayHandler for DisplayHandler {
@@ -372,6 +412,16 @@ impl WlDisplayHandler for DisplayHandler {
         let fractional_scale =
             mapper.add_synthetic_global(registry, ObjectInterface::WpFractionalScaleManagerV1, 1);
         let shm = mapper.add_synthetic_global(registry, ObjectInterface::WlShm, 1);
+        // mpv 的 surface 是假的，真 feedback 由 C++ 在 Qt 连接上请求；
+        // 这里给 mpv 一个同接口的合成 manager，事件按真实 presented 兑现。
+        // 只广告给第一个 registry：后续 Vulkan WSI 的临时 registry 不需要，
+        // 也不该为它制造无法清理的代理对象。
+        let presentation = if self.presentation_advertised {
+            0
+        } else {
+            self.presentation_advertised = true;
+            mapper.add_synthetic_global(registry, ObjectInterface::WpPresentation, 2)
+        };
         registry.set_handler(RegistryHandler {
             mapper,
             state: Rc::clone(&self.state),
@@ -379,6 +429,7 @@ impl WlDisplayHandler for DisplayHandler {
             viewporter,
             fractional_scale,
             shm,
+            presentation,
         });
     }
 }
@@ -390,6 +441,7 @@ struct RegistryHandler {
     viewporter: u32,
     fractional_scale: u32,
     shm: u32,
+    presentation: u32,
 }
 
 impl WlRegistryHandler for RegistryHandler {
@@ -411,6 +463,14 @@ impl WlRegistryHandler for RegistryHandler {
                 // 把 image description 发到一个不存在的 server surface。
                 | ObjectInterface::WpColorManagerV1
                 | ObjectInterface::WpColorRepresentationManagerV1
+                // 这些也是 surface 级协议，对代理合成的假 surface 调用会
+                // protocol error 或毫无意义；content-type 由 C++ 设在真
+                // parent surface 上，presentation 由代理合成（见下）。
+                | ObjectInterface::WpPresentation
+                | ObjectInterface::WpContentTypeManagerV1
+                | ObjectInterface::WpTearingControlManagerV1
+                | ObjectInterface::WpCommitTimingManagerV1
+                | ObjectInterface::XdgSessionManagerV1
         ) {
             self.mapper.ignore_global(name);
         } else if interface == ObjectInterface::ZwpLinuxDmabufV1 {
@@ -451,6 +511,15 @@ impl WlRegistryHandler for RegistryHandler {
             });
             shm.send_format(WlShmFormat::ARGB8888);
             shm.send_format(WlShmFormat::XRGB8888);
+        } else if name == self.presentation {
+            let presentation = id.downcast::<WpPresentation>();
+            presentation.set_forward_to_server(false);
+            // 时间戳来自同一个 Qt 连接上的真实 wp_presentation；绑定后立刻
+            // 告诉 mpv clock id（协议要求），默认 CLOCK_MONOTONIC。
+            presentation.send_clock_id(presentation::clock_id());
+            presentation.set_handler(presentation::ManagerHandler {
+                state: Rc::clone(&self.state),
+            });
         } else {
             let compositor = id.try_downcast::<WlCompositor>();
             let subcompositor = id.try_downcast::<WlSubcompositor>();

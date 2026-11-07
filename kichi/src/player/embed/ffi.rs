@@ -34,6 +34,13 @@ pub unsafe extern "C" fn kichi_embed_frame_displayed(frame: *mut Frame) {
     }
 }
 
+/// 这一帧要从真实 child surface 上兑现的 presentation feedback token；
+/// 0 表示没有 mpv feedback 在等。C++ 必须在调用 `displayed` 前读走它。
+#[no_mangle]
+pub unsafe extern "C" fn kichi_embed_frame_presentation_token(frame: *const Frame) -> u64 {
+    unsafe { frame.as_ref() }.map_or(0, |frame| frame.presentation_token())
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn kichi_embed_frame_width(frame: *const Frame) -> u32 {
     unsafe { frame.as_ref() }.map_or(0, |frame| frame.width)

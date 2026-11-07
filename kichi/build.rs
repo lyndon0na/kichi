@@ -161,7 +161,9 @@ const CPP_FILES: &[&str] = &[
     "cpp/wayland_video_surface.h",
     "cpp/wayland_video_surface.cpp",
     "cpp/protocol/color-management-v1-protocol.cpp",
+    "cpp/protocol/content-type-v1-protocol.cpp",
     "cpp/protocol/linux-dmabuf-v1-protocol.cpp",
+    "cpp/protocol/presentation-time-protocol.cpp",
     "cpp/protocol/viewporter-protocol.cpp",
     "cpp/app_platform.h",
     "cpp/app_platform.cpp",
@@ -171,7 +173,9 @@ const CPP_FILES: &[&str] = &[
 const CPP_HEADERS: &[&str] = &[
     "cpp/embed_ffi.h",
     "cpp/protocol/color-management-v1-client-protocol.h",
+    "cpp/protocol/content-type-v1-client-protocol.h",
     "cpp/protocol/linux-dmabuf-v1-client-protocol.h",
+    "cpp/protocol/presentation-time-client-protocol.h",
     "cpp/protocol/viewporter-client-protocol.h",
 ];
 

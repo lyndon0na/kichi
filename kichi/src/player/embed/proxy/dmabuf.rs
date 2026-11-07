@@ -69,6 +69,7 @@ impl BufferInfo {
             pixels: None,
             buffer_id: Some(buffer_id),
             callback_batch: None,
+            presentation_token: None,
             event_tx,
             displayed: false,
         })

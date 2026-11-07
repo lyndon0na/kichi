@@ -11,7 +11,7 @@ kichi 自身以 `GPL-3.0-or-later` 发布，完整文本见 `LICENSE`。本文�
 | pikpaktui 0.0.58 | Apache-2.0 | 分享、任务和选链等请求形状的行为参考；未复制的部分不产生额外义务 |
 | pikpak-kotlin | MIT | 部分接口字段与请求形状的行为参考 |
 | [Tabler Icons](https://github.com/tabler/tabler-icons) | MIT | `kichi/qml/NavIcon.qml` 中使用的路径数据 |
-| [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) | MIT | `kichi/cpp/protocol/` 下由 `wayland-scanner` 生成的 linux-dmabuf / viewporter / color-management 客户端协议代码；版权归 Collabora、Intel 等各协议作者 |
+| [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) | MIT | `kichi/cpp/protocol/` 下由 `wayland-scanner` 生成的 linux-dmabuf / viewporter / color-management / presentation-time / content-type 客户端协议代码；版权归 Collabora、Intel 等各协议作者 |
 
 内嵌播放器的「libmpv + Wayland 代理截帧」思路参考了 Mutsumi（MIT）；未复制其代码，
 因此不随本项目分发其源码或二进制。

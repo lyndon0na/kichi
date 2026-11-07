@@ -18,10 +18,13 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <mutex>
 
 #include "protocol/color-management-v1-client-protocol.h"
+#include "protocol/content-type-v1-client-protocol.h"
 #include "protocol/linux-dmabuf-v1-client-protocol.h"
+#include "protocol/presentation-time-client-protocol.h"
 #include "protocol/viewporter-client-protocol.h"
 
 namespace {
@@ -29,6 +32,17 @@ namespace {
 std::mutex gTargetMutex;
 KichiColorTarget gPreferredTarget{};
 bool gPreferredTargetValid = false;
+
+// 真实 wp_presentation 事件队列：C++ 回调（Qt 线程）写入，代理线程取走。
+std::mutex gPresentationMutex;
+std::deque<KichiPresentationEvent> gPresentationQueue;
+std::atomic<uint32_t> gPresentationClock{1};
+
+void pushPresentationEvent(const KichiPresentationEvent &event)
+{
+    std::lock_guard<std::mutex> lock(gPresentationMutex);
+    gPresentationQueue.push_back(event);
+}
 
 int mapPrimaries(uint32_t primaries)
 {
@@ -135,6 +149,38 @@ void bufferRelease(void *data, wl_buffer *buffer)
 
 const wl_buffer_listener bufferListener = {
     bufferRelease,
+};
+
+void presentationClockId(void *, wp_presentation *, uint32_t clockId)
+{
+    gPresentationClock.store(clockId);
+}
+
+const wp_presentation_listener presentationListener = {
+    presentationClockId,
+};
+
+void feedbackSyncOutput(void *, struct wp_presentation_feedback *, wl_output *)
+{
+}
+
+void feedbackPresented(void *data, struct wp_presentation_feedback *feedback, uint32_t tvSecHi,
+                       uint32_t tvSecLo, uint32_t tvNsec, uint32_t refresh, uint32_t seqHi,
+                       uint32_t seqLo, uint32_t flags)
+{
+    static_cast<WaylandVideoSurface *>(data)->onPresentationPresented(
+        feedback, tvSecHi, tvSecLo, tvNsec, refresh, seqHi, seqLo, flags);
+}
+
+void feedbackDiscarded(void *data, struct wp_presentation_feedback *feedback)
+{
+    static_cast<WaylandVideoSurface *>(data)->onPresentationDiscarded(feedback);
+}
+
+const wp_presentation_feedback_listener presentationFeedbackListener = {
+    feedbackSyncOutput,
+    feedbackPresented,
+    feedbackDiscarded,
 };
 
 // 播放窗口换到另一个 output / 用户改 HDR 设置时 KWin 会更新 preferred。
@@ -402,6 +448,23 @@ extern "C" bool kichi_wayland_preferred_target(KichiColorTarget *out)
     return true;
 }
 
+extern "C" uint32_t kichi_embed_presentation_clock(void)
+{
+    return gPresentationClock.load();
+}
+
+extern "C" bool kichi_embed_presentation_take(KichiPresentationEvent *out)
+{
+    if (!out)
+        return false;
+    std::lock_guard<std::mutex> lock(gPresentationMutex);
+    if (gPresentationQueue.empty())
+        return false;
+    *out = gPresentationQueue.front();
+    gPresentationQueue.pop_front();
+    return true;
+}
+
 // ------------------------------------------------------------- construction
 
 WaylandVideoSurface::WaylandVideoSurface(QQuickWindow *window)
@@ -420,6 +483,10 @@ WaylandVideoSurface::~WaylandVideoSurface()
     teardownChild();
     if (m_colorManager)
         wp_color_manager_v1_destroy(m_colorManager);
+    if (m_contentTypeManager)
+        wp_content_type_manager_v1_destroy(m_contentTypeManager);
+    if (m_presentation)
+        wp_presentation_destroy(m_presentation);
     if (m_viewporter)
         wp_viewporter_destroy(m_viewporter);
     if (m_dmabuf)
@@ -468,6 +535,16 @@ void WaylandVideoSurface::bindGlobal(wl_registry *registry, uint32_t name,
                              std::min<uint32_t>(version, 1)));
         wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_colorManager), m_queue);
         wp_color_manager_v1_add_listener(m_colorManager, &colorManagerListener, this);
+    } else if (std::strcmp(interface, wp_presentation_interface.name) == 0) {
+        m_presentation = static_cast<wp_presentation *>(
+            wl_registry_bind(registry, name, &wp_presentation_interface,
+                             std::min<uint32_t>(version, 2)));
+        wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_presentation), m_queue);
+        wp_presentation_add_listener(m_presentation, &presentationListener, this);
+    } else if (std::strcmp(interface, wp_content_type_manager_v1_interface.name) == 0) {
+        m_contentTypeManager = static_cast<wp_content_type_manager_v1 *>(
+            wl_registry_bind(registry, name, &wp_content_type_manager_v1_interface, 1));
+        wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_contentTypeManager), m_queue);
     }
 }
 
@@ -664,6 +741,17 @@ bool WaylandVideoSurface::ensureChild()
     // 父 surface 必须不是整块 opaque，否则下面的视频永远看不到。
     wl_surface_set_opaque_region(m_parent, nullptr);
 
+    // content-type 是 surface 级协议：mpv 的 surface 是假的，必须设在真正
+    // 参与合成的播放窗口 surface 上。合成器据此知道这块内容以视频为主。
+    if (m_contentTypeManager) {
+        m_contentType = wp_content_type_manager_v1_get_surface_content_type(m_contentTypeManager,
+                                                                            m_parent);
+        if (m_contentType) {
+            wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_contentType), m_queue);
+            wp_content_type_v1_set_content_type(m_contentType, WP_CONTENT_TYPE_V1_TYPE_VIDEO);
+        }
+    }
+
     m_child = wl_compositor_create_surface(m_compositor);
     if (!m_child)
         return false;
@@ -722,6 +810,20 @@ void WaylandVideoSurface::teardownChild()
     }
     m_frames.clear();
 
+    for (auto &[feedback, token] : m_pendingFeedback) {
+        // 不要在 surface 销毁时让 mpv 永远等这些 feedback：明确回 discarded。
+        KichiPresentationEvent event{};
+        event.token = token;
+        event.presented = 0;
+        pushPresentationEvent(event);
+        wp_presentation_feedback_destroy(feedback);
+    }
+    m_pendingFeedback.clear();
+
+    if (m_contentType) {
+        wp_content_type_v1_destroy(m_contentType);
+        m_contentType = nullptr;
+    }
     if (m_colorSurface) {
         wp_color_management_surface_v1_destroy(m_colorSurface);
         m_colorSurface = nullptr;
@@ -917,6 +1019,31 @@ void WaylandVideoSurface::commitFrame(KichiFrame *frame)
 
     m_frames[buffer] = frame;
     wl_buffer_add_listener(buffer, &bufferListener, this);
+
+    // 给真实 child surface 请求 presentation feedback；token 由代理随帧传来。
+    // 必须在 commit 前请求，事件才对应这次内容提交。
+    const uint64_t presentationToken = kichi_embed_frame_presentation_token(frame);
+    if (presentationToken != 0) {
+        bool requested = false;
+        if (m_presentation) {
+            auto *feedback = wp_presentation_feedback(m_presentation, m_child);
+            if (feedback) {
+                wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(feedback), m_queue);
+                wp_presentation_feedback_add_listener(feedback, &presentationFeedbackListener,
+                                                      this);
+                m_pendingFeedback[feedback] = presentationToken;
+                requested = true;
+            }
+        }
+        if (!requested) {
+            // 没有协议 / 对象创建失败：明确 discarded，绝不让 mpv 等假事件。
+            KichiPresentationEvent event{};
+            event.token = presentationToken;
+            event.presented = 0;
+            pushPresentationEvent(event);
+        }
+    }
+
     wl_surface_attach(m_child, buffer, 0, 0);
     wl_surface_damage_buffer(m_child, 0, 0, width, height);
     wl_surface_commit(m_child);
@@ -939,6 +1066,42 @@ void WaylandVideoSurface::onBufferReleased(wl_buffer *buffer)
         m_frames.erase(it);
     }
     wl_buffer_destroy(buffer);
+}
+
+void WaylandVideoSurface::onPresentationPresented(struct wp_presentation_feedback *feedback,
+                                                  uint32_t tvSecHi, uint32_t tvSecLo,
+                                                  uint32_t tvNsec, uint32_t refresh,
+                                                  uint32_t seqHi, uint32_t seqLo, uint32_t flags)
+{
+    auto it = m_pendingFeedback.find(feedback);
+    if (it != m_pendingFeedback.end()) {
+        KichiPresentationEvent event{};
+        event.token = it->second;
+        event.presented = 1;
+        event.tv_sec_hi = tvSecHi;
+        event.tv_sec_lo = tvSecLo;
+        event.tv_nsec = tvNsec;
+        event.refresh = refresh;
+        event.seq_hi = seqHi;
+        event.seq_lo = seqLo;
+        event.flags = flags;
+        pushPresentationEvent(event);
+        m_pendingFeedback.erase(it);
+    }
+    wp_presentation_feedback_destroy(feedback);
+}
+
+void WaylandVideoSurface::onPresentationDiscarded(struct wp_presentation_feedback *feedback)
+{
+    auto it = m_pendingFeedback.find(feedback);
+    if (it != m_pendingFeedback.end()) {
+        KichiPresentationEvent event{};
+        event.token = it->second;
+        event.presented = 0;
+        pushPresentationEvent(event);
+        m_pendingFeedback.erase(it);
+    }
+    wp_presentation_feedback_destroy(feedback);
 }
 
 void WaylandVideoSurface::dispatch()

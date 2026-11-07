@@ -221,10 +221,13 @@ impl SurfaceHandler {
 impl WlSurfaceHandler for SurfaceHandler {
     fn handle_destroy(&mut self, slf: &Rc<WlSurface>) {
         let surface_id = slf.unique_id();
-        self.shared
-            .borrow_mut()
-            .surfaces
-            .retain(|surface| surface.unique_id() != surface_id);
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared
+                .surfaces
+                .retain(|surface| surface.unique_id() != surface_id);
+            shared.presentation.discard_surface(surface_id);
+        }
         slf.delete_id();
     }
 
@@ -242,7 +245,7 @@ impl WlSurfaceHandler for SurfaceHandler {
         self.pending_callbacks.push(Rc::clone(callback));
     }
 
-    fn handle_commit(&mut self, _slf: &Rc<WlSurface>) {
+    fn handle_commit(&mut self, slf: &Rc<WlSurface>) {
         let callbacks = std::mem::take(&mut self.pending_callbacks);
         let pending = self.pending_buffer.take();
 
@@ -254,10 +257,23 @@ impl WlSurfaceHandler for SurfaceHandler {
             Some(Some(buffer)) => self.commit_frame(&buffer, batch),
             _ => None,
         };
+        // mpv 在 commit 前请求的 presentation feedback：新帧带 token 交给
+        // C++，等真实 presented；没有新帧的 commit 内容没有变化，回 discarded。
+        let token = self
+            .shared
+            .borrow_mut()
+            .presentation
+            .take_token(slf.unique_id());
 
-        if let Some(frame) = frame {
+        if let Some(mut frame) = frame {
+            if let Some(token) = token {
+                frame.set_presentation_token(token);
+            }
             store_frame(&self.shared, frame);
             return;
+        }
+        if let Some(token) = token {
+            self.shared.borrow_mut().presentation.discard(token);
         }
         if let Some(batch) = batch {
             let attached = self

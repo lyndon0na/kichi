@@ -23,6 +23,20 @@ typedef struct KichiColorTarget {
     uint32_t reference_luminance;
 } KichiColorTarget;
 
+// C++ presenter 在真实 child surface 上收到的 wp_presentation feedback。
+// token 由代理生成并随 KichiFrame 传来；presented=0 表示 discarded。
+typedef struct KichiPresentationEvent {
+    uint64_t token;
+    uint32_t presented;
+    uint32_t tv_sec_hi;
+    uint32_t tv_sec_lo;
+    uint32_t tv_nsec;
+    uint32_t refresh;
+    uint32_t seq_hi;
+    uint32_t seq_lo;
+    uint32_t flags;
+} KichiPresentationEvent;
+
 #define KICHI_PRIMARIES_UNKNOWN 0
 #define KICHI_PRIMARIES_BT709 1
 #define KICHI_PRIMARIES_BT2020 2
@@ -45,6 +59,9 @@ bool kichi_embed_frame_pending(void);
 KichiFrame *kichi_embed_frame_take(void);
 void kichi_embed_frame_free(KichiFrame *frame);
 void kichi_embed_frame_displayed(KichiFrame *frame);
+
+// 这一帧等待兑现的 presentation feedback token；0 = 没有。
+uint64_t kichi_embed_frame_presentation_token(const KichiFrame *frame);
 
 uint32_t kichi_embed_frame_width(const KichiFrame *frame);
 uint32_t kichi_embed_frame_height(const KichiFrame *frame);

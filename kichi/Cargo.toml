@@ -27,11 +27,16 @@ resvg = { version = "0.49.0", default-features = false }
 wl-proxy = { version = "0.1.5", default-features = false, features = [
     "protocol-color_management_v1",
     "protocol-color_representation_v1",
+    "protocol-commit_timing_v1",
+    "protocol-content_type_v1",
     "protocol-drm",
     "protocol-fractional_scale_v1",
     "protocol-linux_dmabuf_v1",
+    "protocol-presentation_time",
+    "protocol-tearing_control_v1",
     "protocol-viewporter",
     "protocol-xdg_shell",
+    "protocol-xdg_session_management_v1",
 ] }
 
 [build-dependencies]
