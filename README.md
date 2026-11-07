@@ -69,6 +69,26 @@ cargo build --release
 产物在 `dist/`。脚本按当前构建机的 glibc 版本打包，不承诺跨发行版兼容；
 KWallet、XDG Portal、Plasma 主题、Breeze 图标、mpv / VLC 仍使用宿主环境。
 
+### Flatpak
+
+需要 `flatpak-builder`、`org.kde.Platform//6.11`、`org.kde.Sdk//6.11` 和
+`org.freedesktop.Sdk.Extension.rust-stable//25.08`：
+
+```bash
+flatpak install flathub org.kde.Platform//6.11 org.kde.Sdk//6.11
+flatpak install flathub org.freedesktop.Sdk.Extension.rust-stable//25.08
+# 如果发行版的 flathub 远程带过滤、装不到 rust extension：
+# flatpak remote-add --user --if-not-exists flathub-full https://dl.flathub.org/repo/flathub.flatpakrepo
+# flatpak install --user flathub-full org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+./scripts/build-flatpak.sh
+flatpak install --user dist/io.github.lyndon0na.kichi-*.flatpak
+flatpak run io.github.lyndon0na.kichi
+```
+
+Flatpak 包内自带 libmpv 及其依赖，内嵌播放不依赖宿主安装 mpv。外部 mpv / VLC
+预设仍然需要宿主存在对应程序，Flatpak 沙箱内不可用。
+
 ## 测试
 
 ```bash

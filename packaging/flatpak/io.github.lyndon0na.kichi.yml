@@ -1,0 +1,151 @@
+app-id: io.github.lyndon0na.kichi
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: kichi
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.freedesktop.FileManager1
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.ScreenSaver
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --env=LC_NUMERIC=C
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/doc
+  - '*.la'
+  - '*.a'
+
+modules:
+  - name: libunibreak
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://github.com/adah1972/libunibreak/releases/download/libunibreak_8_0/libunibreak-8.0.tar.gz
+        sha256: 9c4fad6e517338a098373acc9f35579ae2c325e6446666fb9ac2666ba15ceba4
+
+  - name: libass
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --enable-asm
+      - --enable-fontconfig
+      - --enable-harfbuzz
+    sources:
+      - type: git
+        url: https://github.com/libass/libass.git
+        tag: 0.17.5
+        commit: 4a05d8127f525943ebf45fdc6497c9e665947f0d
+
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Ddemos=false
+      - -Dvulkan=enabled
+      - -Dshaderc=enabled
+      - -Dopengl=enabled
+      - -Dlcms=enabled
+      - -Dd3d11=disabled
+      - -Dlibdovi=disabled
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/libplacebo.git
+        tag: v7.387.0
+        commit: 275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+  - name: luajit
+    no-autogen: true
+    make-args:
+      - BUILDMODE=dynamic
+      - PREFIX=${FLATPAK_DEST}
+    make-install-args:
+      - PREFIX=${FLATPAK_DEST}
+    cleanup:
+      - /bin
+      - /include
+      - /lib/pkgconfig
+      - /share/man
+    sources:
+      - type: git
+        url: https://github.com/openresty/luajit2.git
+        tag: v2.1-20260724
+        commit: 982cd8323eafd8604a9e5f2a916aa50b9f67d9ed
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-date=false
+      - -Dcplayer=false
+      - -Dlibmpv=true
+      - -Dgpl=true
+      - -Dtests=false
+      - -Dwayland=enabled
+      - -Dx11=disabled
+      - -Ddmabuf-wayland=enabled
+      - -Dgl=enabled
+      - -Dplain-gl=enabled
+      - -Degl=enabled
+      - -Degl-wayland=enabled
+      - -Dvulkan=enabled
+      - -Dlibarchive=enabled
+      - -Dlcms2=enabled
+      - -Dpulse=enabled
+      - -Dalsa=disabled
+      - -Dpipewire=disabled
+      - -Dvaapi=enabled
+      - -Dvaapi-wayland=enabled
+      - -Djavascript=disabled
+      - -Dlua=enabled
+      - -Duchardet=disabled
+      - -Dzimg=disabled
+      - -Ddvdnav=disabled
+      - -Dlibbluray=disabled
+      - -Dcdda=disabled
+      - -Ddvbin=disabled
+      - -Dvapoursynth=disabled
+      - -Drubberband=disabled
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.42.0
+        commit: b0841e8c4d156b8403dc1876c4cbd9011eb583f3
+
+  - name: kichi
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/kichi/cargo
+        CARGO_NET_OFFLINE: 'true'
+        RUSTFLAGS: -L/app/lib
+    build-commands:
+      - cargo build --release --offline --locked
+      - install -Dm755 target/release/kichi /app/bin/kichi
+      - install -Dm644 packaging/flatpak/io.github.lyndon0na.kichi.desktop /app/share/applications/io.github.lyndon0na.kichi.desktop
+      - install -Dm644 packaging/flatpak/io.github.lyndon0na.kichi.metainfo.xml /app/share/metainfo/io.github.lyndon0na.kichi.metainfo.xml
+      - install -Dm644 kichi/assets/icons/hicolor/scalable/apps/kichi.svg /app/share/icons/hicolor/scalable/apps/io.github.lyndon0na.kichi.svg
+      - install -Dm644 LICENSE /app/share/licenses/io.github.lyndon0na.kichi/LICENSE
+      - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/licenses/io.github.lyndon0na.kichi/THIRD_PARTY_NOTICES.md
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - private
+          - dist
+      - cargo-sources.json

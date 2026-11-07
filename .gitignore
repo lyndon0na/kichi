@@ -4,6 +4,10 @@
 /off
 /dist
 
+# Flatpak 构建产物
+/build-dir
+/.flatpak-builder
+
 # 内部文档（只留本地，不随仓库发布）
 /private/
 

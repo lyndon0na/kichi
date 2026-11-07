@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Kichi
+Name[zh_CN]=Kichi
+GenericName=PikPak Client
+GenericName[zh_CN]=PikPak 客户端
+Comment=Unofficial PikPak client for KDE Plasma
+Comment[zh_CN]=KDE Plasma 的非官方 PikPak 客户端
+Exec=kichi
+Icon=io.github.lyndon0na.kichi
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.lyndon0na.kichi
+Categories=Network;FileTransfer;KDE;Qt;
+Keywords=PikPak;cloud;download;KDE;
