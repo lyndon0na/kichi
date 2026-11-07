@@ -2,9 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 登录后的固定导航栏：我的文件 / 传输任务 / 分享 / 回收站。
-// 三个资料库（最近保存 / 播放历史 / 已加星标）是文件页的子页，入口在
-// 文件页面包屑行（LibraryMenuButton.qml），不占侧栏；停在库页时仍选中「我的文件」。
+// 登录后的固定导航栏：我的文件 / 传输任务 / 最近保存 / 播放历史 /
+// 已加星标 / 分享 / 回收站。
 // 设置收进账号行右侧；退出登录在设置页「账号」一节。
 //
 // 视觉：侧栏底色比内容区低半档，导航项是圆角卡片；选中态用「淡强调色底 +
@@ -23,9 +22,6 @@ Rectangle {
     property int localTaskCount: 0
     property int offlineTaskCount: 0
 
-    /// 主导航高亮用的索引：资料库三页属于文件页，选中态落回「我的文件」
-    readonly property int selectionIndex: pages.libraryPages.indexOf(bar.currentIndex) >= 0
-                                          ? pages.files : bar.currentIndex
     readonly property int taskCount: bar.localTaskCount + bar.offlineTaskCount
     readonly property string taskCountText: bar.taskCount > 99
                                             ? "99+" : String(bar.taskCount)
@@ -48,6 +44,9 @@ Rectangle {
             model: [
                 { "page": pages.files, "label": qsTr("我的文件"), "icon": "folder" },
                 { "page": pages.transfers, "label": qsTr("传输任务"), "icon": "transfer" },
+                { "page": pages.recentSaved, "label": qsTr("最近保存"), "icon": "clock" },
+                { "page": pages.playbackHistory, "label": qsTr("播放历史"), "icon": "history" },
+                { "page": pages.starred, "label": qsTr("已加星标"), "icon": "star" },
                 { "page": pages.shares, "label": qsTr("分享"), "icon": "share" },
                 { "page": pages.trash, "label": qsTr("回收站"), "icon": "trash" }
             ]
@@ -58,7 +57,7 @@ Rectangle {
 
                 // Button 的 checkable 会在点击时自行改写 checked，并永久切断与当前页的
                 // 绑定；选中态只认 currentIndex，避免连点当前入口后高亮消失。
-                readonly property bool navSelected: bar.selectionIndex === modelData.page
+                readonly property bool navSelected: bar.currentIndex === modelData.page
 
                 objectName: "sidebarNav_" + modelData.page
                 Layout.fillWidth: true

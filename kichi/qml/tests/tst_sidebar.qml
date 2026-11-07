@@ -71,8 +71,8 @@ TestCase {
     }
 
     function test_order_and_page_mapping() {
-        // 传输任务紧跟我的文件；三个资料库收进文件页，设置收进账号行。
-        const expectedPages = [0, 2, 1, 3]
+        // 传输任务紧跟我的文件，三个资料库紧随其后；设置收进账号行。
+        const expectedPages = [0, 2, 4, 5, 6, 1, 3]
         let previousY = -1
 
         for (let i = 0; i < expectedPages.length; ++i) {
@@ -90,10 +90,6 @@ TestCase {
             compare(pageSpy.signalArguments[0][0], page)
             wait(0)
         }
-
-        compare(navItem(4), null, "最近保存不占主导航")
-        compare(navItem(5), null, "播放历史不占主导航")
-        compare(navItem(6), null, "已加星标不占主导航")
     }
 
     function test_task_badge_only_shows_unfinished_count() {
@@ -181,15 +177,17 @@ TestCase {
             sidebar, 0, (tasksItem.height - selectionBar.height) / 2).y
         tryCompare(selectionBar, "y", tasksY, 1000)
 
-        // 库页属于文件页：侧栏仍选中「我的文件」
+        // 资料库页也是主导航：选中自己的入口，不再落回「我的文件」
         sidebar.currentIndex = 4
-        tryCompare(filesSurface, "opacity", 1, 1000)
-        tryCompare(targetSurface, "opacity", 0, 1000)
-        verify(navItem(0).navSelected, "最近保存页应选中我的文件")
-        const filesTarget = navItem(0)
-        const filesY = filesTarget.mapToItem(
-            sidebar, 0, (filesTarget.height - selectionBar.height) / 2).y
-        tryCompare(selectionBar, "y", filesY, 1000)
+        const libraryItem = navItem(4)
+        const librarySurface = findChild(libraryItem, "sidebarSelectionSurface")
+        verify(librarySurface !== null, "最近保存页缺少选中底色")
+        tryCompare(filesSurface, "opacity", 0, 1000)
+        tryCompare(librarySurface, "opacity", 1, 1000)
+        verify(libraryItem.navSelected, "最近保存页应选中自己的入口")
+        const libraryY = libraryItem.mapToItem(
+            sidebar, 0, (libraryItem.height - selectionBar.height) / 2).y
+        tryCompare(selectionBar, "y", libraryY, 1000)
 
         // 设置是独立窗口：不占页面索引，齿轮点亮只看 settingsActive
         const settingsButton = findChild(sidebar, "accountSettingsButton")
@@ -197,7 +195,7 @@ TestCase {
         wait(0)
         compare(settingsButton.checked, true, "设置对话框打开时应点亮账号行设置按钮")
         compare(selectionBar.visible, true, "主导航仍保持当前页的选中竖条")
-        verify(navItem(0).navSelected, "打开设置不应改变主导航选中项")
+        verify(libraryItem.navSelected, "打开设置不应改变主导航选中项")
 
         sidebar.settingsActive = false
         sidebar.currentIndex = 0

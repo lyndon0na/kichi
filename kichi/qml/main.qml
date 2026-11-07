@@ -243,8 +243,7 @@ ApplicationWindow {
 
                 // 页头两行，和列表同一块底色（页头是内容的一部分，不单独成栏）：
                 //   上行 页名 + 搜索框 + 目录操作
-                //   下行 面包屑（文件页）或返回文件页的路径（资料库三页），
-                //        右端常驻「资料库」入口
+                //   下行 面包屑（仅文件页）
                 Item {
                     id: titleRow
 
@@ -371,7 +370,6 @@ ApplicationWindow {
                     Layout.bottomMargin: 0
                     Layout.preferredHeight: 30
                     visible: root.currentPage === pageIds.files
-                             || pageIds.libraryPages.indexOf(root.currentPage) >= 0
                     spacing: 4
 
                     // 面包屑：上一级 + 各级目录，可点着往回跳。
@@ -380,7 +378,7 @@ ApplicationWindow {
                     Item {
                         id: crumbBar
 
-                        // 目录面包屑只属于文件页；库页用下面的「‹ 我的文件」代替
+                        // 目录面包屑只属于文件页
                         visible: root.currentPage === pageIds.files
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
@@ -575,53 +573,6 @@ ApplicationWindow {
                                 }
                             }
 
-                        }
-                    }
-
-                    // 库页：目录面包屑让位给一条回文件页的路径
-                    RowLayout {
-                        objectName: "libraryBackRow"
-
-                        visible: pageIds.libraryPages.indexOf(root.currentPage) >= 0
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                        Layout.preferredHeight: 30
-                        spacing: 2
-
-                        KIconButton {
-                            objectName: "libraryBackButton"
-
-                            iconName: "chevron-left"
-                            iconSize: 14
-                            iconOpacity: 0.65
-                            Layout.alignment: Qt.AlignVCenter
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("返回我的文件")
-                            Accessible.name: qsTr("返回我的文件")
-                            onClicked: root.navigateTo(pageIds.files)
-                        }
-
-                        Label {
-                            text: qsTr("我的文件")
-                            font.pixelSize: 13
-                            color: Qt.rgba(palette.text.r, palette.text.g,
-                                           palette.text.b, 0.7)
-
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.navigateTo(pageIds.files)
-                            }
-                        }
-                    }
-
-                    // 三个资料库的入口：文件页和库页都常驻，进库后可直接换库
-                    LibraryMenuButton {
-                        Layout.alignment: Qt.AlignVCenter
-                        currentPage: root.currentPage
-                        onPageRequested: function (pageIndex) {
-                            root.navigateTo(pageIndex)
                         }
                     }
                 }

@@ -30,7 +30,6 @@ const QML_FILES: &[&str] = &[
     "qml/SideBar.qml",
     "qml/AccountCard.qml",
     "qml/QuotaIndicator.qml",
-    "qml/LibraryMenuButton.qml",
     "qml/NavIcon.qml",
     "qml/FileIcon.qml",
     "qml/FileThumbnail.qml",
