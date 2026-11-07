@@ -77,6 +77,9 @@ TestCase {
         backend.lastSubmitted = ""
         backend.lastSubmittedFolder = ""
         backend.lastSavedIndices = []
+        dialog.targetFolderId = null
+        dialog.targetFolderPath = ""
+        dialog.pickerStartPath = []
         if (magnetDialog && magnetDialog.visible)
             magnetDialog.close()
         if (dialog.visible)
@@ -172,7 +175,7 @@ TestCase {
         compare(backend.lastSubmitted, "", "登录态失败不应再提交云下载")
         compare(dialog.torrentNoticeError, true)
         compare(dialog.torrentNotice, "登录状态失效")
-        compare(footerOk.text, "添加")
+        compare(footerOk.text, "解析")
         compare(footerOk.enabled, true)
     }
 
@@ -271,5 +274,72 @@ TestCase {
         input.text = "AERUKZ4JVPG66AJDIVTYTK6N54ASGRL0"
         compare(dialog.canSubmit, false)
         compare(dialog.invalidLine, 1)
+    }
+
+    function test_direct_cloud_download_skips_magnet_parsing() {
+        open()
+        const cloud = findChild(dialog, "newTaskDirectCloud")
+        input.text = "magnet:?xt=urn:btih:abc"
+        compare(footerOk.text, "解析")
+
+        cloud.checked = true
+        compare(dialog.submitsAsCloudDownload, true)
+        compare(footerOk.text, "云下载")
+        mouseClick(footerOk)
+
+        compare(backend.lastLink, "", "勾选后不再解析磁链")
+        compare(backend.lastSubmitted, "magnet:?xt=urn:btih:abc")
+        tryCompare(dialog, "visible", false)
+    }
+
+    function test_direct_cloud_download_uses_target_folder() {
+        open()
+        dialog.targetFolderId = "folder-1"
+        dialog.targetFolderPath = "全部文件 / 剧集"
+        input.text = "magnet:?xt=urn:btih:abc"
+        findChild(dialog, "newTaskDirectCloud").checked = true
+        mouseClick(footerOk)
+
+        compare(backend.lastSubmitted, "magnet:?xt=urn:btih:abc")
+        compare(backend.lastSubmittedFolder, "folder-1")
+        tryCompare(dialog, "visible", false)
+    }
+
+    function test_non_magnet_input_shows_cloud_download_label() {
+        open()
+        input.text = "https://example.com/a.mkv"
+        compare(dialog.submitsAsCloudDownload, true)
+        compare(footerOk.text, "云下载")
+
+        input.text = "magnet:?xt=urn:btih:abc"
+        compare(dialog.submitsAsCloudDownload, false)
+        compare(footerOk.text, "解析")
+    }
+
+    function test_direct_cloud_download_resets_on_reopen() {
+        open()
+        const cloud = findChild(dialog, "newTaskDirectCloud")
+        cloud.checked = true
+        dialog.close()
+        tryCompare(dialog, "visible", false)
+
+        dialog.open()
+        tryCompare(dialog, "visible", true)
+        compare(dialog.directCloudDownload, false)
+        compare(cloud.checked, false)
+    }
+
+    function test_direct_cloud_checkbox_locks_while_parsing() {
+        open()
+        const cloud = findChild(dialog, "newTaskDirectCloud")
+        input.text = "magnet:?xt=urn:btih:abc"
+        mouseClick(footerOk)
+
+        compare(dialog.parsingMagnet, true)
+        compare(cloud.enabled, false)
+        backend.finishPreview(false, "登录状态失效", false)
+        compare(dialog.parsingMagnet, false)
+        compare(cloud.enabled, true)
+        compare(footerOk.text, "解析")
     }
 }

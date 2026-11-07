@@ -948,7 +948,7 @@ TestCase {
         input.text = "随便写点什么"
         tryCompare(dialog, "invalidLine", 1)
         compare(dialog.canSubmit, false)
-        compare(ok.enabled, false, "无法识别的输入不能让「添加」可点")
+        compare(ok.enabled, false, "无法识别的输入不能让「云下载」可点")
         tryCompare(status, "text", "第 1 行不是有效的磁力 / ed2k / HTTP 链接")
         compare(status.color, dialog.theme.danger)
 

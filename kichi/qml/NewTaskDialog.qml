@@ -21,10 +21,15 @@ KDialog {
     readonly property bool canSubmit: dialog.backend !== null
                                         && dialog.linkCount > 0
                                         && dialog.invalidLine === 0
-    /// 所有非空行都是磁力链接（或裸 infohash）时，添加前先批量解析文件清单。
+    /// 所有非空行都是磁力链接（或裸 infohash）时，提交前先批量解析文件清单。
     readonly property var magnetLinks: dialog.allMagnetLinks(input.text)
-    /// 单条磁链正在后台解析；期间锁定添加 / 取消，避免结果落到已关闭的弹窗。
+    /// 单条磁链正在后台解析；期间锁定主按钮 / 取消 / 勾选框，避免结果落到已关闭的弹窗。
     property bool parsingMagnet: false
+    /// 勾选后跳过磁链解析 / 秒传选择，直接把整段输入建成普通离线任务。
+    property bool directCloudDownload: false
+    /// 这一次提交会走普通云下载：手动勾选，或输入里没有可解析的磁力链接。
+    readonly property bool submitsAsCloudDownload: dialog.directCloudDownload
+                                                   || dialog.magnetLinks.length === 0
 
     objectName: "newTaskDialog"
     title: qsTr("新任务")
@@ -40,6 +45,8 @@ KDialog {
     function resetForOpen() {
         input.text = ""
         dialog.parsingMagnet = false
+        dialog.directCloudDownload = false
+        directCloudCheck.checked = false
         dialog.torrentNotice = ""
         dialog.torrentNoticeError = false
         input.forceActiveFocus()
@@ -55,7 +62,9 @@ KDialog {
         statusColor: dialog.invalidLine > 0 || dialog.torrentNoticeError
                      ? theme.danger
                      : theme.textMuted
-        okText: dialog.parsingMagnet ? qsTr("解析中…") : qsTr("添加")
+        okText: dialog.parsingMagnet
+                ? qsTr("解析中…")
+                : dialog.submitsAsCloudDownload ? qsTr("云下载") : qsTr("解析")
         okObjectName: "newTaskDialogOk"
         cancelObjectName: "newTaskDialogCancel"
         okEnabled: dialog.canSubmit && !dialog.parsingMagnet
@@ -116,6 +125,16 @@ KDialog {
                 color: theme.textPrimary
                 font.pixelSize: theme.fontBody
                 font.weight: Font.DemiBold
+            }
+
+            CheckBox {
+                id: directCloudCheck
+                objectName: "newTaskDirectCloud"
+                text: qsTr("直接云下载")
+                font.pixelSize: theme.fontMeta
+                enabled: !dialog.parsingMagnet
+                // 用 checkedChanged 而不是 toggled：重开弹窗时代码里改 checked 也要同步。
+                onCheckedChanged: dialog.directCloudDownload = checked
             }
 
             KButton {
@@ -369,10 +388,14 @@ KDialog {
         return count
     }
 
-    /// 单条磁链先解析，其余输入直接提交云下载。
+    /// 勾选直接云下载（或输入里没有磁链）时不解析，其余情况先解析磁链。
     function submit() {
         if (!dialog.backend || !dialog.canSubmit || dialog.parsingMagnet)
             return
+        if (dialog.submitsAsCloudDownload) {
+            dialog.submitTask()
+            return
+        }
         const links = dialog.magnetLinks
         if (links.length > 0) {
             dialog.parsingMagnet = true
