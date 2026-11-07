@@ -15,7 +15,6 @@
 //! 通过全局队列投递给主线程，由 QML 定时器调用 `poll()` 消费——
 //! 和网络结果回投用的是同一套模式（见 `actions.rs`）。
 
-use std::path::Path;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -109,11 +108,6 @@ fn handle_slot() -> &'static Mutex<Option<Handle>> {
     HANDLE.get_or_init(|| Mutex::new(None))
 }
 
-/// 是否运行在 Flatpak 沙箱里。
-fn in_sandbox() -> bool {
-    Path::new("/.flatpak-info").exists() || std::env::var_os("FLATPAK_ID").is_some()
-}
-
 /// 托盘是否可用（启动失败时界面会禁用「关闭到托盘」）。
 pub fn is_available() -> bool {
     match handle_slot().lock() {
@@ -135,7 +129,7 @@ pub fn start() -> bool {
     // well-known name，但仍可以通过唯一连接名注册到宿主 watcher。
     // ksni 为这种环境提供了关闭 well-known name 的开关。
     let service = TrayIcon;
-    let result = if in_sandbox() {
+    let result = if crate::platform::flatpak_sandbox() {
         service.disable_dbus_name(true).spawn()
     } else {
         service.spawn()

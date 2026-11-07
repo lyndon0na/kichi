@@ -25,6 +25,7 @@ TestCase {
         property string embedInputConfPath: "/tmp/kichi/embed-input.conf"
         property bool playerVulkan: true
         property string playerBackend: "mpv"
+        property bool flatpak: false
         property string playerDefaultCommand: "mpv"
         property string playerCommand: ""
         property string playerDefaultArgs: "--no-border"
@@ -108,6 +109,7 @@ TestCase {
         backend.playerInputConf = true
         backend.playerVulkan = true
         backend.playerBackend = "mpv"
+        backend.flatpak = false
         backend.playerCommand = ""
         backend.playerArgs = ""
         backend.downloadDir = ""
@@ -319,6 +321,32 @@ TestCase {
         box.activated(2)
         wait(40)
         compare(backend.playerBackend, "vlc", "选择 VLC 后应写回播放器预设")
+    }
+
+    function test_flatpak_only_keeps_embedded_player() {
+        openSection(page.playbackSection)
+
+        var row = findChild(page, "settingsPlayerRow")
+        var note = findChild(page, "settingsPlayerFlatpakOnly")
+        var advanced = findChild(page, "settingsAdvancedPlayer")
+        var body = findChild(page, "settingsPlayerAdvancedBody")
+        verify(row !== null && note !== null && advanced !== null && body !== null)
+        verify(row.visible, "普通构建显示播放器选择")
+        verify(!note.visible, "普通构建不显示 Flatpak 说明")
+        verify(advanced.visible, "普通构建显示自定义播放器入口")
+
+        mouseClick(advanced)
+        wait(40)
+        verify(body.visible, "自定义播放器项可以展开")
+
+        backend.flatpak = true
+        wait(40)
+        verify(!row.visible, "Flatpak 里隐藏播放器选择")
+        verify(note.visible, "Flatpak 里说明只使用内嵌播放器")
+        verify(!advanced.visible, "Flatpak 里隐藏自定义播放器入口")
+        verify(!body.visible, "Flatpak 里已展开的高级项也收起")
+
+        backend.flatpak = false
     }
 
     function test_quality_ask_label_is_compact() {

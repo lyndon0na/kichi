@@ -25,7 +25,7 @@ kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随 Plasma 系统配色
 | 上传 | 文件 / 文件夹、拖放、multipart 断点、限速、自动续传（可选） |
 | 分享 | 创建分享、管理列表、批量撤销 |
 | 资料库 | 最近保存、播放历史、已加星标 |
-| 播放 | 内嵌 libmpv（Wayland）、外部 mpv / VLC、清晰度选择、外挂字幕、续播、文件夹连播 |
+| 播放 | 内嵌 libmpv（Wayland）、外部 mpv / VLC（Flatpak 版仅内嵌）、清晰度选择、外挂字幕、续播、文件夹连播 |
 | 桌面集成 | 系统托盘、单实例、Plasma 配色、中文界面 |
 
 ## 环境要求
@@ -34,6 +34,7 @@ kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随 Plasma 系统配色
 - 系统钥匙串（KWallet / Secret Service）用于保存登录令牌；不可用时降级为 0600 文件
 - XDG Desktop Portal（文件选择、目录选择）
 - 内嵌播放需要 Wayland 会话；没有 `WAYLAND_DISPLAY` 时自动回退外部 mpv
+  （Flatpak 版没有外部回退，只提示需要 Wayland）
 
 ## 构建
 
@@ -86,8 +87,9 @@ flatpak install --user dist/io.github.lyndon0na.kichi-*.flatpak
 flatpak run io.github.lyndon0na.kichi
 ```
 
-Flatpak 包内自带 libmpv 及其依赖，内嵌播放不依赖宿主安装 mpv。外部 mpv / VLC
-预设仍然需要宿主存在对应程序，Flatpak 沙箱内不可用。
+Flatpak 包内自带 libmpv 及其依赖，内嵌播放不依赖宿主安装 mpv。Flatpak 版只提供
+内嵌播放器：设置页不显示外部 mpv / VLC / 自定义播放器选项，因为沙箱内看不到也无法
+启动宿主播放器。需要外部播放器时请使用 AppImage 或自行构建。
 
 ## 测试
 

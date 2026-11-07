@@ -32,8 +32,13 @@ use crate::settings::{PlayerBackend, Settings};
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
 /// 设置要求内嵌播放，且没有用 `KICHI_PLAYER` 临时改走外部命令。
+///
+/// Flatpak 沙箱里只有内嵌播放器：设置页不显示外部选项，`KICHI_PLAYER`
+/// 也不再把播放引到根本不存在的宿主命令上。
 fn wants_embedded(settings: &Settings) -> bool {
-    settings.player_backend == PlayerBackend::Embedded && std::env::var_os("KICHI_PLAYER").is_none()
+    let sandboxed = crate::platform::flatpak_sandbox();
+    settings.effective_player_backend() == PlayerBackend::Embedded
+        && (sandboxed || std::env::var_os("KICHI_PLAYER").is_none())
 }
 
 /// 播放事件回投：切回界面线程，带上这次播放的代数与提示文案。
@@ -217,14 +222,23 @@ impl qobject::Kichi {
         // 开关关闭 / 非 mpv（含 VLC）：本次不准备字幕（计划取出来丢掉，别留给下一次）
         let settings = self.settings.clone();
         let (config, _) = PlayerConfig::resolve_playable(
-            settings.player_backend,
+            settings.effective_player_backend(),
             settings.player_command_override(),
             settings.player_args_override(),
         );
         // 内嵌路径不依赖系统 mpv；只有它不可用（没有 Wayland）时才回退外部，
         // 那时才需要先确认外部播放器存在，比取完直链再 spawn 失败省一次网络请求。
+        // Flatpak 沙箱里没有外部播放器可回退，直接给出明确原因。
         let embedded_ok = wants_embedded(&settings) && crate::player::embed::available().is_ok();
         if !embedded_ok {
+            if crate::platform::flatpak_sandbox() {
+                let reason = crate::player::embed::available()
+                    .err()
+                    .unwrap_or_else(|| "内嵌播放器不可用".to_owned());
+                self.as_mut()
+                    .fail_play_loading(&format!("Flatpak 版只提供内嵌播放器：{reason}"));
+                return;
+            }
             if let Err(message) = config.check_available() {
                 self.as_mut().fail_play_loading(&message);
                 return;
@@ -389,7 +403,7 @@ impl qobject::Kichi {
         }
         let settings = self.settings.clone();
         let (config, player_notice) = PlayerConfig::resolve_playable(
-            settings.player_backend,
+            settings.effective_player_backend(),
             settings.player_command_override(),
             settings.player_args_override(),
         );
@@ -478,6 +492,13 @@ impl qobject::Kichi {
                 }
                 Err(reason) => {
                     self.as_mut().stop_embed_and_clear();
+                    if crate::platform::flatpak_sandbox() {
+                        // 沙箱里没有外部播放器可回退；这里报清楚，别让用户
+                        // 看到「已改用外部播放器」之后又找不到 mpv。
+                        self.as_mut()
+                            .fail_play_loading(&format!("Flatpak 版只提供内嵌播放器：{reason}"));
+                        return;
+                    }
                     fallback_notice = Some(format!("内嵌播放不可用（{reason}），已改用外部播放器"));
                 }
             }

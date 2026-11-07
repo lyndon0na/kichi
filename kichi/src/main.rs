@@ -7,6 +7,7 @@
 mod cxxqt_object;
 mod format;
 mod instance;
+mod platform;
 mod player;
 mod session;
 mod settings;
@@ -50,9 +51,7 @@ fn main() {
     // 如果请求方 app_id 与当前活动窗口的 desktopFileName 不同，会按
     // StartupNotify=true 播放「正在启动」光标动画——内嵌播放窗口每次打开
     // 都会请求激活，桌面文件名空着就会每次都闪一次启动反馈。
-    let desktop_file = if std::path::Path::new("/.flatpak-info").exists()
-        || std::env::var_os("FLATPAK_ID").is_some()
-    {
+    let desktop_file = if platform::flatpak_sandbox() {
         "io.github.lyndon0na.kichi"
     } else {
         "kichi"

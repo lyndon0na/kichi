@@ -161,6 +161,8 @@ pub mod qobject {
         #[qproperty(QString, preferred_quality, cxx_name = "preferredQuality", READ, NOTIFY = changed)]
         /// 播放器预设："embedded" / "mpv" / "vlc" / "custom"
         #[qproperty(QString, player_backend, cxx_name = "playerBackend", READ, NOTIFY = changed)]
+        /// 是否运行在 Flatpak 沙箱里（只读；沙箱内只提供内嵌播放器）
+        #[qproperty(bool, flatpak, cxx_name = "flatpak", READ, NOTIFY = changed)]
         #[qproperty(QString, player_command, cxx_name = "playerCommand", READ, NOTIFY = changed)]
         #[qproperty(QString, player_args, cxx_name = "playerArgs", READ, NOTIFY = changed)]
         #[qproperty(QString, player_default_command, cxx_name = "playerDefaultCommand", READ, NOTIFY = changed)]
@@ -1406,6 +1408,8 @@ pub struct KichiRust {
     pub(crate) preferred_quality: QString,
     /// 播放器预设（"embedded" / "mpv" / "vlc" / "custom"）
     pub(crate) player_backend: QString,
+    /// 是否运行在 Flatpak 沙箱里（只读；沙箱内只提供内嵌播放器）
+    pub(crate) flatpak: bool,
     /// 自定义播放器命令 / 参数（空串 = 用默认）
     pub(crate) player_command: QString,
     pub(crate) player_args: QString,
@@ -1699,6 +1703,7 @@ impl Default for KichiRust {
             settings: crate::settings::Settings::default(),
             preferred_quality: QString::from("ask"),
             player_backend: QString::from("embedded"),
+            flatpak: crate::platform::flatpak_sandbox(),
             player_command: QString::default(),
             player_args: QString::default(),
             player_default_command: QString::from(crate::player::DEFAULT_PLAYER),

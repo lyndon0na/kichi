@@ -8,6 +8,8 @@ ColumnLayout {
 
     property var backend: null
     property bool advancedOpen: false
+    /// Flatpak 沙箱里只提供内嵌播放器：外部播放器选项与自定义命令整体隐藏。
+    readonly property bool flatpak: playback.backend ? playback.backend.flatpak : false
 
     readonly property KTheme theme: KTheme { parent: playback }
 
@@ -18,6 +20,8 @@ ColumnLayout {
         Layout.fillWidth: true
 
         KSettingsRow {
+            objectName: "settingsPlayerRow"
+            visible: !playback.flatpak
             title: qsTr("播放器")
             description: qsTr("在独立的 kichi 播放窗口里播放，主窗口可同时使用；支持暂停、拖动进度与字幕；也可改为外部 mpv / VLC。外部播放器需系统已安装，缺少时会自动改用另一个。")
 
@@ -57,6 +61,13 @@ ColumnLayout {
                         playback.advancedOpen = true
                 }
             }
+        }
+
+        KSettingsRow {
+            objectName: "settingsPlayerFlatpakOnly"
+            visible: playback.flatpak
+            title: qsTr("播放器")
+            description: qsTr("Flatpak 版只使用内嵌播放器；外部 mpv / VLC 与自定义命令在沙箱内不可用。需要外部播放器时请使用 AppImage 或自行构建。")
         }
 
         KSettingsRow {
@@ -132,6 +143,7 @@ ColumnLayout {
 
         KSettingsRow {
             objectName: "settingsAdvancedPlayer"
+            visible: !playback.flatpak
             interactive: true
             title: qsTr("自定义播放器命令")
             description: qsTr("仅「自定义」模式使用；编辑后会自动切到自定义。")
@@ -147,7 +159,7 @@ ColumnLayout {
 
         ColumnLayout {
             objectName: "settingsPlayerAdvancedBody"
-            visible: playback.advancedOpen
+            visible: playback.advancedOpen && !playback.flatpak
             Layout.fillWidth: true
             Layout.topMargin: theme.gapMd
             spacing: theme.gapSm
@@ -199,7 +211,7 @@ ColumnLayout {
             Label {
                 objectName: "settingsPlayerArgsHint"
                 Layout.fillWidth: true
-                text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。Flatpak 版 mpv 可填 flatpak run --die-with-parent io.mpv.Mpv。")
+                text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。原生构建可用 flatpak run --die-with-parent io.mpv.Mpv 调用 Flatpak 版 mpv。")
                 font.pixelSize: theme.fontCaption
                 color: theme.textMuted
                 wrapMode: Text.WordWrap

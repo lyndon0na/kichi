@@ -663,6 +663,24 @@ impl Settings {
             .min(crate::session::limits::MAX_UPLOAD_RATE_MIB);
         self
     }
+
+    /// 本次运行实际生效的播放器。
+    ///
+    /// Flatpak 沙箱里只有内嵌播放器：即使配置文件（与原生构建共用）
+    /// 里还留着 mpv / VLC / 自定义，也只按内嵌执行。这里只改读取结果，
+    /// **不回写** `player_backend`——否则在 Flatpak 里改一次别的设置，
+    /// 就会把原生构建选好的外部播放器一起覆盖掉。
+    pub fn effective_player_backend(&self) -> PlayerBackend {
+        self.effective_player_backend_in(crate::platform::flatpak_sandbox())
+    }
+
+    fn effective_player_backend_in(&self, sandboxed: bool) -> PlayerBackend {
+        if sandboxed {
+            PlayerBackend::Embedded
+        } else {
+            self.player_backend
+        }
+    }
 }
 
 /// 写盘：先写同目录临时文件再 rename，避免写到一半断电留下半个 JSON。
@@ -1012,6 +1030,30 @@ mod tests {
                 "{language:?}"
             );
         }
+    }
+
+    #[test]
+    fn flatpak_uses_embedded_without_rewriting_the_saved_choice() {
+        let settings = Settings {
+            player_backend: PlayerBackend::Vlc,
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            settings.effective_player_backend_in(true),
+            PlayerBackend::Embedded,
+            "Flatpak 沙箱里只能内嵌"
+        );
+        assert_eq!(
+            settings.effective_player_backend_in(false),
+            PlayerBackend::Vlc,
+            "非 Flatpak 保持用户选择"
+        );
+        assert_eq!(
+            settings.player_backend,
+            PlayerBackend::Vlc,
+            "共用配置文件不能被 Flatpak 悄悄改写"
+        );
     }
 
     #[test]
