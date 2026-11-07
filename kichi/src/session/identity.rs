@@ -257,7 +257,6 @@ mod tests {
             usage: 5,
             limit: None,
             vip: true,
-            ..kichi_core::Quota::default()
         };
         session.cache_quota(&unlimited);
         let saved = session.cached_quota().expect("缓存后应能读回");
@@ -269,7 +268,6 @@ mod tests {
             usage: 12,
             limit: Some(100),
             vip: false,
-            ..kichi_core::Quota::default()
         };
         session.cache_quota(&limited);
         let saved = session.cached_quota().expect("覆盖后应能读回");

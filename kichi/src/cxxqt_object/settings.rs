@@ -651,10 +651,12 @@ mod disk_tests {
         // SAFETY: 单测进程内串行，且只此处读写该变量
         unsafe { std::env::set_var("KICHI_SETTINGS_FILE", &path) };
 
-        let mut settings = Settings::default();
-        settings.preferred_quality = Quality::Original;
-        settings.sort_field = SortField::Size;
-        settings.sort_ascending = false;
+        let settings = Settings {
+            preferred_quality: Quality::Original,
+            sort_field: SortField::Size,
+            sort_ascending: false,
+            ..Settings::default()
+        };
         super::settings::save(&super::settings::default_path(), &settings).expect("保存失败");
 
         let (loaded, warning) = super::settings::load(&super::settings::default_path());

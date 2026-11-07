@@ -820,7 +820,7 @@ mod tests {
             PlayerBackend::Embedded,
             "旧设置没有播放器预设字段时默认内嵌"
         );
-        assert_eq!(settings.notify_enabled, true, "缺失字段取默认");
+        assert!(settings.notify_enabled, "缺失字段取默认");
         assert!(settings.auto_subtitles, "旧设置没有这个字段时默认开");
         assert_eq!(
             settings.player_audio_lang,

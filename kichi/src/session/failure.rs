@@ -83,6 +83,12 @@ impl std::fmt::Display for Failure {
     }
 }
 
+impl From<StoreError> for Failure {
+    fn from(err: StoreError) -> Self {
+        Failure::Other(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod limit_tests {
     use super::*;
@@ -114,11 +120,5 @@ mod limit_tests {
         });
         assert!(failure.is_rate_limited());
         assert!(failure.to_string().contains("不是 kichi 故障"));
-    }
-}
-
-impl From<StoreError> for Failure {
-    fn from(err: StoreError) -> Self {
-        Failure::Other(err.to_string())
     }
 }
