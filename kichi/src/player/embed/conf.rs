@@ -21,6 +21,7 @@ const RESERVED: &[&str] = &[
     "config-dir",
     "idle",
     "force-window",
+    "keepaspect-window",
     "terminal",
     "msg-level",
     // 输入 / 键位 / 脚本：kichi 接管键盘，不加载用户 input.conf 与脚本
@@ -54,7 +55,7 @@ pub(crate) const TEMPLATE: &str = r#"# kichi 内嵌播放器的 mpv 配置（mpv
 #
 # 内嵌必需的选项由 kichi 固定，这里写了也不会生效：
 #   vo / gpu-context / gpu-api / clipboard-backends / input-* / osc / config /
-#   idle / force-window / stop-screensaver / ytdl / sub-auto / script* /
+#   idle / force-window / keepaspect-window / stop-screensaver / ytdl / sub-auto / script* /
 #   fullscreen 等。
 # 当前内嵌默认 Vulkan 渲染；设置页「内嵌播放器」→「Vulkan 渲染」可关闭回退 OpenGL。
 #
@@ -284,10 +285,10 @@ mod tests {
     fn reserved_options_and_profile_sections_are_skipped() {
         let (parsed, dir) = parse(
             "reserved",
-            "vo=vulkan\ngpu-api=vulkan\ninput-conf=~/x\nfullscreen=yes\n[my-profile]\nscale=bilinear\n",
+            "vo=vulkan\ngpu-api=vulkan\ninput-conf=~/x\nfullscreen=yes\nkeepaspect-window=yes\n[my-profile]\nscale=bilinear\n",
         );
         assert!(parsed.options.is_empty(), "profile 段与保留项都不生效");
-        assert_eq!(parsed.ignored, 4);
+        assert_eq!(parsed.ignored, 5);
         let _ = std::fs::remove_dir_all(dir);
     }
 

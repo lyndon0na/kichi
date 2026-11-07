@@ -385,6 +385,11 @@ fn create_mpv(
             ("ytdl", "no"),
             ("audio-display", "no"),
             ("sub-auto", "no"),
+            // 播放窗口由 kichi 决定尺寸：mpv 必须按 configure 的整窗出帧，
+            // 由它在 buffer 内部留黑边；否则 mpv 会为保持视频比例自行改变
+            // 窗口尺寸（如 640x360 被改成 640x1138），C++ 再按整窗拉伸 viewport
+            // 就会把画面压扁 / 拉长。
+            ("keepaspect-window", "no"),
         ] {
             init.set_option(name, value)?;
         }
