@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建本机自用的 AppImage。
+# 构建 AppImage（产物面向当前构建机）。
 #
 # 设计边界：
 # - Qt / Kirigami / qqc2-desktop-style 和它们的运行库进包；

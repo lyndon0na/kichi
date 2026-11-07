@@ -480,7 +480,7 @@ fn end_notice(report: &BatchReport, end: &BatchEnd) -> Option<super::notificatio
             report.folder,
             reason,
         )),
-        // 空文件夹是成功，但不值得打扰：验收点见 ADR 0012
+        // 空文件夹是成功，但不值得打扰：边界规则见 ADR 0012
         BatchEnd::Completed if report.empty_folder => None,
         BatchEnd::Completed => Some(super::notifications::batch_finished(
             super::notifications::BatchSummary {

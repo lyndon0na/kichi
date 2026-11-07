@@ -4,11 +4,15 @@
 /off
 /dist
 
+# 内部文档（只留本地，不随仓库发布）
+/private/
+
 # 编辑器 / 系统
 .idea/
 .vscode/
 *.swp
 .DS_Store
+**/.qmlls.ini
 
 # 本地日志
 *.log
