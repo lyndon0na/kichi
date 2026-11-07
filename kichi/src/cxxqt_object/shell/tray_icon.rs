@@ -15,7 +15,7 @@
 const SIZES: [i32; 4] = [22, 24, 32, 48];
 
 /// 应用图标源文件，与 AppImage 打包用的是同一份。
-const SVG: &str = include_str!("../../assets/icons/hicolor/scalable/apps/kichi.svg");
+const SVG: &str = include_str!("../../../assets/icons/hicolor/scalable/apps/kichi.svg");
 
 /// 生成托盘图标的多档位图。
 pub(crate) fn icon_pixmaps() -> Vec<ksni::Icon> {

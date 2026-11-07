@@ -1116,54 +1116,129 @@ impl QVariantList {
     }
 }
 
+// 桥接实现按功能分组放进子目录，与 `kichi/qml/` 的功能目录对应。
+// 模块名与模块树保持平铺（用 `#[path]` 指向实际文件），所以各实现里的
+// `super::xxx` 仍指向 `cxxqt_object` 本身，不会因搬目录连锁改引用。
+
+// 通用基础设施：后台线程、配置、通知、缩略图、文件定位、目录选择器
+#[path = "cxxqt_object/common/actions.rs"]
 mod actions;
+#[path = "cxxqt_object/common/backend.rs"]
 mod backend;
-mod downloads;
-mod file_action_lock;
-mod file_actions;
-mod file_link;
-mod file_optimistic;
-mod file_stars;
-mod file_targets;
-mod file_transfers;
-mod files;
-mod files_cache;
+#[path = "cxxqt_object/common/folder_picker.rs"]
 mod folder_picker;
-mod library;
-mod magnets;
+#[path = "cxxqt_object/common/notifications.rs"]
 mod notifications;
-mod play;
-mod play_history;
-mod play_prepare;
-mod playlist;
-mod playlist_prefetch;
-mod playlist_recovery;
-mod queue;
-mod queue_collect;
-mod queue_worker;
+#[path = "cxxqt_object/common/reveal.rs"]
 mod reveal;
-mod search;
-mod search_local;
-mod settings;
-mod shares;
-mod tasks;
-mod tasks_submit;
+#[path = "cxxqt_object/common/thumbnails.rs"]
 mod thumbnails;
-mod torrents;
-mod transfers;
-mod transfers_actions;
-mod transfers_detail;
-mod transfers_history;
-mod transfers_rate;
-mod transfers_sync;
-mod transfers_view;
-mod trash;
+
+// 外壳：设置模型、系统托盘
+#[path = "cxxqt_object/shell/settings.rs"]
+mod settings;
+#[path = "cxxqt_object/shell/tray.rs"]
 mod tray;
+#[path = "cxxqt_object/shell/tray_icon.rs"]
 mod tray_icon;
+
+// 文件浏览与文件操作
+#[path = "cxxqt_object/files/file_action_lock.rs"]
+mod file_action_lock;
+#[path = "cxxqt_object/files/file_actions.rs"]
+mod file_actions;
+#[path = "cxxqt_object/files/file_link.rs"]
+mod file_link;
+#[path = "cxxqt_object/files/file_optimistic.rs"]
+mod file_optimistic;
+#[path = "cxxqt_object/files/file_stars.rs"]
+mod file_stars;
+#[path = "cxxqt_object/files/file_targets.rs"]
+mod file_targets;
+#[path = "cxxqt_object/files/file_transfers.rs"]
+mod file_transfers;
+#[path = "cxxqt_object/files/files.rs"]
+mod files;
+#[path = "cxxqt_object/files/files_cache.rs"]
+mod files_cache;
+
+// 回收站
+#[path = "cxxqt_object/trash/trash.rs"]
+mod trash;
+
+// 下载：调度、目录遍历、下载循环
+#[path = "cxxqt_object/downloads/downloads.rs"]
+mod downloads;
+#[path = "cxxqt_object/downloads/queue.rs"]
+mod queue;
+#[path = "cxxqt_object/downloads/queue_collect.rs"]
+mod queue_collect;
+#[path = "cxxqt_object/downloads/queue_worker.rs"]
+mod queue_worker;
+
+// 上传：扫描、调度、上传线程、入口
+#[path = "cxxqt_object/upload/upload_queue.rs"]
 mod upload_queue;
+#[path = "cxxqt_object/upload/upload_scan.rs"]
 mod upload_scan;
+#[path = "cxxqt_object/upload/upload_worker.rs"]
 mod upload_worker;
+#[path = "cxxqt_object/upload/uploads.rs"]
 mod uploads;
+
+// 本机传输记录：状态机、明细、落盘、限速、视图
+#[path = "cxxqt_object/transfers/transfers.rs"]
+mod transfers;
+#[path = "cxxqt_object/transfers/transfers_actions.rs"]
+mod transfers_actions;
+#[path = "cxxqt_object/transfers/transfers_detail.rs"]
+mod transfers_detail;
+#[path = "cxxqt_object/transfers/transfers_history.rs"]
+mod transfers_history;
+#[path = "cxxqt_object/transfers/transfers_rate.rs"]
+mod transfers_rate;
+#[path = "cxxqt_object/transfers/transfers_sync.rs"]
+mod transfers_sync;
+#[path = "cxxqt_object/transfers/transfers_view.rs"]
+mod transfers_view;
+
+// 离线任务：磁力解析、提交、种子
+#[path = "cxxqt_object/tasks/magnets.rs"]
+mod magnets;
+#[path = "cxxqt_object/tasks/tasks.rs"]
+mod tasks;
+#[path = "cxxqt_object/tasks/tasks_submit.rs"]
+mod tasks_submit;
+#[path = "cxxqt_object/tasks/torrents.rs"]
+mod torrents;
+
+// 播放：取链、续播、播放列表
+#[path = "cxxqt_object/playback/play.rs"]
+mod play;
+#[path = "cxxqt_object/playback/play_history.rs"]
+mod play_history;
+#[path = "cxxqt_object/playback/play_prepare.rs"]
+mod play_prepare;
+#[path = "cxxqt_object/playback/playlist.rs"]
+mod playlist;
+#[path = "cxxqt_object/playback/playlist_prefetch.rs"]
+mod playlist_prefetch;
+#[path = "cxxqt_object/playback/playlist_recovery.rs"]
+mod playlist_recovery;
+
+// 资料库
+#[path = "cxxqt_object/library/library.rs"]
+mod library;
+
+// 搜索
+#[path = "cxxqt_object/search/search.rs"]
+mod search;
+#[path = "cxxqt_object/search/search_local.rs"]
+mod search_local;
+
+// 分享
+#[path = "cxxqt_object/shares/shares.rs"]
+mod shares;
 
 use backend::Backend;
 use files::Crumb;

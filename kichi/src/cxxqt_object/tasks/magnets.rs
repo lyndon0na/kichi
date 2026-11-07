@@ -421,4 +421,5 @@ fn to_i32(value: usize) -> i32 {
 }
 
 #[cfg(test)]
+#[path = "magnets/tests.rs"]
 mod tests;
