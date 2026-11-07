@@ -5,8 +5,7 @@ import QtQuick.Controls
 
 // 分享列表的右键菜单：单项和批量共用。
 //
-// 菜单父项固定为窗口 overlay，坐标由 SharesPage 在行上换算成窗口坐标后传入
-// （见 docs/pitfalls.md 第 10 条）。
+// 菜单父项固定为窗口 overlay，坐标由 SharesPage 在行上换算成窗口坐标后传入。
 Item {
     id: root
 

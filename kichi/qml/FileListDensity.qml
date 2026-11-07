@@ -4,7 +4,7 @@ import QtQuick
 //
 // 表头（FileListHeader）、列表行（FileRow）、网格卡片（FileGridItem）和
 // 搜索结果都从这里取同一组数值——只改这一处，各视图一起变，不会出现
-// 「表头 100px、行里 90px」的错位（见 docs/pitfalls.md 第 8 条）。
+// 「表头 100px、行里 90px」的错位。
 //
 // 基准取应用默认字体（本机 KDE 配的是 Noto Sans 10pt）：字体按点值配置时
 // font.pixelSize 为 -1，退回 13，正是 10pt 在 96dpi 下的实际像素。

@@ -5,8 +5,7 @@
 //! 与 QML 里行的 `key` 一致。
 //!
 //! 可重试的状态是 `Failed` 与 `Interrupted`（上次退出时没跑完）：后者按原 id、
-//! 原下载目录、原子目录重新入队，`partials.json` 里还有断点就接着下
-//! （`docs/adr/0014-download-history-on-disk.md`）。
+//! 原下载目录、原子目录重新入队，`partials.json` 里还有断点就接着下。
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

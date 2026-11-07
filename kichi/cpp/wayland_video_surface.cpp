@@ -783,7 +783,7 @@ bool WaylandVideoSurface::ensureChild()
         if (m_childFeedback)
             wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_childFeedback), m_queue);
         // 播放窗口自己的 feedback 才反映它所在 output；child feedback 在映射前
-        // 常是默认 sRGB/80（见 docs/pitfalls.md 第 61 条）。
+        // 常是默认 sRGB/80。
         m_parentFeedback = wp_color_manager_v1_get_surface_feedback(m_colorManager, m_parent);
         if (m_parentFeedback) {
             wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_parentFeedback), m_queue);

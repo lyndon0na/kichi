@@ -5,14 +5,14 @@ import org.kde.kirigami as Kirigami
 // 全应用视觉令牌（圆角 / 间距 / 字号 / 表面色）。
 //
 // 原则没有变：颜色仍然全部从 `palette.*` 推导，明暗跟随 Plasma 桌面设置，
-// 不自带两套色板（见 docs/ui.md）。这里只是把以前散在各处的
+// 不自带两套色板。这里只是把以前散在各处的
 // 「12 / 4 / 0.05」收成有名字的常量，改一处全应用一起变。
 //
 // 用法：在需要的地方实例化一个 `KTheme { id: theme }`，读 `theme.radiusCard`
 // 之类的值。它本身不可见、尺寸为 0，不参与布局。
 //
 // ⚠ 字号只走三档 + 两个辅助档：标题 18 / 小标题 14 / 正文 13 / 次要 12 / 说明 11。
-//   不要再随手加第五、第六档（docs/ui.md「排版」一节）。
+//   不要再随手加第五、第六档。
 Item {
     id: theme
 
@@ -65,7 +65,7 @@ Item {
     // —— 强调色（= Plasma 系统强调色，Primary 按钮 / 选中态 / 关键高亮） ——
     readonly property color accent: palette.highlight
     // ⚠ 不要命名为 onAccent / onDanger：QML 会把 on* 解析成信号处理器，
-    // 这两个属性会静默回落成无效颜色（文字变黑），见 docs/pitfalls.md 第 55 条。
+    // 这两个属性会静默回落成无效颜色（文字变黑）。
     readonly property color accentForeground: palette.highlightedText
     /// 选中态底色：一层很淡的强调色，不铺满饱和色块
     readonly property color accentSoft: Qt.rgba(accent.r, accent.g, accent.b,

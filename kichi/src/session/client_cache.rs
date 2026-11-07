@@ -1,7 +1,7 @@
 //! 会话级网盘客户端缓存。
 //!
 //! reqwest 的连接池与 TLS session 都在 Client 里，每次 build 都是新池 + 新握手，
-//! 还会起一条专属运行时线程（`docs/pitfalls.md` 第 17 条）。批量下载曾经一个文件
+//! 还会起一条专属运行时线程。批量下载曾经一个文件
 //! 建三个 client，25 个文件实测 1.24 s/个 vs 复用 0.47 s/个。
 //!
 //! 键是 **access token 本身**：`Session::drive()` 每次都先跑 `ensure_tokens()`，

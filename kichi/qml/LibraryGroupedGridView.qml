@@ -204,7 +204,7 @@ Item {
                 if (!root.libraryPage)
                     return
                 // TapHandler 挂在 Flickable 上时 position 以内容区为原点，纵向随
-                // contentY 走（docs/pitfalls.md 第 44 条）。先换算成视口坐标，
+                // contentY 走。先换算成视口坐标，
                 // 否则滚动越深弹窗越偏，最后被夹到窗口底部。
                 const viewport = groupedList.mapFromItem(
                     null, point.scenePosition.x, point.scenePosition.y)

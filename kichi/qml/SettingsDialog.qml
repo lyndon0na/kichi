@@ -5,7 +5,7 @@ import QtQuick.Layouts
 // 设置对话框：应用内模态浮层，不是独立窗口。
 // 背景压暗主界面，打开期间不能操作其它页面；关闭后内容保留，下次打开还是上次的分组。
 // 壳子是「卡片式设置」：大圆角面板、面板内自带标题栏和关闭按钮，左侧大纲不铺底色。
-// ⚠ 弹窗必须挂 Overlay.overlay（docs/pitfalls.md 第 10 条）。
+// ⚠ 弹窗必须挂 Overlay.overlay。
 Popup {
     id: settingsDialog
 
@@ -40,7 +40,7 @@ Popup {
             color: Qt.rgba(0, 0, 0, 0.4)
         }
 
-        // 面板比普通弹窗再圆一档，和内部的 6px 控件拉开层次（docs/ui.md「圆角与间距」）。
+        // 面板比普通弹窗再圆一档，和内部的 6px 控件拉开层次。
         Rectangle {
             anchors.fill: parent
             radius: theme.radiusDialog

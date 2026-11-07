@@ -144,7 +144,6 @@ fn wait_for_id(client: &DriveClient, parent: Option<&str>, name: &str) -> Option
 /// 真实端点探针：`batchMove` / `batchCopy` 的请求形状与错误码。
 ///
 /// ⚠ 会真实改动云端数据（建三个临时目录 + 一次复制），跑之前先提醒用户。
-/// 结论写回 `docs/api.md`。
 #[test]
 #[ignore = "会真实改动云端数据，跑前提醒用户（需要 KICHI_TEST_USER / KICHI_TEST_PASS）"]
 fn real_move_copy_probe() {

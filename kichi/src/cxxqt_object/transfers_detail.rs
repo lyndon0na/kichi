@@ -6,7 +6,7 @@
 //! 锁顺序固定为「先 records，再 selection」：`select_folder` / `detail_snapshot`
 //! 与 `transfers::reset` 都遵守这个顺序，不会交叉加锁。
 //!
-//! 登出不清记录（`docs/adr/0014`），只清这里的选中；旧记录仍是可浏览 / 可重试的历史。
+//! 登出不清记录，只清这里的选中；旧记录仍是可浏览 / 可重试的历史。
 
 use std::sync::{Mutex, OnceLock};
 

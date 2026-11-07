@@ -12,7 +12,7 @@ import io.kichi 1.0
 // backend 所有属性共用一个 changed 信号，位置这类高频值不做绑定，避免每次
 // 通知都重算窗口绑定。
 //
-// 关窗语义（docs/pitfalls.md 第 60 条）：
+// 关窗语义：
 // - 用户关窗（窗口管理器 / Alt+F4 / 关闭按钮）= 停播；`dismissed` 压住
 //   「Stopped 回投之前又被 backend.changed 拉起来」的窗口。
 // - 播放结束 / 失败由 backend 把 embedActive 置 false，这里只 `hide()`：
@@ -22,7 +22,7 @@ Window {
 
     // 显式断开主窗口的 transient 关系：否则 Qt 会把嵌套 Window 自动设成主窗口的
     // 子窗口，KWin 永远把播放窗口压在 kichi 上面，主窗口就没法正常浏览。
-    // 代价是任务栏 / Alt-Tab 多一个独立条目（docs/adr/0027-embedded-mpv.md）。
+    // 代价是任务栏 / Alt-Tab 多一个独立条目。
     transientParent: null
 
     property var backend: null

@@ -399,7 +399,7 @@ Item {
                                 if (!page.backend)
                                     return
                                 // position 以内容区为原点，纵向随 contentY 走
-                                // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
+                                // 先换算回视口坐标。
                                 const viewport = libraryList.mapFromItem(
                                     null, point.scenePosition.x,
                                     point.scenePosition.y)

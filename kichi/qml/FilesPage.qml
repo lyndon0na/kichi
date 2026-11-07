@@ -191,7 +191,7 @@ Item {
                ? 0 : page.displayEntries.length
     }
 
-    // 页面尺寸常量（滚动条悬浮宽度 10px，见 KScrollBar / docs/pitfalls.md 第 13 条）
+    // 页面尺寸常量（滚动条悬浮宽度 10px，见 KScrollBar）
     UiMetrics {
         id: metrics
     }
@@ -469,7 +469,7 @@ Item {
 
                         // 空白处右键：行自己用 MouseArea 处理右键，这里只接住没命中行的位置。
                         // TapHandler 的 position 以内容区为原点、纵向随 contentY 走
-                        // （docs/pitfalls.md 第 44 条），先换算回视口坐标。
+                        // 先换算回视口坐标。
                         TapHandler {
                             acceptedButtons: Qt.RightButton
                             onTapped: function (point) {

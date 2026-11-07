@@ -29,7 +29,7 @@ Rectangle {
     implicitWidth: label.implicitWidth + 14
     implicitHeight: 20
     // 小圆角而不是满圆：KDE 控件都是 5px 级别的圆角，
-    // 药丸状在这里会显得比周围控件「软」一档（docs/ui.md「圆角与间距」）
+    // 药丸状在这里会显得比周围控件「软」一档
     radius: theme.radiusSmall
     color: theme.softTint(toneColor, badge.tone === "neutral" ? 0.10 : 0.14)
 

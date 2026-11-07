@@ -41,7 +41,7 @@ const TOTAL_BUDGET_FACTOR: u32 = 20;
 /// 重试预算：连续失败 + 整次下载总额两条线。
 ///
 /// - 每推进一次数据（真拿到新字节）连续计数清零，几小时的下载不会因为零星抖动
-///   把额度耗光（2026-10-28 修，见 `docs/known-issues.md` §4.1）；
+///   把额度耗光（2026-10-28 修）；
 /// - 总额度防「每次给一点就断」的无限重试循环。
 pub(super) struct RetryBudget {
     consecutive: u32,

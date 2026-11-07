@@ -4,10 +4,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 底部居中的播放加载 / 错误提示条（见 docs/adr/0008、0020）。
+// 底部居中的播放加载 / 错误提示条。
 //
-// 只占自身尺寸，不铺满：`anchors.fill` 的透明层会吃掉文件列表的点击
-// （docs/pitfalls.md 第 6 / 18 条）。`visible` 必须是真 false，不只是透明。
+// 只占自身尺寸，不铺满：`anchors.fill` 的透明层会吃掉文件列表的点击，
+// `visible` 必须是真 false，不只是透明。
 //
 // 三个状态（优先级：错误 > 加载 > 回退提示）：
 // - 加载：仅当加载中的条目不在当前列表里（切目录 / 退出搜索 / 换标签页 /

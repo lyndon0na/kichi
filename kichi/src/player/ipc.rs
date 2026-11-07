@@ -10,7 +10,7 @@
 //! - 就绪后必须写 `set_property idle no`，否则 `--idle=yes` 会让进程在播完后
 //!   一直留着不退出。
 //!
-//! 直链只在 IPC 里出现：不进 argv、不落盘（`docs/adr/0008-mpv-idle-ipc.md`）。
+//! 直链只在 IPC 里出现：不进 argv、不落盘。
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

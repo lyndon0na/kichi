@@ -4,7 +4,7 @@
 //! 「怎么把字节拉下来」。两条纪律：
 //! - 下载必须用**单独的** reqwest client，`ClientBuilder::timeout(idle)` 的语义是
 //!   「等响应头 ≤ idle + 每次 read ≤ idle」，没有整文件总时限；**不能**给 request
-//!   加 `.timeout()`，那会变成总时限（见 `docs/pitfalls.md` 第 14 条）。
+//!   加 `.timeout()`，那会变成总时限。
 //! - 直链是带签名的临时 URL，不缓存、不打印（错误里最多带状态码）。
 //!
 //! Range 语义（2026-10-27 新增）：
@@ -246,7 +246,7 @@ impl DriveClient {
     ///
     /// **必须**用 client 级 `.timeout()`：blocking 版的语义是「等响应头 ≤ D +
     /// 每次 `read` ≤ D」，没有整体时长上限。request 级 `.timeout()` 会被写进
-    /// async 层变成总时限，大文件会被拦腰砍断（见 `docs/pitfalls.md`）。
+    /// async 层变成总时限，大文件会被拦腰砍断。
     ///
     /// 缓存键是 `idle`：正常路径永远是 [`download_idle`]，只有测试注入短超时
     /// （以及同进程内改 `KICHI_DOWNLOAD_IDLE_TIMEOUT`）才会换一把。
@@ -402,7 +402,7 @@ fn is_timeout(err: &io::Error) -> bool {
 ///
 /// 不用 `reqwest::Error` 的 `Display`：带 url 的错误会在末尾追加
 /// `for url (...)`，而那正是带签名的下载直链，这段文本还会落进
-/// `transfers.json`（`docs/pitfalls.md` 第 29 条）。
+/// `transfers.json`。
 fn network_reason(err: &reqwest::Error) -> String {
     if err.is_connect() {
         "无法连接下载服务器".to_owned()

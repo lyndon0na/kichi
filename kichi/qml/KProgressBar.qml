@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 
-// 全应用唯一的进度条样式（见 docs/pitfalls.md 第 15 条）。
+// 全应用唯一的进度条样式。
 //
 // 为什么不用裸 ProgressBar：KDE 的 qqc2-breeze-style 里，ProgressBar 的
 // contentItem 用 Repeater 按「当前宽度」铺虚线，delegate 用 anchors.top /

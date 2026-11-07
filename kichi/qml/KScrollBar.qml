@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// 全应用唯一的滚动条样式（见 docs/pitfalls.md 第 13 条）。
+// 全应用唯一的滚动条样式。
 //
 // 普通页面只写 `ScrollBar.vertical: KScrollBar {}`，不传参数。
 // ScrollView 内替换任一方向的默认滚动条时，必须像 NewTaskDialog 一样显式挂 parent

@@ -1,7 +1,7 @@
 //! 下载线程的执行体：建目录、逐条下载、进度节流、结果回投。
 //!
-//! 目录遍历在 [`super::queue_collect`]（空文件夹 / 过深 / 收集期失败的边界
-//! 见 `docs/adr/0012-folder-download-boundaries.md`）；调度与占用表在
+//! 目录遍历在 [`super::queue_collect`]（空文件夹 / 过深 / 收集期失败的边界）；
+//! 调度与占用表在
 //! [`super::queue`]；本文件只在后台跑，不碰 Qt 对象，
 //! 所有界面更新都经 `actions::enqueue_ui` 回主线程。
 //!
@@ -36,7 +36,7 @@ pub(crate) fn download_parallel() -> usize {
 
 /// 相对下载根目录的目录路径 → 本地绝对路径。
 ///
-/// 建目录与文件落盘必须共用这一套 `safe_file_name` 拼接（`docs/pitfalls.md`），
+/// 建目录与文件落盘必须共用这一套 `safe_file_name` 拼接，
 /// 否则目录建在一个名字下、文件落到另一个名字下。
 pub(crate) fn local_dir(root: &Path, parts: &[String]) -> PathBuf {
     let mut path = root.to_path_buf();

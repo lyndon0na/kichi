@@ -267,7 +267,7 @@ ApplicationWindow {
                             id: pageTitleShift
                             y: 0
                         }
-                        // 一级标题：18px Bold，和正文（13）拉开层级（docs/ui.md）
+                        // 一级标题：18px Bold，和正文（13）拉开层级
                         font.pixelSize: theme.fontTitle
                         font.weight: Font.Bold
                         color: theme.textPrimary

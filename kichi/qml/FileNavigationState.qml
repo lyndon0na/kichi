@@ -119,8 +119,8 @@ QtObject {
         scrollRestoreAttempts = 0
         scrollRetryTimer.stop()
         if (target === 0) {
-            // Qt 6.11 在列表高度变化后可能异步恢复旧 contentY（docs/pitfalls.md
-            // 第 57 条），下一帧再压一次，确保进入子目录真的停在第一行。
+            // Qt 6.11 在列表高度变化后可能异步恢复旧 contentY，下一帧再压一次，
+            // 确保进入子目录真的停在第一行。
             nav.fileList.positionViewAtBeginning()
             nav.fileList.contentY = 0
             nav.fileList.forceLayout()

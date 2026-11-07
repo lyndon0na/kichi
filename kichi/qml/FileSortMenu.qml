@@ -7,21 +7,19 @@ import QtQuick.Controls
 // 不重新拉网。列表表头点列走同一个入口（FileListHeader），两处结果必须一致。
 //
 // 打勾状态在每次打开时从后端**重读**，不写绑定：MenuItem 的 checkable 没有互斥
-// 组，点一下就把 checked 换成命令值并永久断掉绑定（docs/pitfalls.md 第 11 条
-// 同一类坑），之后从表头改排序这里就同步不回来了。
+// 组，点一下就把 checked 换成命令值并永久断掉绑定（同一类坑），之后从表头改排序这里就同步不回来了。
 Menu {
     id: menu
 
     property var backend: null
 
     title: qsTr("排序")
-    // 宽度只写在菜单上（docs/pitfalls.md 第 9 条）
+    // 宽度只写在菜单上
     width: 150
     enabled: menu.backend !== null
 
     // 换排序列时用该列的常用方向：名称从 A 到 Z，大小和时间把大的 / 新的放前面。
-    // 与 FileListHeader.defaultAscending 是同一条规则，两处要一起改
-    // （docs/ui.md「文件右键菜单」）。
+    // 与 FileListHeader.defaultAscending 是同一条规则，两处要一起改。
     function defaultAscending(field) {
         return field === "name"
     }

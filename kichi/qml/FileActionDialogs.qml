@@ -9,7 +9,7 @@ import QtQuick.Layouts
 // 从 FilesPageMenu.qml 拆出来（那里已超行数软上限）：
 // 菜单只管「点哪一项」，这里管「结果怎么显示」。
 //
-// 统一规则（docs/pitfalls.md 第 28 条）：不用 standardButtons。
+// 统一规则：不用 standardButtons。
 // 写入被 Rust 接受后立刻关窗；数据已经乐观更新，网络失败由底栏提示并回滚。
 Item {
     id: root
@@ -40,7 +40,7 @@ Item {
 
         title: qsTr("重命名")
         modal: true
-        // 位置一律按窗口算（docs/pitfalls.md 第 10 条）：挂在本组件自己的 Item 上
+        // 位置一律按窗口算：挂在本组件自己的 Item 上
         // 会跟着宿主大小走，宿主是 0×0 时弹窗就跑到窗口左上角（2026-10-28 实测）。
         parent: Overlay.overlay
         anchors.centerIn: Overlay.overlay

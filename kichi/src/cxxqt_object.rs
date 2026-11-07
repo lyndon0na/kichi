@@ -1450,7 +1450,7 @@ pub struct KichiRust {
     pub(crate) settings_path: QString,
     /// 令牌存储后端（系统钥匙串 / 降级文件），设置页只读展示
     pub(crate) storage_backend: QString,
-    /// 传输任务记录（跨重启保留，见 `docs/adr/0014`；QML 直接当 model 用）
+    /// 传输任务记录（跨重启保留；QML 直接当 model 用）
     pub(crate) transfers: QVariantList,
     /// 记录结构版本（QML 据此决定要不要重读 `transfers`）
     pub(crate) transfer_revision: i32,

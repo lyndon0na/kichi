@@ -1657,7 +1657,7 @@ TestCase {
 
     // 卡片之间的缝隙也要能弹出空白菜单（排序入口在这里）。
     // GridView.indexAt 按 cell 命中，缝隙会被算进隔壁那张卡，
-    // 所以容器另有 hitItemIndex 按卡片本体矩形判一次（docs/pitfalls.md 第 44 条）。
+    // 所以容器另有 hitItemIndex 按卡片本体矩形判一次。
     function test_right_click_in_grid_seam_opens_blank_menu() {
         fakeBackend.files = manyEntries(30)
         fakeBackend.contentView = "grid"

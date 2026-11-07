@@ -6,7 +6,7 @@ import QtQuick.Layouts
 
 // 移动 / 复制的目标文件夹选择器。
 //
-// 纯 QML 自绘（docs/pitfalls.md：不能构造 QWidget / 不能用原生目录选择框）。
+// 纯 QML 自绘：不能构造 QWidget / 不能用原生目录选择框。
 // 只列文件夹；源文件夹在列表里置灰、不可进入——这样结构上就到不了
 // 「把文件夹移进它自己的子目录」。目标等于源目录时确定键也置灰。
 KDialog {
@@ -64,7 +64,7 @@ KDialog {
 
     title: mode === "move" ? qsTr("移动到…") : qsTr("复制到…")
     modal: true
-    // 位置一律按窗口算（docs/pitfalls.md 第 10 条），不依赖宿主页面的大小
+    // 位置一律按窗口算，不依赖宿主页面的大小
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
     width: formWidth + leftPadding + rightPadding

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// 页面级尺寸常量（见 docs/pitfalls.md 第 13 条）。
+// 页面级尺寸常量。
 //
 // 可滚视图铺到窗口右缘，滚动条悬浮在页面右侧留白里，不占布局：
 // 条宽不写死在这里，直接量 KScrollBar 的宽度，改样式只改那一个文件。

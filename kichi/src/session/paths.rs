@@ -65,7 +65,7 @@ pub fn embed_input_conf_path() -> PathBuf {
 
 /// 账号的本地索引库位置。可用 `KICHI_INDEX_FILE` 覆盖（测试 / 多实例）。
 ///
-/// 文件名只用 `user_id`，**不用邮箱**：`docs/` 与日志都不该出现账号信息，
+/// 文件名只用 `user_id`，**不用邮箱**：日志与导出内容都不该出现账号信息，
 /// 文件名同样不应该。索引是可重建缓存，删掉不会丢数据。
 pub fn index_path(user_id: &str) -> PathBuf {
     if let Some(path) = std::env::var_os("KICHI_INDEX_FILE") {

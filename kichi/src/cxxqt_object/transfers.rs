@@ -1,4 +1,4 @@
-//! 传输任务记录表：下载流水（跨重启保留，见 `docs/adr/0014-download-history-on-disk.md`）。
+//! 传输任务记录表：下载流水（跨重启保留）。
 //!
 //! 只有界面侧需要这些记录（排队顺序、失败原因、落盘路径），因此不进
 //! `kichi-core`；落盘与读回规则拆在 [`super::transfers_history`]。
@@ -41,7 +41,7 @@ pub(crate) enum TransferState {
     Failed,
     Cancelled,
     /// 上次退出时还没跑完（读回历史时标上）；不能取消、也不算结束，
-    /// 但可以「重试」——重启后不自动续跑（`docs/adr/0011-resumable-downloads.md`）。
+    /// 但可以「重试」——重启后不自动续跑。
     Interrupted,
 }
 

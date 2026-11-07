@@ -17,18 +17,18 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
-# —— 规则：滚动条只有一种做法（docs/pitfalls.md 第 13 条）——
+# —— 规则：滚动条只有一种做法 ——
 # 裸 ScrollBar 自带默认宽度、浮动在内容之上，各页外观会各不相同。
 # 页面里一律 `ScrollBar.vertical: KScrollBar {}`；下面的静态检查当场拦住新写法。
 raw="$(grep -rnE '(^|[^A-Za-z])ScrollBar[[:space:]]*\{|ScrollBar\.vertical:[[:space:]]*ScrollBar' \
         kichi/qml --include='*.qml' | grep -v '/KScrollBar.qml:' || true)"
 if [[ -n "$raw" ]]; then
-    echo "qml-lint: 发现裸 ScrollBar，应改用 KScrollBar（见 docs/pitfalls.md 第 13 条）：" >&2
+    echo "qml-lint: 发现裸 ScrollBar，应改用 KScrollBar：" >&2
     printf '%s\n' "$raw" >&2
     exit 1
 fi
 
-# —— 规则：滚动视图不能越过边界回弹（docs/pitfalls.md 第 13 条）——
+# —— 规则：滚动视图不能越过边界回弹 ——
 # Qt Quick 默认是 DragAndOvershootBounds，会像移动端一样在首尾橡皮筋回弹。
 # 生产 QML 里出现可滚视图的文件都必须显式声明 StopAtBounds。
 scroll_files="$(grep -rlE '(^|[^A-Za-z])(ListView|GridView|Flickable)[[:space:]]*\{' \
@@ -42,18 +42,17 @@ while IFS= read -r file; do
 done <<<"$scroll_files"
 if [[ -n "$missing_bounds" ]]; then
     echo "qml-lint: 可滚视图缺少 boundsBehavior: Flickable.StopAtBounds" >&2
-    echo "（见 docs/pitfalls.md 第 13 条）：" >&2
     printf '%s' "$missing_bounds" >&2
     exit 1
 fi
 
-# —— 规则：进度条只有一种做法（docs/pitfalls.md 第 15 条）——
-# breeze 风格的 ProgressBar 在宽度变化时会逐帧刷 TypeError（见 pitfalls 第 15 条），
+# —— 规则：进度条只有一种做法 ——
+# breeze 风格的 ProgressBar 在宽度变化时会逐帧刷 TypeError，
 # 页面里一律 KProgressBar；下面这段静态检查当场拦住裸写法。
 rawbar="$(grep -rnE '(^|[^A-Za-z])ProgressBar[[:space:]]*\{' \
         kichi/qml --include='*.qml' | grep -v '/KProgressBar.qml:' || true)"
 if [[ -n "$rawbar" ]]; then
-    echo "qml-lint: 发现裸 ProgressBar，应改用 KProgressBar（见 docs/pitfalls.md 第 15 条）：" >&2
+    echo "qml-lint: 发现裸 ProgressBar，应改用 KProgressBar：" >&2
     printf '%s\n' "$rawbar" >&2
     exit 1
 fi

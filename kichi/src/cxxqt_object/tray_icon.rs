@@ -6,8 +6,8 @@
 //! （2026-11-03 用户看过深浅面板对比图后选定这个效果）。
 //!
 //! 为什么用 `resvg` 而不是 Qt：托盘图标经 D-Bus 传像素（SNI 的 `IconPixmap`），
-//! 渲染发生在 ksni 的后台线程里；引 Qt 的 SVG 模块会把 QtWidgets 路径拽进来
-//! （见 `docs/pitfalls.md` 第 1 条），还要多装一个系统开发包。
+//! 渲染发生在 ksni 的后台线程里；引 Qt 的 SVG 模块会把 QtWidgets 路径拽进来，
+//! 还要多装一个系统开发包。
 //! `resvg` 是纯 Rust，SVG 编译期内嵌，换机器、换图标主题、清空
 //! `~/.local/share/icons` 都不受影响。
 

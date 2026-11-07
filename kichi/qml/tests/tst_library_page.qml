@@ -1015,7 +1015,7 @@ TestCase {
     }
 
     /// 右键空白处时菜单必须贴着光标。回归的是 TapHandler.point.position
-    /// 用内容坐标直接 mapToItem 的老问题（docs/pitfalls.md 第 44 条）：
+    /// 用内容坐标直接 mapToItem 的老问题：
     /// 滚动越深偏移越大，最后被弹窗定位器夹到窗口底部（状态条附近）。
     function test_playback_history_list_blank_menu_follows_cursor_after_scroll() {
         backend.libraryKind = "playback-history"

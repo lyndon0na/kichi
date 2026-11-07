@@ -73,7 +73,7 @@ Item {
             page.refresh()
     }
 
-    // 页面尺寸常量：滚动条悬浮宽度（见 KScrollBar / docs/pitfalls.md 第 13 条）
+    // 页面尺寸常量：滚动条悬浮宽度（见 KScrollBar）
     UiMetrics {
         id: metrics
     }

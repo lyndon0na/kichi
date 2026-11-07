@@ -1,13 +1,12 @@
 //! 下载落盘的文件名策略：同名不覆盖、`.kichi-part` 原子占位。
 //!
 //! 从 `download.rs` 拆出来守行数上限：那边管「取链接 → 流式写盘」，
-//! 这里管「这次写到哪个文件」。两条纪律（见
-//! `docs/adr/0002-download-never-overwrite.md`）：
+//! 这里管「这次写到哪个文件」。两条纪律：
 //! - 同名冲突自动加序号 `name (1).ext`，**绝不覆盖**已有文件；
 //! - 先写 `<名>.kichi-part`，完成才 rename，断电不留半个文件冒充成品。
 //!
 //! 名字长度也在这里收敛：单个名字按字节截到 [`MAX_NAME_BYTES`]（保留扩展名，
-//! 加 8 位短哈希区分），见 `docs/adr/0007-long-filename-truncation.md`。
+//! 加 8 位短哈希区分）。
 
 use std::fs::File;
 use std::io;
@@ -60,7 +59,7 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
 /// 这个名字（期间别的线程再选会看到 part 文件已存在）。
 ///
 /// 已存在的**正式文件**也要跳过：rename 会覆盖目标，只有确认没有同名成品
-/// 才能选这个名字（`docs/adr/0002-download-never-overwrite.md`）。
+/// 才能选这个名字。
 pub(super) fn claim_part(dir: &Path, name: &str) -> Result<(File, PathBuf, PathBuf), Failure> {
     let (stem, ext) = split_ext(name);
     for index in 0..10_000 {

@@ -225,7 +225,7 @@ TestCase {
         // 回归：KDialog 里曾用一个普通子项 `KTheme { id: theme }` 取色。Dialog 的
         // 默认 contentItem 只在「恰好一个子项」时认内容，多一个不可见子项正文就
         // 塌成 0 高——外壳照常居中，输入框被挤没了，页脚按钮压在它上面
-        // （2026-10-29 用户截图：所有弹窗都这样）。见 docs/pitfalls.md 第 36 条。
+        // （2026-10-29 用户截图：所有弹窗都这样）。
         var dialog = startRename()
         var field = findChild(dialog, "renameNameField")
         verify(field !== null, "重命名输入框存在")
