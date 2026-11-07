@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: fedora:45
+    steps:
+      - name: Install system dependencies
+        run: >
+          dnf install -y
+          git curl ca-certificates tar gzip
+          qt6-qtbase-devel qt6-qtdeclarative-devel
+          mpv-devel cmake ninja-build gcc-c++ pkgconf-pkg-config
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: QML lint and tests
+        run: ./scripts/qml-lint.sh

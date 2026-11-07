@@ -5,6 +5,12 @@
 <h1 align="center">kichi</h1>
 
 <p align="center">
+  <a href="https://github.com/lyndon0na/kichi/actions/workflows/ci.yml">
+    <img src="https://github.com/lyndon0na/kichi/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+</p>
+
+<p align="center">
   PikPak 的非官方 Linux 桌面客户端，面向 KDE Plasma / Wayland。
 </p>
 
