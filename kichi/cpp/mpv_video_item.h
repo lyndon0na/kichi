@@ -21,6 +21,8 @@ class MpvVideoItem : public QQuickItem
     Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
     Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY hasFrameChanged)
+    // 当前显示目标（调试用）：primaries / transfer / peak。
+    Q_PROPERTY(QString colorInfo READ colorInfo NOTIFY colorInfoChanged)
 
 public:
     explicit MpvVideoItem(QQuickItem *parent = nullptr);
@@ -30,11 +32,13 @@ public:
     void setActive(bool active);
     QString error() const { return m_error; }
     bool hasFrame() const { return m_hasFrame; }
+    QString colorInfo() const { return m_colorInfo; }
 
 signals:
     void activeChanged();
     void errorChanged();
     void hasFrameChanged();
+    void colorInfoChanged();
 
 protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
@@ -49,6 +53,7 @@ private:
     QTimer m_poll;
     std::atomic<bool> m_active{false};
     QString m_error;
+    QString m_colorInfo;
     std::unique_ptr<WaylandVideoSurface> m_native;
     bool m_hasFrame = false;
 };

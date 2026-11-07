@@ -137,6 +137,24 @@ const wl_buffer_listener bufferListener = {
     bufferRelease,
 };
 
+// 播放窗口换到另一个 output / 用户改 HDR 设置时 KWin 会更新 preferred。
+// 回调里只打标记，真正查询放到下一次 poll，避免在 dispatch 里嵌套 roundtrip。
+void feedbackPreferredChanged(void *data, wp_color_management_surface_feedback_v1 *, uint32_t)
+{
+    static_cast<WaylandVideoSurface *>(data)->requestPreferredUpdate();
+}
+
+void feedbackPreferredChanged2(void *data, wp_color_management_surface_feedback_v1 *, uint32_t,
+                               uint32_t)
+{
+    static_cast<WaylandVideoSurface *>(data)->requestPreferredUpdate();
+}
+
+const wp_color_management_surface_feedback_v1_listener feedbackListener = {
+    feedbackPreferredChanged,
+    feedbackPreferredChanged2,
+};
+
 void cmSupportedIntent(void *, wp_color_manager_v1 *, uint32_t)
 {
 }
@@ -168,15 +186,18 @@ const wp_color_manager_v1_listener colorManagerListener = {
 };
 
 
-void infoDone(void *data, wp_image_description_info_v1 *)
+void infoDone(void *data, wp_image_description_info_v1 *info)
 {
+    // done 是最后一条事件；info 对象本身要显式销毁（description 销毁不会带走它）。
+    if (info)
+        wp_image_description_info_v1_destroy(info);
     auto *state = static_cast<InfoState *>(data);
     qInfo() << "[kichi] 内嵌 Wayland 色彩：preferred primaries=" << state->primaries
             << "transfer=" << state->transfer << "lum=" << state->minLuminance << "/"
             << state->maxLuminance << "/" << state->referenceLuminance;
     if (state->hasLuminance) {
-        // 主窗口的 preferred 才是 SDR target；child preferred 只在没有主窗口
-        // target 时兜底（它经常是默认 sRGB/80，不能覆盖主窗口的 BT2020）。
+        // 主窗口 / 播放窗口的 preferred 才是 SDR target；child preferred 只在
+        // 没有主窗口 target 时兜底（它经常是默认 sRGB/80，不能覆盖 HDR）。
         bool needFallback;
         {
             std::lock_guard<std::mutex> lock(gTargetMutex);
@@ -276,7 +297,8 @@ const wp_image_description_v1_listener descListener = {
     descReady2,
 };
 
-// 启动时用临时 surface 查一次 preferred；playback 的 mpv target 需要它。
+// 启动时先查主窗口 surface 的 preferred，给 mpv 一个初值；播放窗口映射后
+// 再以播放窗口 target 为准（见 queryPlaybackPreferred）。
 void targetDescFailed(void *data, wp_image_description_v1 *description, uint32_t, const char *)
 {
     auto *query = static_cast<TargetQuery *>(data);
@@ -300,8 +322,10 @@ const wp_image_description_v1_listener targetDescListener = {
     targetDescReady2,
 };
 
-void targetInfoDone(void *, wp_image_description_info_v1 *)
+void targetInfoDone(void *, wp_image_description_info_v1 *info)
 {
+    if (info)
+        wp_image_description_info_v1_destroy(info);
 }
 
 void targetInfoIcc(void *, wp_image_description_info_v1 *, int32_t fd, uint32_t)
@@ -516,22 +540,71 @@ void WaylandVideoSurface::queryPreferredTarget()
     }
 
     if (queried) {
-        rememberPreferred(query.primaries, query.transfer, query.minLuminance,
-                          query.maxLuminance, query.referenceLuminance);
+        if (rememberPreferred(query.primaries, query.transfer, query.minLuminance,
+                              query.maxLuminance, query.referenceLuminance)) {
+            publishTarget();
+        }
         qInfo() << "[kichi] 内嵌 Wayland 首选色彩：primaries=" << query.primaries
                 << "transfer=" << query.transfer << "lum=" << query.minLuminance << "/"
                 << query.maxLuminance << "/" << query.referenceLuminance;
     } else {
         // KWin 默认 SDR 混合空间；主窗口还不可查时用它兜底。
-        std::lock_guard<std::mutex> lock(gTargetMutex);
-        gPreferredTarget.primaries = KICHI_PRIMARIES_BT709;
-        gPreferredTarget.transfer = KICHI_TRANSFER_SRGB;
-        gPreferredTarget.min_luminance_10000 = 2000;
-        gPreferredTarget.max_luminance = 80;
-        gPreferredTarget.reference_luminance = 80;
-        gPreferredTargetValid = true;
+        KichiColorTarget fallback{};
+        fallback.primaries = KICHI_PRIMARIES_BT709;
+        fallback.transfer = KICHI_TRANSFER_SRGB;
+        fallback.min_luminance_10000 = 2000;
+        fallback.max_luminance = 80;
+        fallback.reference_luminance = 80;
+        {
+            std::lock_guard<std::mutex> lock(gTargetMutex);
+            gPreferredTarget = fallback;
+            gPreferredTargetValid = true;
+        }
+        applyColorInfo(fallback);
         qInfo() << "[kichi] 内嵌 Wayland 首选色彩：回退 sRGB/BT709/80";
     }
+}
+
+// 播放窗口真正映射后，它所在的 output 才是视频 surface 的混合空间。
+// 主窗口 target 只用于启动时 mpv 的初值；这里查到就以播放窗口为准。
+void WaylandVideoSurface::queryPlaybackPreferred()
+{
+    if (!m_colorManager || !m_parentFeedback || !m_window)
+        return;
+    if (!m_window->isVisible() || !m_window->isExposed())
+        return;
+
+    TargetQuery query;
+    auto *description = wp_color_management_surface_feedback_v1_get_preferred(m_parentFeedback);
+    if (!description)
+        return;
+    wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(description), m_queue);
+    wp_image_description_v1_add_listener(description, &targetDescListener, &query);
+    (void)wl_display_roundtrip_queue(m_display, m_queue);
+    if (query.ready && !query.failed) {
+        auto *info = wp_image_description_v1_get_information(description);
+        if (info) {
+            wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(info), m_queue);
+            wp_image_description_info_v1_add_listener(info, &targetInfoListener, &query);
+            (void)wl_display_roundtrip_queue(m_display, m_queue);
+        }
+    }
+    wp_image_description_v1_destroy(description);
+
+    if (!query.ready || query.failed || !query.hasLuminance)
+        return;
+    if (!rememberPreferred(query.primaries, query.transfer, query.minLuminance,
+                           query.maxLuminance, query.referenceLuminance))
+        return;
+
+    // 先让视频 surface 用新描述，再把同一个 target 投给 mpv 线程。
+    applyColorDescription();
+    publishTarget();
+    qInfo() << "[kichi] 播放窗口首选色彩更新（"
+            << (m_screen ? m_screen->name() : QStringLiteral("未知屏幕"))
+            << "）：primaries=" << query.primaries << "transfer=" << query.transfer
+            << "lum=" << query.minLuminance << "/" << query.maxLuminance << "/"
+            << query.referenceLuminance;
 }
 
 void WaylandVideoSurface::noteColorFeature(uint32_t feature)
@@ -618,10 +691,20 @@ bool WaylandVideoSurface::ensureChild()
         m_colorSurface = wp_color_manager_v1_get_surface(m_colorManager, m_child);
         if (m_colorSurface)
             wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_colorSurface), m_queue);
-        m_feedback = wp_color_manager_v1_get_surface_feedback(m_colorManager, m_child);
-        if (m_feedback)
-            wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_feedback), m_queue);
+        m_childFeedback = wp_color_manager_v1_get_surface_feedback(m_colorManager, m_child);
+        if (m_childFeedback)
+            wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_childFeedback), m_queue);
+        // 播放窗口自己的 feedback 才反映它所在 output；child feedback 在映射前
+        // 常是默认 sRGB/80（见 docs/pitfalls.md 第 61 条）。
+        m_parentFeedback = wp_color_manager_v1_get_surface_feedback(m_colorManager, m_parent);
+        if (m_parentFeedback) {
+            wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(m_parentFeedback), m_queue);
+            wp_color_management_surface_feedback_v1_add_listener(m_parentFeedback,
+                                                                 &feedbackListener, this);
+        }
         applyColorDescription();
+        // 窗口这时已映射；下一拍 poll 查播放窗口的实际 preferred。
+        m_preferredDirty = true;
     }
 
     // 让 Qt 再提交一次父 surface，把 opaque_region=null 生效。
@@ -643,9 +726,13 @@ void WaylandVideoSurface::teardownChild()
         wp_color_management_surface_v1_destroy(m_colorSurface);
         m_colorSurface = nullptr;
     }
-    if (m_feedback) {
-        wp_color_management_surface_feedback_v1_destroy(m_feedback);
-        m_feedback = nullptr;
+    if (m_childFeedback) {
+        wp_color_management_surface_feedback_v1_destroy(m_childFeedback);
+        m_childFeedback = nullptr;
+    }
+    if (m_parentFeedback) {
+        wp_color_management_surface_feedback_v1_destroy(m_parentFeedback);
+        m_parentFeedback = nullptr;
     }
     if (m_viewport) {
         wp_viewport_destroy(m_viewport);
@@ -661,6 +748,8 @@ void WaylandVideoSurface::teardownChild()
     }
     m_parent = nullptr;
     m_parentId = 0;
+    m_screen = nullptr;
+    m_preferredDirty = false;
     m_hasFrame = false;
     notifyFrame();
 }
@@ -703,8 +792,22 @@ void WaylandVideoSurface::poll()
     if (!m_active || !m_window || !m_window->isVisible())
         return;
 
+    // 换屏不一定伴随 preferred_changed（有些合成器只在 surface 重新映射时更新），
+    // 这里按 QWindow 当前 screen 兜底触发一次查询。
+    QScreen *screen = m_window->screen();
+    if (screen != m_screen) {
+        m_screen = screen;
+        m_preferredDirty = true;
+    }
+
     if (!ensureChild())
         return;
+    // 窗口还没 exposed 时先别清标记：第一次 poll 可能早于 Qt 提交首帧，
+    // 这时查 preferred 会拿到默认 sRGB/80，等映射完成再查。
+    if (m_preferredDirty && m_window->isExposed()) {
+        m_preferredDirty = false;
+        queryPlaybackPreferred();
+    }
     pollFrames();
 }
 
@@ -869,7 +972,7 @@ void WaylandVideoSurface::applyColorDescription()
     }
 
     // 没有可用 target / 合成器不支持 parametric：回退到 child preferred。
-    if (!m_feedback) {
+    if (!m_childFeedback) {
         wp_color_management_surface_v1_unset_image_description(m_colorSurface);
         if (m_child) {
             wl_surface_commit(m_child);
@@ -877,7 +980,7 @@ void WaylandVideoSurface::applyColorDescription()
         }
         return;
     }
-    auto *description = wp_color_management_surface_feedback_v1_get_preferred(m_feedback);
+    auto *description = wp_color_management_surface_feedback_v1_get_preferred(m_childFeedback);
     if (!description) {
         wp_color_management_surface_v1_unset_image_description(m_colorSurface);
         if (m_child) {
@@ -953,18 +1056,88 @@ void WaylandVideoSurface::applyImageDescription(wp_image_description_v1 *descrip
     }
 }
 
-void WaylandVideoSurface::rememberPreferred(uint32_t primaries, uint32_t transfer,
+bool WaylandVideoSurface::rememberPreferred(uint32_t primaries, uint32_t transfer,
                                             uint32_t minLuminance, uint32_t maxLuminance,
                                             uint32_t referenceLuminance)
 {
-    std::lock_guard<std::mutex> lock(gTargetMutex);
-    gPreferredTarget.primaries = mapPrimaries(primaries);
-    gPreferredTarget.transfer = mapTransfer(transfer);
-    gPreferredTarget.min_luminance_10000 = minLuminance;
-    gPreferredTarget.max_luminance = maxLuminance;
-    gPreferredTarget.reference_luminance = referenceLuminance;
-    gPreferredTargetValid = gPreferredTarget.primaries != KICHI_PRIMARIES_UNKNOWN
-        && gPreferredTarget.transfer != KICHI_TRANSFER_UNKNOWN;
+    KichiColorTarget next{};
+    next.primaries = mapPrimaries(primaries);
+    next.transfer = mapTransfer(transfer);
+    next.min_luminance_10000 = minLuminance;
+    next.max_luminance = maxLuminance;
+    next.reference_luminance = referenceLuminance;
+    if (next.primaries == KICHI_PRIMARIES_UNKNOWN || next.transfer == KICHI_TRANSFER_UNKNOWN
+        || next.max_luminance == 0)
+        return false;
+
+    {
+        std::lock_guard<std::mutex> lock(gTargetMutex);
+        if (gPreferredTargetValid && gPreferredTarget.primaries == next.primaries
+            && gPreferredTarget.transfer == next.transfer
+            && gPreferredTarget.min_luminance_10000 == next.min_luminance_10000
+            && gPreferredTarget.max_luminance == next.max_luminance
+            && gPreferredTarget.reference_luminance == next.reference_luminance)
+            return false;
+        gPreferredTarget = next;
+        gPreferredTargetValid = true;
+    }
+    applyColorInfo(next);
+    return true;
+}
+
+// C++ → Rust：只投递，不跨线程直接调 mpv。
+void WaylandVideoSurface::publishTarget()
+{
+    KichiColorTarget target{};
+    {
+        std::lock_guard<std::mutex> lock(gTargetMutex);
+        if (!gPreferredTargetValid)
+            return;
+        target = gPreferredTarget;
+    }
+    kichi_embed_set_color_target(&target);
+}
+
+void WaylandVideoSurface::applyColorInfo(const KichiColorTarget &target)
+{
+    QString primaries;
+    switch (target.primaries) {
+    case KICHI_PRIMARIES_BT2020:
+        primaries = QStringLiteral("BT.2020");
+        break;
+    case KICHI_PRIMARIES_DISPLAY_P3:
+        primaries = QStringLiteral("Display P3");
+        break;
+    case KICHI_PRIMARIES_BT709:
+        primaries = QStringLiteral("BT.709");
+        break;
+    default:
+        primaries = QStringLiteral("未知色域");
+        break;
+    }
+
+    QString transfer;
+    switch (target.transfer) {
+    case KICHI_TRANSFER_PQ:
+        transfer = QStringLiteral("PQ");
+        break;
+    case KICHI_TRANSFER_HLG:
+        transfer = QStringLiteral("HLG");
+        break;
+    case KICHI_TRANSFER_SRGB:
+        transfer = QStringLiteral("sRGB");
+        break;
+    case KICHI_TRANSFER_GAMMA22:
+        transfer = QStringLiteral("gamma2.2");
+        break;
+    default:
+        transfer = QStringLiteral("未知传输");
+        break;
+    }
+
+    m_colorInfo = QStringLiteral("%1 / %2 / %3 nits")
+                      .arg(primaries, transfer)
+                      .arg(target.max_luminance);
 }
 
 // -------------------------------------------------------------------- misc

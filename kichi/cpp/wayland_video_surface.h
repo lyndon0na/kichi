@@ -10,8 +10,10 @@
 #include <unordered_map>
 
 class QQuickWindow;
+class QScreen;
 
 struct wl_buffer;
+struct KichiColorTarget;
 struct wl_compositor;
 struct wl_display;
 struct wl_event_queue;
@@ -33,7 +35,7 @@ struct KichiFrame;
 //
 // 视频像素不再经过 Qt 场景图：Qt 只负责窗口和控件，KWin 直接合成视频 surface。
 // 10bit / HDR / 硬解 dmabuf / tiled modifier 都能原样交给合成器；色彩跟随
-// 合成器给主窗口的 preferred image description。
+// 播放窗口所在 output 的 preferred image description。
 class WaylandVideoSurface
 {
 public:
@@ -45,6 +47,8 @@ public:
     bool available() const { return m_available; }
     QString error() const { return m_error; }
     bool hasFrame() const { return m_hasFrame; }
+    /// 当前视频 surface 使用的显示目标（调试展示用）。
+    QString colorInfo() const { return m_colorInfo; }
 
     void setActive(bool active);
     void setGeometry(const QSize &logicalSize, qreal devicePixelRatio);
@@ -54,16 +58,19 @@ public:
 
     // 供 C 语言 Wayland listener 调用（不是给业务层用的 API）。
     void applyImageDescription(wp_image_description_v1 *description);
-    void rememberPreferred(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
+    bool rememberPreferred(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
                            uint32_t maxLuminance, uint32_t referenceLuminance);
     void onBufferReleased(wl_buffer *buffer);
     void noteColorFeature(uint32_t feature);
     void noteTransfer(uint32_t transfer);
     void bindGlobal(wl_registry *registry, uint32_t name, const char *interface, uint32_t version);
+    void requestPreferredUpdate() { m_preferredDirty = true; }
 
 private:
     bool initWayland();
     void queryPreferredTarget();
+    void queryPlaybackPreferred();
+    void publishTarget();
     bool ensureChild();
     void teardownChild();
     void pollFrames();
@@ -72,6 +79,7 @@ private:
     bool createShmBuffer(KichiFrame *frame, int width, int height, wl_buffer **out);
     void dispatch();
     void applyColorDescription();
+    void applyColorInfo(const KichiColorTarget &target);
     bool applyParametric(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
                          uint32_t maxLuminance, uint32_t referenceLuminance);
     void notifyFrame();
@@ -100,8 +108,12 @@ private:
     wl_subsurface *m_subsurface = nullptr;
     wp_viewport *m_viewport = nullptr;
     wp_color_management_surface_v1 *m_colorSurface = nullptr;
-    wp_color_management_surface_feedback_v1 *m_feedback = nullptr;
+    wp_color_management_surface_feedback_v1 *m_childFeedback = nullptr;
+    wp_color_management_surface_feedback_v1 *m_parentFeedback = nullptr;
+    QScreen *m_screen = nullptr;
     quintptr m_parentId = 0;
+    bool m_preferredDirty = false;
+    QString m_colorInfo;
 
     bool m_cmParametric = false;
     bool m_cmSetPrimaries = false;

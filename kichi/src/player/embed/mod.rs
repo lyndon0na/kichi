@@ -85,6 +85,10 @@ pub(crate) enum Control {
     Keypress(String),
     /// 立即套用新的字幕样式（设置页 / 播放窗口调整时实时预览）。
     SubtitleStyle(SubtitleStyle),
+    /// 播放窗口换屏 / 合成器 preferred 变化：更新 mpv 的 target-*。
+    ///
+    /// C++ presenter 只通过 [`set_color_target`] 投递，不跨线程直接调 mpv。
+    SetColorTarget(color::ColorTarget),
     Quit,
 }
 
@@ -672,6 +676,15 @@ pub fn keypress(key: &str) {
 pub fn set_subtitle_style(style: SubtitleStyle) {
     if let Some(session) = current() {
         session.send(Control::SubtitleStyle(style));
+    }
+}
+
+/// 播放窗口 / 换屏后合成器 preferred 变了：投递给 mpv 线程。
+///
+/// 没有会话时直接丢弃：下一个会话创建 mpv 时会再读一次全局首选目标。
+pub(crate) fn set_color_target(target: color::ColorTarget) {
+    if let Some(session) = current() {
+        session.send(Control::SetColorTarget(target));
     }
 }
 

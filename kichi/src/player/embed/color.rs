@@ -34,10 +34,30 @@ pub(crate) fn preferred_target() -> Option<ColorTarget> {
     let mut target = ColorTarget::default();
     // SAFETY: `target` 是有效可写的 C 结构；C++ 侧只读缓存并拷贝。
     let ok = unsafe { kichi_wayland_preferred_target(&mut target) };
-    if !ok || target.primaries == 0 || target.transfer == 0 {
+    (ok && target.is_valid()).then_some(target)
+}
+
+impl ColorTarget {
+    /// 能否映射成 mpv 的 `target-*` 选项。
+    pub(crate) fn is_valid(&self) -> bool {
+        primaries_name(self.primaries).is_some()
+            && transfer_name(self.transfer).is_some()
+            && self.max_luminance > 0
+    }
+}
+
+/// 合成器首选描述变了才需要重设 mpv target / 视频 surface。
+///
+/// `previous` 是已经应用到 mpv 的目标；无效候选一律忽略，避免把已验证的
+/// HDR target 换成未知值。
+pub(crate) fn target_update(
+    previous: Option<ColorTarget>,
+    next: ColorTarget,
+) -> Option<ColorTarget> {
+    if !next.is_valid() || previous == Some(next) {
         None
     } else {
-        Some(target)
+        Some(next)
     }
 }
 
@@ -77,5 +97,64 @@ mod tests {
         assert_eq!(transfer_name(TRANSFER_PQ), Some("pq"));
         assert_eq!(transfer_name(TRANSFER_HLG), Some("hlg"));
         assert_eq!(transfer_name(0), None);
+    }
+
+    fn hdr() -> ColorTarget {
+        ColorTarget {
+            primaries: PRIMARIES_BT2020,
+            transfer: TRANSFER_GAMMA22,
+            min_luminance_10000: 0,
+            max_luminance: 760,
+            reference_luminance: 400,
+        }
+    }
+
+    fn sdr() -> ColorTarget {
+        ColorTarget {
+            primaries: PRIMARIES_BT709,
+            transfer: TRANSFER_SRGB,
+            min_luminance_10000: 2000,
+            max_luminance: 80,
+            reference_luminance: 80,
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_targets() {
+        assert!(hdr().is_valid());
+        assert!(sdr().is_valid());
+        assert!(!ColorTarget::default().is_valid());
+        assert!(!ColorTarget {
+            max_luminance: 0,
+            ..hdr()
+        }
+        .is_valid());
+        assert!(!ColorTarget {
+            primaries: 99,
+            ..hdr()
+        }
+        .is_valid());
+    }
+
+    #[test]
+    fn only_reports_meaningful_target_changes() {
+        // 第一次拿到首选要应用；同一份描述重复上报则不要重复设 mpv。
+        assert_eq!(target_update(None, hdr()), Some(hdr()));
+        assert_eq!(target_update(Some(hdr()), hdr()), None);
+        // 换屏 / HDR 开关：HDR ↔ SDR 必须更新。
+        assert_eq!(target_update(Some(hdr()), sdr()), Some(sdr()));
+        assert_eq!(target_update(Some(sdr()), hdr()), Some(hdr()));
+        // 未知候选不能覆盖当前已知目标。
+        assert_eq!(target_update(Some(hdr()), ColorTarget::default()), None);
+        assert_eq!(
+            target_update(
+                Some(hdr()),
+                ColorTarget {
+                    max_luminance: 0,
+                    ..sdr()
+                }
+            ),
+            None
+        );
     }
 }

@@ -37,6 +37,10 @@ typedef struct KichiColorTarget {
 // 合成器给这个 surface 的首选目标；启动时由 Wayland presenter 缓存。
 bool kichi_wayland_preferred_target(KichiColorTarget *out);
 
+// 播放窗口换屏 / 合成器 preferred 变化时，由 C++ presenter 投递新目标。
+// Rust 只把它转给 mpv 事件线程，不在这里直接调 mpv。
+void kichi_embed_set_color_target(const KichiColorTarget *target);
+
 bool kichi_embed_frame_pending(void);
 KichiFrame *kichi_embed_frame_take(void);
 void kichi_embed_frame_free(KichiFrame *frame);

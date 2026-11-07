@@ -850,6 +850,18 @@ Window {
                     font.weight: Font.Medium
                 }
 
+                // 当前显示色彩目标（调试用）：拖到不同 output 时可确认是否跟着变。
+                Label {
+                    objectName: "playbackWindowColorInfo"
+                    visible: win.chromeVisible && video.colorInfo.length > 0
+                    text: video.colorInfo
+                    color: "white"
+                    opacity: 0.55
+                    font.pixelSize: theme.fontCaption
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: Math.max(120, win.width / 4)
+                }
+
                 // 窗口态由窗管标题栏提供关闭；全屏时没有标题栏，才在控制条上留出口。
                 KIconButton {
                     id: closeButton

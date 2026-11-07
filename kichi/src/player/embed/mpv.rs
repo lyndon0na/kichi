@@ -41,7 +41,7 @@ pub(super) fn run(
         resume,
     } = extras;
 
-    let mpv = match create_mpv(title, &settings) {
+    let (mpv, mut current_target) = match create_mpv(title, &settings) {
         Ok(mpv) => mpv,
         Err(err) => {
             eprintln!("[kichi] 内嵌播放器初始化失败：{err}");
@@ -130,6 +130,12 @@ pub(super) fn run(
                     session.set_tracks(track_snapshot(&mpv));
                 }
                 Control::SubtitleStyle(style) => apply_subtitle_style(&mpv, &style),
+                Control::SetColorTarget(target) => {
+                    if let Some(target) = color::target_update(current_target, target) {
+                        apply_color_target(&mpv, target);
+                        current_target = Some(target);
+                    }
+                }
                 Control::Quit => {
                     let _ = mpv.command("quit", &[]);
                 }
@@ -329,14 +335,16 @@ pub(super) fn run(
     terminate(mpv);
 }
 
-/// 按源的色彩决定 output target / surface image description。
+/// 按合成器首选色彩决定 mpv 的 output target。
 ///
-/// SDR：保持 `create_mpv` 里的合成器 preferred target。
-/// HDR（PQ / HLG）：改成 PQ/BT2020，并通知 C++ presenter 把视频 surface
-/// 的 image description 换成 PQ。
-fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::Error> {
+/// SDR / HDR 都用同一个 target；HDR 源由 mpv tone-map 到它。返回创建时
+/// 实际采用的 target，播放中换屏后由 [`Control::SetColorTarget`] 更新。
+fn create_mpv(
+    title: &str,
+    settings: &SessionSettings,
+) -> Result<(Mpv, Option<color::ColorTarget>), libmpv2::Error> {
     let user_conf = settings.conf.as_deref().map(conf::Parsed::load);
-    // 合成器首选色彩（SDR 时 mpv 的 target 跟它走；HDR 在 FileLoaded 时覆盖）。
+    // 合成器首选色彩；播放窗口出现在另一个 output 后由 C++ presenter 更新。
     let preferred = color::preferred_target();
     let mpv = Mpv::with_initializer(|init| {
         // 先应用用户配置，再写内嵌固定项：固定的 vo / gpu / 输入配置永远赢。
@@ -448,7 +456,34 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
     {
         mpv.observe_property(name, format, index as u64 + 1)?;
     }
-    Ok(mpv)
+    Ok((mpv, preferred))
+}
+
+/// 把首选 target 写进 mpv；单项失败只记日志，不中断播放。
+fn apply_color_target(mpv: &Mpv, target: color::ColorTarget) {
+    let set = |name: &str, result: Result<(), libmpv2::Error>| {
+        if let Err(err) = result {
+            eprintln!("[kichi] 内嵌播放器设置 {name} 失败：{err}");
+        }
+    };
+    if let Some(primaries) = color::primaries_name(target.primaries) {
+        set("target-prim", mpv.set_property("target-prim", primaries));
+    }
+    if let Some(transfer) = color::transfer_name(target.transfer) {
+        set("target-trc", mpv.set_property("target-trc", transfer));
+    }
+    if target.max_luminance > 0 {
+        set(
+            "target-peak",
+            mpv.set_property("target-peak", i64::from(target.max_luminance)),
+        );
+    }
+    eprintln!(
+        "[kichi] 内嵌播放器色彩 target 更新：primaries={} transfer={} peak={}",
+        color::primaries_name(target.primaries).unwrap_or("unknown"),
+        color::transfer_name(target.transfer).unwrap_or("unknown"),
+        target.max_luminance
+    );
 }
 
 /// 内嵌渲染后端（`gpu-context` + `gpu-api`）。

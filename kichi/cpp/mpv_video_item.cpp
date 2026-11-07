@@ -88,6 +88,11 @@ void MpvVideoItem::poll()
     m_native->poll();
     if (m_native->error() != m_error)
         setError(m_native->error());
+    const QString colorInfo = m_native->colorInfo();
+    if (colorInfo != m_colorInfo) {
+        m_colorInfo = colorInfo;
+        emit colorInfoChanged();
+    }
 }
 
 void MpvVideoItem::pushViewport()

@@ -5,7 +5,7 @@
 
 use std::os::fd::AsRawFd;
 
-use super::{set_viewport, take_frame, Frame};
+use super::{color::ColorTarget, set_viewport, take_frame, Frame};
 
 #[no_mangle]
 pub extern "C" fn kichi_embed_frame_pending() -> bool {
@@ -100,6 +100,14 @@ pub unsafe extern "C" fn kichi_embed_frame_plane_stride(frame: *const Frame, ind
 #[no_mangle]
 pub extern "C" fn kichi_embed_set_viewport(width: i32, height: i32, scale: f64) {
     set_viewport(width, height, scale);
+}
+
+/// C++ presenter 发现播放窗口的首选色彩变化：只投递到 mpv 事件线程。
+#[no_mangle]
+pub unsafe extern "C" fn kichi_embed_set_color_target(target: *const ColorTarget) {
+    if let Some(target) = unsafe { target.as_ref() } {
+        super::set_color_target(*target);
+    }
 }
 
 /// 把 `frame`（像素）按比例放进 `item`（逻辑），得到居中的信箱矩形。
