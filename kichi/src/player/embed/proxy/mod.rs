@@ -3,11 +3,11 @@
 //! 做法参考 Mutsumi（MIT）：mpv 以为自己在跟合成器说话，实际对端是本模块。
 //! 代理合成 `xdg_wm_base` / `wp_viewporter` / `wp_fractional_scale_manager_v1` /
 //! `wl_shm`，转发 `wl_compositor` / `wl_subcompositor` / `zwp_linux_dmabuf_v1`，
-//! 在 `wl_surface.commit` 时把 buffer 记成 [`Frame`] 交给 Qt 侧。
+//! 在 `wl_surface.commit` 时把 buffer 记成 [`Frame`] 交给 C++
+//! `WaylandVideoSurface` 直接提交给合成器。
 //!
-//! 只支持两种输出：单平面 `XRGB8888/ARGB8888 + LINEAR` 的 dmabuf，以及
-//! `wl_shm` 的 32 位帧（软件路径兜底）。其它格式在 dmabuf 协商阶段就被过滤掉，
-//! mpv 会自己转成这两种。
+//! 输出格式不再过滤：合成器广告的 dmabuf format / modifier 原样转给 mpv，
+//! `wl_shm` 仍作为软件兜底。
 
 mod dmabuf;
 mod shm;
@@ -406,10 +406,15 @@ impl WlRegistryHandler for RegistryHandler {
                 | ObjectInterface::WpViewporter
                 | ObjectInterface::WpFractionalScaleManagerV1
                 | ObjectInterface::WlShm
+                // mpv 的 surface 是代理合成的；色彩描述由 kichi 的
+                // Wayland presenter 直接设到真 surface 上，不能让 mpv
+                // 把 image description 发到一个不存在的 server surface。
+                | ObjectInterface::WpColorManagerV1
+                | ObjectInterface::WpColorRepresentationManagerV1
         ) {
             self.mapper.ignore_global(name);
         } else if interface == ObjectInterface::ZwpLinuxDmabufV1 {
-            // v4 起走 feedback；代理要重写格式表，版本再高也没有新语义
+            // v4 起走 feedback；格式表原样转发，版本再高也没有新语义
             self.mapper
                 .forward_global(slf, name, interface, version.min(4));
         } else {

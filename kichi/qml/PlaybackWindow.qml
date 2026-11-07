@@ -72,7 +72,8 @@ Window {
 
     title: backend !== null && backend.embedTitle.length > 0
            ? backend.embedTitle : "kichi"
-    color: "black"
+    // 原生 Wayland surface 把视频画在父窗口下面，父窗口必须透明。
+    color: "transparent"
     // 视频窗口固定深色：系统浅色主题下也不要出现白色 ToolTip / 悬停底 / 系统菜单。
     palette.window: "#0A0A0A"
     palette.windowText: "#F2FFFFFF"
@@ -694,7 +695,7 @@ Window {
         id: surface
 
         anchors.fill: parent
-        color: "black"
+        color: "transparent"
         focus: true
 
         Keys.onPressed: function (event) {
@@ -708,6 +709,13 @@ Window {
             id: video
             anchors.fill: parent
             active: win.visible && win.playing
+        }
+
+        // 原生 surface 出第一帧前先盖黑幕，避免桌面 / 上一个视频从透明窗口里闪出来。
+        Rectangle {
+            anchors.fill: parent
+            color: "black"
+            visible: !video.hasFrame
         }
 
         Label {

@@ -5,10 +5,12 @@
 //!
 //! mpv 的 Wayland 连接不指向真实合成器，而是指向 [`proxy`] 里的进程内代理；
 //! 代理把 `wl_surface.commit` 上的 dmabuf / shm 帧交给我们，再由 C++ 侧的
-//! `MpvVideoItem` 导入成 Qt 纹理。`WAYLAND_SOCKET`（一次性 fd）只在
+//! `WaylandVideoSurface` 直接提交给合成器（不经过 Qt 纹理）。
+//! `WAYLAND_SOCKET`（一次性 fd）只在
 //! mpv 建连期间存在：客户端真的发出第一个请求后才恢复，避免 mpv 在慢网络上
 //! 等太久转而连上真实合成器、弹出第二个播放器窗口。
 
+mod color;
 pub(crate) mod conf;
 mod ffi;
 mod mpv;

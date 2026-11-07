@@ -158,18 +158,28 @@ const QML_FILES: &[&str] = &[
 const CPP_FILES: &[&str] = &[
     "cpp/mpv_video_item.h",
     "cpp/mpv_video_item.cpp",
+    "cpp/wayland_video_surface.h",
+    "cpp/wayland_video_surface.cpp",
+    "cpp/protocol/color-management-v1-protocol.cpp",
+    "cpp/protocol/linux-dmabuf-v1-protocol.cpp",
+    "cpp/protocol/viewporter-protocol.cpp",
     "cpp/app_platform.h",
     "cpp/app_platform.cpp",
 ];
 
 // 纯 C 头文件不参与 moc 编译，只登记依赖。
-const CPP_HEADERS: &[&str] = &["cpp/embed_ffi.h"];
+const CPP_HEADERS: &[&str] = &[
+    "cpp/embed_ffi.h",
+    "cpp/protocol/color-management-v1-client-protocol.h",
+    "cpp/protocol/linux-dmabuf-v1-client-protocol.h",
+    "cpp/protocol/viewporter-client-protocol.h",
+];
 
 fn main() {
     require_libmpv();
 
-    // 手写 C++ 直接用 eglGetProcAddress 取扩展入口（Qt 不导出该符号）。
-    println!("cargo:rustc-link-lib=EGL");
+    // Wayland 原生 surface：compositor / dmabuf / color-management。
+    println!("cargo:rustc-link-lib=wayland-client");
 
     // QML 与桥接源码任何改动都要重跑本构建脚本
     for file in QML_FILES {

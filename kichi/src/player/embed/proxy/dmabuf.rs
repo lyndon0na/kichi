@@ -1,11 +1,11 @@
 //! dmabuf 协商与 buffer 登记。
 //!
-//! 格式白名单只有「ARGB8888 / XRGB8888 + LINEAR」：单平面、8-bit、
-//! Qt 侧可以直接 `eglCreateImageKHR` 成普通 `GL_TEXTURE_2D`，不需要
-//! external-OES 采样器。mpv 的 gpu-next 会把解码结果转成这两种再输出。
+//! 不再过滤格式：合成器广告什么格式（10bit、多平面、tiled modifier、
+//! 硬解输出）就原样转给 mpv。帧不再进 Qt 纹理，而是由 Wayland 侧
+//! presenter 直接提交给合成器。
 
 use std::cell::RefCell;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::rc::Rc;
 
 use wl_proxy::object::ObjectCoreApi;
@@ -27,10 +27,6 @@ use super::{Frame, Plane, ProxyEvent, SharedState};
 pub(crate) const FOURCC_ARGB8888: u32 = 0x3432_5241; // 'AR24'
 pub(crate) const FOURCC_XRGB8888: u32 = 0x3432_5258; // 'XR24'
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
-
-fn allowed(format: u32, modifier: u64) -> bool {
-    modifier == DRM_FORMAT_MOD_LINEAR && matches!(format, FOURCC_ARGB8888 | FOURCC_XRGB8888)
-}
 
 struct StoredPlane {
     fd: OwnedFd,
@@ -85,9 +81,7 @@ pub(crate) struct DmabufHandler {
 
 impl ZwpLinuxDmabufV1Handler for DmabufHandler {
     fn handle_format(&mut self, slf: &Rc<ZwpLinuxDmabufV1>, format: u32) {
-        if allowed(format, DRM_FORMAT_MOD_LINEAR) {
-            slf.send_format(format);
-        }
+        slf.send_format(format);
     }
 
     fn handle_modifier(
@@ -97,10 +91,7 @@ impl ZwpLinuxDmabufV1Handler for DmabufHandler {
         modifier_hi: u32,
         modifier_lo: u32,
     ) {
-        let modifier = ((modifier_hi as u64) << 32) | modifier_lo as u64;
-        if allowed(format, modifier) {
-            slf.send_modifier(format, modifier_hi, modifier_lo);
-        }
+        slf.send_modifier(format, modifier_hi, modifier_lo);
     }
 
     fn handle_create_params(
@@ -137,22 +128,16 @@ impl ZwpLinuxDmabufV1Handler for DmabufHandler {
     }
 }
 
-/// 重写 compositor 的格式表：只留白名单项，并把 tranche 里的索引重新映射。
-struct FeedbackHandler {
-    index_map: Vec<Option<u16>>,
-    pending_device: Option<Vec<u8>>,
-    pending_flags: Option<ZwpLinuxDmabufFeedbackV1TrancheFlags>,
-    pending_formats: Vec<u16>,
-}
+/// 原样转发 compositor 的 dmabuf feedback。
+///
+/// 以前这里会过滤成 8bit linear 白名单；现在视频不进 Qt 纹理，mpv 可以
+/// 直接输出 10bit / 多平面 / 带 modifier 的硬解 dmabuf，合成器支持什么
+/// 就让它看到什么。
+struct FeedbackHandler;
 
 impl FeedbackHandler {
     fn new() -> Self {
-        Self {
-            index_map: Vec::new(),
-            pending_device: None,
-            pending_flags: None,
-            pending_formats: Vec::new(),
-        }
+        Self
     }
 }
 
@@ -163,108 +148,30 @@ impl ZwpLinuxDmabufFeedbackV1Handler for FeedbackHandler {
         fd: &Rc<OwnedFd>,
         size: u32,
     ) {
-        let entries = size as usize / 16;
-        if entries == 0 {
-            slf.send_format_table(fd, size);
-            return;
-        }
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                size as usize,
-                libc::PROT_READ,
-                libc::MAP_PRIVATE,
-                fd.as_raw_fd(),
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            slf.send_format_table(fd, size);
-            return;
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) };
-        let mut table = Vec::with_capacity(size as usize);
-        self.index_map = vec![None; entries];
-        let mut new_index: u16 = 0;
-        for index in 0..entries {
-            let base = index * 16;
-            let Ok(format_bytes) = bytes[base..base + 4].try_into() else {
-                continue;
-            };
-            let Ok(modifier_bytes) = bytes[base + 8..base + 16].try_into() else {
-                continue;
-            };
-            let format = u32::from_ne_bytes(format_bytes);
-            let modifier = u64::from_ne_bytes(modifier_bytes);
-            if allowed(format, modifier) {
-                self.index_map[index] = Some(new_index);
-                new_index = new_index.saturating_add(1);
-                table.extend_from_slice(&bytes[base..base + 16]);
-            }
-        }
-        unsafe { libc::munmap(ptr, size as usize) };
-
-        if table.is_empty() {
-            // 一个白名单格式都没有：不发这张表，mpv 会认为 dmabuf 不可用。
-            return;
-        }
-        let memfd = unsafe { libc::memfd_create(c"kichi-dmabuf".as_ptr(), 0) };
-        if memfd < 0 {
-            return;
-        }
-        let written =
-            unsafe { libc::write(memfd, table.as_ptr() as *const libc::c_void, table.len()) };
-        if written < 0 {
-            unsafe { libc::close(memfd) };
-            return;
-        }
-        let new_fd = Rc::new(unsafe { OwnedFd::from_raw_fd(memfd) });
-        slf.send_format_table(&new_fd, table.len() as u32);
+        slf.send_format_table(fd, size);
     }
 
     fn handle_main_device(&mut self, slf: &Rc<ZwpLinuxDmabufFeedbackV1>, device: &[u8]) {
         slf.send_main_device(device);
     }
 
-    fn handle_tranche_target_device(&mut self, _slf: &Rc<ZwpLinuxDmabufFeedbackV1>, device: &[u8]) {
-        self.pending_device = Some(device.to_vec());
-        self.pending_flags = None;
-        self.pending_formats.clear();
+    fn handle_tranche_target_device(&mut self, slf: &Rc<ZwpLinuxDmabufFeedbackV1>, device: &[u8]) {
+        slf.send_tranche_target_device(device);
     }
 
     fn handle_tranche_flags(
         &mut self,
-        _slf: &Rc<ZwpLinuxDmabufFeedbackV1>,
+        slf: &Rc<ZwpLinuxDmabufFeedbackV1>,
         flags: ZwpLinuxDmabufFeedbackV1TrancheFlags,
     ) {
-        self.pending_flags = Some(flags);
+        slf.send_tranche_flags(flags);
     }
 
-    fn handle_tranche_formats(&mut self, _slf: &Rc<ZwpLinuxDmabufFeedbackV1>, indices: &[u8]) {
-        for chunk in indices.chunks_exact(2) {
-            let old = u16::from_ne_bytes([chunk[0], chunk[1]]);
-            if let Some(Some(new)) = self.index_map.get(old as usize) {
-                self.pending_formats.push(*new);
-            }
-        }
+    fn handle_tranche_formats(&mut self, slf: &Rc<ZwpLinuxDmabufFeedbackV1>, indices: &[u8]) {
+        slf.send_tranche_formats(indices);
     }
 
     fn handle_tranche_done(&mut self, slf: &Rc<ZwpLinuxDmabufFeedbackV1>) {
-        if self.pending_formats.is_empty() {
-            self.pending_device = None;
-            self.pending_flags = None;
-            return;
-        }
-        if let Some(device) = self.pending_device.take() {
-            slf.send_tranche_target_device(&device);
-        }
-        slf.send_tranche_flags(self.pending_flags.take().unwrap_or_default());
-        let bytes: Vec<u8> = self
-            .pending_formats
-            .drain(..)
-            .flat_map(|index| index.to_ne_bytes())
-            .collect();
-        slf.send_tranche_formats(&bytes);
         slf.send_tranche_done();
     }
 

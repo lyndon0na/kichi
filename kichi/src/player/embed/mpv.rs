@@ -11,7 +11,7 @@ use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
 
 use super::{
-    conf, ChapterInfo, Control, Session, SessionSettings, SubtitleStyle, TrackInfo,
+    color, conf, ChapterInfo, Control, Session, SessionSettings, SubtitleStyle, TrackInfo,
     WaylandSocketGuard,
 };
 use crate::player::progress::ProgressTracker;
@@ -164,7 +164,6 @@ pub(super) fn run(
                 }
             }
         }
-
         match mpv.wait_event(EVENT_TIMEOUT) {
             None => {}
             Some(Ok(Event::FileLoaded)) => {
@@ -330,8 +329,15 @@ pub(super) fn run(
     terminate(mpv);
 }
 
+/// 按源的色彩决定 output target / surface image description。
+///
+/// SDR：保持 `create_mpv` 里的合成器 preferred target。
+/// HDR（PQ / HLG）：改成 PQ/BT2020，并通知 C++ presenter 把视频 surface
+/// 的 image description 换成 PQ。
 fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::Error> {
     let user_conf = settings.conf.as_deref().map(conf::Parsed::load);
+    // 合成器首选色彩（SDR 时 mpv 的 target 跟它走；HDR 在 FileLoaded 时覆盖）。
+    let preferred = color::preferred_target();
     let mpv = Mpv::with_initializer(|init| {
         // 先应用用户配置，再写内嵌固定项：固定的 vo / gpu / 输入配置永远赢。
         if let Some(parsed) = &user_conf {
@@ -373,6 +379,19 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
             ("sub-auto", "no"),
         ] {
             init.set_option(name, value)?;
+        }
+        // 一次性设好合成器 preferred target；HDR 源也会被 mpv tone-map 到
+        // 这个 target，和外部 mpv 的 target-colorspace-hint 行为一致。
+        if let Some(target) = preferred {
+            if let Some(primaries) = color::primaries_name(target.primaries) {
+                init.set_option("target-prim", primaries)?;
+            }
+            if let Some(transfer) = color::transfer_name(target.transfer) {
+                init.set_option("target-trc", transfer)?;
+            }
+            if target.max_luminance > 0 {
+                init.set_option("target-peak", target.max_luminance.to_string().as_str())?;
+            }
         }
         // 键位文件交给 mpv 解析；文件不存在时不设置，免得每次开播都报读文件失败。
         if let Some(input_conf) = &settings.input_conf {

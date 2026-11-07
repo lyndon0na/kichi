@@ -13,6 +13,30 @@ extern "C" {
 
 typedef struct KichiFrame KichiFrame;
 
+// Wayland presenter 查询到的合成器首选色彩目标。整数值与
+// kichi/src/player/embed/color.rs 的 Rust 枚举保持一致。
+typedef struct KichiColorTarget {
+    int32_t primaries;
+    int32_t transfer;
+    uint32_t min_luminance_10000;
+    uint32_t max_luminance;
+    uint32_t reference_luminance;
+} KichiColorTarget;
+
+#define KICHI_PRIMARIES_UNKNOWN 0
+#define KICHI_PRIMARIES_BT709 1
+#define KICHI_PRIMARIES_BT2020 2
+#define KICHI_PRIMARIES_DISPLAY_P3 3
+
+#define KICHI_TRANSFER_UNKNOWN 0
+#define KICHI_TRANSFER_GAMMA22 1
+#define KICHI_TRANSFER_SRGB 2
+#define KICHI_TRANSFER_PQ 3
+#define KICHI_TRANSFER_HLG 4
+
+// 合成器给这个 surface 的首选目标；启动时由 Wayland presenter 缓存。
+bool kichi_wayland_preferred_target(KichiColorTarget *out);
+
 bool kichi_embed_frame_pending(void);
 KichiFrame *kichi_embed_frame_take(void);
 void kichi_embed_frame_free(KichiFrame *frame);
