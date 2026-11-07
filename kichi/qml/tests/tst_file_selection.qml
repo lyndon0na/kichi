@@ -130,4 +130,42 @@ TestCase {
         selection.click("b", 1, Qt.ControlModifier, entries)
         compare(selection.singleId(), "", "多选时单条操作用不了")
     }
+
+    function test_selection_is_remembered_per_directory() {
+        selection.selectAll(entries)
+        selection.rememberForKey("dir-a")
+        selection.clear()
+
+        selection.restoreForKey("dir-b", entries)
+        compare(picked(), "", "没有记录的目录必须从空选择开始")
+        compare(selection.anchorId, "")
+
+        selection.restoreForKey("dir-a", entries)
+        compare(picked(), "a,b,c,d")
+        compare(selection.anchorId, "a", "锚点一并恢复")
+    }
+
+    function test_restore_drops_ids_that_left_the_directory() {
+        selection.click("a", 0, Qt.NoModifier, entries)
+        selection.click("c", 2, Qt.ControlModifier, entries)
+        selection.rememberForKey("dir-a")
+        selection.clear()
+
+        selection.restoreForKey("dir-a", [{ id: "b" }, { id: "c" }])
+        compare(picked(), "c", "已不存在的条目不能重新标成选中")
+        compare(selection.anchorId, "c",
+                "保存的锚点不存在时退回第一条选中项")
+    }
+
+    function test_selection_memory_evicts_the_oldest_directory() {
+        selection.click("a", 0, Qt.NoModifier, entries)
+        for (let i = 0; i <= selection.maxSavedDirs; ++i)
+            selection.rememberForKey("dir-" + i)
+        selection.clear()
+
+        selection.restoreForKey("dir-0", entries)
+        compare(picked(), "", "超过上限先淘汰最久未使用的目录")
+        selection.restoreForKey("dir-" + selection.maxSavedDirs, entries)
+        compare(picked(), "a", "最新目录仍在记忆里")
+    }
 }

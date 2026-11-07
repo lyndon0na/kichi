@@ -1,11 +1,14 @@
 import QtQuick
 
-// 文件页的交互逻辑：滚动位置记忆、导航、键盘快捷键、文件操作完成后的收尾。
+// 文件页的交互逻辑：目录导航、显式定位、键盘快捷键、文件操作完成后的收尾。
 //
 // 从 FilesPage.qml 拆出来（页面已超行数软上限）。这里不画任何东西，
 // 只持有状态并调用 backend；页面负责把 fileList / menu / selection 接进来。
+// 滚动 / 选中按目录记忆和导航恢复在 FileNavigationState.qml。
 QtObject {
     id: ctl
+
+    objectName: "filePageInteraction"
 
     property var backend: null
     property var selection: null
@@ -20,17 +23,24 @@ QtObject {
     /// 当前活动视图："list" / "grid"；滚动位置按「目录 + 视图」分别记住
     property string viewMode: "list"
 
+    /// 目录导航状态：滚动 / 选中记忆、进入子目录归顶、返回恢复。
+    property FileNavigationState navigation: FileNavigationState {
+        backend: ctl.backend
+        fileList: ctl.fileList
+        selection: ctl.selection
+        entries: ctl.entries
+        searching: ctl.searching
+        navigationLocked: ctl.navigationLocked
+        viewMode: ctl.viewMode
+        revealScrollActive: ctl.pendingRevealId.length > 0
+                             || ctl.pendingCreatedRevealId.length > 0
+                             || ctl.createdFlashId.length > 0
+        revealSelectionActive: ctl.pendingRevealId.length > 0
+                               || ctl.pendingCreatedRevealId.length > 0
+    }
+
     signal folderOpenRequested(string id)
 
-    // —— 滚动位置记忆（目录 id → contentY）——
-    // 进目录 / 返回 / 刷新 / 移动完成后都不跳回顶部。
-    property KScrollMemory scrollMemory: KScrollMemory {
-        flickable: ctl.fileList
-    }
-    property bool restoreScrollPending: false
-    property real pendingScrollY: -1
-    property string pendingViewMode: ""
-    property int seenFilesRevision: -1
     /// 离线任务 / 搜索结果定位：等目录模型真正显示后再选中目标。
     property string pendingRevealId: ""
     /// 新建文件夹的临时行出现后，等模型回填再滚动到它。
@@ -63,47 +73,73 @@ QtObject {
         return folders
     }
 
-    // —— 滚动位置 ——
-
-    function scrollKeyFor(view) {
-        const scope = ctl.searching
-                    ? "search"
-                    : (ctl.backend ? ctl.backend.currentDirId : "")
-        return String(scope) + ":" + String(view)
-    }
+    // —— 目录导航（页面入口，细节在 FileNavigationState）——
 
     function rememberScroll() {
-        if (!ctl.backend || !ctl.fileList)
-            return
-        scrollMemory.rememberKey(scrollKeyFor(viewMode))
+        navigation.rememberScroll()
     }
 
-    function cancelScrollRestore() {
-        restoreScrollPending = false
-        pendingScrollY = -1
-        pendingViewMode = ""
+    function rememberSelection() {
+        navigation.rememberSelection()
     }
 
     function restoreScrollNow() {
-        // 定位目标时以“让目标可见”为准，旧的目录滚动位置不能随后把它盖掉。
-        if (pendingRevealId.length > 0 || pendingCreatedRevealId.length > 0
-                || createdFlashId.length > 0)
+        navigation.restoreScrollNow()
+    }
+
+    function prepareViewSwitch(view) {
+        navigation.prepareViewSwitch(view)
+    }
+
+    function noteFilesRevision() {
+        navigation.noteFilesRevision()
+    }
+
+    function clearSelectionMemory() {
+        navigation.clearSelectionMemory()
+    }
+
+    function beginSearch() {
+        navigation.beginSearch()
+    }
+
+    function endSearch() {
+        navigation.endSearch()
+    }
+
+    function navigateToDir(id) {
+        if (!ctl.backend || ctl.backend.filesLoading === true)
             return
-        if (pendingScrollY < 0)
+        ctl.clearCreatedFlash()
+        navigation.navigateToDir(id)
+    }
+
+    /// 搜索结果进文件夹：同样从顶部开始，并让 endSearch 跳过原目录恢复。
+    function beginSearchChildNavigation() {
+        if (!ctl.backend)
             return
-        if (pendingViewMode.length > 0 && pendingViewMode !== viewMode)
+        ctl.clearCreatedFlash()
+        navigation.beginSearchChildNavigation()
+    }
+
+    function goParent() {
+        if (!ctl.backend)
             return
-        // 空目录或尚未布局：清掉待恢复值，别留到下一次无关刷新再跳
-        if (!ctl.backend || ctl.entries.length === 0) {
-            pendingScrollY = -1
-            pendingViewMode = ""
+        ctl.clearCreatedFlash()
+        navigation.goParent()
+    }
+
+    function goCrumb(index) {
+        if (!ctl.backend)
             return
-        }
-        if (ctl.fileList.contentHeight <= 0)
+        ctl.clearCreatedFlash()
+        navigation.goCrumb(index)
+    }
+
+    function refreshFiles() {
+        if (!ctl.backend)
             return
-        scrollMemory.applyTo(ctl.fileList, pendingScrollY)
-        pendingScrollY = -1
-        pendingViewMode = ""
+        navigation.refreshFiles()
     }
 
     /// 目录模型加载完成后，按 id 选中并滚动到目标条目。
@@ -112,7 +148,8 @@ QtObject {
         if (target.length === 0)
             return
         pendingRevealId = target
-        cancelScrollRestore()
+        navigation.cancelScrollRestore()
+        navigation.cancelSelectionRestore()
         Qt.callLater(ctl.tryRevealPending)
     }
 
@@ -170,7 +207,7 @@ QtObject {
         const target = pendingCreatedRevealId
         pendingCreatedRevealId = ""
         createdFlashId = target
-        cancelScrollRestore()
+        navigation.cancelScrollRestore()
         ctl.fileList.currentIndex = index
         ctl.fileList.positionViewAtIndex(
             index, ctl.viewMode === "grid" ? GridView.Contain : ListView.Contain)
@@ -211,23 +248,11 @@ QtObject {
             ctl.flashTimer.stop()
     }
 
-    /// 切换列表 / 网格：先把当前视图的位置记下来，等目标视图真正可见后再恢复。
-    function prepareViewSwitch(view) {
-        if (!ctl.backend)
-            return
-        pendingScrollY = scrollMemory.valueFor(scrollKeyFor(view), 0)
-        pendingViewMode = view
-        restoreScrollPending = false
-        Qt.callLater(ctl.restoreScrollNow)
-    }
-
     onViewModeChanged: {
         if (pendingRevealId.length > 0)
             Qt.callLater(ctl.tryRevealPending)
         else if (pendingCreatedRevealId.length > 0)
             Qt.callLater(ctl.tryRevealCreated)
-        else if (pendingViewMode === viewMode)
-            Qt.callLater(ctl.restoreScrollNow)
     }
 
     onEntriesChanged: {
@@ -235,68 +260,6 @@ QtObject {
             Qt.callLater(ctl.tryRevealPending)
         if (pendingCreatedRevealId.length > 0)
             Qt.callLater(ctl.tryRevealCreated)
-    }
-
-    function noteFilesRevision() {
-        if (!ctl.backend)
-            return
-        // 搜索批次更新不一定改 filesRevision；结果模型一变就先清掉已消失的选择。
-        if (ctl.searching) {
-            if (ctl.selection)
-                ctl.selection.pruneExcept(ctl.entries, ctl.backend.fileActionIds)
-            return
-        }
-        const revision = ctl.backend.filesRevision
-        if (revision === seenFilesRevision)
-            return
-        seenFilesRevision = revision
-        if (ctl.selection)
-            ctl.selection.pruneExcept(ctl.backend.files, ctl.backend.fileActionIds)
-        if (restoreScrollPending) {
-            restoreScrollPending = false
-            pendingScrollY = scrollMemory.valueFor(scrollKeyFor(viewMode), 0)
-            pendingViewMode = ""
-            // 列表布局在模型更新之后才完成；contentHeight 变化时会再试一次
-            Qt.callLater(ctl.restoreScrollNow)
-        }
-    }
-
-    // —— 导航（都先记滚动位置）——
-
-    function navigateToDir(id) {
-        if (!ctl.backend)
-            return
-        ctl.clearCreatedFlash()
-        rememberScroll()
-        restoreScrollPending = true
-        ctl.backend.openDir(id)
-    }
-
-    function goParent() {
-        if (!ctl.backend)
-            return
-        ctl.clearCreatedFlash()
-        rememberScroll()
-        restoreScrollPending = true
-        ctl.backend.openParent()
-    }
-
-    function goCrumb(index) {
-        if (!ctl.backend)
-            return
-        ctl.clearCreatedFlash()
-        rememberScroll()
-        restoreScrollPending = true
-        ctl.backend.openCrumb(index)
-    }
-
-    function refreshFiles() {
-        if (!ctl.backend)
-            return
-        ctl.backend.clearStatusMessage()
-        rememberScroll()
-        restoreScrollPending = true
-        ctl.backend.refreshFiles()
     }
 
     /// 文件操作结果回到界面：乐观模型已原位更新，移走 / 删掉的清空选择。

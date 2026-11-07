@@ -73,6 +73,10 @@ TestCase {
         property int openDirCalls: 0
         property int searchOpenCalls: 0
         property int searchRevealCalls: 0
+        /// 目录导航测试用：打开目录时按 filesByDir 真的换一批条目。
+        property bool autoNavigate: false
+        property var filesByDir: ({})
+        property var dirStack: [""]
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -100,10 +104,31 @@ TestCase {
             contentView = view === "grid" ? "grid" : "list"
         }
 
+        function dirKey(id) {
+            const key = String(id || "")
+            return key.length === 0 ? "root" : key
+        }
+
+        function showDir(id) {
+            currentDirId = String(id || "")
+            files = filesByDir[dirKey(currentDirId)] || []
+            filesRevision += 1
+            changed()
+        }
+
         function openDir(id) {
             openDirCalls += 1
+            if (!autoNavigate)
+                return
+            dirStack = dirStack.concat([String(id || "")])
+            showDir(id)
         }
-        function openParent() {}
+        function openParent() {
+            if (!autoNavigate || dirStack.length <= 1)
+                return
+            dirStack = dirStack.slice(0, dirStack.length - 1)
+            showDir(dirStack[dirStack.length - 1])
+        }
         function openCrumb(index) {}
         function clearStatusMessage() {}
         function refreshFiles() {
@@ -148,6 +173,10 @@ TestCase {
             searchStatus = ""
             searchTruncated = false
             filesLoading = true
+            if (autoNavigate) {
+                dirStack = dirStack.concat([String(id || "")])
+                currentDirId = String(id || "")
+            }
             changed()
         }
         function searchRevealFolder(id) {
@@ -251,6 +280,18 @@ TestCase {
         return list
     }
 
+    /// 目录导航测试：每个目录用独立 id 前缀，避免跨目录误命中。
+    function dirEntries(prefix, count) {
+        const list = []
+        for (let i = 0; i < count; ++i) {
+            const item = entry(i, i === 0 ? "folder" : "file")
+            item.id = prefix + "-" + i
+            item.name = prefix + " 条目 " + i
+            list.push(item)
+        }
+        return list
+    }
+
     function cleanup() {
         if (page) {
             page.activeFileView.cancelFlick()
@@ -314,6 +355,9 @@ TestCase {
         fakeBackend.openDirCalls = 0
         fakeBackend.searchOpenCalls = 0
         fakeBackend.searchRevealCalls = 0
+        fakeBackend.autoNavigate = false
+        fakeBackend.filesByDir = ({})
+        fakeBackend.dirStack = [""]
     }
 
     function test_grid_item_uses_three_by_two_thumbnail_and_two_line_name() {
@@ -1718,5 +1762,163 @@ TestCase {
         wait(40)
         compare(spy.count, 1, "最后一行下方右键要弹出空白菜单")
         spy.destroy()
+    }
+
+    function selectedIds(selection) {
+        return selection.idList().sort().join(",")
+    }
+
+    /// 列表 / 网格共用：进入子目录从顶部，选中状态按目录各自恢复。
+    function checkDirectorySelectionMemory(viewName) {
+        const parentEntries = dirEntries("parent", 30)
+        const child = dirEntries("child", 4)
+        const grandChild = dirEntries("grand", 3)
+        fakeBackend.files = parentEntries
+        fakeBackend.contentView = viewName
+        fakeBackend.currentDirId = ""
+        fakeBackend.autoNavigate = true
+        fakeBackend.filesByDir = ({})
+        fakeBackend.filesByDir["root"] = parentEntries
+        fakeBackend.filesByDir[parentEntries[0].id] = child
+        fakeBackend.filesByDir[child[0].id] = grandChild
+        fakeBackend.dirStack = [""]
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const view = findChild(page, viewName === "grid" ? "fileGrid" : "fileList")
+        const selection = findChild(page, "fileSelection")
+        verify(view !== null && selection !== null)
+        view.contentY = viewName === "grid" ? 180 : 5 * 48
+        wait(30)
+        const parentY = view.contentY
+        verify(parentY > 0, "测试必须从滚动后的父目录出发")
+
+        selection.click(parentEntries[1].id, 1, Qt.NoModifier, parentEntries)
+        selection.click(parentEntries[2].id, 2, Qt.ControlModifier, parentEntries)
+        compare(selectedIds(selection),
+                parentEntries[1].id + "," + parentEntries[2].id)
+
+        page.openEntryFolder(parentEntries[0].id)
+        wait(100)
+        compare(fakeBackend.currentDirId, parentEntries[0].id)
+        compare(view.contentY, 0, "进入子目录必须从顶部显示")
+        const first = view.itemAtIndex(0)
+        verify(first !== null && Math.round(first.y) === 0,
+               "首项必须停在顶部，y=" + (first ? first.y : "null"))
+        compare(selection.count, 0, "子目录没有记忆时从空选择开始")
+
+        selection.click(child[1].id, 1, Qt.NoModifier, child)
+        compare(selectedIds(selection), child[1].id)
+
+        page.goUp()
+        wait(100)
+        compare(fakeBackend.currentDirId, "")
+        compare(view.contentY, parentY, "返回上级恢复离开时的滚动位置")
+        compare(selectedIds(selection),
+                parentEntries[1].id + "," + parentEntries[2].id,
+                "返回上级恢复父目录的选中状态")
+
+        page.openEntryFolder(parentEntries[0].id)
+        wait(100)
+        compare(view.contentY, 0, "再次进入子目录仍从顶部")
+        compare(selection.count, 0,
+                "子目录退出后不再保留选择，重新进入必须从空选择开始")
+
+        // 再往下一层：从孙目录返回时，子目录自己的选择仍要恢复。
+        selection.click(child[1].id, 1, Qt.NoModifier, child)
+        page.openEntryFolder(child[0].id)
+        wait(100)
+        compare(fakeBackend.currentDirId, child[0].id)
+        compare(selection.count, 0, "进入孙目录也从空选择开始")
+        page.goUp()
+        wait(100)
+        compare(fakeBackend.currentDirId, parentEntries[0].id)
+        compare(selectedIds(selection), child[1].id,
+                "从孙目录返回时恢复子目录离开时的选择")
+        page.goUp()
+        wait(100)
+        compare(fakeBackend.currentDirId, "")
+        compare(selectedIds(selection),
+                parentEntries[1].id + "," + parentEntries[2].id,
+                "再返回父目录仍恢复父目录的选择")
+    }
+
+    function test_list_remembers_selection_per_directory() {
+        checkDirectorySelectionMemory("list")
+    }
+
+    function test_grid_remembers_selection_per_directory() {
+        checkDirectorySelectionMemory("grid")
+    }
+
+    function test_search_exit_restores_directory_selection_and_scroll() {
+        const entries = dirEntries("search-root", 30)
+        fakeBackend.files = entries
+        fakeBackend.currentDirId = ""
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        const selection = findChild(page, "fileSelection")
+        verify(list !== null && selection !== null)
+        list.contentY = 5 * 48
+        wait(30)
+        const savedY = list.contentY
+        verify(savedY > 0)
+
+        selection.click(entries[1].id, 1, Qt.NoModifier, entries)
+        selection.click(entries[2].id, 2, Qt.ControlModifier, entries)
+        const wanted = entries[1].id + "," + entries[2].id
+
+        fakeBackend.searchResults = [entries[1]]
+        fakeBackend.searchActive = true
+        wait(60)
+        compare(selection.count, 0, "进入搜索先清空目录选择")
+
+        fakeBackend.searchActive = false
+        wait(100)
+        compare(selectedIds(selection), wanted, "退出搜索恢复原目录的选中状态")
+        compare(list.contentY, savedY, "退出搜索恢复原目录的滚动位置")
+    }
+
+    function test_search_folder_navigation_starts_at_top() {
+        const results = dirEntries("result", 20)
+        results[0].id = "target-dir"
+        results[0].kind = "folder"
+        const targetEntries = dirEntries("target", 4)
+        fakeBackend.files = dirEntries("origin", 8)
+        fakeBackend.currentDirId = ""
+        fakeBackend.searchResults = results
+        fakeBackend.searchActive = true
+        fakeBackend.searchSettled = true
+        fakeBackend.searchStatus = "搜索完成"
+        fakeBackend.autoNavigate = true
+        fakeBackend.dirStack = [""]
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        verify(list !== null)
+        list.contentY = 4 * 48
+        wait(30)
+        verify(list.contentY > 0, "测试必须从滚动后的搜索结果出发")
+
+        page.openEntryFolder("target-dir")
+        wait(60)
+        compare(fakeBackend.currentDirId, "target-dir")
+        fakeBackend.files = targetEntries
+        fakeBackend.filesLoading = false
+        fakeBackend.filesRevision += 1
+        fakeBackend.changed()
+        wait(100)
+
+        compare(page.holdingSearchEntries, false)
+        compare(list.contentY, 0, "从搜索结果进文件夹也要从顶部显示")
+        const first = list.itemAtIndex(0)
+        verify(first !== null && Math.round(first.y) === 0,
+               "首项必须停在顶部，y=" + (first ? first.y : "null"))
     }
 }

@@ -71,6 +71,14 @@ Item {
         gridView.positionViewAtIndex(index, mode)
     }
 
+    function positionViewAtBeginning() {
+        gridView.positionViewAtBeginning()
+    }
+
+    function forceLayout() {
+        gridView.forceLayout()
+    }
+
     function indexAt(x, y) {
         return gridView.indexAt(x, y)
     }

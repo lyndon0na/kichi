@@ -18,6 +18,7 @@ Item {
     // 多选状态（纯逻辑在 FileSelection.qml）
     FileSelection {
         id: selection
+        objectName: "fileSelection"
     }
 
     // 搜索视图开着：同一套列表 / 网格切换 model 显示结果
@@ -298,6 +299,7 @@ Item {
             const entries = page.displayEntries.slice()
             const statusText = page.backend.searchStatus
             const truncated = page.backend.searchTruncated === true
+            interaction.beginSearchChildNavigation()
             page.backend.searchOpenFolder(id)
             page.holdSearchEntriesUntilLoaded(entries, statusText, truncated)
         } else {
@@ -325,6 +327,7 @@ Item {
         if (!page.visible) {
             interaction.clearCreatedFlash()
             interaction.rememberScroll()
+            interaction.rememberSelection()
             page.clearHeldSearchEntries()
             if (page.searching && page.backend)
                 page.backend.exitSearch()
@@ -353,11 +356,13 @@ Item {
         Qt.callLater(interaction.tryRevealPending)
     }
     onSearchingChanged: {
-        selection.clear()
-        if (page.searching)
+        if (page.searching) {
+            interaction.beginSearch()
             page.clearHeldSearchEntries()
-        else
+        } else {
+            interaction.endSearch()
             Qt.callLater(page.refreshPendingOfflineTaskFolder)
+        }
     }
     onHoldingSearchEntriesChanged: {
         if (!page.holdingSearchEntries)
@@ -733,6 +738,9 @@ Item {
         target: page.backend
 
         function onChanged() {
+            // 登出后旧账号的目录 id 不能留到下一次登录。
+            if (page.backend && page.backend.authState !== "signedIn")
+                interaction.clearSelectionMemory()
             interaction.noteFilesRevision()
             if (page.holdingSearchEntries && page.backend
                     && !page.backend.filesLoading) {

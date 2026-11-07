@@ -16,6 +16,74 @@ QtObject {
 
     readonly property int count: Object.keys(selectedIds).length
 
+    /// 目录 id → { ids, anchorId }；只在本次运行内保留。
+    property var savedByDir: ({})
+    /// 目录的使用顺序，超出上限时淘汰最久未使用的。
+    property var savedOrder: []
+    readonly property int maxSavedDirs: 20
+
+    /// 离开目录前调用：把当前选择记到这个目录名下。
+    /// 选择为空时直接删掉记录，避免空目录长期占位。
+    function rememberForKey(key) {
+        const dirKey = String(key)
+        if (count === 0) {
+            if (savedByDir[dirKey] === undefined)
+                return
+            const next = copyDirMap(savedByDir)
+            delete next[dirKey]
+            savedByDir = next
+            const order = savedOrder.slice()
+            const at = order.indexOf(dirKey)
+            if (at >= 0)
+                order.splice(at, 1)
+            savedOrder = order
+            return
+        }
+        const next = copyDirMap(savedByDir)
+        next[dirKey] = {
+            ids: copy(selectedIds),
+            anchorId: anchorId
+        }
+        savedByDir = next
+        touchKey(dirKey)
+    }
+
+    /// 回到目录后调用：只恢复目标目录里仍存在的 id；
+    /// 没有记录就清空当前选择，不能把上一个目录的选择带进来。
+    function restoreForKey(key, entries) {
+        const dirKey = String(key)
+        const saved = savedByDir[dirKey]
+        if (!saved || !saved.ids) {
+            clear()
+            return
+        }
+        const present = ({})
+        for (let i = 0; i < (entries ? entries.length : 0); ++i) {
+            const id = entries[i] ? entries[i].id : ""
+            if (id)
+                present[id] = true
+        }
+        const next = ({})
+        let first = ""
+        const ids = Object.keys(saved.ids)
+        for (let i = 0; i < ids.length; ++i) {
+            if (present[ids[i]]) {
+                next[ids[i]] = true
+                if (first.length === 0)
+                    first = ids[i]
+            }
+        }
+        selectedIds = next
+        const anchor = saved.anchorId
+        anchorId = anchor && next[anchor] ? anchor : first
+        touchKey(dirKey)
+    }
+
+    function clearMemory() {
+        savedByDir = ({})
+        savedOrder = []
+    }
+
     function isSelected(id) {
         return !!id && selectedIds[id] === true
     }
@@ -169,5 +237,32 @@ QtObject {
         for (let i = 0; i < keys.length; i++)
             next[keys[i]] = true
         return next
+    }
+
+    function copyDirMap(map) {
+        const next = ({})
+        const keys = Object.keys(map)
+        for (let i = 0; i < keys.length; i++)
+            next[keys[i]] = map[keys[i]]
+        return next
+    }
+
+    /// 记录一次使用，并按上限淘汰最久未使用的目录。
+    function touchKey(key) {
+        const order = savedOrder.slice()
+        const at = order.indexOf(key)
+        if (at >= 0)
+            order.splice(at, 1)
+        order.push(key)
+        const evicted = []
+        while (order.length > maxSavedDirs)
+            evicted.push(order.shift())
+        if (evicted.length > 0) {
+            const next = copyDirMap(savedByDir)
+            for (let i = 0; i < evicted.length; i++)
+                delete next[evicted[i]]
+            savedByDir = next
+        }
+        savedOrder = order
     }
 }
