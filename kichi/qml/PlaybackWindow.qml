@@ -736,14 +736,18 @@ Window {
         }
 
         // 队列切集：旧画面已经结束，新一集还在取链 / 等窗口时显示加载环。
+        // 播放窗口里只作提示，不能点击取消：取消入口留在主窗口（文件列表 /
+        // 底栏提示条），关窗同样会停止这次加载。
         VideoLoadingOverlay {
+            objectName: "playbackWindowLoading"
+
             anchors.fill: parent
             cornerRadius: 0
             visible: win.playing && win.backend !== null && win.backend.queueAdvancing
-            onCancelRequested: {
-                if (win.backend !== null)
-                    win.backend.cancelPlayLoading()
-            }
+            cancellable: false
+            label: win.backend !== null && win.backend.playLoadingName.length > 0
+                   ? qsTr("正在加载「%1」…").arg(win.backend.playLoadingName)
+                   : qsTr("正在加载…")
         }
 
         Rectangle {
