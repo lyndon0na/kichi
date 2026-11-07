@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtTest
-import ".."
+import "../tasks"
 
 // 离线任务页列表差异算法的回归测试（2026-10-28）。
 //

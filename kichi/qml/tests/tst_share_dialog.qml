@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../shares"
 
 TestCase {
     name: "ShareDialog"

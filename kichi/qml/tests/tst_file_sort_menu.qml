@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../files"
 
 // 文件页右键「排序」子菜单。
 //

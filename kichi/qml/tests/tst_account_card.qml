@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../shell"
 
 // 账号区视觉回归：昵称优先、账号兜底、头像保留系统强调色、设置入口在行尾。
 TestCase {

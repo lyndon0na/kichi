@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../library"
 
 // 页头数据来源：只属于「已加星标」，且只在本地索引已开启、已就绪时显示。
 TestCase {

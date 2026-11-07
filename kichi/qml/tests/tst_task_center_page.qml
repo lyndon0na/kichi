@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../tasks"
 
 // 任务中心壳层：一个入口、两张独立表；切标签只改变哪张表处于 active。
 TestCase {

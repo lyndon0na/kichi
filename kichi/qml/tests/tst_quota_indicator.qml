@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../shell"
 
 // 底栏容量指示：首次加载画骨架、到达后原地替换；不限量时保留文字、不画容量条。
 TestCase {

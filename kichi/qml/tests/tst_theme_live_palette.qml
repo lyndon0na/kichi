@@ -1,6 +1,8 @@
 import QtQuick
 import QtTest
-import ".."
+import "../components"
+import "../core"
+import "../settings"
 
 // 回归：KTheme 挂在属性上可以避免影响默认内容项识别，但对象如果没有父项，
 // palette 会停在创建时的值，运行中切换 Plasma 配色后设置页不会实时刷新。

@@ -1,6 +1,8 @@
 import QtQuick
 import QtTest
-import ".."
+import "../core"
+import "../files"
+import "../trash"
 
 // 文件 / 回收站列表的新表格语言：
 // - 两页始终使用固定缩略图槽；

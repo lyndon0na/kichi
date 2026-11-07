@@ -1,6 +1,5 @@
 import QtQuick
 import QtTest
-import ".."
 
 // 文件列表的右键路由：
 // - 行上的右键由行内的 MouseArea 处理（多选需要修饰键）；

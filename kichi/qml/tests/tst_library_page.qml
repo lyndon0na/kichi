@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../library"
 
 // 资料库三页共用的表格骨架。
 // 三个数据源分支只替换后端的 libraryRows，页面本身必须能正确刷新、空态、

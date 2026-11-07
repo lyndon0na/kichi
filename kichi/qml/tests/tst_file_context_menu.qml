@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../files"
 
 // 文件条目右键菜单的「下载到本地」。
 //

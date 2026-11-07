@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../components"
 
 // VideoLoadingOverlay：列表里点击取消；播放窗口里把 cancellable 关掉后
 // 只显示加载环和文字提示，点击不再取消。

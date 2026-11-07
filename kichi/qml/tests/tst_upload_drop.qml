@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../files"
 
 // 文件页拖放上传：只负责把 URI 和拖入时的目录快照交给 Rust。
 TestCase {

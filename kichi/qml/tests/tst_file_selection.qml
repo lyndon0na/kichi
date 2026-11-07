@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../files"
 
 // 多选逻辑：Ctrl 切换、Shift 区间、全选、右键收窄、刷新后清理。
 //

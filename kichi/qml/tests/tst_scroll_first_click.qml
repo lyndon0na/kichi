@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../components"
 
 // 首击转发层自己的双击兜底：
 // 正常路径是第一次点击停住惯性、第二次回到委托；但如果视图仍报告 moving，

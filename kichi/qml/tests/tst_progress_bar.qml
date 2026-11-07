@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtTest
-import ".."
+import "../components"
 
 // 进度条静默性回归测试（2026-10-27）。
 //

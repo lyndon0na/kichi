@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
-import ".."
+import "../dialogs"
+import "../tasks"
 
 // 两个目录选择器的导航回归测试：
 // 滚轮后首击直接进入当前可见目录；进入子目录时在当前位置原子替换内容。

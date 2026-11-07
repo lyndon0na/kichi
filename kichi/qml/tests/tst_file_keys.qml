@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../files"
 
 // 文件页快捷键的焦点前提（用户实机报过「Ctrl+A / Delete / F2 / Enter / Backspace
 // 按了都没反应」）：

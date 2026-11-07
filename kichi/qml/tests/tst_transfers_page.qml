@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtTest
-import ".."
+import "../transfers"
 
 // 传输任务单列表回归测试：一行同时承载进行中 / 排队 / 历史，
 // 文件夹子行只按需内联插入，响应式列与逐行动作都直接驱动真实组件。

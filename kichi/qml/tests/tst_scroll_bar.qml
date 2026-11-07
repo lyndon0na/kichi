@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtTest
-import ".."
+import "../components"
 
 // KScrollBar：内容装不下时静止也在位；KDE 风格背景（整条轨道线）必须清掉，
 // 只留 6px 滑块，否则右侧看起来像还留着一根车道边框。

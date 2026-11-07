@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../playback"
 
 // 连播队列浮层：只读 backend.playQueue，点一行把队列下标发回去。
 TestCase {

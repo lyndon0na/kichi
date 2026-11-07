@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../trash"
 
 // 回收站表格与危险操作的组件测试。
 // 重点锁住：批量选择、还原、选中项彻底删除和整库清空的确认与异步边界。

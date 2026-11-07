@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
-import ".."
+import "../files"
+import "../components"
 
 TestCase {
     name: "FileIcons"

@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
-import ".."
+import "../core"
+import "../files"
 
 // 文件类内容页网格基础组件回归：
 // - 网格使用 3:2 缩略图，普通目录只显示最多两行文件名；

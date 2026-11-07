@@ -1,6 +1,10 @@
 import QtQuick
 import QtTest
-import ".."
+import "../components"
+import "../files"
+import "../library"
+import "../transfers"
+import "../trash"
 
 TestCase {
     name: "ElidedTextRows"

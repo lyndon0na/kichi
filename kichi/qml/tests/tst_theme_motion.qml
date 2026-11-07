@@ -1,7 +1,7 @@
 import QtQuick
 import QtTest
 import org.kde.kirigami as Kirigami
-import ".."
+import "../core"
 
 // 动效时长必须走 Kirigami 的令牌，这样 KDE 的全局动画速度设置才会生效。
 TestCase {

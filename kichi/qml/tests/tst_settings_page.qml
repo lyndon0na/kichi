@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../settings"
 
 // 设置对话框内容：左侧大纲切换分组，右侧只保留当前分组。
 // 退出登录仍在「账号」里：按钮只发一次 signOutRequested，

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtTest
-import ".."
+import "../playback"
 
 // 播放加载提示条的回归测试（2026-10-27）。
 //

@@ -99,7 +99,9 @@ KNOWN=(
     'Member "backend" not found on type "QQuickMenu"'
 )
 
-out="$("$LINT" -I "$MODULES" kichi/qml/*.qml 2>&1)"
+# qml 按功能区放在子目录里；lint 生产文件，tests/ 由下面的运行期测试覆盖。
+mapfile -t lint_files < <(find kichi/qml -name '*.qml' -not -path '*/tests/*' | sort)
+out="$("$LINT" -I "$MODULES" "${lint_files[@]}" 2>&1)"
 
 bad=""
 while IFS= read -r line; do

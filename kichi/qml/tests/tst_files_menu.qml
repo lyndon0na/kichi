@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
-import ".."
+import "../components"
+import "../files"
 
 // 文件页写操作弹窗（重命名 / 新建文件夹 / 删除）。
 //

@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../core"
 
 TestCase {
     name: "ClipboardHelper"

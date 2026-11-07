@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtTest
-import ".."
+import "../components"
 
 TestCase {
     name: "ElidedLabel"

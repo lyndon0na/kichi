@@ -1,6 +1,8 @@
 import QtQuick
 import QtTest
-import ".."
+import "../components"
+import "../core"
+import "../files"
 
 // 空内容加载骨架的共享状态与视觉布局。
 TestCase {

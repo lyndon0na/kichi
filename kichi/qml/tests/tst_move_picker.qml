@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../dialogs"
 
 // 移动 / 复制的目标文件夹选择器。
 //

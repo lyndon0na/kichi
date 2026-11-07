@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ".."
+import "../shell"
 
 // 侧栏显示顺序与页面索引解耦，避免重排后点进错误页面。
 TestCase {
