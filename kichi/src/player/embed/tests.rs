@@ -17,6 +17,32 @@ use crate::player::{PlaybackExtras, StartEvent};
 use crate::session::download::Cancel;
 
 #[test]
+fn buffering_covers_cache_seek_and_startup_but_not_user_pause() {
+    let session = super::Session::new(Arc::new(Cancel::default()));
+    assert!(!session.buffering());
+
+    // 起播前核心空闲算加载；用户手动暂停不算。
+    session.set_core_idle(true);
+    assert!(session.buffering());
+    session.set_paused(true);
+    assert!(!session.buffering());
+
+    // 等缓存是 mpv 自己因缓冲不足暂停，和用户暂停无关。
+    session.set_paused_for_cache(true);
+    assert!(session.buffering());
+    session.set_paused(false);
+    session.set_paused_for_cache(false);
+    assert!(session.buffering());
+
+    // 跳转中也显示加载环。
+    session.set_core_idle(false);
+    session.set_seeking(true);
+    assert!(session.buffering());
+    session.set_seeking(false);
+    assert!(!session.buffering());
+}
+
+#[test]
 #[ignore = "需要 Wayland 会话与 ffmpeg；手动运行"]
 fn embedded_pipeline_delivers_a_frame() {
     if let Err(reason) = available() {

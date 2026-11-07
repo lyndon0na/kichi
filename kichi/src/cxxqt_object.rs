@@ -647,6 +647,11 @@ pub mod qobject {
         #[cxx_name = "embedPaused"]
         fn embed_paused(self: &Self) -> bool;
 
+        /// 是否正在加载 / 缓冲（等缓存、跳转中或起播前空闲）；界面按固定节拍读取
+        #[qinvokable]
+        #[cxx_name = "embedBuffering"]
+        fn embed_buffering(self: &Self) -> bool;
+
         /// 当前轨道列表：`{ id, kind: "audio" / "sub", label, selected }`
         #[qinvokable]
         #[cxx_name = "embedTracks"]

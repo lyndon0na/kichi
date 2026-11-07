@@ -771,6 +771,11 @@ impl qobject::Kichi {
         crate::player::embed::is_paused()
     }
 
+    /// 是否正在加载 / 缓冲（等缓存、跳转中或起播前空闲）
+    pub fn embed_buffering(&self) -> bool {
+        crate::player::embed::buffering()
+    }
+
     /// 当前可切换的轨道（音轨 + 字幕轨）；菜单打开时现取，保证勾选状态最新。
     pub fn embed_tracks(&self) -> QVariantList {
         let mut list = QVariantList::default();

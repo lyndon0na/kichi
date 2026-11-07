@@ -217,6 +217,12 @@ pub(super) fn run(
                 }
                 ("mute", PropertyData::Flag(muted)) => session.set_muted(muted),
                 ("speed", PropertyData::Double(speed)) => session.set_speed(speed),
+                // 缓冲 / 跳转 / 起播前核心空闲：界面据此显示加载环，而不是停在旧画面。
+                ("paused-for-cache", PropertyData::Flag(buffering)) => {
+                    session.set_paused_for_cache(buffering);
+                }
+                ("seeking", PropertyData::Flag(seeking)) => session.set_seeking(seeking),
+                ("core-idle", PropertyData::Flag(idle)) => session.set_core_idle(idle),
                 ("vo-configured", PropertyData::Flag(true)) => {
                     if !session.wayland_connected() {
                         // VO 配置成功却没走过内嵌代理：mpv 连到了别的地方，
@@ -413,6 +419,10 @@ fn create_mpv(title: &str, settings: &SessionSettings) -> Result<Mpv, libmpv2::E
         ("mute", Format::Flag),
         ("speed", Format::Double),
         ("vo-configured", Format::Flag),
+        // 缓冲提示：等缓存 / 跳转中 / 起播前核心空闲（与手动暂停区分）。
+        ("paused-for-cache", Format::Flag),
+        ("seeking", Format::Flag),
+        ("core-idle", Format::Flag),
     ]
     .into_iter()
     .enumerate()

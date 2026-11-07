@@ -39,6 +39,10 @@ Window {
     property real duration: 0
     property bool paused: false
     property bool seeking: false
+    // mpv 正在等缓存 / 跳转 / 起播前空闲；持续一小会儿才亮加载环（见 syncBuffering）
+    property bool buffering: false
+    property bool showBuffering: false
+    readonly property bool queueAdvancing: backend !== null && backend.queueAdvancing === true
     property bool chromeVisible: true
     // 音量 / 静音由 backend 持久化；这里只绑定展示。
     readonly property int volume: backend !== null ? backend.embedVolume : 100
@@ -189,6 +193,21 @@ Window {
             backend.embedSyncAudio(actualVolume, actualMuted)
             audioSave.restart()
         }
+        syncBuffering()
+    }
+
+    // 缓冲提示：等缓存 / 跳转 / 起播前空闲时亮加载环。持续 300ms 才显示，
+    // 避免快速跳转或瞬时缓存抖动让界面闪一下。
+    function syncBuffering() {
+        var buffering = backend !== null && backend.embedBuffering() === true
+        win.buffering = buffering
+        if (!buffering || win.seeking) {
+            bufferingDelay.stop()
+            win.showBuffering = false
+            return
+        }
+        if (!bufferingDelay.running && !win.showBuffering)
+            bufferingDelay.restart()
     }
 
     function togglePause() {
@@ -228,6 +247,7 @@ Window {
         position = target
         seekSlider.value = target
         seekSettle.restart()
+        syncBuffering()
         wake()
     }
 
@@ -501,6 +521,9 @@ Window {
         hideTimer.stop()
         seekSettle.stop()
         osdTimer.stop()
+        bufferingDelay.stop()
+        buffering = false
+        showBuffering = false
         osdText = ""
         volumeOpen = false
         subStyleOpen = false
@@ -657,6 +680,16 @@ Window {
         onTriggered: win.commitAudio()
     }
 
+    // 缓冲提示的防闪烁延迟：短暂停顿不弹，持续等缓存 / 跳转才亮加载环。
+    Timer {
+        id: bufferingDelay
+        interval: 300
+        onTriggered: {
+            if (win.buffering && !win.seeking)
+                win.showBuffering = true
+        }
+    }
+
     Rectangle {
         id: surface
 
@@ -743,11 +776,24 @@ Window {
 
             anchors.fill: parent
             cornerRadius: 0
-            visible: win.playing && win.backend !== null && win.backend.queueAdvancing
+            visible: win.playing && win.queueAdvancing
             cancellable: false
             label: win.backend !== null && win.backend.playLoadingName.length > 0
                    ? qsTr("正在加载「%1」…").arg(win.backend.playLoadingName)
                    : qsTr("正在加载…")
+        }
+
+        // 播放中的缓冲 / 跳转 / 起播等待：mpv 画面会停在旧帧，用加载环明确告诉
+        // 用户还在工作。不能点击取消（取消入口在暂停按钮 / 关闭窗口）。
+        VideoLoadingOverlay {
+            objectName: "playbackWindowBuffering"
+
+            anchors.fill: parent
+            cornerRadius: 0
+            visible: win.playing && win.showBuffering && !win.queueAdvancing
+                     && video.error.length === 0
+            cancellable: false
+            label: qsTr("正在缓冲…")
         }
 
         Rectangle {

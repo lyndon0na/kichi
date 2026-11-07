@@ -38,6 +38,11 @@ pub(crate) struct Session {
     pub(crate) frame_dirty: Arc<AtomicBool>,
     control: Mutex<Option<Sender<Control>>>,
     paused: AtomicBool,
+    /// mpv 正在等缓存 / 正在跳转 / 核心空闲（起播前）。界面据此显示缓冲加载环。
+    /// 手动暂停不算加载：`core-idle` 与 `pause` 同时为真时按暂停处理。
+    paused_for_cache: AtomicBool,
+    seeking: AtomicBool,
+    core_idle: AtomicBool,
     /// 当前音量 / 静音：界面和 mpv 原生键位都会改它。
     volume: AtomicI32,
     muted: AtomicBool,
@@ -223,6 +228,9 @@ impl Session {
             frame_dirty: Arc::new(AtomicBool::new(false)),
             control: Mutex::new(None),
             paused: AtomicBool::new(false),
+            paused_for_cache: AtomicBool::new(false),
+            seeking: AtomicBool::new(false),
+            core_idle: AtomicBool::new(false),
             volume: AtomicI32::new(100),
             muted: AtomicBool::new(false),
             position: Mutex::new(None),
@@ -262,6 +270,28 @@ impl Session {
 
     pub(crate) fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_paused_for_cache(&self, paused: bool) {
+        self.paused_for_cache.store(paused, Ordering::Release);
+    }
+
+    pub(crate) fn set_seeking(&self, seeking: bool) {
+        self.seeking.store(seeking, Ordering::Release);
+    }
+
+    pub(crate) fn set_core_idle(&self, idle: bool) {
+        self.core_idle.store(idle, Ordering::Release);
+    }
+
+    /// 是否正在加载 / 缓冲：等缓存、跳转中，或起播前核心空闲。
+    ///
+    /// 手动暂停时 `core-idle` 也会为真，所以只有 `pause` 为假时才把空闲算作加载；
+    /// `paused-for-cache` 是 mpv 自己因缓存不足暂停，和用户暂停无关。
+    fn buffering(&self) -> bool {
+        self.paused_for_cache.load(Ordering::Acquire)
+            || self.seeking.load(Ordering::Acquire)
+            || (self.core_idle.load(Ordering::Acquire) && !self.paused.load(Ordering::Acquire))
     }
 
     pub(crate) fn set_volume(&self, volume: i32) {
@@ -664,6 +694,11 @@ pub fn seek_absolute(seconds: f64) {
 
 pub fn is_paused() -> bool {
     current().is_some_and(|session| session.is_paused())
+}
+
+/// 当前会话是否正在加载 / 缓冲（等缓存、跳转或起播前空闲）。
+pub fn buffering() -> bool {
+    current().is_some_and(|session| session.buffering())
 }
 
 pub fn position() -> Option<f64> {
