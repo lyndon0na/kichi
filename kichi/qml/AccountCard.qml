@@ -50,9 +50,12 @@ Item {
 
     // 账号信息是侧栏页脚，不再做成独立卡片：只用一条淡分隔线收尾，
     // 避免和导航选中项争夺视觉层级。
-    implicitHeight: layout.y + layout.implicitHeight + theme.gapSm
+    // 自己不再留底部内边距：侧栏本身有 12px 外边距补齐，否则
+    // 「分隔线→账号行」比「账号行→窗口底」少一截，整行看着偏上（2026-11-07 用户反馈）。
+    implicitHeight: layout.y + layout.implicitHeight
 
     Rectangle {
+        objectName: "accountDivider"
         width: parent.width
         height: 1
         color: theme.divider

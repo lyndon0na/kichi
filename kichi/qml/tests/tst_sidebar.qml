@@ -137,6 +137,19 @@ TestCase {
         sidebar.currentIndex = 0
     }
 
+    function test_account_row_vertical_insets_match() {
+        const divider = findChild(sidebar, "accountDivider")
+        const button = findChild(sidebar, "accountSettingsButton")
+        verify(divider !== null && button !== null, "账号区缺少分隔线或设置入口")
+
+        // 分隔线到账号行、账号行到侧栏底要一样高；底部那段由侧栏的 12px
+        // 外边距补齐，账号卡自己不能再留内边距（否则整行偏上）。
+        const rowTop = button.mapToItem(sidebar, 0, 0).y
+        const dividerBottom = divider.mapToItem(sidebar, 0, divider.height).y
+        const below = sidebar.height - (rowTop + button.height)
+        compare(rowTop - dividerBottom, below, "账号区上下留白必须一致")
+    }
+
     function test_account_settings_entry_requests_settings_page() {
         const settingsButton = findChild(sidebar, "accountSettingsButton")
         verify(settingsButton !== null, "账号行缺少设置入口")
