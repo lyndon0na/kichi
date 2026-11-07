@@ -391,7 +391,10 @@ fn create_mpv(
             // 就会把画面压扁 / 拉长。
             ("keepaspect-window", "no"),
         ] {
-            init.set_option(name, value)?;
+            if let Err(err) = init.set_option(name, value) {
+                eprintln!("[kichi] 内嵌播放器固定选项「{name}={value}」设置失败：{err}");
+                return Err(err);
+            }
         }
         // 一次性设好合成器 preferred target；HDR 源也会被 mpv tone-map 到
         // 这个 target，和外部 mpv 的 target-colorspace-hint 行为一致。
