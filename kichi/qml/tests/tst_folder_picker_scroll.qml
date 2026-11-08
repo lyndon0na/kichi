@@ -198,6 +198,20 @@ TestCase {
         return list
     }
 
+    // 惯性滚动中 ListView 可能有一帧拿不到中心点下的 delegate（或指针正好落在
+    // 两行之间的 spacing 里），等坐标重新落到某一行再继续，避免把渲染计时差异
+    // 当成「首击失效」。
+    function centerIndex(list) {
+        const x = list.width / 2
+        const y = list.height / 2
+        let index = -1
+        tryVerify(function () {
+            index = list.indexAt(x, y + list.contentY)
+            return index >= 0
+        }, 1000, "滚轮后列表中心必须有可点击的行")
+        return index
+    }
+
     function wheelThenClickFirstVisible(list, picker, prefix) {
         const centerX = list.width / 2
         const centerY = list.height / 2
@@ -208,7 +222,7 @@ TestCase {
         wait(40)
         verify(list.contentY > 0, "滚轮必须滚动列表")
 
-        const index = list.indexAt(centerX, centerY + list.contentY)
+        const index = centerIndex(list)
         verify(index >= 0)
         verify(index !== initialIndex, "点击的应是滚轮后新出现的目录")
 
@@ -234,7 +248,7 @@ TestCase {
         mouseWheel(list, x, y, 0, -120)
         wait(40)
         verify(list.contentY > 0)
-        const index = list.indexAt(x, y + list.contentY)
+        const index = centerIndex(list)
         verify(index >= 0)
         verify(index !== initialIndex)
 
