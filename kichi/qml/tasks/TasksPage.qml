@@ -12,6 +12,10 @@ Item {
     property var backend: null
     /// 页面被侧栏切到前台：首次进入立即刷新，之后由 Rust 冷却与轮询合并请求。
     property bool active: false
+    // 页面切走时先把 ListView 的 model 摘掉再清空 ListModel：
+    // 直接 clear 时缓存中的委托会触发 Qt 的
+    // `DelegateModel::cancel: index out range`（QTBUG-66749 同类）。
+    property var taskViewModel: taskRows
     property alias savedContentY: scrollMemory.savedY
     property alias pendingScrollRestore: scrollMemory.pending
     property alias scrollRestoreAttempts: scrollMemory.attempts
@@ -58,13 +62,17 @@ Item {
         if (!active) {
             scrollMemory.remember()
             scrollMemory.cancel()
+            page.taskViewModel = null
             taskRows.clear()
+            // 清空后再挂回去；否则测试 / 调用点读 list.model 会拿到 null。
+            page.taskViewModel = taskRows
             if (list) {
                 list.positionViewAtBeginning()
                 list.contentY = 0
             }
             return
         }
+        page.taskViewModel = taskRows
         if (list)
             list.positionViewAtBeginning()
         page.syncRows()
@@ -160,7 +168,7 @@ Item {
                 anchors.fill: parent
                 clip: true
                 spacing: 0
-                model: taskRows
+                model: page.taskViewModel
                 boundsBehavior: Flickable.StopAtBounds
                 onContentHeightChanged: scrollMemory.restore()
 
