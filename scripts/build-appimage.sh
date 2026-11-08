@@ -3,7 +3,8 @@
 #
 # 设计边界：
 # - Qt / Kirigami / qqc2-desktop-style 和它们的运行库进包；
-# - KWallet、XDG Portal、Plasma 主题、Breeze 图标、mpv / VLC 继续用宿主；
+# - 内嵌播放保留，但 libmpv / FFmpeg 由宿主提供（需安装 mpv-libs / mpv）；
+# - KWallet、XDG Portal、Plasma 主题、Breeze 图标继续用宿主；
 # - 工具固定版本并校验 SHA-256，缓存到 target/appimage-tools；
 # - 产物只面向当前构建机（Fedora 的 glibc 下限），不作为跨发行版承诺。
 
@@ -133,6 +134,10 @@ prune_appdir() {
             ! -name 'qtdeclarative_zh_CN.qm' ! -name 'qtdeclarative_zh_TW.qm' \
             -delete
     fi
+
+    # 内嵌播放保留，但 libmpv / FFmpeg 交给宿主：先删掉 libmpv，
+    # 下面的 ldd 可达性会把只被它拖进来的 FFmpeg / 编解码库一并裁掉。
+    rm -f "$appdir"/usr/lib/libmpv.so "$appdir"/usr/lib/libmpv.so.*
 
     # 只保留从剩余程序、插件和 QML 模块可达的库；被裁模块拖进来的
     # libQt6Pdf / libQt63D / 冷门图片编解码器会在这一步一起消失。
@@ -280,6 +285,21 @@ mkdir -p "$APPDIR/apprun-hooks"
 cat > "$APPDIR/apprun-hooks/linuxdeploy-plugin-qt-hook.sh" <<'HOOK'
 # Replaced by kichi: non-KDE appearance comes from XDG Desktop Portal.
 # Do not set QT_QPA_PLATFORMTHEME here; the gtk2 platform theme is not packaged.
+# linuxdeploy 的 AppRun 只会 source 这个文件，libmpv 检查必须从这里带进来。
+. "$this_dir"/apprun-hooks/kichi-require-libmpv.sh
+HOOK
+
+# libmpv / FFmpeg 不随包提供，缺了在启动阶段给一句能照做的提示，
+# 而不是让动态链接器抛 “libmpv.so.2: cannot open shared object file”。
+cat > "$APPDIR/apprun-hooks/kichi-require-libmpv.sh" <<'HOOK'
+if ! {
+    ldconfig -p 2>/dev/null | grep -q 'libmpv\.so\.2' ||
+    [ -e /usr/lib64/libmpv.so.2 ] || [ -e /usr/lib/libmpv.so.2 ] ||
+    [ -e /lib64/libmpv.so.2 ] || [ -e /lib/libmpv.so.2 ]
+}; then
+    echo "kichi: 需要宿主安装 libmpv（Fedora: sudo dnf install mpv-libs；Arch: sudo pacman -S mpv；Debian: sudo apt install libmpv2）" >&2
+    exit 1
+fi
 HOOK
 
 prune_appdir "$APPDIR"
@@ -293,13 +313,21 @@ missing=0
 while IFS= read -r -d '' f; do
     file -b "$f" | grep -q '^ELF' || continue
     out="$(ldd "$f" 2>&1 || true)"
-    if printf '%s\n' "$out" | grep -q 'not found'; then
+    # libmpv 由宿主提供，AppDir 里本来就不该有；其余未解析依赖仍算失败。
+    unresolved="$(printf '%s\n' "$out" | grep 'not found' | grep -v 'libmpv\.so\.2' || true)"
+    if [[ -n "$unresolved" ]]; then
         echo "build-appimage: $f 存在未解析依赖：" >&2
-        printf '%s\n' "$out" | grep 'not found' >&2
+        printf '%s\n' "$unresolved" >&2
         missing=1
     fi
 done < <(find "$APPDIR/usr" -type f \( -perm -u+x -o -name '*.so' -o -name '*.so.*' \) -print0)
 [[ "$missing" == 0 ]] || exit 1
+
+# libmpv 必须留给宿主；意外进包说明裁剪逻辑回退了。
+[[ ! -e "$APPDIR/usr/lib/libmpv.so.2" ]] || {
+    echo "build-appimage: 不该打进包的 libmpv.so.2" >&2
+    exit 1
+}
 
 for required in \
     usr/bin/kichi \
@@ -310,8 +338,7 @@ for required in \
     usr/plugins/platforms/libqwayland.so \
     usr/plugins/platforms/libqxcb.so \
     usr/plugins/wayland-shell-integration/libxdg-shell.so \
-    usr/lib/libQt6Quick.so.6 \
-    usr/lib/libmpv.so.2; do
+    usr/lib/libQt6Quick.so.6; do
     [[ -f "$APPDIR/$required" ]] || {
         echo "build-appimage: AppDir 缺少必需文件：$required" >&2
         exit 1

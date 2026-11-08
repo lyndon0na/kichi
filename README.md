@@ -43,7 +43,7 @@ Flatpak 走同一套逻辑。
 | 上传 | 文件 / 文件夹、拖放、multipart 断点、限速、自动续传（可选） |
 | 分享 | 创建分享、管理列表、批量撤销 |
 | 资料库 | 最近保存、播放历史、已加星标 |
-| 播放 | 内嵌 libmpv（Wayland）、外部 mpv / VLC（Flatpak 版仅内嵌）、清晰度选择、外挂字幕、续播、文件夹连播 |
+| 播放 | 内嵌 libmpv（Wayland；需宿主 libmpv）、外部 mpv / VLC（可切换）、清晰度选择、外挂字幕、续播、文件夹连播 |
 | 桌面集成 | 系统托盘、单实例、系统深色模式与强调色、中文界面 |
 
 ## 环境要求
@@ -51,7 +51,9 @@ Flatpak 走同一套逻辑。
 - Linux，推荐 Wayland 会话
 - 系统钥匙串（KWallet / Secret Service）用于保存登录令牌；不可用时降级为 0600 文件
 - XDG Desktop Portal（文件选择、目录选择）
-- 内嵌播放需要 Wayland 会话；没有 `WAYLAND_DISPLAY` 时自动回退外部 mpv
+- 内嵌播放需要 Wayland 会话和宿主 libmpv；AppImage 不打包 libmpv，
+  需先安装 `mpv-libs`（Fedora）/ `mpv`（Arch）/ `libmpv2`（Debian）。
+  没有 `WAYLAND_DISPLAY` 时自动回退外部 mpv
   （Flatpak 版没有外部回退，只提示需要 Wayland）
 
 ## 构建
@@ -101,7 +103,10 @@ chmod +x dist/kichi-*.AppImage
 ```
 
 脚本按当前构建机的 glibc 版本打包，不承诺跨发行版兼容；
-KWallet、XDG Portal、系统主题、Breeze 图标、mpv / VLC 仍使用宿主环境。
+KWallet、XDG Portal、系统主题、Breeze 图标继续使用宿主环境。
+AppImage **不打包 libmpv / FFmpeg**，内嵌播放使用宿主的 `libmpv.so.2`；
+运行前需要安装 `mpv-libs`（Fedora）/ `mpv`（Arch）/ `libmpv2`（Debian），
+缺了会在启动时给出提示。
 
 ### Flatpak
 
