@@ -1225,10 +1225,18 @@ mod torrents;
 // 播放：取链、续播、播放列表
 #[path = "cxxqt_object/playback/play.rs"]
 mod play;
+#[path = "cxxqt_object/playback/play_embed.rs"]
+mod play_embed;
+#[path = "cxxqt_object/playback/play_fetch.rs"]
+mod play_fetch;
 #[path = "cxxqt_object/playback/play_history.rs"]
 mod play_history;
 #[path = "cxxqt_object/playback/play_prepare.rs"]
 mod play_prepare;
+#[path = "cxxqt_object/playback/play_start.rs"]
+mod play_start;
+#[path = "cxxqt_object/playback/play_state.rs"]
+mod play_state;
 #[path = "cxxqt_object/playback/playlist.rs"]
 mod playlist;
 #[path = "cxxqt_object/playback/playlist_prefetch.rs"]
