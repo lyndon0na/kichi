@@ -55,6 +55,13 @@ jobs:
           mpv-devel patchelf cmake ninja-build gcc-c++ pkgconf-pkg-config
           desktop-file-utils
       - uses: actions/checkout@v4
+      - name: Cache AppImage tools
+        uses: actions/cache@v4
+        with:
+          path: target/appimage-tools
+          key: appimage-tools-v1-${{ hashFiles('scripts/build-appimage.sh') }}
+          restore-keys: |
+            appimage-tools-v1-
       - uses: dtolnay/rust-toolchain@stable
       - name: Build AppImage
         run: ./scripts/build-appimage.sh

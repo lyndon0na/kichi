@@ -67,6 +67,8 @@ APPIMAGETOOL_SHA=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb
 LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
 QT_PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
+RUNTIME="$TOOLS_DIR/runtime-x86_64"
 
 fetch_tool() {
     local path="$1"
@@ -80,7 +82,8 @@ fetch_tool() {
             exit 1
         }
         echo "==> 下载 $(basename "$path")"
-        curl -fL --retry 3 --connect-timeout 15 -o "$tmp" "$url"
+        curl -fL --retry 8 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 15 -o "$tmp" "$url"
         echo "$expected  $tmp" | sha256sum -c -
         mv "$tmp" "$path"
         chmod +x "$path"
@@ -162,6 +165,24 @@ mkdir -p "$TOOLS_DIR" "$DIST_DIR"
 fetch_tool "$LINUXDEPLOY" "$LINUXDEPLOY_URL" "$LINUXDEPLOY_SHA"
 fetch_tool "$QT_PLUGIN" "$QT_PLUGIN_URL" "$QT_PLUGIN_SHA"
 fetch_tool "$APPIMAGETOOL" "$APPIMAGETOOL_URL" "$APPIMAGETOOL_SHA"
+
+# appimagetool 默认会在打包时临时下载 runtime；单独缓存它，GitHub 下载
+# 偶发 504 时至少第二次构建不用再等。没有固定 SHA（continuous 通道）。
+if [[ ! -x "$RUNTIME" ]]; then
+    command -v curl >/dev/null 2>&1 || {
+        echo "build-appimage: 缺少 curl，且 runtime 不在 $TOOLS_DIR" >&2
+        exit 1
+    }
+    echo "==> 下载 AppImage runtime"
+    curl -fL --retry 8 --retry-all-errors --retry-delay 5 \
+        --connect-timeout 15 -o "$RUNTIME.part" "$RUNTIME_URL"
+    mv "$RUNTIME.part" "$RUNTIME"
+    chmod +x "$RUNTIME"
+fi
+file -b "$RUNTIME" | grep -q '^ELF' || {
+    echo "build-appimage: runtime 不是 ELF：$RUNTIME" >&2
+    exit 1
+}
 
 # 构建环境可能没有 /dev/fuse；让 AppImage 工具走解包运行路径。
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -365,7 +386,7 @@ for pkg in qt6-qtbase qt6-qtdeclarative qt6-qtwayland kf6-kirigami \
 done
 
 echo "==> 生成 AppImage"
-"$APPIMAGETOOL" --no-appstream "$APPDIR" "$DIST_DIR/$APPIMAGE_NAME"
+"$APPIMAGETOOL" --no-appstream --runtime-file "$RUNTIME" "$APPDIR" "$DIST_DIR/$APPIMAGE_NAME"
 chmod +x "$DIST_DIR/$APPIMAGE_NAME"
 (
     cd "$DIST_DIR"
