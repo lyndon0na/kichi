@@ -1167,6 +1167,10 @@ mod file_transfers;
 mod files;
 #[path = "cxxqt_object/files/files_cache.rs"]
 mod files_cache;
+#[path = "cxxqt_object/files/files_nav.rs"]
+mod files_nav;
+#[path = "cxxqt_object/files/files_view.rs"]
+mod files_view;
 
 // 回收站
 #[path = "cxxqt_object/trash/trash.rs"]
