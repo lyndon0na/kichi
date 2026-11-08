@@ -1123,6 +1123,12 @@ impl QVariantList {
 // 通用基础设施：后台线程、配置、通知、缩略图、文件定位、目录选择器
 #[path = "cxxqt_object/common/actions.rs"]
 mod actions;
+#[path = "cxxqt_object/common/actions_display.rs"]
+mod actions_display;
+#[path = "cxxqt_object/common/actions_index.rs"]
+mod actions_index;
+#[path = "cxxqt_object/common/actions_status.rs"]
+mod actions_status;
 #[path = "cxxqt_object/common/backend.rs"]
 mod backend;
 #[path = "cxxqt_object/common/folder_picker.rs"]
