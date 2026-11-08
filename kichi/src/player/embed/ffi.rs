@@ -5,7 +5,10 @@
 
 use std::os::fd::AsRawFd;
 
-use super::{color::ColorTarget, set_viewport, take_frame, Frame};
+use super::{
+    color::{self, ColorInfo, ColorTarget},
+    set_viewport, take_frame, Frame,
+};
 
 #[no_mangle]
 pub extern "C" fn kichi_embed_frame_pending() -> bool {
@@ -107,6 +110,28 @@ pub unsafe extern "C" fn kichi_embed_frame_plane_stride(frame: *const Frame, ind
 #[no_mangle]
 pub extern "C" fn kichi_embed_set_viewport(width: i32, height: i32, scale: f64) {
     set_viewport(width, height, scale);
+}
+
+/// 把 compositor preferred 的原始描述换算成 mpv / surface 用的输出 target。
+///
+/// 规则与 mpv `wayland_common.c: info_done()` 一致；放在 Rust 侧是为了让
+/// `color.rs` 的单测能覆盖 PQ 切换和 203 nit 缩放。
+#[no_mangle]
+pub unsafe extern "C" fn kichi_normalize_color_info(
+    info: *const ColorInfo,
+    out: *mut ColorTarget,
+) -> bool {
+    let Some(info) = (unsafe { info.as_ref() }) else {
+        return false;
+    };
+    let Some(target) = color::normalize(*info) else {
+        return false;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return false;
+    };
+    *out = target;
+    true
 }
 
 /// C++ presenter 发现播放窗口的首选色彩变化：只投递到 mpv 事件线程。

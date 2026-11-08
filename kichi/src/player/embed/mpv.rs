@@ -335,7 +335,7 @@ pub(super) fn run(
     terminate(mpv);
 }
 
-/// 按合成器首选色彩决定 mpv 的 output target。
+/// 按合成器首选色彩（已归一化）决定 mpv 的 output target。
 ///
 /// SDR / HDR 都用同一个 target；HDR 源由 mpv tone-map 到它。返回创建时
 /// 实际采用的 target，播放中换屏后由 [`Control::SetColorTarget`] 更新。
@@ -361,6 +361,12 @@ fn create_mpv(
             ("vo", "gpu-next"),
             ("gpu-context", gpu_context),
             ("gpu-api", gpu_api),
+            // mpv 的 surface 是代理造的，image description 由 kichi 设到真
+            // surface 上。让 mpv 自己发 colorspace hint 时，Vulkan/Wayland
+            // 没有 color surface 会把 target 改回 sRGB，导致 target-* 被忽略、
+            // 画面用 sRGB 编码却贴着 PQ 描述（非常暗）。禁用 hint，让
+            // target-* 真正决定渲染目标。
+            ("target-colorspace-hint", "no"),
             ("hwdec", "auto-safe"),
             // 测试自检时把 mpv 日志打到 stderr，方便排查链路；正式构建保持静默。
             ("terminal", if cfg!(test) { "yes" } else { "no" }),
@@ -396,7 +402,7 @@ fn create_mpv(
                 return Err(err);
             }
         }
-        // 一次性设好合成器 preferred target；HDR 源也会被 mpv tone-map 到
+        // 一次性设好归一化后的输出 target；HDR 源也会被 mpv tone-map 到
         // 这个 target，和外部 mpv 的 target-colorspace-hint 行为一致。
         if let Some(target) = preferred {
             if let Some(primaries) = color::primaries_name(target.primaries) {

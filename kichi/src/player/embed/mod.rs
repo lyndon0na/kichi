@@ -85,7 +85,7 @@ pub(crate) enum Control {
     Keypress(String),
     /// 立即套用新的字幕样式（设置页 / 播放窗口调整时实时预览）。
     SubtitleStyle(SubtitleStyle),
-    /// 播放窗口换屏 / 合成器 preferred 变化：更新 mpv 的 target-*。
+    /// 播放窗口换屏 / 合成器 preferred 变化：更新 mpv 的归一化 target-*。
     ///
     /// C++ presenter 只通过 [`set_color_target`] 投递，不跨线程直接调 mpv。
     SetColorTarget(color::ColorTarget),

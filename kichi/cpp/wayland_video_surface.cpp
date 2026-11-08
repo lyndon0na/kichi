@@ -30,6 +30,8 @@
 namespace {
 
 std::mutex gTargetMutex;
+// 合成器原始 preferred（调试展示用）和归一化后的输出目标（mpv/surface 用）。
+KichiColorInfo gPreferredInfo{};
 KichiColorTarget gPreferredTarget{};
 bool gPreferredTargetValid = false;
 
@@ -117,6 +119,9 @@ struct InfoState {
     uint32_t minLuminance = 0;
     uint32_t maxLuminance = 0;
     uint32_t referenceLuminance = 0;
+    uint32_t targetMaxLuminance = 0;
+    uint32_t maxCll = 0;
+    uint32_t maxFall = 0;
     bool hasLuminance = false;
 };
 
@@ -128,8 +133,39 @@ struct TargetQuery {
     uint32_t minLuminance = 0;
     uint32_t maxLuminance = 0;
     uint32_t referenceLuminance = 0;
+    uint32_t targetMaxLuminance = 0;
+    uint32_t maxCll = 0;
+    uint32_t maxFall = 0;
     bool hasLuminance = false;
 };
+
+KichiColorInfo queryInfo(const TargetQuery &query)
+{
+    KichiColorInfo info{};
+    info.primaries = mapPrimaries(query.primaries);
+    info.transfer = mapTransfer(query.transfer);
+    info.min_luminance_10000 = query.minLuminance;
+    info.max_luminance = query.maxLuminance;
+    info.reference_luminance = query.referenceLuminance;
+    info.target_max_luminance = query.targetMaxLuminance;
+    info.max_cll = query.maxCll;
+    info.max_fall = query.maxFall;
+    return info;
+}
+
+KichiColorInfo stateInfo(const InfoState &state)
+{
+    KichiColorInfo info{};
+    info.primaries = mapPrimaries(state.primaries);
+    info.transfer = mapTransfer(state.transfer);
+    info.min_luminance_10000 = state.minLuminance;
+    info.max_luminance = state.maxLuminance;
+    info.reference_luminance = state.referenceLuminance;
+    info.target_max_luminance = state.targetMaxLuminance;
+    info.max_cll = state.maxCll;
+    info.max_fall = state.maxFall;
+    return info;
+}
 
 void registryGlobal(void *data, wl_registry *registry, uint32_t name, const char *interface,
                     uint32_t version)
@@ -244,7 +280,9 @@ void infoDone(void *data, wp_image_description_info_v1 *info)
     auto *state = static_cast<InfoState *>(data);
     qInfo() << "[kichi] 内嵌 Wayland 色彩：preferred primaries=" << state->primaries
             << "transfer=" << state->transfer << "lum=" << state->minLuminance << "/"
-            << state->maxLuminance << "/" << state->referenceLuminance;
+            << state->maxLuminance << "/" << state->referenceLuminance
+            << "target=" << state->targetMaxLuminance << "cll=" << state->maxCll
+            << "fall=" << state->maxFall;
     if (state->hasLuminance) {
         // 主窗口 / 播放窗口的 preferred 才是 SDR target；child preferred 只在
         // 没有主窗口 target 时兜底（它经常是默认 sRGB/80，不能覆盖 HDR）。
@@ -254,9 +292,7 @@ void infoDone(void *data, wp_image_description_info_v1 *info)
             needFallback = !gPreferredTargetValid;
         }
         if (needFallback) {
-            state->self->rememberPreferred(state->primaries, state->transfer,
-                                           state->minLuminance, state->maxLuminance,
-                                           state->referenceLuminance);
+            state->self->rememberPreferred(stateInfo(*state));
         }
     }
     delete state;
@@ -302,16 +338,24 @@ void infoTargetPrimaries(void *, wp_image_description_info_v1 *, int32_t, int32_
 {
 }
 
-void infoTargetLuminance(void *, wp_image_description_info_v1 *, uint32_t, uint32_t)
+void infoTargetLuminance(void *data, wp_image_description_info_v1 *, uint32_t minLuminance,
+                         uint32_t maxLuminance)
 {
+    auto *state = static_cast<InfoState *>(data);
+    // min 也留着：mpv 的缩放公式会用 a = luminances.min，但 display 的
+    // min 不属于 preferred 的纸白/峰值，这里目前只取峰值。
+    (void)minLuminance;
+    state->targetMaxLuminance = maxLuminance;
 }
 
-void infoTargetMaxCll(void *, wp_image_description_info_v1 *, uint32_t)
+void infoTargetMaxCll(void *data, wp_image_description_info_v1 *, uint32_t maxCll)
 {
+    static_cast<InfoState *>(data)->maxCll = maxCll;
 }
 
-void infoTargetMaxFall(void *, wp_image_description_info_v1 *, uint32_t)
+void infoTargetMaxFall(void *data, wp_image_description_info_v1 *, uint32_t maxFall)
 {
+    static_cast<InfoState *>(data)->maxFall = maxFall;
 }
 
 const wp_image_description_info_v1_listener infoListener = {
@@ -418,16 +462,21 @@ void targetInfoTargetPrimaries(void *, wp_image_description_info_v1 *, int32_t, 
 {
 }
 
-void targetInfoTargetLuminance(void *, wp_image_description_info_v1 *, uint32_t, uint32_t)
+void targetInfoTargetLuminance(void *data, wp_image_description_info_v1 *, uint32_t minLuminance,
+                               uint32_t maxLuminance)
 {
+    (void)minLuminance;
+    static_cast<TargetQuery *>(data)->targetMaxLuminance = maxLuminance;
 }
 
-void targetInfoTargetMaxCll(void *, wp_image_description_info_v1 *, uint32_t)
+void targetInfoTargetMaxCll(void *data, wp_image_description_info_v1 *, uint32_t maxCll)
 {
+    static_cast<TargetQuery *>(data)->maxCll = maxCll;
 }
 
-void targetInfoTargetMaxFall(void *, wp_image_description_info_v1 *, uint32_t)
+void targetInfoTargetMaxFall(void *data, wp_image_description_info_v1 *, uint32_t maxFall)
 {
+    static_cast<TargetQuery *>(data)->maxFall = maxFall;
 }
 
 const wp_image_description_info_v1_listener targetInfoListener = {
@@ -621,28 +670,28 @@ void WaylandVideoSurface::queryPreferredTarget()
     }
 
     if (queried) {
-        if (rememberPreferred(query.primaries, query.transfer, query.minLuminance,
-                              query.maxLuminance, query.referenceLuminance)) {
+        if (rememberPreferred(queryInfo(query))) {
             publishTarget();
         }
         qInfo() << "[kichi] 内嵌 Wayland 首选色彩：primaries=" << query.primaries
                 << "transfer=" << query.transfer << "lum=" << query.minLuminance << "/"
-                << query.maxLuminance << "/" << query.referenceLuminance;
+                << query.maxLuminance << "/" << query.referenceLuminance
+                << "target=" << query.targetMaxLuminance << "cll=" << query.maxCll
+                << "fall=" << query.maxFall;
     } else {
-        // KWin 默认 SDR 混合空间；主窗口还不可查时用它兜底。
-        KichiColorTarget fallback{};
+        // KWin 默认 SDR 混合空间；主窗口还不可查时用它兜底。归一化后
+        // target-peak 会是 203，reference 也是 203；surface 按相对亮度描述。
+        KichiColorInfo fallback{};
         fallback.primaries = KICHI_PRIMARIES_BT709;
-        fallback.transfer = KICHI_TRANSFER_SRGB;
+        // KWin 的 SDR 混合空间是 gamma2.2；不要用 SRGB，KWin 的
+        // parametric creator 明确拒绝已弃用的 SRGB transfer。
+        fallback.transfer = KICHI_TRANSFER_GAMMA22;
         fallback.min_luminance_10000 = 2000;
         fallback.max_luminance = 80;
         fallback.reference_luminance = 80;
-        {
-            std::lock_guard<std::mutex> lock(gTargetMutex);
-            gPreferredTarget = fallback;
-            gPreferredTargetValid = true;
-        }
-        applyColorInfo(fallback);
-        qInfo() << "[kichi] 内嵌 Wayland 首选色彩：回退 sRGB/BT709/80";
+        fallback.target_max_luminance = 80;
+        rememberPreferred(fallback);
+        qInfo() << "[kichi] 内嵌 Wayland 首选色彩：回退 gamma2.2/BT709/80";
     }
 }
 
@@ -674,8 +723,7 @@ void WaylandVideoSurface::queryPlaybackPreferred()
 
     if (!query.ready || query.failed || !query.hasLuminance)
         return;
-    if (!rememberPreferred(query.primaries, query.transfer, query.minLuminance,
-                           query.maxLuminance, query.referenceLuminance))
+    if (!rememberPreferred(queryInfo(query)))
         return;
 
     // 先让视频 surface 用新描述，再把同一个 target 投给 mpv 线程。
@@ -1132,9 +1180,7 @@ void WaylandVideoSurface::applyColorDescription()
         target = gPreferredTarget;
     }
     if (valid) {
-        if (applyParametric(waylandPrimaries(target.primaries), waylandTransfer(target.transfer),
-                            target.min_luminance_10000, target.max_luminance,
-                            target.reference_luminance))
+        if (applyParametric(target))
             return;
     }
 
@@ -1161,13 +1207,14 @@ void WaylandVideoSurface::applyColorDescription()
     wp_image_description_v1_add_listener(description, &descListener, state);
 }
 
-bool WaylandVideoSurface::applyParametric(uint32_t primaries, uint32_t transfer,
-                                          uint32_t minLuminance, uint32_t maxLuminance,
-                                          uint32_t referenceLuminance)
+bool WaylandVideoSurface::applyParametric(const KichiColorTarget &target)
 {
     if (!m_colorSurface || !m_colorManager || !m_cmParametric || !m_cmSetPrimaries
         || !m_cmSetLuminances)
         return false;
+
+    const uint32_t primaries = waylandPrimaries(target.primaries);
+    const uint32_t transfer = waylandTransfer(target.transfer);
     if (transfer == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ && !m_cmHasPq)
         return false;
     if (transfer == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22 && !m_cmHasGamma22)
@@ -1183,8 +1230,35 @@ bool WaylandVideoSurface::applyParametric(uint32_t primaries, uint32_t transfer,
     wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(creator), m_queue);
     wp_image_description_creator_params_v1_set_primaries_named(creator, primaries);
     wp_image_description_creator_params_v1_set_tf_named(creator, transfer);
-    wp_image_description_creator_params_v1_set_luminances(creator, minLuminance, maxLuminance,
-                                                          referenceLuminance);
+
+    const bool pq = transfer == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ;
+    const bool hlg = transfer == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG;
+    if (pq) {
+        // PQ 的 surface 亮度固定为 0..10000、参考白 203；目标峰值只通过
+        // HDR metadata 传给 compositor（mpv 的 set_color_management 同做法）。
+        wp_image_description_creator_params_v1_set_luminances(creator, 0, 10'000, 203);
+        wp_image_description_creator_params_v1_set_mastering_luminance(
+            creator, 0, target.max_luminance);
+        wp_image_description_creator_params_v1_set_max_cll(creator, target.max_luminance);
+        wp_image_description_creator_params_v1_set_max_fall(creator, 0);
+        qInfo() << "[kichi] 内嵌 Wayland 色彩：surface PQ 0..10000/203，peak="
+                << target.max_luminance;
+    } else if (hlg) {
+        // HLG 保留曲线，亮度范围用协议默认值；峰值由 metadata 表达。
+        wp_image_description_creator_params_v1_set_mastering_luminance(
+            creator, 0, target.max_luminance);
+        wp_image_description_creator_params_v1_set_max_cll(creator, target.max_luminance);
+        wp_image_description_creator_params_v1_set_max_fall(creator, 0);
+        qInfo() << "[kichi] 内嵌 Wayland 色彩：surface HLG，peak=" << target.max_luminance;
+    } else {
+        wp_image_description_creator_params_v1_set_luminances(
+            creator, target.min_luminance_10000, target.max_luminance,
+            target.reference_luminance);
+        qInfo() << "[kichi] 内嵌 Wayland 色彩：surface SDR lum="
+                << target.min_luminance_10000 << "/" << target.max_luminance << "/"
+                << target.reference_luminance;
+    }
+
     auto *description = wp_image_description_creator_params_v1_create(creator);
     if (!description)
         return false;
@@ -1192,9 +1266,8 @@ bool WaylandVideoSurface::applyParametric(uint32_t primaries, uint32_t transfer,
     // 自建的 parametric 描述不允许 get_information（协议 no_information）。
     auto *state = new DescState{this, false};
     wp_image_description_v1_add_listener(description, &descListener, state);
-    qInfo() << "[kichi] 内嵌 Wayland 色彩：preferred primaries=" << primaries
-            << "transfer=" << transfer << "lum=" << minLuminance << "/" << maxLuminance
-            << "/" << referenceLuminance;
+    qInfo() << "[kichi] 内嵌 Wayland 色彩：target primaries=" << primaries
+            << "transfer=" << transfer << "peak=" << target.max_luminance;
     return true;
 }
 
@@ -1230,19 +1303,21 @@ void WaylandVideoSurface::applyImageDescription(wp_image_description_v1 *descrip
     }
 }
 
-bool WaylandVideoSurface::rememberPreferred(uint32_t primaries, uint32_t transfer,
-                                            uint32_t minLuminance, uint32_t maxLuminance,
-                                            uint32_t referenceLuminance)
+bool WaylandVideoSurface::rememberPreferred(const KichiColorInfo &info)
 {
+    // 归一化规则在 Rust 的 color.rs 里，C++ 只负责查询和落盘；这样
+    // 760/400 → 386 的换算有单测覆盖。
     KichiColorTarget next{};
-    next.primaries = mapPrimaries(primaries);
-    next.transfer = mapTransfer(transfer);
-    next.min_luminance_10000 = minLuminance;
-    next.max_luminance = maxLuminance;
-    next.reference_luminance = referenceLuminance;
-    if (next.primaries == KICHI_PRIMARIES_UNKNOWN || next.transfer == KICHI_TRANSFER_UNKNOWN
-        || next.max_luminance == 0)
+    if (!kichi_normalize_color_info(&info, &next)) {
+        qWarning() << "[kichi] 内嵌 Wayland 色彩：无法归一化 preferred"
+                   << "primaries=" << info.primaries << "transfer=" << info.transfer
+                   << "lum=" << info.min_luminance_10000 << "/" << info.max_luminance << "/"
+                   << info.reference_luminance << "target=" << info.target_max_luminance;
         return false;
+    }
+
+    // 调试文字同时保留原始 preferred 和实际输出 target。
+    applyColorInfo(info, next);
 
     {
         std::lock_guard<std::mutex> lock(gTargetMutex);
@@ -1250,12 +1325,14 @@ bool WaylandVideoSurface::rememberPreferred(uint32_t primaries, uint32_t transfe
             && gPreferredTarget.transfer == next.transfer
             && gPreferredTarget.min_luminance_10000 == next.min_luminance_10000
             && gPreferredTarget.max_luminance == next.max_luminance
-            && gPreferredTarget.reference_luminance == next.reference_luminance)
+            && gPreferredTarget.reference_luminance == next.reference_luminance) {
+            gPreferredInfo = info;
             return false;
+        }
+        gPreferredInfo = info;
         gPreferredTarget = next;
         gPreferredTargetValid = true;
     }
-    applyColorInfo(next);
     return true;
 }
 
@@ -1272,46 +1349,49 @@ void WaylandVideoSurface::publishTarget()
     kichi_embed_set_color_target(&target);
 }
 
-void WaylandVideoSurface::applyColorInfo(const KichiColorTarget &target)
+static QString primariesLabel(int primaries)
 {
-    QString primaries;
-    switch (target.primaries) {
+    switch (primaries) {
     case KICHI_PRIMARIES_BT2020:
-        primaries = QStringLiteral("BT.2020");
-        break;
+        return QStringLiteral("BT.2020");
     case KICHI_PRIMARIES_DISPLAY_P3:
-        primaries = QStringLiteral("Display P3");
-        break;
+        return QStringLiteral("Display P3");
     case KICHI_PRIMARIES_BT709:
-        primaries = QStringLiteral("BT.709");
-        break;
+        return QStringLiteral("BT.709");
     default:
-        primaries = QStringLiteral("未知色域");
-        break;
+        return QStringLiteral("未知色域");
     }
+}
 
-    QString transfer;
-    switch (target.transfer) {
+static QString transferLabel(int transfer)
+{
+    switch (transfer) {
     case KICHI_TRANSFER_PQ:
-        transfer = QStringLiteral("PQ");
-        break;
+        return QStringLiteral("PQ");
     case KICHI_TRANSFER_HLG:
-        transfer = QStringLiteral("HLG");
-        break;
+        return QStringLiteral("HLG");
     case KICHI_TRANSFER_SRGB:
-        transfer = QStringLiteral("sRGB");
-        break;
+        return QStringLiteral("sRGB");
     case KICHI_TRANSFER_GAMMA22:
-        transfer = QStringLiteral("gamma2.2");
-        break;
+        return QStringLiteral("gamma2.2");
     default:
-        transfer = QStringLiteral("未知传输");
-        break;
+        return QStringLiteral("未知传输");
     }
+}
 
-    m_colorInfo = QStringLiteral("%1 / %2 / %3 nits")
-                      .arg(primaries, transfer)
-                      .arg(target.max_luminance);
+void WaylandVideoSurface::applyColorInfo(const KichiColorInfo &preferred,
+                                         const KichiColorTarget &target)
+{
+    const QString raw = QStringLiteral("%1/%2/%3 ref%4")
+                            .arg(primariesLabel(preferred.primaries),
+                                 transferLabel(preferred.transfer))
+                            .arg(preferred.max_luminance)
+                            .arg(preferred.reference_luminance);
+    const QString output = QStringLiteral("%1/%2/%3")
+                               .arg(primariesLabel(target.primaries),
+                                    transferLabel(target.transfer))
+                               .arg(target.max_luminance);
+    m_colorInfo = raw + QStringLiteral(" → ") + output + QStringLiteral(" nits");
 }
 
 // -------------------------------------------------------------------- misc

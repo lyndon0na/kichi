@@ -13,6 +13,7 @@ class QQuickWindow;
 class QScreen;
 
 struct wl_buffer;
+struct KichiColorInfo;
 struct KichiColorTarget;
 struct wl_compositor;
 struct wl_display;
@@ -39,7 +40,8 @@ struct KichiFrame;
 //
 // 视频像素不再经过 Qt 场景图：Qt 只负责窗口和控件，KWin 直接合成视频 surface。
 // 10bit / HDR / 硬解 dmabuf / tiled modifier 都能原样交给合成器；色彩跟随
-// 播放窗口所在 output 的 preferred image description。
+// 播放窗口所在 output 的 preferred image description，并按 mpv 的 target
+// 模式归一化成 PQ / 相对亮度描述。
 class WaylandVideoSurface
 {
 public:
@@ -62,8 +64,7 @@ public:
 
     // 供 C 语言 Wayland listener 调用（不是给业务层用的 API）。
     void applyImageDescription(wp_image_description_v1 *description, bool allowInfo);
-    bool rememberPreferred(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
-                           uint32_t maxLuminance, uint32_t referenceLuminance);
+    bool rememberPreferred(const KichiColorInfo &info);
     void onBufferReleased(wl_buffer *buffer);
     void onPresentationPresented(struct wp_presentation_feedback *feedback, uint32_t tvSecHi,
                                  uint32_t tvSecLo, uint32_t tvNsec, uint32_t refresh,
@@ -87,9 +88,8 @@ private:
     bool createShmBuffer(KichiFrame *frame, int width, int height, wl_buffer **out);
     void dispatch();
     void applyColorDescription();
-    void applyColorInfo(const KichiColorTarget &target);
-    bool applyParametric(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
-                         uint32_t maxLuminance, uint32_t referenceLuminance);
+    void applyColorInfo(const KichiColorInfo &preferred, const KichiColorTarget &target);
+    bool applyParametric(const KichiColorTarget &target);
     void notifyFrame();
     void setError(const QString &error);
 

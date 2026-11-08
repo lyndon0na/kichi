@@ -13,8 +13,21 @@ extern "C" {
 
 typedef struct KichiFrame KichiFrame;
 
-// Wayland presenter 查询到的合成器首选色彩目标。整数值与
-// kichi/src/player/embed/color.rs 的 Rust 枚举保持一致。
+// 合成器 preferred image description 的原始值（wp_image_description_info_v1）。
+// 整数值与 kichi/src/player/embed/color.rs 的 Rust 枚举保持一致。
+typedef struct KichiColorInfo {
+    int32_t primaries;
+    int32_t transfer;
+    uint32_t min_luminance_10000;
+    uint32_t max_luminance;
+    uint32_t reference_luminance;
+    // target_luminance 的 max；0 表示 compositor 没发。
+    uint32_t target_max_luminance;
+    uint32_t max_cll;
+    uint32_t max_fall;
+} KichiColorInfo;
+
+// 归一化后的输出目标：mpv target-* 和视频 surface description 共用。
 typedef struct KichiColorTarget {
     int32_t primaries;
     int32_t transfer;
@@ -22,6 +35,9 @@ typedef struct KichiColorTarget {
     uint32_t max_luminance;
     uint32_t reference_luminance;
 } KichiColorTarget;
+
+// 把 preferred 原始描述换算成输出目标（mpv target 模式）。成功返回 true。
+bool kichi_normalize_color_info(const KichiColorInfo *info, KichiColorTarget *out);
 
 // C++ presenter 在真实 child surface 上收到的 wp_presentation feedback。
 // token 由代理生成并随 KichiFrame 传来；presented=0 表示 discarded。
