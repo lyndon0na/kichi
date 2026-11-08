@@ -4,9 +4,11 @@ import org.kde.kirigami as Kirigami
 
 // 全应用视觉令牌（圆角 / 间距 / 字号 / 表面色）。
 //
-// 原则没有变：颜色仍然全部从 `palette.*` 推导，明暗跟随 Plasma 桌面设置，
-// 不自带两套色板。这里只是把以前散在各处的
-// 「12 / 4 / 0.05」收成有名字的常量，改一处全应用一起变。
+// 原则没有变：颜色仍然全部从 `palette.*` 推导，不自带两套色板。
+// KDE 会话由 Qt/KDE 原生主题读取 `kdeglobals`；其他桌面使用 Fusion，
+// 由 Rust 侧从 XDG Desktop Portal 读取深色偏好与强调色后注入 QPalette
+// （见 `src/appearance.rs` 与 `cpp/app_platform.cpp`）。因此这里只负责
+// 把同一个 palette 翻译成有名字的令牌，不关心系统外观来自哪里。
 //
 // 用法：在需要的地方实例化一个 `KTheme { id: theme }`，读 `theme.radiusCard`
 // 之类的值。它本身不可见、尺寸为 0，不参与布局。
@@ -62,7 +64,9 @@ Item {
     /// 页面标题淡入时的轻微上移距离
     readonly property int motionPageLift: 3
 
-    // —— 强调色（= Plasma 系统强调色，Primary 按钮 / 选中态 / 关键高亮） ——
+    // —— 强调色（系统强调色：Primary 按钮 / 选中态 / 关键高亮） ——
+    // KDE 下来自 Plasma 的 palette.highlight；其他桌面由 appearance 模块把
+    // portal 的 accent-color 写进 Highlight / Accent / highlightedText。
     readonly property color accent: palette.highlight
     // ⚠ 不要命名为 onAccent / onDanger：QML 会把 on* 解析成信号处理器，
     // 这两个属性会静默回落成无效颜色（文字变黑）。

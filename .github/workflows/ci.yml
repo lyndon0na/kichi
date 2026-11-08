@@ -22,6 +22,7 @@ jobs:
           dnf install -y
           git curl ca-certificates tar gzip
           qt6-qtbase-devel qt6-qtdeclarative-devel
+          kf6-kirigami kf6-qqc2-desktop-style
           mpv-devel cmake ninja-build gcc-c++ pkgconf-pkg-config
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

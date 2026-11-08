@@ -222,6 +222,16 @@ else
     echo "build-appimage: 警告：找不到 Kirigami 平台插件 $KIRIGAMI_PLATFORM_PLUGIN" >&2
 fi
 
+# KDE 会话使用 org.kde.desktop 风格，配色来自 KDE 平台主题；不带上它，
+# 包内只剩 xdgdesktopportal，Plasma 下会退回默认调色板、丢失系统强调色。
+KDE_PLATFORM_THEME="$QT_PLUGINS_DIR/platformthemes/KDEPlasmaPlatformTheme6.so"
+if [[ -f "$KDE_PLATFORM_THEME" ]]; then
+    install -Dm644 "$KDE_PLATFORM_THEME" \
+        "$APPDIR/usr/plugins/platformthemes/KDEPlasmaPlatformTheme6.so"
+else
+    echo "build-appimage: 警告：找不到 KDE 平台主题 $KDE_PLATFORM_THEME；KDE 下可能退回默认浅色" >&2
+fi
+
 export QML_SOURCES_PATHS="$BUILD_DIR/qml-src:$ROOT/packaging/appimage"
 export QML_MODULES_PATHS="$QT_QML_DIR"
 # linuxdeploy-plugin-qt 默认只带 X11 平台插件；显式加入 Wayland，
@@ -253,6 +263,7 @@ done
 # 继续递归部署；这里再处理显式放进 AppDir 的 Kirigami / Wayland 插件。
 for plugin_path in \
     "$APPDIR/usr/plugins/kf6/kirigami/platform" \
+    "$APPDIR/usr/plugins/platformthemes" \
     "$APPDIR/usr/plugins/wayland-decoration-client" \
     "$APPDIR/usr/plugins/wayland-graphics-integration-client" \
     "$APPDIR/usr/plugins/wayland-shell-integration"; do
@@ -261,6 +272,15 @@ for plugin_path in \
         --appdir "$APPDIR" \
         --deploy-deps-only "$plugin_path"
 done
+
+# linuxdeploy 会塞一个把 GNOME / XFCE 指向 gtk2 平台主题的钩子，但包内没有
+# gtk2 插件；非 KDE 的外观改由应用自己读 XDG Desktop Portal。保留文件本身
+# （AppRun 会无条件 source 它），只把内容换成空操作。
+mkdir -p "$APPDIR/apprun-hooks"
+cat > "$APPDIR/apprun-hooks/linuxdeploy-plugin-qt-hook.sh" <<'HOOK'
+# Replaced by kichi: non-KDE appearance comes from XDG Desktop Portal.
+# Do not set QT_QPA_PLATFORMTHEME here; the gtk2 platform theme is not packaged.
+HOOK
 
 prune_appdir "$APPDIR"
 
@@ -285,6 +305,7 @@ for required in \
     usr/bin/kichi \
     usr/qml/org/kde/desktop/qmldir \
     usr/qml/org/kde/kirigami/qmldir \
+    usr/qml/QtQuick/Controls/Fusion/qmldir \
     usr/plugins/kf6/kirigami/platform/org.kde.desktop.so \
     usr/plugins/platforms/libqwayland.so \
     usr/plugins/platforms/libqxcb.so \
@@ -297,10 +318,19 @@ for required in \
     }
 done
 
+# KDE 平台主题在纯 GNOME 构建机上可能不存在；存在时必须成功进包。
+if [[ -f "$KDE_PLATFORM_THEME" ]]; then
+    [[ -f "$APPDIR/usr/plugins/platformthemes/KDEPlasmaPlatformTheme6.so" ]] || {
+        echo "build-appimage: AppDir 缺少 KDE 平台主题" >&2
+        exit 1
+    }
+fi
+
 echo "==> 收集许可证与项目声明"
 install -m644 LICENSE "$APPDIR/usr/share/licenses/kichi/LICENSE"
 install -m644 THIRD_PARTY_NOTICES.md "$APPDIR/usr/share/licenses/kichi/THIRD_PARTY_NOTICES.md"
-for pkg in qt6-qtbase qt6-qtdeclarative qt6-qtwayland kf6-kirigami kf6-qqc2-desktop-style mpv-libs; do
+for pkg in qt6-qtbase qt6-qtdeclarative qt6-qtwayland kf6-kirigami \
+    kf6-qqc2-desktop-style plasma-integration mpv-libs; do
     if [[ -d "/usr/share/licenses/$pkg" ]]; then
         mkdir -p "$APPDIR/usr/share/licenses/kichi/$pkg"
         cp -a "/usr/share/licenses/$pkg/." "$APPDIR/usr/share/licenses/kichi/$pkg/"

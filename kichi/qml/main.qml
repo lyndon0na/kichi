@@ -18,7 +18,10 @@ ApplicationWindow {
     height: 640
     visible: true
     // 窗口底色 = 内容「白纸」色：页头、列表共用一块面，靠侧栏的浅灰区分出外壳
-    color: palette.base
+    // 走 KTheme 而不是直接 `palette.base`：运行中切换系统深浅色时，
+    // ApplicationWindow 自身的 palette 绑定不一定跟着应用调色板更新，
+    // 子项里的 KTheme 会更新（否则会出现卡片已变暗、窗口底色还是浅色）。
+    color: theme.surface
 
     // 会话对象：构造时自动恢复 KWallet 里的登录态
     Kichi {

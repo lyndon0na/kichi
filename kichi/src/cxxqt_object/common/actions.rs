@@ -143,6 +143,10 @@ impl qobject::Kichi {
 
     /// 主线程抽水：执行后台线程投递过来的结果（QML 定时器驱动）。
     pub fn pump(mut self: Pin<&mut Self>) {
+        // 系统外观变化（深色 / 强调色）也回到主线程应用。
+        if let Some(appearance) = crate::appearance::take_pending() {
+            crate::appearance::apply(appearance);
+        }
         let mut handled = false;
         // 托盘事件（显示/退出）也在主线程消费
         for event in super::tray::poll() {

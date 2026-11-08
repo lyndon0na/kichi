@@ -170,3 +170,14 @@ if [[ $status -ne 0 ]] || grep -qE '^(FAIL!|QWARN|WARNING)' <<<"$kde_out"; then
     exit 1
 fi
 echo "qml-lint: tst_scroll_bar.qml（KDE 风格）通过"
+
+# 非 KDE 桌面实际跑 Fusion；主题令牌在 Fusion 下也必须完整可读。
+fusion_out="$(QT_QPA_PLATFORM=offscreen QT_QUICK_CONTROLS_STYLE=Fusion \
+    timeout 120 "$RUNNER" -input kichi/qml/tests/tst_theme_dark_accent.qml 2>&1)"
+status=$?
+if [[ $status -ne 0 ]] || grep -qE '^(FAIL!|QWARN|WARNING)' <<<"$fusion_out"; then
+    echo "qml-lint: 深色主题测试在 Fusion 风格下失败（退出码 $status）" >&2
+    printf '%s\n' "$fusion_out" >&2
+    exit 1
+fi
+echo "qml-lint: tst_theme_dark_accent.qml（Fusion 风格）通过"

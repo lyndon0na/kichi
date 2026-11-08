@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import org.kde.kirigami.dialogs as KDialogs
 import "../core"
 
 // 统一弹窗外观：大圆角、弹窗表面色、极浅描边。
@@ -26,12 +25,48 @@ Dialog {
     // 无标题的防御分支仍保留正常上边距。
     topPadding: title.length > 0 ? 0 : padding
 
-    header: KDialogs.DialogHeader {
-        dialog: control
+    // 标题栏自己画：KDE 的 DialogHeader 走 Kirigami / kdeglobals，非 KDE 桌面
+    // 既不会跟随注入的调色板，关闭按钮用的 window-close-symbolic 也未必存在。
+    // 这里只保留标题和关闭入口，颜色全部走 KTheme（= 当前 palette）。
+    header: Item {
+        id: header
+
         visible: control.title.length > 0
-        padding: control.padding
-        // 只保留 Dialog.spacing 这一道标题 / 正文间隔。
-        bottomPadding: 0
+        implicitHeight: visible
+                        ? Math.max(titleLabel.implicitHeight,
+                                   closeButton.implicitHeight) + theme.gapMd
+                        : 0
+
+        ElidedLabel {
+            id: titleLabel
+
+            objectName: "dialogTitleLabel"
+            anchors.left: parent.left
+            anchors.leftMargin: control.padding
+            anchors.right: closeButton.left
+            anchors.rightMargin: theme.gapSm
+            anchors.verticalCenter: parent.verticalCenter
+            text: control.title
+            font.pixelSize: theme.fontSection
+            font.weight: Font.DemiBold
+            color: theme.textPrimary
+            elide: Text.ElideRight
+        }
+
+        KIconButton {
+            id: closeButton
+
+            objectName: "dialogCloseButton"
+            anchors.right: parent.right
+            anchors.rightMargin: control.padding
+            anchors.verticalCenter: parent.verticalCenter
+            iconName: "x"
+            iconSize: 14
+            iconOpacity: 0.7
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("关闭")
+            onClicked: control.reject()
+        }
     }
 
     // org.kde.desktop 的 Dialog 样式会把 contentItem 固定成一个空 Item。

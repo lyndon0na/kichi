@@ -77,6 +77,7 @@ AppImage 会动态打包 Qt 6 和 KDE 运行时组件。按当前 Fedora 构建�
 | Qt 6 Core / Gui / Qml / Quick / Wayland 等 | `LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0` |
 | KDE Kirigami | BSD-3-Clause、CC0-1.0、FSFAP、GPL-2.0-or-later、LGPL-2.x、LGPL-3.0-only、MIT 等（按文件） |
 | `kf6-qqc2-desktop-style` | CC0-1.0、GPL-2.0-only、GPL-2.0-or-later、GPL-3.0-only、LGPL-2.x、LGPL-3.0-only 及 KFQF GPL 文本（按文件） |
+| `plasma-integration`（KDE 平台主题） | BSD-3-Clause、CC0-1.0、GPL-2.0-only、GPL-3.0-only、LGPL-2.x、LGPL-3.0-only（按文件） |
 | Breeze 图标主题 | LGPL-2.1-or-later、LGPL-3.0-or-later、CC-BY-SA-4.0（按文件） |
 
 这些组件的完整许可证文本由发行版包提供。发布 AppImage 时必须随包收集对应文本，

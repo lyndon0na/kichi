@@ -14,8 +14,13 @@
   PikPak 的第三方 Linux 桌面客户端。
 </p>
 
-kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随系统配色，目标是做成一个
+kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随系统外观，目标是做成一个
 日常可用的原生桌面应用，而不是网页套壳。
+
+KDE 会话使用 `org.kde.desktop`（Breeze 外观，配色与强调色来自 Plasma）；
+其他桌面使用完全由 `QPalette` 驱动的 Fusion，并通过 XDG Desktop Portal 的
+`org.freedesktop.appearance` 读取系统深色偏好与强调色。源码运行、AppImage 和
+Flatpak 走同一套逻辑。
 
 > **非官方项目**：与 PikPak 官方没有任何关系。客户端使用第三方接口，接口随时可能变化；
 > 请自行确认使用方式符合服务条款，风险自负。
@@ -39,7 +44,7 @@ kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随系统配色，目�
 | 分享 | 创建分享、管理列表、批量撤销 |
 | 资料库 | 最近保存、播放历史、已加星标 |
 | 播放 | 内嵌 libmpv（Wayland）、外部 mpv / VLC（Flatpak 版仅内嵌）、清晰度选择、外挂字幕、续播、文件夹连播 |
-| 桌面集成 | 系统托盘、单实例、系统配色、中文界面 |
+| 桌面集成 | 系统托盘、单实例、系统深色模式与强调色、中文界面 |
 
 ## 环境要求
 
@@ -54,11 +59,16 @@ kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随系统配色，目�
 需要 Rust 工具链和以下系统依赖（Fedora 包名）：
 
 ```bash
-sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel mpv-devel cmake gcc-c++
+sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel \
+    kf6-kirigami kf6-qqc2-desktop-style mpv-devel cmake gcc-c++
 ```
 
-Debian / Ubuntu 对应的包名是 `qt6-base-dev`、`qt6-declarative-dev`、`libmpv-dev`、
-`cmake`、`g++`。
+Debian / Ubuntu 对应的包名是 `qt6-base-dev`、`qt6-declarative-dev`、
+`qml6-module-org-kde-kirigami`、`qml6-module-org-kde-qqc2desktopstyle`（发行版
+拆包时名称可能略有不同）、`libmpv-dev`、`cmake`、`g++`。
+
+`kf6-kirigami` 提供 `KTheme` 使用的动效时长令牌；`kf6-qqc2-desktop-style`
+只在 KDE 会话下用于原生 Breeze 控件，非 KDE 桌面会改用 Qt 自带的 Fusion。
 
 ```bash
 git clone https://github.com/lyndon0na/kichi.git
@@ -134,7 +144,8 @@ cargo test --workspace      # 单元测试
 
 ## 已知限制
 
-- 主要针对 Wayland 开发和验证，其他桌面环境可用但未逐一验证
+- 主要针对 Wayland 开发和验证；非 KDE 桌面使用 Fusion，并按 XDG Desktop Portal
+  跟随深色模式与强调色，其他桌面环境尚未逐一实机验证
 - PikPak 接口没有公开文档，字段和错误码可能随官方变动
 - 内嵌播放窗口的行为仍在实机打磨中
 

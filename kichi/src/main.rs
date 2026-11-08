@@ -4,6 +4,7 @@
 //! 生成的 QML 类型注册表，因此 QML 里可以直接 `import io.kichi 1.0`
 //! 实例化 `Kichi {}`（无需从 C++ 侧注入根对象）。
 
+mod appearance;
 mod cxxqt_object;
 mod format;
 mod instance;
@@ -28,13 +29,22 @@ fn main() {
         instance::Claim::Unprotected => None,
     };
 
-    // 控件风格：跟随 KDE 桌面（Breeze 图标 + 系统配色方案）。
-    // 不指定时 Qt 用 Basic 风格——一套刻意不带装饰的裸控件，菜单 / 弹窗 / 输入框
-    // 会显得和桌面其它应用不是一家人。
+    // 控件风格：KDE 用 org.kde.desktop（Breeze 外观 + KDE 原生调色板）；
+    // 其他桌面用 Fusion。Fusion 完全由 QPalette 驱动，才能接住 XDG Desktop
+    // Portal 给的深色偏好和强调色；org.kde.desktop 的开关等私有控件固定读
+    // Kirigami / kdeglobals，在 GNOME 下无法只靠调色板变暗。
     // 用户显式设了环境变量就尊重用户（调试 / 换风格时别被这里覆盖）。
     if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
-        std::env::set_var("QT_QUICK_CONTROLS_STYLE", "org.kde.desktop");
+        let style = if platform::kde_session() {
+            "org.kde.desktop"
+        } else {
+            "Fusion"
+        };
+        std::env::set_var("QT_QUICK_CONTROLS_STYLE", style);
     }
+    // 只有纯 QPalette 驱动的风格才需要外观注入；KDE 原生风格由 KDE 自己维护。
+    let palette_driven =
+        std::env::var("QT_QUICK_CONTROLS_STYLE").map_or(true, |style| style != "org.kde.desktop");
 
     // 上次崩溃可能留下字幕临时目录：只清 24 小时前的，避免误删另一个实例正在用的。
     player::subtitles::sweep_stale(std::time::Duration::from_secs(24 * 60 * 60));
@@ -61,6 +71,12 @@ fn main() {
     // 播放窗口是独立的顶层窗口：主窗口缩到托盘后关掉播放窗口，不能连带结束整个
     // 进程。真退出由 main.qml 的关窗 / 托盘逻辑显式调用 Qt.quit()。
     unsafe { kichi_set_quit_on_last_window_closed(false) };
+
+    // 先取一次系统外观再载入 QML：深色偏好 / 强调色直接成为窗口的默认
+    // palette，避免首帧先画成浅色再闪一下。之后的变化由 Kichi::pump() 应用。
+    if palette_driven {
+        appearance::apply(appearance::start());
+    }
 
     let mut engine = QQmlApplicationEngine::new();
 
