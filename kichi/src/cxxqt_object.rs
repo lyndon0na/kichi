@@ -1193,6 +1193,12 @@ mod upload_queue;
 mod upload_scan;
 #[path = "cxxqt_object/upload/upload_worker.rs"]
 mod upload_worker;
+#[path = "cxxqt_object/upload/upload_worker_file.rs"]
+mod upload_worker_file;
+#[path = "cxxqt_object/upload/upload_worker_folder.rs"]
+mod upload_worker_folder;
+#[path = "cxxqt_object/upload/upload_worker_notice.rs"]
+mod upload_worker_notice;
 #[path = "cxxqt_object/upload/uploads.rs"]
 mod uploads;
 
