@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:45
     steps:
+      # qml-lint 的 ElidedLabel 用例依赖中文字体宽度；容器里没有 CJK 字体时
+      # 纯中文文本宽度为 0，truncated 断言会失败。
       - name: Install system dependencies
         run: >
           dnf install -y
@@ -24,6 +26,7 @@ jobs:
           qt6-qtbase-devel qt6-qtdeclarative-devel
           kf6-kirigami kf6-qqc2-desktop-style
           mpv-devel cmake ninja-build gcc-c++ pkgconf-pkg-config
+          google-droid-sans-fonts
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
