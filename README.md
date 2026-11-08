@@ -11,14 +11,21 @@
 </p>
 
 <p align="center">
-  PikPak 的非官方 Linux 桌面客户端，面向 KDE Plasma / Wayland。
+  PikPak 的第三方 Linux 桌面客户端。
 </p>
 
-kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随 Plasma 系统配色，目标是做成一个
+kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随系统配色，目标是做成一个
 日常可用的原生桌面应用，而不是网页套壳。
 
 > **非官方项目**：与 PikPak 官方没有任何关系。客户端使用第三方接口，接口随时可能变化；
 > 请自行确认使用方式符合服务条款，风险自负。
+
+<p align="center">
+  <a href="docs/screenshots/main-window.webp">
+    <img src="docs/screenshots/main-window.webp" alt="kichi 主界面与内嵌播放器" width="900">
+  </a>
+</p>
+<p align="center"><sub>主界面与内嵌播放器</sub></p>
 
 ## 功能
 
@@ -32,11 +39,11 @@ kichi 用 Rust + Qt 6（cxx-qt + QML）写成，界面跟随 Plasma 系统配色
 | 分享 | 创建分享、管理列表、批量撤销 |
 | 资料库 | 最近保存、播放历史、已加星标 |
 | 播放 | 内嵌 libmpv（Wayland）、外部 mpv / VLC（Flatpak 版仅内嵌）、清晰度选择、外挂字幕、续播、文件夹连播 |
-| 桌面集成 | 系统托盘、单实例、Plasma 配色、中文界面 |
+| 桌面集成 | 系统托盘、单实例、系统配色、中文界面 |
 
 ## 环境要求
 
-- Linux，推荐 KDE Plasma + Wayland
+- Linux，推荐 Wayland 会话
 - 系统钥匙串（KWallet / Secret Service）用于保存登录令牌；不可用时降级为 0600 文件
 - XDG Desktop Portal（文件选择、目录选择）
 - 内嵌播放需要 Wayland 会话；没有 `WAYLAND_DISPLAY` 时自动回退外部 mpv
@@ -69,12 +76,22 @@ cargo build --release
 
 ### AppImage
 
+需要 `patchelf >= 0.18`（Fedora：`sudo dnf install patchelf`），脚本目前只支持 x86_64；
+`linuxdeploy` 等工具会自动下载并校验。
+
 ```bash
 ./scripts/build-appimage.sh
 ```
 
-产物在 `dist/`。脚本按当前构建机的 glibc 版本打包，不承诺跨发行版兼容；
-KWallet、XDG Portal、Plasma 主题、Breeze 图标、mpv / VLC 仍使用宿主环境。
+产物在 `dist/`，运行：
+
+```bash
+chmod +x dist/kichi-*.AppImage
+./dist/kichi-*.AppImage
+```
+
+脚本按当前构建机的 glibc 版本打包，不承诺跨发行版兼容；
+KWallet、XDG Portal、系统主题、Breeze 图标、mpv / VLC 仍使用宿主环境。
 
 ### Flatpak
 
@@ -108,18 +125,34 @@ cargo test --workspace      # 单元测试
 
 ## 数据位置
 
-- 设置与传输记录：`~/.config/kichi/`
+- 设置与传输记录：`$XDG_CONFIG_HOME/kichi/`（默认 `~/.config/kichi/`）
 - 登录令牌：系统钥匙串（`kichi` service）；钥匙串不可用时才落到 0600 文件
-- 下载断点：下载根目录下的 `.kichi-part` 与 `~/.config/kichi/partials.json`
+- 下载断点：下载根目录下的 `.kichi-part` 与配置目录下的 `partials.json`
 
 所有网络请求只发往 `user.mypikpak.com`、`api-drive.mypikpak.com` 及下载 CDN；
 账号头像下载额外访问 `lh3.googleusercontent.com`。没有遥测、上报或统计。
 
 ## 已知限制
 
-- 主要针对 KDE Plasma / Wayland 开发和验证，其他桌面环境可用但未逐一验证
+- 主要针对 Wayland 开发和验证，其他桌面环境可用但未逐一验证
 - PikPak 接口没有公开文档，字段和错误码可能随官方变动
 - 内嵌播放窗口的行为仍在实机打磨中
+
+## 参考项目
+
+接口实现和播放器方案参考了以下项目，具体许可证与使用范围见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+| 项目 | 许可证 | 参考内容 |
+| --- | --- | --- |
+| [rclone](https://github.com/rclone/rclone) 的 PikPak 后端 | MIT | 端点常量、设备 ID / captcha 签名算法与部分请求形状；部分代码已移植 |
+| [pikpak-kotlin](https://github.com/NihilDigit/pikpak-kotlin) | MIT | 部分接口字段与请求形状 |
+| [pikpaktui](https://github.com/Bengerthelorf/pikpaktui) | Apache-2.0 | 分享、任务与选链等请求形状 |
+| [Mutsumi](https://github.com/MutsumiUniverse/Mutsumi) | MIT | 内嵌播放器的 libmpv + Wayland 代理思路 |
+
+图标路径来自 [Tabler Icons](https://github.com/tabler/tabler-icons)（MIT），
+Wayland 客户端协议代码由 [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+（MIT）生成。
 
 ## 许可证
 

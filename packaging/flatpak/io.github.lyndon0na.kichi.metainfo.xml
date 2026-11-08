@@ -4,12 +4,12 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Kichi</name>
-  <summary>Unofficial PikPak desktop client</summary>
-  <summary xml:lang="zh_CN">PikPak 的非官方桌面客户端</summary>
+  <summary>Third-party PikPak desktop client</summary>
+  <summary xml:lang="zh_CN">PikPak 的第三方桌面客户端</summary>
 
   <description>
-    <p>Kichi is an unofficial PikPak client for KDE Plasma, built with Rust and Qt 6. It focuses on native desktop integration, resumable transfers and an embedded libmpv player.</p>
-    <p xml:lang="zh_CN">Kichi 是面向 KDE Plasma 的 PikPak 非官方桌面客户端，使用 Rust 和 Qt 6 编写，重点是原生桌面体验、可续传的传输任务和内嵌 libmpv 播放。</p>
+    <p>Kichi is a third-party PikPak desktop client for Linux, built with Rust and Qt 6 for a native desktop experience.</p>
+    <p xml:lang="zh_CN">Kichi 是 PikPak 的第三方 Linux 桌面客户端，使用 Rust 和 Qt 6 编写，提供原生桌面体验。</p>
     <ul>
       <li>Browse, search and manage cloud files</li>
       <li>Offline tasks, downloads with resume, uploads and shares</li>
