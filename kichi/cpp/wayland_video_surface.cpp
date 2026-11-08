@@ -104,6 +104,10 @@ uint32_t waylandTransfer(int transfer)
 
 struct DescState {
     WaylandVideoSurface *self;
+    // 只有 get_preferred / get_image_description 拿到的描述允许 get_information。
+    // creator（parametric / ICC）创建的描述不允许，Mutter 会直接回
+    // no_information 协议错误并断开 Qt 的整条 Wayland 连接。
+    bool allowInfo;
 };
 
 struct InfoState {
@@ -328,7 +332,7 @@ void descFailed(void *data, wp_image_description_v1 *description, uint32_t cause
 void descReady(void *data, wp_image_description_v1 *description, uint32_t)
 {
     auto *state = static_cast<DescState *>(data);
-    state->self->applyImageDescription(description);
+    state->self->applyImageDescription(description, state->allowInfo);
     delete state;
 }
 
@@ -1153,7 +1157,7 @@ void WaylandVideoSurface::applyColorDescription()
         return;
     }
     wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(description), m_queue);
-    auto *state = new DescState{this};
+    auto *state = new DescState{this, true};
     wp_image_description_v1_add_listener(description, &descListener, state);
 }
 
@@ -1185,7 +1189,8 @@ bool WaylandVideoSurface::applyParametric(uint32_t primaries, uint32_t transfer,
     if (!description)
         return false;
     wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(description), m_queue);
-    auto *state = new DescState{this};
+    // 自建的 parametric 描述不允许 get_information（协议 no_information）。
+    auto *state = new DescState{this, false};
     wp_image_description_v1_add_listener(description, &descListener, state);
     qInfo() << "[kichi] 内嵌 Wayland 色彩：preferred primaries=" << primaries
             << "transfer=" << transfer << "lum=" << minLuminance << "/" << maxLuminance
@@ -1193,18 +1198,24 @@ bool WaylandVideoSurface::applyParametric(uint32_t primaries, uint32_t transfer,
     return true;
 }
 
-void WaylandVideoSurface::applyImageDescription(wp_image_description_v1 *description)
+void WaylandVideoSurface::applyImageDescription(wp_image_description_v1 *description,
+                                                bool allowInfo)
 {
     if (!m_colorSurface) {
         wp_image_description_v1_destroy(description);
         return;
     }
 
-    auto *info = wp_image_description_v1_get_information(description);
-    if (info) {
-        wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(info), m_queue);
-        auto *state = new InfoState{this};
-        wp_image_description_info_v1_add_listener(info, &infoListener, state);
+    // creator 创建的描述（parametric / ICC）不允许 get_information；Mutter 会回
+    // no_information 协议错误，整条 Qt Wayland 连接随之断开。这类描述的参数本来
+    // 就在客户端手里，只有 get_preferred 拿到的描述需要查询。
+    if (allowInfo) {
+        auto *info = wp_image_description_v1_get_information(description);
+        if (info) {
+            wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(info), m_queue);
+            auto *state = new InfoState{this};
+            wp_image_description_info_v1_add_listener(info, &infoListener, state);
+        }
     }
 
     wp_color_management_surface_v1_set_image_description(

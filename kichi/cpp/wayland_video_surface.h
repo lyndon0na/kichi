@@ -61,7 +61,7 @@ public:
     void setFrameCallback(FrameCallback callback) { m_onFrame = std::move(callback); }
 
     // 供 C 语言 Wayland listener 调用（不是给业务层用的 API）。
-    void applyImageDescription(wp_image_description_v1 *description);
+    void applyImageDescription(wp_image_description_v1 *description, bool allowInfo);
     bool rememberPreferred(uint32_t primaries, uint32_t transfer, uint32_t minLuminance,
                            uint32_t maxLuminance, uint32_t referenceLuminance);
     void onBufferReleased(wl_buffer *buffer);
