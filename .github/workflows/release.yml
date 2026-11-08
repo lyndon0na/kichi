@@ -1,0 +1,116 @@
+name: Release
+
+# 打 tag（v*）时构建 AppImage + Flatpak，并挂到同名 GitHub Release；
+# 手动触发只产出 Actions artifact，不创建 release。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: fedora:45
+    steps:
+      - name: Install system dependencies
+        run: >
+          dnf install -y
+          git curl ca-certificates tar gzip
+          qt6-qtbase-devel qt6-qtdeclarative-devel
+          kf6-kirigami kf6-qqc2-desktop-style
+          mpv-devel cmake ninja-build gcc-c++ pkgconf-pkg-config
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: QML lint and tests
+        run: ./scripts/qml-lint.sh
+
+  appimage:
+    needs: check
+    runs-on: ubuntu-latest
+    container: fedora:45
+    steps:
+      - name: Install system dependencies
+        run: >
+          dnf install -y
+          git curl ca-certificates tar gzip
+          file binutils findutils gawk sed grep coreutils
+          qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtwayland
+          kf6-kirigami kf6-qqc2-desktop-style plasma-integration
+          mpv-devel patchelf cmake ninja-build gcc-c++ pkgconf-pkg-config
+          desktop-file-utils
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build AppImage
+        run: ./scripts/build-appimage.sh
+        env:
+          # tag 用版本号命名产物；手动触发留空，脚本回退到日期。
+          KICHI_APPIMAGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: |
+            dist/*.AppImage
+            dist/*.sha256
+          if-no-files-found: error
+
+  flatpak:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flatpak-builder and runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.kde.Platform//6.11 \
+            org.kde.Sdk//6.11 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+      - name: Build Flatpak bundle
+        run: ./scripts/build-flatpak.sh
+        env:
+          KICHI_FLATPAK_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          # GitHub runner 上 /dev/fuse 不保证可用。
+          KICHI_FLATPAK_BUILDER_ARGS: --disable-rofiles-fuse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: |
+            dist/*.flatpak
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [appimage, flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: kichi ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.AppImage
+            dist/*.flatpak
+            dist/*.sha256

@@ -25,6 +25,12 @@ VERSION="${VERSION//\//-}"
 VERSION="${VERSION// /-}"
 BUNDLE="$DIST_DIR/$APP_ID-$VERSION.flatpak"
 
+# 额外参数（例如 CI 里 /dev/fuse 不可用时传 --disable-rofiles-fuse）。
+BUILDER_ARGS=()
+if [[ -n "${KICHI_FLATPAK_BUILDER_ARGS:-}" ]]; then
+    read -r -a BUILDER_ARGS <<< "$KICHI_FLATPAK_BUILDER_ARGS"
+fi
+
 for tool in flatpak flatpak-builder; do
     if ! command -v "$tool" >/dev/null; then
         echo "build-flatpak: 缺少 $tool" >&2
@@ -39,7 +45,7 @@ fi
 
 mkdir -p "$DIST_DIR"
 
-flatpak-builder --force-clean --repo="$REPO_DIR" "$BUILD_DIR" "$MANIFEST"
+flatpak-builder "${BUILDER_ARGS[@]}" --force-clean --repo="$REPO_DIR" "$BUILD_DIR" "$MANIFEST"
 flatpak build-bundle "$REPO_DIR" "$BUNDLE" "$APP_ID" master
 sha256sum "$BUNDLE" > "$BUNDLE.sha256"
 
