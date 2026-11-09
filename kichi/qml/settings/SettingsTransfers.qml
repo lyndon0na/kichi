@@ -19,27 +19,13 @@ ColumnLayout {
         title: qsTr("下载")
         Layout.fillWidth: true
 
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: theme.gapSm
-            spacing: theme.gapXs
-
-            Label {
-                text: qsTr("下载目录")
-                font.pixelSize: theme.fontBody
-                font.weight: Font.Medium
-                color: theme.textPrimary
-            }
-
-            Label {
-                text: qsTr("留空使用 ~/Downloads；修改后立即生效。")
-                font.pixelSize: theme.fontMeta
-                color: theme.textMuted
-            }
+        KSettingsRow {
+            title: qsTr("下载目录")
+            description: qsTr("留空使用 ~/Downloads；修改后立即生效。")
+            controlWidth: 380
 
             RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: theme.gapSm
+                width: parent.width
                 spacing: theme.gapSm
 
                 KTextField {
@@ -54,7 +40,7 @@ ColumnLayout {
 
                 KButton {
                     objectName: "settingsChooseDownloadDir"
-                    text: qsTr("选择目录")
+                    text: qsTr("选择")
                     variant: "secondary"
                     iconName: "folder"
                     onClicked: {
@@ -65,7 +51,7 @@ ColumnLayout {
 
                 KButton {
                     objectName: "settingsOpenDownloadDir"
-                    text: qsTr("打开目录")
+                    text: qsTr("打开")
                     variant: "ghost"
                     onClicked: {
                         if (transfers.backend)

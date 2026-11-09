@@ -584,6 +584,7 @@ TestCase {
             currentSection: page.transfersSection
         })
         verify(smallPage !== null)
+        wait(50)
 
         var scroller = findChild(smallPage, "settingsScroller")
         var box = findChild(smallPage, "settingsAutoResumeUploads")
@@ -595,14 +596,15 @@ TestCase {
         // 居中而不是固定偏移：文案变长时控件位置会往下移。
         scroller.contentY = Math.max(0, Math.min(maxY, boxY - scroller.height / 2))
         wait(30)
-        scroller.flick(0, -100)
-        wait(30)
+        scroller.flick(0, 600)
+        wait(20)
         verify(scroller.moving, "测试必须覆盖惯性滚动期间")
 
         const point = scroller.mapFromItem(
             box, box.width / 2, box.height / 2)
         verify(point.x >= 0 && point.x < scroller.width - 10
-               && point.y >= 0 && point.y < scroller.height)
+               && point.y >= 0 && point.y < scroller.height,
+               "惯性中的控件落点应在滚动视口内：" + point.x + "," + point.y)
         mouseClick(scroller, point.x, point.y)
         wait(50)
         compare(backend.autoResumeUploads, true,

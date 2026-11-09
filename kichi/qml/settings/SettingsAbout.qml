@@ -12,10 +12,10 @@ ColumnLayout {
 
     readonly property KTheme theme: KTheme { parent: about }
 
-    spacing: 0
+    spacing: theme.gapXl
 
     KSettingsGroup {
-        title: qsTr("关于")
+        title: qsTr("存储位置")
         Layout.fillWidth: true
 
         KSettingsRow {
@@ -24,7 +24,7 @@ ColumnLayout {
             ElidedLabel {
                 id: settingsPath
                 objectName: "settingsPath"
-                width: 420
+                width: 320
                 text: about.backend ? about.backend.settingsPath : ""
                 color: theme.textSecondary
                 font.family: "monospace"

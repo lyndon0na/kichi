@@ -13,6 +13,8 @@ Item {
     property string description: ""
     property bool danger: false
     property bool interactive: false
+    /// 路径、命令等大控件的最小槽宽；窄页面里会改为上下排列。
+    property int controlWidth: 0
 
     signal clicked()
 
@@ -20,6 +22,11 @@ Item {
 
     readonly property KTheme theme: KTheme { parent: row }
     readonly property bool hovered: rowMouse.containsMouse && row.interactive
+    readonly property bool stacked: row.width > 0
+                                      && (row.width < 520
+                                          || (row.controlWidth > 0
+                                              && row.width - row.controlWidth
+                                                 < 280))
 
     Layout.fillWidth: true
     implicitHeight: content.implicitHeight + theme.gapLg * 2
@@ -29,12 +36,15 @@ Item {
         color: row.hovered ? theme.surfaceHover : theme.surfaceClear
     }
 
-    RowLayout {
+    GridLayout {
         id: content
+
         anchors.fill: parent
         anchors.topMargin: theme.gapLg
         anchors.bottomMargin: theme.gapLg
-        spacing: theme.gapXl
+        columns: row.stacked ? 1 : 2
+        columnSpacing: theme.gapXl
+        rowSpacing: theme.gapMd
 
         ColumnLayout {
             Layout.fillWidth: true
@@ -62,9 +72,16 @@ Item {
 
         Item {
             id: controlHost
-            Layout.alignment: Qt.AlignVCenter
-            implicitWidth: childrenRect.width
-            implicitHeight: childrenRect.height
+
+            Layout.fillWidth: row.stacked && row.controlWidth > 0
+            Layout.maximumWidth: row.stacked ? Number.POSITIVE_INFINITY
+                                             : implicitWidth
+            Layout.alignment: row.stacked && row.controlWidth === 0
+                              ? Qt.AlignRight : Qt.AlignVCenter
+            implicitWidth: row.controlWidth > 0 ? row.controlWidth
+                                                 : childrenRect.width
+            implicitHeight: Math.max(childrenRect.height,
+                                     row.controlWidth > 0 ? 36 : 0)
         }
     }
 

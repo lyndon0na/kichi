@@ -22,11 +22,31 @@ Item {
     readonly property int aboutSection: 4
 
     readonly property var sections: [
-        { label: qsTr("账号"), icon: "user", component: accountSectionComponent },
-        { label: qsTr("播放"), icon: "play", component: playbackSectionComponent },
-        { label: qsTr("传输"), icon: "transfer", component: transfersSectionComponent },
-        { label: qsTr("通知与后台"), icon: "bell", component: generalSectionComponent },
-        { label: qsTr("关于"), icon: "info", component: aboutSectionComponent }
+        {
+            label: qsTr("账号"),
+            icon: "user",
+            component: accountSectionComponent
+        },
+        {
+            label: qsTr("播放"),
+            icon: "play",
+            component: playbackSectionComponent
+        },
+        {
+            label: qsTr("传输"),
+            icon: "transfer",
+            component: transfersSectionComponent
+        },
+        {
+            label: qsTr("通知与后台"),
+            icon: "bell",
+            component: generalSectionComponent
+        },
+        {
+            label: qsTr("关于"),
+            icon: "info",
+            component: aboutSectionComponent
+        }
     ]
 
     /// 退出登录：对话框只负责发信号，确认框在 SignOutDialog，清令牌在 backend
@@ -35,8 +55,8 @@ Item {
     readonly property KTheme theme: KTheme { parent: page }
     readonly property UiMetrics metrics: UiMetrics {}
 
-    /// 内容区左右留白：比主窗口页边距宽一档，窗口里不显得贴边
-    readonly property int paneMargin: theme.gapXl
+    /// 内容区左右留白：窗口窄时收一档，给宽控件留空间。
+    readonly property int paneMargin: page.width < 820 ? theme.gapLg : theme.gapXl
 
     onCurrentSectionChanged: {
         scroller.contentY = 0
@@ -90,19 +110,36 @@ Item {
                 objectName: "settingsScroller"
                 anchors.fill: parent
                 contentWidth: width
-                contentHeight: bodyLoader.implicitHeight + page.paneMargin
+                contentHeight: contentColumn.height + page.paneMargin
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
 
                 ScrollBar.vertical: KScrollBar {}
 
-                Loader {
-                    id: bodyLoader
-                    objectName: "settingsBodyLoader"
+                Column {
+                    id: contentColumn
+
                     x: page.paneMargin
+                    y: page.paneMargin
                     width: Math.max(0, scroller.width - page.paneMargin * 2)
-                    sourceComponent: page.sections[page.currentSection].component
+                    height: childrenRect.height
+                    spacing: page.theme.gapXl
+
+                    Item {
+                        id: bodyHost
+
+                        width: parent.width
+                        height: bodyLoader.implicitHeight
+
+                        Loader {
+                            id: bodyLoader
+                            objectName: "settingsBodyLoader"
+                            width: parent.width
+                            sourceComponent: page.sections[page.currentSection].component
+                        }
+                    }
                 }
+
             }
 
             ScrollFirstClickArea {

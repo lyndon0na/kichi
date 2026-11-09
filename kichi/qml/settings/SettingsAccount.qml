@@ -110,7 +110,7 @@ ColumnLayout {
     }
 
     KSettingsGroup {
-        title: qsTr("账号")
+        title: qsTr("账户与安全")
         Layout.fillWidth: true
 
         KSettingsRow {

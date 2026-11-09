@@ -12,26 +12,11 @@ ColumnLayout {
 
     readonly property KTheme theme: KTheme { parent: general }
 
-    spacing: 0
+    spacing: theme.gapXl
 
     KSettingsGroup {
-        title: qsTr("通知与后台")
+        title: qsTr("通知")
         Layout.fillWidth: true
-
-        KSettingsRow {
-            title: qsTr("本地目录索引")
-            description: qsTr("在本机保存目录与页面快照，用于输入即搜、重启秒开与路径定位。关闭时不读写本地库，已保存的库文件保留。")
-
-            Switch {
-                objectName: "settingsLocalIndex"
-                checked: general.backend ? general.backend.localIndexEnabled : false
-                Accessible.name: qsTr("本地目录索引")
-                onToggled: function () {
-                    if (general.backend)
-                        general.backend.setLocalIndexEnabled(checked)
-                }
-            }
-        }
 
         KSettingsRow {
             title: qsTr("任务结束通知")
@@ -47,6 +32,11 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    KSettingsGroup {
+        title: qsTr("运行方式")
+        Layout.fillWidth: true
 
         KSettingsRow {
             title: qsTr("关闭窗口时最小化到托盘")
@@ -59,6 +49,26 @@ ColumnLayout {
                 onToggled: function () {
                     if (general.backend)
                         general.backend.setCloseToTray(checked)
+                }
+            }
+        }
+    }
+
+    KSettingsGroup {
+        title: qsTr("本地数据")
+        Layout.fillWidth: true
+
+        KSettingsRow {
+            title: qsTr("本地目录索引")
+            description: qsTr("在本机保存目录与页面快照，用于输入即搜、重启秒开与路径定位。关闭时不读写本地库，已保存的库文件保留。")
+
+            Switch {
+                objectName: "settingsLocalIndex"
+                checked: general.backend ? general.backend.localIndexEnabled : false
+                Accessible.name: qsTr("本地目录索引")
+                onToggled: function () {
+                    if (general.backend)
+                        general.backend.setLocalIndexEnabled(checked)
                 }
             }
         }

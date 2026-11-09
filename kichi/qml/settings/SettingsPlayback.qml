@@ -18,7 +18,7 @@ ColumnLayout {
     spacing: theme.gapXl
 
     KSettingsGroup {
-        title: qsTr("播放")
+        title: qsTr("常用")
         Layout.fillWidth: true
 
         KSettingsRow {
@@ -164,23 +164,17 @@ ColumnLayout {
             visible: playback.advancedOpen && !playback.flatpak
             Layout.fillWidth: true
             Layout.topMargin: theme.gapMd
-            spacing: theme.gapSm
+            spacing: 0
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: theme.gapMd
-
-                Label {
-                    text: qsTr("播放器命令")
-                    Layout.preferredWidth: 96
-                    font.pixelSize: theme.fontBody
-                    color: theme.textPrimary
-                }
+            KSettingsRow {
+                title: qsTr("播放器命令")
+                description: qsTr("留空使用当前播放器的默认命令。")
+                controlWidth: 360
 
                 KTextField {
                     id: commandField
                     objectName: "settingsPlayerCommand"
-                    Layout.fillWidth: true
+                    width: parent.width
                     selectByMouse: true
                     placeholderText: playback.backend ? playback.backend.playerDefaultCommand : ""
                     text: playback.backend ? playback.backend.playerCommand : ""
@@ -188,21 +182,15 @@ ColumnLayout {
                 }
             }
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: theme.gapMd
-
-                Label {
-                    text: qsTr("附加参数")
-                    Layout.preferredWidth: 96
-                    font.pixelSize: theme.fontBody
-                    color: theme.textPrimary
-                }
+            KSettingsRow {
+                title: qsTr("附加参数")
+                description: qsTr("按需追加播放参数；输入框可留空使用播放器默认值。")
+                controlWidth: 360
 
                 KTextField {
                     id: argsField
                     objectName: "settingsPlayerArgs"
-                    Layout.fillWidth: true
+                    width: parent.width
                     selectByMouse: true
                     placeholderText: playback.backend ? playback.backend.playerDefaultArgs : ""
                     text: playback.backend ? playback.backend.playerArgs : ""
@@ -210,19 +198,23 @@ ColumnLayout {
                 }
             }
 
-            Label {
-                objectName: "settingsPlayerArgsHint"
-                Layout.fillWidth: true
-                text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。原生构建可用 flatpak run --die-with-parent io.mpv.Mpv 调用 Flatpak 版 mpv。")
-                font.pixelSize: theme.fontCaption
-                color: theme.textMuted
-                wrapMode: Text.WordWrap
+            KSettingsRow {
+                title: qsTr("占位符")
+                controlWidth: 360
+
+                Label {
+                    objectName: "settingsPlayerArgsHint"
+                    width: parent.width
+                    text: qsTr("非 mpv/VLC 播放器：占位符可放在命令或附加参数里；附加参数留空且命令里没有输入占位符时，默认附加参数是 {playlist}（直接传临时 M3U 路径）。需要 --playlist= 形式时自己写 --playlist={playlist}。{title} 是文件名，{url} 是签名直链；只使用 {url} 时不创建 M3U，且直链会出现在本机进程命令行中。原生构建可用 flatpak run --die-with-parent io.mpv.Mpv 调用 Flatpak 版 mpv。")
+                    font.pixelSize: theme.fontCaption
+                    color: theme.textMuted
+                    wrapMode: Text.WordWrap
+                }
             }
 
-            RowLayout {
-                Layout.fillWidth: true
-
-                Item { Layout.fillWidth: true }
+            KSettingsRow {
+                title: qsTr("恢复默认")
+                description: qsTr("清除已保存的自定义命令与附加参数。")
 
                 KButton {
                     text: qsTr("恢复默认")
