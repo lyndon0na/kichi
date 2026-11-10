@@ -689,6 +689,19 @@ ApplicationWindow {
                                              ? message : root.pageContextText()
         readonly property bool taskNavigationLoading: backend !== null
                 && String(backend.taskFolderLoadingId || "").length > 0
+        readonly property bool indexBuilding: backend !== null
+                && backend.indexBuilding === true
+        // 状态文字允许占用的最大宽度：扣掉页边距、其它底栏控件与间距。
+        // 建库时进度条 / 取消紧跟在文字右边，剩余空间由 spacer 吃掉，
+        // 文字过长就在这个上限内截断，不会把容量指示挤出去。
+        readonly property real textMaxWidth: Math.max(
+            0,
+            width
+            - metrics.pageMargin * 2
+            - theme.gapSm * 4
+            - (taskNavigationLoading ? 14 : 0)
+            - (indexBuilding ? statusBarIndexBuild.implicitWidth : 0)
+            - (root.signedIn ? statusBarQuota.width : 0))
 
         implicitHeight: visible ? barHeight : 0
         visible: (root.signedIn || message.length > 0)
@@ -740,7 +753,9 @@ ApplicationWindow {
 
             ElidedLabel {
                 objectName: "statusBarLabel"
-                Layout.fillWidth: true
+                // 不用 fillWidth：文字按自身宽度排，进度条 / 取消才能紧跟其后
+                Layout.fillWidth: false
+                Layout.preferredWidth: Math.min(implicitWidth, statusBar.textMaxWidth)
                 Layout.fillHeight: true
                 text: statusBar.shownText
                 elide: Text.ElideRight
@@ -750,13 +765,21 @@ ApplicationWindow {
                 showToolTipWhenUntruncated: true
             }
 
-            // 本地索引全量建库：不确定进度 + 取消（文案走 statusMessage）
+            // 本地索引全量建库：不确定进度 + 取消，紧挨着状态文字
             IndexBuildStatus {
+                id: statusBarIndexBuild
                 objectName: "statusBarIndexBuild"
                 backend: backend
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            // 文字不再撑满整行，剩下的宽度由这里吃掉，容量指示保持靠右
+            Item {
+                Layout.fillWidth: true
             }
 
             QuotaIndicator {
+                id: statusBarQuota
                 objectName: "statusBarQuota"
                 Layout.alignment: Qt.AlignVCenter
                 visible: root.signedIn

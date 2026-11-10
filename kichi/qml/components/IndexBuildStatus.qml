@@ -16,7 +16,8 @@ RowLayout {
     readonly property bool building: backend !== null && backend.indexBuilding === true
 
     visible: building
-    spacing: theme.gapSm
+    // 进度条和取消是一组操作，间距比底栏常规间距再紧一点
+    spacing: theme.gapXs
 
     KTheme { id: theme }
 
