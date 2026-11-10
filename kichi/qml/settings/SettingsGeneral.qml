@@ -60,7 +60,7 @@ ColumnLayout {
 
         KSettingsRow {
             title: qsTr("本地目录索引")
-            description: qsTr("在本机保存目录与页面快照，用于输入即搜、重启秒开与路径定位。关闭时不读写本地库，已保存的库文件保留。")
+            description: qsTr("在本机保存目录与页面快照，用于输入即搜、重启秒开与路径定位。首次开启会在后台建立一次索引，期间可照常浏览与搜索（搜索先只筛当前文件夹）；建好后全盘搜索才走本地索引。关闭时不读写本地库，已保存的库文件保留。")
 
             Switch {
                 objectName: "settingsLocalIndex"

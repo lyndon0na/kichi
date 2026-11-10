@@ -48,7 +48,7 @@ ColumnLayout {
             if (root.indexBuilding)
                 return qsTr("本地索引正在后台建立，建好前只搜当前文件夹；建好后重新输入关键词即可全盘搜索。")
             if (root.indexUnavailable)
-                return qsTr("本地索引尚未就绪或读取失败，这次只搜了当前文件夹；可在设置中查看索引状态。")
+                return qsTr("本地索引尚未就绪或读取失败，这次只搜了当前文件夹；可在设置中关闭再开启「本地目录索引」重试，或查看索引状态。")
             return qsTr("可以试试：\n· 换更短的关键词（按名字任意位置匹配，不支持 * ? 通配符）\n· 本地索引可能还没收录最新上传的文件\n· 只搜文件名，不搜文件内容；回收站里的条目也会列出")
         }
         color: palette.placeholderText

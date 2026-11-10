@@ -924,6 +924,11 @@ pub mod qobject {
         #[cxx_name = "setLocalIndexEnabled"]
         fn set_local_index_enabled(self: Pin<&mut Self>, enabled: bool);
 
+        /// 取消正在进行的本地索引全量建库（开关保持开启，旧库不动）
+        #[qinvokable]
+        #[cxx_name = "cancelLocalIndexBuild"]
+        fn cancel_local_index_build(self: Pin<&mut Self>);
+
         #[qinvokable]
         #[cxx_name = "setUploadParallel"]
         fn set_upload_parallel(self: Pin<&mut Self>, value: i32);

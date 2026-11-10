@@ -267,24 +267,29 @@ pub enum Change<'a> {
     },
 }
 
+/// 应用一条局部变更，返回因此标脏的目录（已去重）。
+///
+/// 返回值是给全量建库用的：建库期间落在旧库上的变更会被 `replace_all`
+/// 的扫描快照覆盖，调用方要拿这份清单在建库成功后重新标脏 / 重放。
 pub(super) fn apply_change(
     conn: &Connection,
     change: Change<'_>,
     now: i64,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<Vec<String>> {
     let tx = conn.unchecked_transaction()?;
+    let mut dirty = Vec::new();
     match change {
         Change::Put(entry) => {
             {
                 let mut stmt = tx.prepare(UPSERT_NODE_SQL)?;
                 insert_entry(&mut stmt, entry, false)?;
             }
-            mark_dir_dirty(&tx, entry.parent_id.trim())?;
+            touch_dir(&tx, entry.parent_id.trim(), &mut dirty)?;
         }
         Change::Trash(ids) => {
             for id in ids {
                 if let Some(parent) = parent_of_id(&tx, id)? {
-                    mark_dir_dirty(&tx, &parent)?;
+                    touch_dir(&tx, &parent, &mut dirty)?;
                 }
                 tx.execute(TRASH_SUBTREE_SQL, params![id, now])?;
             }
@@ -293,7 +298,7 @@ pub(super) fn apply_change(
         Change::Restore(ids) => {
             for id in ids {
                 if let Some(parent) = parent_of_id(&tx, id)? {
-                    mark_dir_dirty(&tx, &parent)?;
+                    touch_dir(&tx, &parent, &mut dirty)?;
                 }
                 tx.execute(RESTORE_SUBTREE_SQL, [id])?;
             }
@@ -302,7 +307,7 @@ pub(super) fn apply_change(
         Change::Remove(ids) => {
             for id in ids {
                 if let Some(parent) = parent_of_id(&tx, id)? {
-                    mark_dir_dirty(&tx, &parent)?;
+                    touch_dir(&tx, &parent, &mut dirty)?;
                 }
                 tx.execute(REMOVE_SUBTREE_SQL, [id])?;
             }
@@ -316,7 +321,7 @@ pub(super) fn apply_change(
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
             for parent in parents {
-                mark_dir_dirty(&tx, parent.trim())?;
+                touch_dir(&tx, parent.trim(), &mut dirty)?;
             }
             tx.execute("DELETE FROM nodes WHERE trashed = 1", [])?;
             invalidate_trash_snapshot(&tx)?;
@@ -327,7 +332,7 @@ pub(super) fn apply_change(
                     "UPDATE nodes SET name = ?2, norm_name = ?3 WHERE id = ?1",
                     params![id, name, normalize_name(name)],
                 )?;
-                mark_dir_dirty(&tx, &parent)?;
+                touch_dir(&tx, &parent, &mut dirty)?;
             }
         }
         Change::Starred { ids, starred } => {
@@ -351,12 +356,21 @@ pub(super) fn apply_change(
                     "UPDATE nodes SET parent_id = ?2 WHERE id = ?1",
                     params![id, new_parent],
                 )?;
-                mark_dir_dirty(&tx, &old_parent)?;
-                mark_dir_dirty(&tx, new_parent.trim())?;
+                touch_dir(&tx, &old_parent, &mut dirty)?;
+                touch_dir(&tx, new_parent.trim(), &mut dirty)?;
             }
         }
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(dirty)
+}
+
+fn touch_dir(conn: &Connection, dir_id: &str, dirty: &mut Vec<String>) -> rusqlite::Result<()> {
+    mark_dir_dirty(conn, dir_id)?;
+    if !dirty.iter().any(|seen| seen == dir_id) {
+        dirty.push(dir_id.to_owned());
+    }
+    Ok(())
 }
 
 /// 网络父链回填：只补文件夹自身的名字与父目录，不动目录快照状态。

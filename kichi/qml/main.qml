@@ -750,6 +750,12 @@ ApplicationWindow {
                 showToolTipWhenUntruncated: true
             }
 
+            // 本地索引全量建库：不确定进度 + 取消（文案走 statusMessage）
+            IndexBuildStatus {
+                objectName: "statusBarIndexBuild"
+                backend: backend
+            }
+
             QuotaIndicator {
                 objectName: "statusBarQuota"
                 Layout.alignment: Qt.AlignVCenter

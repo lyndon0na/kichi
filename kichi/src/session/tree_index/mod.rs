@@ -10,7 +10,9 @@ pub(crate) mod query;
 pub(crate) mod store;
 pub(crate) mod sync;
 
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Mutex;
 
 use chrono::Utc;
 use kichi_core::{EntryKind, FileEntry, TrashEntry};
@@ -40,6 +42,73 @@ pub(crate) const SUSPECT_REBUILD_COOLDOWN_SECS: i64 = 900;
 pub(crate) struct TreeIndex {
     store: store::Store,
     owner: String,
+    /// 全量建库期间的写操作暂存（见 [`TreeIndex::finish_build_tracking`]）。
+    build: Mutex<BuildTracking>,
+}
+
+/// 全量建库进行中记下的写操作与脏目录。
+///
+/// 建库最后一步是 `replace_all`：用扫描快照整库替换。扫描是流式的，用户
+/// 在建库期间删除 / 改名 / 星标的条目，如果所在页在操作之前已经扫过，
+/// 新快照会把它带回旧状态。所以建库期间的写操作除了照常落到旧库（建库失败
+/// 时旧库仍然正确），还要在这里留一份，建库成功后重放到新快照上。
+#[derive(Default)]
+struct BuildTracking {
+    active: bool,
+    changes: Vec<PendingChange>,
+    dirty_dirs: BTreeSet<String>,
+}
+
+/// [`Change`] 的拥有所有权副本，供建库结束后重放。
+enum PendingChange {
+    Put(FileEntry),
+    Trash(Vec<String>),
+    Restore(Vec<String>),
+    Remove(Vec<String>),
+    RemoveAllTrashed,
+    Rename { id: String, name: String },
+    Starred { ids: Vec<String>, starred: bool },
+    Move { ids: Vec<String>, parent_id: String },
+}
+
+impl PendingChange {
+    fn owned(change: &Change<'_>) -> Self {
+        match change {
+            Change::Put(entry) => Self::Put((*entry).clone()),
+            Change::Trash(ids) => Self::Trash(ids.to_vec()),
+            Change::Restore(ids) => Self::Restore(ids.to_vec()),
+            Change::Remove(ids) => Self::Remove(ids.to_vec()),
+            Change::RemoveAllTrashed => Self::RemoveAllTrashed,
+            Change::Rename { id, name } => Self::Rename {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+            },
+            Change::Starred { ids, starred } => Self::Starred {
+                ids: ids.to_vec(),
+                starred: *starred,
+            },
+            Change::Move { ids, parent_id } => Self::Move {
+                ids: ids.to_vec(),
+                parent_id: (*parent_id).to_owned(),
+            },
+        }
+    }
+
+    fn as_change(&self) -> Change<'_> {
+        match self {
+            Self::Put(entry) => Change::Put(entry),
+            Self::Trash(ids) => Change::Trash(ids),
+            Self::Restore(ids) => Change::Restore(ids),
+            Self::Remove(ids) => Change::Remove(ids),
+            Self::RemoveAllTrashed => Change::RemoveAllTrashed,
+            Self::Rename { id, name } => Change::Rename { id, name },
+            Self::Starred { ids, starred } => Change::Starred {
+                ids,
+                starred: *starred,
+            },
+            Self::Move { ids, parent_id } => Change::Move { ids, parent_id },
+        }
+    }
 }
 
 impl TreeIndex {
@@ -48,6 +117,7 @@ impl TreeIndex {
         Ok(Self {
             store: store::Store::open(path, owner)?,
             owner: owner.to_owned(),
+            build: Mutex::new(BuildTracking::default()),
         })
     }
 
@@ -56,6 +126,7 @@ impl TreeIndex {
         Ok(Self {
             store: store::Store::open_in_memory(owner)?,
             owner: owner.to_owned(),
+            build: Mutex::new(BuildTracking::default()),
         })
     }
 
@@ -69,7 +140,10 @@ impl TreeIndex {
     }
 
     /// 逻辑关闭；后台若正持有连接不会阻塞等待。
+    ///
+    /// 关闭前丢弃建库暂存（登出 / 换账号 / 关开关都不需要重放）。
     pub(crate) fn close(&self) {
+        self.abort_build_tracking();
         self.store.close();
     }
 
@@ -83,6 +157,9 @@ impl TreeIndex {
     }
 
     /// 一条目录列表落库；`complete` 语义见 [`apply::put_listing`]。
+    ///
+    /// 落库与暂存记录在同一把锁里：建库收尾正好并发时，要么这次写入被记下
+    /// 来、建库成功后标脏，要么建库已经收完尾、这次写入直接落在新快照上。
     pub(crate) fn put_listing(
         &self,
         dir_id: &str,
@@ -90,20 +167,93 @@ impl TreeIndex {
         complete: bool,
     ) -> Result<(), IndexError> {
         let now = Utc::now().timestamp();
+        let mut build = self.lock_build();
         self.store
-            .with_conn(|conn| apply::put_listing(conn, dir_id, entries, complete, now))
+            .with_conn(|conn| apply::put_listing(conn, dir_id, entries, complete, now))?;
+        // 建库成功会整库替换，这批刚写进去的目录快照会消失；记下来待重建后标脏。
+        if build.active {
+            build.dirty_dirs.insert(dir_id.to_owned());
+        }
+        Ok(())
     }
 
     pub(crate) fn apply_change(&self, change: Change<'_>) -> Result<(), IndexError> {
         let now = Utc::now().timestamp();
-        self.store
-            .with_conn(|conn| apply::apply_change(conn, change, now))
+        let mut build = self.lock_build();
+        let pending = build.active.then(|| PendingChange::owned(&change));
+        let dirty = self
+            .store
+            .with_conn(|conn| apply::apply_change(conn, change, now))?;
+        if let Some(pending) = pending {
+            build.changes.push(pending);
+            build.dirty_dirs.extend(dirty);
+        }
+        Ok(())
     }
 
     /// 目录内容已不可信（新建 / 上传 / 离线任务产物等没有具体行可改的场景）。
     pub(crate) fn mark_dir_dirty(&self, dir_id: &str) -> Result<(), IndexError> {
+        let mut build = self.lock_build();
         self.store
-            .with_conn(|conn| apply::mark_dir_dirty(conn, dir_id))
+            .with_conn(|conn| apply::mark_dir_dirty(conn, dir_id))?;
+        if build.active {
+            build.dirty_dirs.insert(dir_id.to_owned());
+        }
+        Ok(())
+    }
+
+    /// 全量建库开始前调用：从这里起记录用户写操作，建库成功后重放。
+    pub(crate) fn begin_build_tracking(&self) {
+        let mut build = self.lock_build();
+        build.active = true;
+        build.changes.clear();
+        build.dirty_dirs.clear();
+    }
+
+    /// 全量建库结束后调用。
+    ///
+    /// - 成功：把建库期间落在旧库上的写操作按原顺序重放到扫描快照上，
+    ///   再补标脏目录（建库期间刚写过的目录快照也会被整库替换抹掉）。
+    /// - 失败 / 取消：旧库原样保留，写操作在发生时就已落库，直接丢弃暂存。
+    pub(crate) fn finish_build_tracking(&self, succeeded: bool) -> Result<(), IndexError> {
+        let (changes, dirty_dirs) = {
+            let mut build = self.lock_build();
+            build.active = false;
+            (
+                std::mem::take(&mut build.changes),
+                std::mem::take(&mut build.dirty_dirs),
+            )
+        };
+        if !succeeded {
+            return Ok(());
+        }
+        // 重放失败也要把剩下的走完：漏掉一条删除比多标一个脏目录更糟。
+        let mut first_error = None;
+        for change in &changes {
+            if let Err(err) = self.apply_change(change.as_change()) {
+                first_error.get_or_insert(err);
+            }
+        }
+        for dir_id in &dirty_dirs {
+            if let Err(err) = self.mark_dir_dirty(dir_id) {
+                first_error.get_or_insert(err);
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+
+    /// 登出 / 关闭索引时丢弃建库暂存；旧库不需要重放。
+    pub(crate) fn abort_build_tracking(&self) {
+        let _ = self.finish_build_tracking(false);
+    }
+
+    fn lock_build(&self) -> std::sync::MutexGuard<'_, BuildTracking> {
+        self.build
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// 用服务端回收站替换本地快照。
@@ -429,6 +579,83 @@ mod tests {
             index.last_full_build_at().expect("读建库时间").is_some(),
             "建库后状态行才能说明索引有多新"
         );
+    }
+
+    #[test]
+    fn build_tracking_replays_user_changes_onto_the_new_snapshot() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index
+            .replace_all(&[file("a", "a.mkv", ""), file("b", "b.mkv", "")])
+            .expect("旧库");
+
+        index.begin_build_tracking();
+        // 这两页在扫描时已经翻过：之后的删除与星标不会出现在扫描快照里
+        index
+            .apply_change(Change::Remove(&["a".to_owned()]))
+            .expect("删除");
+        index
+            .apply_change(Change::Starred {
+                ids: &["b".to_owned()],
+                starred: true,
+            })
+            .expect("加星");
+        index
+            .replace_all(&[file("a", "a.mkv", ""), file("b", "b.mkv", "")])
+            .expect("扫描快照");
+        index.finish_build_tracking(true).expect("重放");
+
+        let rows = index.listing_any("").expect("读根目录").expect("根目录");
+        assert!(
+            !rows.iter().any(|row| row.id == "a"),
+            "建库期间删掉的文件不能复活"
+        );
+        assert!(
+            rows.iter().any(|row| row.id == "b" && row.starred),
+            "建库期间加的星标不能丢"
+        );
+    }
+
+    #[test]
+    fn build_tracking_marks_dirs_written_during_the_build_dirty() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index.replace_all(&[folder("d", "D", "")]).expect("旧库");
+
+        index.begin_build_tracking();
+        // 建库期间用户浏览了 d；这份目录快照会被随后的整库替换抹掉
+        index
+            .put_listing("d", &[file("x", "x.mkv", "d")], true)
+            .expect("写目录");
+        index
+            .replace_all(&[folder("d", "D", "")])
+            .expect("扫描快照");
+        index.finish_build_tracking(true).expect("标脏");
+
+        assert!(
+            index
+                .listing_if_fresh("d", 0, i64::MAX)
+                .expect("读目录")
+                .is_none(),
+            "建库期间写入的目录快照已失效，必须让读路径回网络"
+        );
+    }
+
+    #[test]
+    fn failed_build_keeps_writes_on_the_old_snapshot() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index
+            .replace_all(&[file("a", "a.mkv", ""), file("b", "b.mkv", "")])
+            .expect("旧库");
+
+        index.begin_build_tracking();
+        index
+            .apply_change(Change::Remove(&["a".to_owned()]))
+            .expect("删除");
+        // 建库失败 / 取消：旧库原样保留，写入在发生时就已落库，不需要重放
+        index.finish_build_tracking(false).expect("丢弃暂存");
+
+        let rows = index.listing_any("").expect("读根目录").expect("根目录");
+        assert!(!rows.iter().any(|row| row.id == "a"));
+        assert!(rows.iter().any(|row| row.id == "b"));
     }
 }
 

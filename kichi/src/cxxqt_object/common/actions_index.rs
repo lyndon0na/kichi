@@ -64,6 +64,7 @@ impl qobject::Kichi {
             return;
         }
         let cancel = std::sync::Arc::new(crate::session::download::Cancel::default());
+        index.begin_build_tracking();
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
             rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
@@ -73,6 +74,8 @@ impl qobject::Kichi {
         };
         self.as_mut().set_message("正在建立本地索引……");
         let work_session = session.clone();
+        let done_session = session.clone();
+        let tracking_index = std::sync::Arc::clone(&index);
         run_in_background(
             move || {
                 let client = work_session.drive()?;
@@ -99,8 +102,20 @@ impl qobject::Kichi {
                 )
             },
             move |mut qichi, result| {
+                // 建库成功会用扫描快照整库替换：先把建库期间的用户写操作
+                // 重放到新快照上，否则扫描后才删除 / 改名的条目会复活。
+                let succeeded = matches!(
+                    &result,
+                    Ok(crate::session::tree_index::sync::BuildOutcome::Built(_))
+                );
+                let replay = tracking_index.finish_build_tracking(succeeded);
                 if qichi.as_ref().rust().index_build_epoch != epoch {
                     return;
+                }
+                if let Err(err) = replay {
+                    if !tracking_index.is_closed() {
+                        done_session.record_tree_index_error(format!("本地索引写入失败：{err}"));
+                    }
                 }
                 {
                     let mut rust = qichi.as_mut().rust_mut();
@@ -114,8 +129,11 @@ impl qobject::Kichi {
                             .set_message(&format!("本地索引已建立（{count} 条）"));
                     }
                     Ok(crate::session::tree_index::sync::BuildOutcome::Cancelled) => {
-                        // 登出取消：界面已经在登出流程里，不用再留提示
-                        qichi.as_mut().set_message("");
+                        // 登出 / 关闭开关会推进 epoch，走不到这里；能到这里的
+                        // 只有用户点了底栏的「取消」。
+                        qichi
+                            .as_mut()
+                            .set_message("已取消建立本地索引（可在设置里关闭再开启重试）");
                     }
                     Err(err) => {
                         qichi
@@ -126,6 +144,20 @@ impl qobject::Kichi {
                 qichi.as_mut().report_index_error();
             },
         );
+    }
+
+    /// 底栏进度条上的「取消」：中止在途全量建库。
+    ///
+    /// 只置取消信号、不推进 epoch，让后台线程正常收尾并走完成回调
+    /// （清 index_building、把提示换成「已取消」）；旧库保持原样，开关仍是
+    /// 开启状态，用户之后在设置里关闭再开启即可重试。
+    pub fn cancel_local_index_build(mut self: Pin<&mut Self>) {
+        let cancel = self.as_mut().rust_mut().index_build_cancel.take();
+        let Some(cancel) = cancel else {
+            return;
+        };
+        cancel.cancel();
+        self.as_mut().set_message("正在取消建立本地索引……");
     }
 
     /// 窗口重新获得焦点：触发一次 canary 探针（冷却 / 单飞都在探针入口挡）。

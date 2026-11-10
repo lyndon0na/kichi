@@ -34,6 +34,7 @@ const QML_FILES: &[&str] = &[
     // 通用控件（K* 与小组件）
     "qml/components/DialogFooter.qml",
     "qml/components/ElidedLabel.qml",
+    "qml/components/IndexBuildStatus.qml",
     "qml/components/KButton.qml",
     "qml/components/KColorSwatchRow.qml",
     "qml/components/KComboBox.qml",
