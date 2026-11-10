@@ -186,8 +186,10 @@ ItemDelegate {
     // 选中态：强调色只铺一层很淡的底，左侧再点一根 3px 竖条。
     // 不整行铺满 palette.highlight——饱和色块会把文件名的对比度压下去，
     // 而屏幕上真正「选中」的通常只有一行，代价却铺满整行。
-    // 平铺行不用卡片圆角和行间空隙，只靠整行 hover / 选中底色区分。
+    // 行间仍不留空隙（与表头对齐），只给 hover / 选中底色加圆角，
+    // 让色块收口柔和一点；未选中行底色透明，圆角看不出来。
     background: Rectangle {
+        radius: theme.radiusCard
         color: row.highlighted
                ? theme.accentSoft
                : mouseArea.pressed
@@ -199,6 +201,7 @@ ItemDelegate {
         Rectangle {
             objectName: "fileRowCreatedFlash"
             anchors.fill: parent
+            radius: parent.radius
             color: theme.accentGhost
             opacity: row.createdFlash ? 1 : 0
             visible: opacity > 0

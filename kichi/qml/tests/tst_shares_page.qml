@@ -136,7 +136,7 @@ TestCase {
         var row = list.itemAtIndex(0)
         verify(row)
         compare(row.implicitHeight, 48)
-        compare(row.background.radius, 0)
+        compare(row.background.radius, 6)
     }
 
     function test_rows_reorder_when_a_share_is_removed() {

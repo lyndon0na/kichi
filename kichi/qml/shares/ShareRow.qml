@@ -74,6 +74,7 @@ ItemDelegate {
     icon.color: "transparent"
 
     background: Rectangle {
+        radius: theme.radiusCard
         // MouseArea 位于内容层下方，不能可靠接收整行 hover；
         // ItemDelegate 自己的 hovered 不受子项遮挡影响。
         color: row.highlighted

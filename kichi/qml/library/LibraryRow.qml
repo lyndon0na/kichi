@@ -115,6 +115,7 @@ ItemDelegate {
     }
 
     background: Rectangle {
+        radius: theme.radiusCard
         color: row.highlighted
                ? theme.accentSoft
                : row.rowPressed

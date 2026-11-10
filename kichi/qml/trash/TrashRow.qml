@@ -78,8 +78,10 @@ ItemDelegate {
         }
     }
 
-    // 平铺行不用卡片圆角和行间空隙，只靠整行 hover / 选中底色区分。
+    // 行间不留空隙（与表头对齐），只给 hover / 选中底色加圆角，
+    // 让色块收口柔和一点；未选中行底色透明，圆角看不出来。
     background: Rectangle {
+        radius: theme.radiusCard
         color: row.highlighted
                ? theme.accentSoft
                : row.rowPressed

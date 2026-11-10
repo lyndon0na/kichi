@@ -271,7 +271,7 @@ TestCase {
         var density = findChild(page, "fileListDensity")
         verify(density !== null)
         compare(row.implicitHeight, density.rowHeight)
-        compare(row.background.radius, 0)
+        compare(row.background.radius, 6)
         compare(findChild(row, "thumbnailSlot").width, 36)
         compare(findChild(row, "fileThumbnail").width, 36)
         compare(findChild(row, "fileThumbnail").height, 24)
