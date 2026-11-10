@@ -416,7 +416,7 @@ TestCase {
                "回收站列序应为删除时间在大小之前：" + deletedX + " / " + sizeX)
     }
 
-    function test_rows_are_flat_and_have_bottom_dividers() {
+    function test_rows_are_flat_without_bottom_dividers() {
         harness = harnessComponent.createObject(parent, { visible: true })
         verify(harness !== null)
         wait(20)
@@ -425,7 +425,7 @@ TestCase {
         verify(fileRow !== null && trashRow !== null)
         compare(fileRow.background.radius, 0)
         compare(trashRow.background.radius, 0)
-        verify(findChild(fileRow, "fileRowDivider") !== null)
-        verify(findChild(trashRow, "trashRowDivider") !== null)
+        compare(findChild(fileRow, "fileRowDivider"), null)
+        compare(findChild(trashRow, "trashRowDivider"), null)
     }
 }

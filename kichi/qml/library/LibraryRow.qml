@@ -129,7 +129,6 @@ ItemDelegate {
             accentInset: 28
             accentObjectName: "libraryRowAccent"
             accentColor: theme.accent
-            dividerColor: theme.divider
         }
     }
 

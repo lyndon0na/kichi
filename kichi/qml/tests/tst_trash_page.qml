@@ -275,7 +275,7 @@ TestCase {
         compare(findChild(row, "thumbnailSlot").width, 36)
         compare(findChild(row, "fileThumbnail").width, 36)
         compare(findChild(row, "fileThumbnail").height, 24)
-        verify(findChild(row, "trashRowDivider") !== null)
+        compare(findChild(row, "trashRowDivider"), null)
     }
 
     function test_grid_mode_uses_the_shared_cards_and_supports_selection() {

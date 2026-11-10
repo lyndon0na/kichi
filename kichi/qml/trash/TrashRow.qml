@@ -78,7 +78,7 @@ ItemDelegate {
         }
     }
 
-    // 平铺行只靠底部分隔线分段，不用卡片圆角和行间空隙。
+    // 平铺行不用卡片圆角和行间空隙，只靠整行 hover / 选中底色区分。
     background: Rectangle {
         color: row.highlighted
                ? theme.accentSoft
@@ -93,9 +93,7 @@ ItemDelegate {
             accentVisible: row.highlighted
             accentInset: 28
             accentObjectName: "trashRowAccent"
-            dividerObjectName: "trashRowDivider"
             accentColor: theme.accent
-            dividerColor: theme.divider
         }
     }
 

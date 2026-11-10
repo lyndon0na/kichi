@@ -177,7 +177,6 @@ ItemDelegate {
             accentInset: 20
             accentObjectName: "taskActiveAccent"
             accentColor: theme.accent
-            dividerColor: theme.divider
         }
     }
 

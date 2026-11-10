@@ -205,7 +205,6 @@ ItemDelegate {
             accentVisible: row.active && !row.child
             accentInset: 14
             accentColor: theme.accent
-            dividerColor: row.sticky ? theme.hairline : theme.divider
         }
 
         Rectangle {

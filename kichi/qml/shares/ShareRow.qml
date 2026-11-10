@@ -89,7 +89,6 @@ ItemDelegate {
             accentVisible: row.highlighted
             accentInset: 28
             accentColor: theme.accent
-            dividerColor: theme.divider
         }
     }
 

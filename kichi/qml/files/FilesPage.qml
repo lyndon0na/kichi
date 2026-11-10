@@ -440,7 +440,7 @@ Item {
                         anchors.fill: parent
                         clip: true
                         // 文件页是平铺表格：行和表头共用 34 / 48 高度，
-                        // 只靠 1px 底部分隔线区分，不再用行间缝隙。
+                        // 行间不再画分隔线，也不留行间缝隙。
                         spacing: 0
                         visible: !page.gridMode
                         model: page.fileRows
