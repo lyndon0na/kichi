@@ -415,6 +415,7 @@ impl qobject::Kichi {
                 cancel.cancel();
             }
             rust.index_building = false;
+            rust.local_index_ready = false;
             rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
             if let Some(cancel) = rust.index_probe_cancel.take() {
                 cancel.cancel();

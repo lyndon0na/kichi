@@ -20,6 +20,11 @@ Item {
                                       && !backend.searchSettled
                                       && backend.searchSource === "network"
 
+    // 索引就绪 = 输入即搜全盘；未就绪 = 输入只筛当前目录，回车才遍历网盘。
+    // 占位文案必须跟着这个状态走，否则「搜索整个网盘」会骗人。
+    readonly property bool indexReady: backend !== null
+                                       && backend.localIndexReady === true
+
     implicitHeight: searchField.implicitHeight
     implicitWidth: 330
 
@@ -62,7 +67,9 @@ Item {
 
         objectName: "filesSearchField"
         anchors.fill: parent
-        placeholderText: qsTr("搜索整个网盘")
+        placeholderText: bar.indexReady
+                         ? qsTr("搜索整个网盘")
+                         : qsTr("搜索当前文件夹，回车全盘搜索")
         selectByMouse: true
         // 右边给内嵌的清空 / 搜索按钮让位，文字不钻到按钮底下
         rightPadding: buttonRow.width + 8

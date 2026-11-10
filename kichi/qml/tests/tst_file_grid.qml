@@ -28,6 +28,7 @@ TestCase {
         property bool searchActive: false
         property bool searchSettled: true
         property bool searchTruncated: false
+        property bool localIndexReady: true
         property string searchStatus: ""
         property string searchQuery: ""
         property bool filesLoading: false
@@ -323,6 +324,7 @@ TestCase {
         fakeBackend.searchActive = false
         fakeBackend.searchSettled = true
         fakeBackend.searchTruncated = false
+        fakeBackend.localIndexReady = true
         fakeBackend.searchStatus = ""
         fakeBackend.searchQuery = ""
         fakeBackend.authState = "signedIn"
@@ -1259,14 +1261,19 @@ TestCase {
                 "整行必须排满计算出的列数")
     }
 
-    function test_search_placeholder_names_the_whole_drive() {
+    function test_search_placeholder_follows_local_index() {
+        fakeBackend.localIndexReady = false
         searchBar = searchBarComponent.createObject(parent, { visible: true })
         verify(searchBar !== null)
         wait(20)
 
         const field = findChild(searchBar, "filesSearchField")
         verify(field !== null)
-        compare(field.placeholderText, "搜索整个网盘")
+        compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索",
+                "索引未就绪时输入只能筛当前文件夹，占位文案要说清回车才全盘")
+
+        fakeBackend.localIndexReady = true
+        tryCompare(field, "placeholderText", "搜索整个网盘")
     }
 
     function test_view_toggle_switches_with_one_click_and_stays_available_during_search() {

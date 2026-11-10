@@ -227,6 +227,9 @@ pub mod qobject {
         #[qproperty(bool, auto_resume_uploads, cxx_name = "autoResumeUploads", READ, NOTIFY = changed)]
         /// 本机保存目录树索引与页面快照；关闭时不读不写本地库
         #[qproperty(bool, local_index_enabled, cxx_name = "localIndexEnabled", READ, NOTIFY = changed)]
+        /// 本地索引已成功建库、可承担全盘本地搜索；搜索框据此切换占位文案。
+        /// 开关打开但尚未建好 / 正在首次建库 / 读取失败时都为 false。
+        #[qproperty(bool, local_index_ready, cxx_name = "localIndexReady", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_parallel, cxx_name = "uploadParallel", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_rate_mib, cxx_name = "uploadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
@@ -1587,6 +1590,8 @@ pub struct KichiRust {
     pub(crate) auto_resume_uploads: bool,
     /// 在本机保存目录树索引与页面快照（关闭时不读不写本地库）
     pub(crate) local_index_enabled: bool,
+    /// 本地索引已成功建库、可承担全盘本地搜索
+    pub(crate) local_index_ready: bool,
     pub(crate) upload_parallel: i32,
     pub(crate) upload_rate_mib: i32,
     /// 启动时自动续跑标记是否已经处理过（每进程一次）
@@ -1865,6 +1870,7 @@ impl Default for KichiRust {
             auto_resume_downloads: true,
             auto_resume_uploads: false,
             local_index_enabled,
+            local_index_ready: false,
             upload_parallel: i32::try_from(crate::session::limits::DEFAULT_UPLOAD_PARALLEL)
                 .unwrap_or(2),
             upload_rate_mib: 0,

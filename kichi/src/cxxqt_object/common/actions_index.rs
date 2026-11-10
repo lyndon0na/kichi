@@ -34,6 +34,7 @@ impl qobject::Kichi {
         let index = match session.ensure_tree_index_open() {
             Ok(index) => index,
             Err(_) => {
+                self.as_mut().refresh_local_index_ready();
                 self.as_mut().report_index_error();
                 return;
             }
@@ -41,17 +42,37 @@ impl qobject::Kichi {
         match index.needs_full_build() {
             Ok(true) => {}
             Ok(false) => {
+                self.as_mut().refresh_local_index_ready();
                 // 索引已建好：登录 / 启动恢复顺手对一次账（探针自带冷却与单飞）
                 self.as_mut().probe_tree_index();
                 return;
             }
             Err(err) => {
                 session.record_tree_index_error(format!("本地索引读取失败：{err}"));
+                self.as_mut().refresh_local_index_ready();
                 self.as_mut().report_index_error();
                 return;
             }
         }
+        self.as_mut().refresh_local_index_ready();
         self.as_mut().start_tree_index_build(session, index);
+    }
+
+    /// 把「本地索引是否就绪」同步到 QML 可见属性；值没变就不发通知。
+    ///
+    /// 就绪是派生状态（库是否成功建过），只在打开 / 建库收尾 / 登出 / 开关
+    /// 切换这些时点重算，避免每次 `notify` 都去查一次库。
+    pub(crate) fn refresh_local_index_ready(mut self: Pin<&mut Self>) {
+        let ready = self.backend.session.local_index_ready();
+        let changed = {
+            let mut rust = self.as_mut().rust_mut();
+            let changed = rust.local_index_ready != ready;
+            rust.local_index_ready = ready;
+            changed
+        };
+        if changed {
+            self.as_mut().notify();
+        }
     }
 
     /// 起一次全量建库；调用方已确认需要建库（首次 / 探针判为 suspect）。
@@ -121,6 +142,9 @@ impl qobject::Kichi {
                     let mut rust = qichi.as_mut().rust_mut();
                     rust.index_building = false;
                     rust.index_build_cancel = None;
+                    // 建库失败 / 取消时旧库可能仍然可用（重建场景），统一按
+                    // 库的真实状态重算，而不是固定写成 true / false。
+                    rust.local_index_ready = done_session.local_index_ready();
                 }
                 match result {
                     Ok(crate::session::tree_index::sync::BuildOutcome::Built(count)) => {
