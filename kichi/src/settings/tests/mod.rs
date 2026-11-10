@@ -161,8 +161,8 @@ fn partial_and_unknown_fields_are_tolerated() {
     assert_eq!(settings.player_sub_outline_color, DEFAULT_SUB_OUTLINE_COLOR);
     assert_eq!(
         settings.content_view,
-        ContentViewMode::List,
-        "旧设置没有内容视图字段时默认列表"
+        ContentViewMode::Grid,
+        "旧设置没有内容视图字段时默认网格"
     );
     assert_eq!(settings.window_width, 0, "负尺寸收回为 0");
     assert_eq!(settings.download_parallel, 3, "旧设置没有并发字段时取默认");

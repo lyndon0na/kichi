@@ -108,11 +108,11 @@ impl SortField {
 /// 文件类内容页共用的显示方式。
 ///
 /// 我的文件、回收站和三个资料库页共用这一项；任务 / 分享管理页仍用表格。
-/// 列表是默认值；网格只改变展示，不改变数据、排序、筛选或操作。
+/// 网格是默认值；它只改变展示，不改变数据、排序、筛选或操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContentViewMode {
-    #[default]
     List,
+    #[default]
     Grid,
 }
 

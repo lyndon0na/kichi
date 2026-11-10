@@ -148,7 +148,7 @@ impl Default for Settings {
             player_sub_outline_size: DEFAULT_SUB_OUTLINE_SIZE,
             player_sub_outline_color: DEFAULT_SUB_OUTLINE_COLOR.to_owned(),
             close_to_tray: false,
-            content_view: ContentViewMode::List,
+            content_view: ContentViewMode::Grid,
             sort_field: SortField::Name,
             sort_ascending: true,
             window_width: 0,
