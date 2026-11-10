@@ -43,8 +43,6 @@ RowLayout {
         rightPadding: 8
         enabled: root.canUpload || root.canCreateFolder || root.canCreateTask
         showTextToolTip: false
-        ToolTip.visible: hovered
-        ToolTip.text: qsTr("上传文件 / 文件夹、新建文件夹或离线任务")
         Accessible.name: qsTr("添加")
         onClicked: root.openAddMenu()
 
@@ -65,9 +63,6 @@ RowLayout {
                             root.backend.currentDirId, root.currentFolderPath())
                     }
                 }
-
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("上传到当前文件夹，可一次选择多个文件")
             }
 
             MenuItem {
@@ -80,9 +75,6 @@ RowLayout {
                             root.backend.currentDirId, root.currentFolderPath())
                     }
                 }
-
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("选择单个文件夹；多个文件夹可直接拖入窗口")
             }
 
             MenuItem {
@@ -135,8 +127,6 @@ RowLayout {
         enabled: root.backend !== null && !root.searching && !root.loading
                  && !root.manualRefreshing
         showTextToolTip: false
-        ToolTip.visible: hovered
-        ToolTip.text: qsTr("刷新当前文件夹")
         onClicked: {
             if (root.target)
                 root.target.refreshFiles()

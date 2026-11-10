@@ -498,8 +498,6 @@ ApplicationWindow {
                                 iconSize: 14
                                 iconOpacity: 0.65
                                 enabled: root.crumbs.length > 1
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr("上一级（回到上级目录）")
                                 onClicked: filesPage.goUp()
                             }
 
@@ -762,7 +760,6 @@ ApplicationWindow {
                 verticalAlignment: Text.AlignVCenter
                 color: statusBar.message.length > 0 ? theme.textSecondary : theme.textMuted
                 font.pixelSize: theme.fontMeta
-                showToolTipWhenUntruncated: true
             }
 
             // 本地索引全量建库：不确定进度 + 取消，紧挨着状态文字

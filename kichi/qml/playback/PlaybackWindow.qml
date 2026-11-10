@@ -874,10 +874,6 @@ Window {
                     onMedia: true
                     focusPolicy: Qt.NoFocus
                     Accessible.name: qsTr("关闭播放")
-                    KMediaToolTip {
-                        visible: closeButton.hovered && !win.overlayOpen
-                        text: qsTr("关闭播放")
-                    }
                     onClicked: win.requestClose()
                 }
             }
@@ -933,10 +929,6 @@ Window {
                     focusPolicy: Qt.NoFocus
                     enabled: win.backend !== null && win.backend.playQueueIndex > 0
                     Accessible.name: qsTr("上一集")
-                    KMediaToolTip {
-                        visible: previousButton.hovered && !win.overlayOpen
-                        text: qsTr("上一集")
-                    }
                     onClicked: {
                         if (win.backend !== null)
                             win.backend.playPrevious()
@@ -957,10 +949,6 @@ Window {
                     implicitHeight: 34
                     focusPolicy: Qt.NoFocus
                     Accessible.name: win.paused ? qsTr("继续播放") : qsTr("暂停")
-                    KMediaToolTip {
-                        visible: pauseButton.hovered && !win.overlayOpen
-                        text: win.paused ? qsTr("继续播放") : qsTr("暂停")
-                    }
                     onClicked: win.togglePause()
                 }
 
@@ -979,10 +967,6 @@ Window {
                              && win.backend.playQueueIndex >= 0
                              && win.backend.playQueueIndex < win.backend.playQueue.length - 1
                     Accessible.name: qsTr("下一集")
-                    KMediaToolTip {
-                        visible: nextButton.hovered && !win.overlayOpen
-                        text: qsTr("下一集")
-                    }
                     onClicked: {
                         if (win.backend !== null)
                             win.backend.playNext()
@@ -1103,10 +1087,6 @@ Window {
                     color: speedHover.containsMouse ? theme.mediaHover : "transparent"
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("播放速度 %1").arg(win.formatSpeed(win.speedPercent))
-                    KMediaToolTip {
-                        visible: speedHover.containsMouse && !win.overlayOpen
-                        text: qsTr("播放速度")
-                    }
 
                     MouseArea {
                         id: speedHover
@@ -1178,10 +1158,6 @@ Window {
                     focusPolicy: Qt.NoFocus
                     enabled: win.backend !== null && win.backend.playQueue.length > 1
                     Accessible.name: qsTr("播放列表")
-                    KMediaToolTip {
-                        visible: queueButton.hovered && !win.overlayOpen
-                        text: qsTr("播放列表")
-                    }
                     onClicked: win.toggleQueuePanel(queueButton)
                 }
 
@@ -1218,10 +1194,6 @@ Window {
                     implicitHeight: 34
                     focusPolicy: Qt.NoFocus
                     Accessible.name: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
-                    KMediaToolTip {
-                        visible: fullscreenButton.hovered && !win.overlayOpen
-                        text: win.isFullScreen ? qsTr("退出全屏") : qsTr("全屏")
-                    }
                     onClicked: win.toggleFullscreen()
                 }
             }

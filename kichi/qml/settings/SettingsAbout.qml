@@ -31,7 +31,6 @@ ColumnLayout {
                 font.pixelSize: theme.fontMeta
                 elide: Text.ElideMiddle
                 horizontalAlignment: Text.AlignRight
-                showToolTipWhenUntruncated: true
             }
         }
     }

@@ -78,8 +78,6 @@ Popup {
                 iconName: "x"
                 iconSize: 16
                 iconOpacity: 0.7
-                ToolTip.text: qsTr("关闭")
-                ToolTip.visible: hovered
                 onClicked: settingsDialog.close()
             }
         }

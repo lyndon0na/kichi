@@ -42,7 +42,6 @@ RowLayout {
         color: theme.textMuted
         font.pixelSize: theme.fontMeta
         elide: Text.ElideRight
-        showToolTipWhenUntruncated: true
     }
 
     Rectangle {

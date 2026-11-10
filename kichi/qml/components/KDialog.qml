@@ -63,8 +63,6 @@ Dialog {
             iconName: "x"
             iconSize: 14
             iconOpacity: 0.7
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("关闭")
             onClicked: control.reject()
         }
     }

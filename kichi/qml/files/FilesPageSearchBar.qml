@@ -117,8 +117,6 @@ Item {
             iconOpacity: 0.7
             iconColor: palette.placeholderText
             visible: searchField.text.length > 0
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("清空关键词，回到当前文件夹")
             onClicked: bar.clearAndExit()
         }
 
@@ -131,8 +129,6 @@ Item {
             iconOpacity: 1
             iconColor: palette.placeholderText
             enabled: searchField.text.trim().length > 0 && !bar.scanning
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("搜索整个网盘（优先本地索引；索引未就绪时才逐页请求官方列表）")
             onClicked: bar.startFullScan()
         }
     }

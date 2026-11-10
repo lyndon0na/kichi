@@ -27,9 +27,5 @@ KButton {
     enabled: backend !== null
     showTextToolTip: false
     Accessible.name: qsTr("当前内容显示方式：%1").arg(text)
-    ToolTip.visible: hovered
-    ToolTip.text: qsTr("点击切换到%1").arg(nextView === "grid"
-                                            ? qsTr("网格视图")
-                                            : qsTr("列表视图"))
     onClicked: viewRequested(nextView)
 }
