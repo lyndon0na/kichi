@@ -780,6 +780,7 @@ ApplicationWindow {
 
             // 右侧数量摘要：和左侧上下文互补，页面切换时始终有内容
             ElidedLabel {
+                id: statusBarCount
                 objectName: "statusBarCount"
                 Layout.alignment: Qt.AlignVCenter
                 Layout.maximumWidth: 220
