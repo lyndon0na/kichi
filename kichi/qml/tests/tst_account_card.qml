@@ -2,7 +2,7 @@ import QtQuick
 import QtTest
 import "../shell"
 
-// 账号区视觉回归：昵称优先、账号兜底、头像保留系统强调色、设置入口在行尾。
+// 账号区视觉回归：昵称优先、账号兜底（悬停提示展示邮箱）、头像保留系统强调色、设置入口在行尾。
 TestCase {
     name: "AccountCard"
     when: windowShown
@@ -12,6 +12,14 @@ TestCase {
     AccountCard {
         id: card
         width: 240
+    }
+
+    Component {
+        id: accountCardComponent
+
+        AccountCard {
+            width: 240
+        }
     }
 
     SignalSpy {
@@ -38,6 +46,10 @@ TestCase {
         card.account = "mail@example.com"
         card.displayName = "夏日用户"
         card.avatarPath = ""
+        card.quotaUsed = ""
+        card.quotaLimit = ""
+        card.quotaLoading = false
+        card.quotaRatio = -1
         card.settingsActive = false
     }
 
@@ -95,6 +107,62 @@ TestCase {
         wait(0)
         compare(card.identityPending, false)
         compare(card.shownName, "fallback")
+    }
+
+    function test_single_line_keeps_height_and_hides_email() {
+        // 声明式控件在 Qt Test 里默认隐藏，尺寸断言用动态创建的一份
+        const testCard = accountCardComponent.createObject(parent, { visible: true })
+        verify(testCard !== null, "AccountCard 创建失败")
+        testCard.account = "mail@example.com"
+        testCard.displayName = "夏日用户"
+        wait(0)
+
+        compare(findNamed(testCard, "accountEmail"), null, "账号区不再显示邮箱行")
+        compare(findNamed(testCard, "avatarCircle").width, 28)
+
+        // 加载骨架和真实文字同一行高：身份数据到达时账号区不抽动
+        const loadedHeight = testCard.implicitHeight
+        testCard.displayName = ""
+        testCard.account = ""
+        wait(0)
+        compare(testCard.identityPending, true)
+        tryCompare(testCard, "implicitHeight", loadedHeight, 1000)
+
+        testCard.destroy()
+    }
+
+    function test_quota_line_fills_account_area() {
+        const testCard = accountCardComponent.createObject(parent, { visible: true })
+        verify(testCard !== null, "AccountCard 创建失败")
+        testCard.account = "mail@example.com"
+        testCard.displayName = "夏日用户"
+        testCard.quotaUsed = "4.7 TB"
+        testCard.quotaLimit = "10.0 TB"
+        testCard.quotaRatio = 0.47
+        wait(0)
+
+        const text = findNamed(testCard, "quotaText")
+        const track = findNamed(testCard, "quotaTrack")
+        verify(text !== null && track !== null, "账号区缺少容量指示")
+        compare(text.visible, true)
+        compare(text.text, qsTr("已用 4.7 TB / 10.0 TB"))
+        compare(track.visible, true)
+
+        // 容量条铺满账号区内容宽度，位于名字行下方
+        const settingsButton = findNamed(testCard, "accountSettingsButton")
+        tryCompare(track, "width", testCard.width - 2 * testCard.theme.gapMd, 1000)
+        verify(track.mapToItem(testCard, 0, 0).y
+               > settingsButton.mapToItem(testCard, 0, 0).y,
+               "容量条应在账号行下方")
+
+        // 上限未知且不在加载：整块收起，不占账号区高度
+        testCard.quotaUsed = ""
+        testCard.quotaLimit = ""
+        testCard.quotaRatio = -1
+        wait(0)
+        compare(findNamed(testCard, "accountQuota").visible, false)
+
+        testCard.destroy()
     }
 
 }

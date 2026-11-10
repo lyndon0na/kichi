@@ -7,8 +7,9 @@ import "../core"
 
 // 侧栏底部的账号区（从 SideBar.qml 拆出来，守 QML 行数提醒线）。
 //
-// 一行：头像 + 用户名 + 右侧设置入口。容量已挪到底栏右侧（QuotaIndicator.qml）；
-// 会员标在 2026-11-05 去掉——身份只留头像和名字，不再和设置按钮抢位置。
+// 一行：头像 + 名字 + 右侧设置入口；名字下面一行是容量文字 + 容量条
+// （QuotaIndicator.qml）。账号行保持克制，完整账号放在名字的悬停提示里。
+// 会员标在 2026-11-05 去掉——身份不再和设置按钮抢位置。
 //
 // 退出登录不在这里：它是低频、不可逆的操作，放在设置页「账号」一节，
 // 点下去还要过一道确认（2026-10-29 用户要求，别再加回账号区）。
@@ -25,6 +26,11 @@ Item {
     property string displayName: ""
     /// Rust 下载后的本地头像 `file://` URI；空串时显示首字母
     property string avatarPath: ""
+    /// 容量：已用 / 上限文字与占用比例（< 0 = 不限量 / 未知）
+    property string quotaUsed: ""
+    property string quotaLimit: ""
+    property bool quotaLoading: false
+    property double quotaRatio: -1
     /// 当前停在设置页：右侧设置按钮点亮强调色
     property bool settingsActive: false
 
@@ -78,9 +84,9 @@ Item {
             Rectangle {
                 objectName: "avatarCircle"
                 Layout.alignment: Qt.AlignVCenter
-                implicitWidth: 24
-                implicitHeight: 24
-                radius: 12
+                implicitWidth: 28
+                implicitHeight: 28
+                radius: 14
                 color: theme.accentGhost
                 opacity: card.identityPending ? card.skeletonPulse : 1
 
@@ -101,8 +107,8 @@ Item {
                     anchors.fill: parent
                     source: card.avatarPath
                     visible: status === Image.Ready
-                    sourceSize.width: 48
-                    sourceSize.height: 48
+                    sourceSize.width: 56
+                    sourceSize.height: 56
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                     cache: false
@@ -135,10 +141,11 @@ Item {
 
             ElidedLabel {
                 Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
                 visible: !card.identityPending
                 text: card.shownName
                 color: theme.textPrimary
-                font.pixelSize: theme.fontMeta
+                font.pixelSize: theme.fontBody
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
                 toolTipText: card.account.length > 0 ? card.account : card.shownName
@@ -172,6 +179,18 @@ Item {
                 ToolTip.text: qsTr("设置（Ctrl+,）")
                 onClicked: card.settingsRequested()
             }
+        }
+
+        // 第二行：容量文字 + 容量条。没有上限（未知 / 未登录）时整块收起，
+        // 不占布局高度；加载中先画骨架。
+        QuotaIndicator {
+            objectName: "accountQuota"
+            Layout.fillWidth: true
+            visible: card.quotaLoading || card.quotaLimit.length > 0
+            used: card.quotaUsed
+            limit: card.quotaLimit
+            loading: card.quotaLoading
+            ratio: card.quotaRatio
         }
     }
 

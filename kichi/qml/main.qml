@@ -675,9 +675,10 @@ ApplicationWindow {
         backend: backend
     }
 
-    // 底栏：左侧单槽消息 + 右侧容量指示。消息默认显示当前页面 / 目录上下文，
-    // 进度、错误和需要留意的结果临时覆盖它，结束后自动回到上下文。
-    // 登录页只在本就有错误时出现，此时容量指示隐藏。
+    // 底栏：左侧单槽消息 + 右侧当前页面的数量摘要。消息默认显示当前页面 /
+    // 目录上下文，进度、错误和需要留意的结果临时覆盖它，结束后自动回到上下文。
+    // 容量在侧栏账号区（AccountCard.qml / QuotaIndicator.qml）。
+    // 登录页只在本就有错误时出现。
     footer: Item {
         id: statusBar
 
@@ -689,9 +690,11 @@ ApplicationWindow {
                 && String(backend.taskFolderLoadingId || "").length > 0
         readonly property bool indexBuilding: backend !== null
                 && backend.indexBuilding === true
+        // 右侧数量摘要的宽度上限：太长时截断，不把左侧上下文挤没
+        readonly property real countWidth: Math.min(statusBarCount.implicitWidth, 220)
         // 状态文字允许占用的最大宽度：扣掉页边距、其它底栏控件与间距。
         // 建库时进度条 / 取消紧跟在文字右边，剩余空间由 spacer 吃掉，
-        // 文字过长就在这个上限内截断，不会把容量指示挤出去。
+        // 文字过长就在这个上限内截断。
         readonly property real textMaxWidth: Math.max(
             0,
             width
@@ -699,7 +702,7 @@ ApplicationWindow {
             - theme.gapSm * 4
             - (taskNavigationLoading ? 14 : 0)
             - (indexBuilding ? statusBarIndexBuild.implicitWidth : 0)
-            - (root.signedIn ? statusBarQuota.width : 0))
+            - statusBar.countWidth)
 
         implicitHeight: visible ? barHeight : 0
         visible: (root.signedIn || message.length > 0)
@@ -770,20 +773,21 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignVCenter
             }
 
-            // 文字不再撑满整行，剩下的宽度由这里吃掉，容量指示保持靠右
+            // 文字不再撑满整行，剩下的宽度由这里吃掉
             Item {
                 Layout.fillWidth: true
             }
 
-            QuotaIndicator {
-                id: statusBarQuota
-                objectName: "statusBarQuota"
+            // 右侧数量摘要：和左侧上下文互补，页面切换时始终有内容
+            ElidedLabel {
+                objectName: "statusBarCount"
                 Layout.alignment: Qt.AlignVCenter
-                visible: root.signedIn
-                used: backend ? backend.quotaUsed : ""
-                limit: backend ? backend.quotaLimit : ""
-                loading: backend ? backend.quotaLoading : false
-                ratio: backend ? backend.quotaRatio : -1
+                Layout.maximumWidth: 220
+                visible: text.length > 0
+                text: root.pageCountText()
+                color: theme.textMuted
+                font.pixelSize: theme.fontMeta
+                elide: Text.ElideRight
             }
         }
     }
@@ -903,6 +907,7 @@ ApplicationWindow {
 
     /// 底栏无提醒时显示的上下文。读取的是各页已经维护的加载态与计数，
     /// 不另起网络请求，也不把常规刷新写进 statusMessage。
+    /// 底栏左侧：当前页面 / 目录的上下文；数量摘要拆到 pageCountText。
     function pageContextText() {
         if (!backend)
             return ""
@@ -912,69 +917,96 @@ ApplicationWindow {
                     // 本地索引没有「已扫多少条」的进度，别借用网络扫描的文案
                     if (backend.searchSource === "index")
                         return qsTr("正在本地索引里搜索…")
-                    return qsTr("全盘搜索 · 已扫 %1 条，命中 %2 条")
-                            .arg(backend.searchScanned)
-                            .arg(backend.searchHits)
+                    return qsTr("全盘搜索")
                 }
-                return qsTr("搜索「%1」· 命中 %2 条")
-                        .arg(backend.searchQuery)
-                        .arg(backend.searchHits)
+                return qsTr("搜索「%1」").arg(backend.searchQuery)
             }
             const folder = root.crumbs.length > 0
                     ? root.crumbs[root.crumbs.length - 1] : qsTr("全部文件")
             if (backend.filesLoading)
                 return qsTr("正在读取「%1」…").arg(folder)
+            return folder
+        }
+        if (root.currentPage === pageIds.shares)
+            return qsTr("分享")
+        if (root.currentPage === pageIds.transfers) {
+            if (taskCenterPage.currentTab === "offline")
+                return qsTr("离线任务")
+            return qsTr("本机传输")
+        }
+        if (root.currentPage === pageIds.trash)
+            return qsTr("回收站")
+        if (pageIds.libraryPages.indexOf(root.currentPage) >= 0)
+            return root.pageTitle()
+        return ""
+    }
+
+    /// 底栏右侧：当前页面的数量 / 进度摘要；没有可显示的内容时返回空串。
+    function pageCountText() {
+        if (!backend)
+            return ""
+        if (root.currentPage === pageIds.files) {
+            if (backend.searchActive) {
+                if (!backend.searchSettled) {
+                    if (backend.searchSource === "index")
+                        return ""
+                    return qsTr("已扫 %1 条，命中 %2 条")
+                            .arg(backend.searchScanned)
+                            .arg(backend.searchHits)
+                }
+                return qsTr("命中 %1 条").arg(backend.searchHits)
+            }
+            if (backend.filesLoading)
+                return ""
             if (backend.filesRefreshing)
-                return qsTr("%1 · 共 %2 项 · 正在刷新…")
-                        .arg(folder).arg(backend.files.length)
-            return qsTr("%1 · 共 %2 项").arg(folder).arg(backend.files.length)
+                return qsTr("共 %1 项 · 正在刷新…").arg(backend.files.length)
+            return qsTr("共 %1 项").arg(backend.files.length)
         }
         if (root.currentPage === pageIds.shares) {
             if (backend.sharesLoading)
-                return qsTr("分享 · 正在读取…")
-            return qsTr("分享 · 共 %1 条").arg(backend.shares.length)
+                return qsTr("正在读取…")
+            return qsTr("共 %1 条").arg(backend.shares.length)
         }
         if (root.currentPage === pageIds.transfers) {
             if (taskCenterPage.currentTab === "offline") {
                 if (taskCenterPage.tasksView.tasksLoading)
-                    return qsTr("离线任务 · 正在读取…")
+                    return qsTr("正在读取…")
                 const count = backend.tasks.length
                 const active = taskCenterPage.tasksView.activeCount
                 if (active > 0) {
-                    return qsTr("离线任务 · 共 %1 条，%2 条进行中")
+                    return qsTr("共 %1 条，%2 条进行中")
                             .arg(count)
                             .arg(active)
                 }
-                return qsTr("离线任务 · 共 %1 条").arg(count)
+                return qsTr("共 %1 条").arg(count)
             }
             const active = taskCenterPage.transfersView.activeCount
             const queued = taskCenterPage.transfersView.queuedCount
             const paused = taskCenterPage.transfersView.pausedCount
             if (active + queued + paused === 0)
-                return qsTr("本机传输 · 暂无进行中的任务")
-            return qsTr("本机传输 · %1").arg(taskCenterPage.transfersView.statusText)
+                return qsTr("暂无进行中的任务")
+            return taskCenterPage.transfersView.statusText
         }
         if (root.currentPage === pageIds.trash) {
             if (backend.trashLoading
                     || (!backend.trashLoaded && backend.trashError.length === 0))
-                return qsTr("回收站 · 正在读取…")
+                return qsTr("正在读取…")
             if (!backend.trashLoaded && backend.trashError.length > 0)
-                return qsTr("回收站 · 读取失败")
-            return qsTr("回收站 · 共 %1 项").arg(backend.trashFiles.length)
+                return qsTr("读取失败")
+            return qsTr("共 %1 项").arg(backend.trashFiles.length)
         }
         if (pageIds.libraryPages.indexOf(root.currentPage) >= 0) {
-            const title = root.pageTitle()
             if (backend.libraryLoading)
-                return qsTr("%1 · 正在读取…").arg(title)
+                return qsTr("正在读取…")
             if (backend.libraryError.length > 0)
-                return qsTr("%1 · 读取失败").arg(title)
+                return qsTr("读取失败")
             if (backend.libraryKind === "recent-saved" && root.currentPage === pageIds.recentSaved
                     || backend.libraryKind === "playback-history"
                        && root.currentPage === pageIds.playbackHistory
                     || backend.libraryKind === "starred" && root.currentPage === pageIds.starred) {
-                return qsTr("%1 · 共 %2 项").arg(title).arg(backend.libraryRows.length)
+                return qsTr("共 %1 项").arg(backend.libraryRows.length)
             }
-            return title
+            return ""
         }
         return ""
     }

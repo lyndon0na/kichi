@@ -131,6 +131,14 @@ Rectangle {
             account: bar.backend ? String(bar.backend.account) : ""
             displayName: bar.backend ? String(bar.backend.displayName) : ""
             avatarPath: bar.backend ? String(bar.backend.avatarPath) : ""
+            // 测试替身只会实现自己用到的属性：缺失时按「没有容量」处理
+            quotaUsed: bar.backend && bar.backend.quotaUsed !== undefined
+                       ? String(bar.backend.quotaUsed) : ""
+            quotaLimit: bar.backend && bar.backend.quotaLimit !== undefined
+                        ? String(bar.backend.quotaLimit) : ""
+            quotaLoading: bar.backend && bar.backend.quotaLoading === true
+            quotaRatio: bar.backend && bar.backend.quotaRatio !== undefined
+                        ? bar.backend.quotaRatio : -1
             settingsActive: bar.settingsActive
             onSettingsRequested: bar.settingsRequested()
         }

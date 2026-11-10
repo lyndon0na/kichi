@@ -2,7 +2,7 @@ import QtQuick
 import QtTest
 import "../shell"
 
-// 底栏容量指示：首次加载画骨架、到达后原地替换；不限量时保留文字、不画容量条。
+// 账号区容量指示：首次加载画骨架、到达后原地替换；不限量时保留文字、不画容量条。
 TestCase {
     name: "QuotaIndicator"
     when: windowShown
@@ -72,6 +72,24 @@ TestCase {
         compare(findChild(quota, "quotaSkeleton").visible, false)
         compare(findChild(quota, "quotaText").visible, true)
         compare(findChild(quota, "quotaTrack").visible, true)
+    }
+
+    function test_initial_load_keeps_height() {
+        quota.used = ""
+        quota.limit = ""
+        quota.ratio = -1
+        quota.loading = true
+        wait(0)
+        const skeletonHeight = quota.implicitHeight
+
+        quota.used = "1 GB"
+        quota.limit = "10 GB"
+        quota.ratio = 0.42
+        quota.loading = false
+        wait(0)
+
+        compare(quota.implicitHeight, skeletonHeight,
+                "骨架换成文字时容量区高度不能变")
     }
 
     function test_refresh_with_existing_values_keeps_them() {

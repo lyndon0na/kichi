@@ -3,13 +3,13 @@ import QtQuick.Layouts
 import "../components"
 import "../core"
 
-// 底栏右侧的容量指示：已用 / 上限文字 + 3px 容量条。
+// 账号区的容量指示：已用 / 上限文字 + 铺满一行的 3px 容量条。
 //
-// 从账号区整块挪来（2026-11-05）：账号行只留头像、名字和设置入口，
-// 容量这种长期不变的数字放到不抢视线、又始终可见的底栏。
+// 2026-11-05 曾整块挪到底栏右侧；2026-11-10 移回账号区——
+// 底栏只剩页面上下文，侧栏底部也不会显得太空。
 // 首次加载还没拿到数值时画骨架（文字条 + 空轨道呼吸），到达后原地替换；
 // 已有数值的刷新不闪骨架，继续显示旧值。
-RowLayout {
+ColumnLayout {
     id: quota
 
     property string used: ""
@@ -28,27 +28,34 @@ RowLayout {
 
     readonly property KTheme theme: KTheme { parent: quota }
 
+    // 骨架和真实文字共用同一行高，容量数据到达时账号区不抽动
+    FontMetrics {
+        id: textMetrics
+        font.pixelSize: quota.theme.fontCaption
+    }
+    readonly property real textHeight: textMetrics.height
+
     /// 骨架的呼吸透明度（只在首次加载时动）
     property real skeletonPulse: 1
 
-    spacing: theme.gapSm
+    spacing: theme.gapXs
 
     ElidedLabel {
         objectName: "quotaText"
         visible: quota.ready
-        Layout.alignment: Qt.AlignVCenter
-        Layout.maximumWidth: 200
+        Layout.fillWidth: true
+        Layout.preferredHeight: quota.textHeight
         text: quota.text
         color: theme.textMuted
-        font.pixelSize: theme.fontMeta
+        font.pixelSize: theme.fontCaption
         elide: Text.ElideRight
+        showToolTipWhenUntruncated: true
     }
 
     Rectangle {
         objectName: "quotaTrack"
         visible: quota.showBar
-        Layout.alignment: Qt.AlignVCenter
-        Layout.preferredWidth: 56
+        Layout.fillWidth: true
         Layout.preferredHeight: 3
         radius: 1.5
         color: theme.surfacePressed
@@ -62,25 +69,31 @@ RowLayout {
         }
     }
 
-    // 首次加载的骨架：与真实内容同一横排、同一尺寸，数据到达时只换内容不撑开底栏
-    RowLayout {
+    // 首次加载的骨架：与真实内容同一竖排、同一高度，数据到达时只换内容不撑开侧栏
+    ColumnLayout {
         objectName: "quotaSkeleton"
         visible: quota.pending
-        Layout.alignment: Qt.AlignVCenter
+        Layout.fillWidth: true
         spacing: quota.spacing
 
-        Rectangle {
-            objectName: "quotaSkeletonText"
-            Layout.preferredWidth: 96
-            Layout.preferredHeight: 10
-            radius: 2
-            color: theme.surfacePressed
-            opacity: quota.skeletonPulse
+        Item {
+            Layout.fillWidth: true
+            Layout.preferredHeight: quota.textHeight
+
+            Rectangle {
+                objectName: "quotaSkeletonText"
+                width: 96
+                height: 10
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 2
+                color: quota.theme.surfacePressed
+                opacity: quota.skeletonPulse
+            }
         }
 
         Rectangle {
             objectName: "quotaSkeletonTrack"
-            Layout.preferredWidth: 56
+            Layout.fillWidth: true
             Layout.preferredHeight: 3
             radius: 1.5
             color: theme.surfacePressed
