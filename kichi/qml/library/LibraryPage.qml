@@ -41,9 +41,6 @@ Item {
                                      && page.backend.contentView === "grid"
     readonly property bool dateGrouped: page.dateSectionsEnabled
                                         && page.kind === "playback-history"
-    /// 图片预览只在有图片条目的两页提供；播放历史只有视频 / 音频。
-    readonly property bool imagePreviewEnabled: page.kind === "recent-saved"
-                                                || page.kind === "starred"
     readonly property var libraryRows: entryRows.model
     readonly property var activeView: page.gridMode
                                       ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid)
@@ -196,8 +193,9 @@ Item {
     }
 
     /// 图片预览：取图仍由 Rust 完成（直链留后端），这里只负责开浮层。
+    /// 入口只看条目本身——是不是图片文件；页面不参与判断。
     function openImagePreview(id) {
-        if (!page.imagePreviewEnabled || !page.backend)
+        if (!page.backend)
             return
         const target = String(id)
         let entry = null
@@ -231,7 +229,7 @@ Item {
                                null,
                                page.activeView.width / 2,
                                Math.max(24, page.activeView.height / 2)))
-        } else if (page.imagePreviewEnabled && entry.image === true) {
+        } else if (entry.image === true) {
             page.openImagePreview(entry.id)
         }
     }
@@ -462,7 +460,7 @@ Item {
                             videoBadgeMargin: density.listVideoBadgeMargin
                             playLoading: page.isPlayLoading(entry.id)
                             playing: page.isPlaying(entry.id)
-                            previewImages: page.imagePreviewEnabled
+                            previewImages: true
 
                             onActivateRequested: function (id) {
                                 if (page.backend)
@@ -547,7 +545,7 @@ Item {
                         libraryPage: page
                         entryIndex: index
                         density: density
-                        previewImages: page.imagePreviewEnabled
+                        previewImages: true
 
                         onEntrySelected: function (entryIndex, modifiers) {
                             if (entryIndex < 0 || entryIndex >= page.entries.length)
@@ -651,7 +649,6 @@ Item {
     LibraryContextMenu {
         id: libraryMenu
         backend: page.backend
-        previewEnabled: page.imagePreviewEnabled
         onPlayRequested: function (id, point) {
             page.playEntry(id, point)
         }

@@ -16,8 +16,7 @@ Item {
     property bool targetIsFolder: false
     property bool targetPlayable: false
     property bool targetStarred: false
-    /// 「预览…」只在本页支持图片预览时出现（最近保存 / 已加星标）。
-    property bool previewEnabled: false
+    /// 入口只看条目是不是图片文件，不按页面开关。
     property bool targetImage: false
     property bool targetPending: false
     property bool targetHasPartial: false
@@ -63,7 +62,7 @@ Item {
         MenuItem {
             objectName: "libraryPreviewItem"
             text: qsTr("预览…")
-            visible: root.previewEnabled && root.targetImage
+            visible: root.targetImage
             enabled: root.backend !== null && !root.backend.filesLoading
             onTriggered: root.previewRequested(root.targetId)
         }

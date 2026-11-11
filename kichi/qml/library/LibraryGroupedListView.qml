@@ -142,6 +142,7 @@ Item {
                              ? root.libraryPage.isPlayLoading(entry.id) : false
                 playing: entry && root.libraryPage
                          ? root.libraryPage.isPlaying(entry.id) : false
+                previewImages: true
 
                 onActivateRequested: function (id) {
                     if (backend)
@@ -154,6 +155,10 @@ Item {
                 onPlayRequested: function (id, point) {
                     if (root.libraryPage)
                         root.libraryPage.playEntry(id, row.mapToItem(null, point.x, point.y))
+                }
+                onPreviewRequested: function (id) {
+                    if (root.libraryPage)
+                        root.libraryPage.openImagePreview(id)
                 }
                 onContextMenu: function (point) {
                     if (root.libraryPage)

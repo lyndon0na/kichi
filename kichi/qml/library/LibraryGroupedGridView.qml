@@ -256,6 +256,7 @@ Item {
                     entryData: cardData.entry
                     entryIndex: cardData.entryIndex
                     density: root.density
+                    previewImages: true
 
                     onEntrySelected: function (entryIndex, modifiers) {
                         root.currentIndex = entryIndex
@@ -269,6 +270,10 @@ Item {
                     onEntryPlayRequested: function (id, position) {
                         if (root.libraryPage)
                             root.libraryPage.playEntry(id, position)
+                    }
+                    onPreviewRequested: function (id) {
+                        if (root.libraryPage)
+                            root.libraryPage.openImagePreview(id)
                     }
                     onEntryContextMenuRequested: function (entry, position) {
                         if (!root.libraryPage)

@@ -1129,14 +1129,13 @@ TestCase {
         wait(20)
     }
 
-    // 图片预览只挂在最近保存 / 已加星标：双击图片交给后端取图并打开浮层。
-    function test_image_preview_on_saved_and_starred() {
+    // 资料库列表里的图片条目：双击交给后端取图并打开浮层。
+    function test_image_entry_opens_preview() {
         const imageRow = row("photo-a", false)
         imageRow.name = "photo-a.png"
         imageRow.image = true
         publish([imageRow])
 
-        verify(page.imagePreviewEnabled)
         const list = findChild(page, "libraryList")
         verify(list !== null)
         tryVerify(function () { return list.itemAtIndex(0) !== null })
@@ -1152,8 +1151,9 @@ TestCase {
         wait(20)
     }
 
-    // 播放历史只有视频 / 音频，不提供入口也不向后端发请求。
-    function test_playback_history_has_no_image_preview() {
+    // 入口只看条目本身，不按页面开关：播放历史里出现图片条目同样可预览，
+    // 非图片条目（例如视频）不会触发取图。
+    function test_image_preview_follows_the_entry() {
         page.kind = "playback-history"
         backend.libraryKind = "playback-history"
         const imageRow = row("photo-b", false)
@@ -1161,11 +1161,20 @@ TestCase {
         imageRow.image = true
         publish([imageRow])
 
-        verify(!page.imagePreviewEnabled)
         page.openImagePreview("photo-b")
-        compare(backend.previewCalls, 0)
+        compare(backend.previewCalls, 1)
+        compare(backend.previewedId, "photo-b")
         const overlay = findChild(page, "libraryImagePreview")
         verify(overlay !== null)
+        compare(overlay.visible, true)
+        overlay.dismiss()
+        wait(20)
+
+        backend.previewCalls = 0
+        backend.previewedId = ""
+        publish([row("clip-b", true)])
+        page.openImagePreview("clip-b")
+        compare(backend.previewCalls, 0)
         compare(overlay.visible, false)
     }
 }
