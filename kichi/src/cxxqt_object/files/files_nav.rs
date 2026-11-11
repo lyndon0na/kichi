@@ -286,6 +286,7 @@ impl qobject::Kichi {
             rust.refresh_pending_manual = false;
             rust.entries.clear();
             rust.files = QVariantList::default();
+            rust.filtered_files = QVariantList::default();
             rust.files_revision = rust.files_revision.wrapping_add(1);
             rust.files_cache.clear();
             rust.files_request_running = false;

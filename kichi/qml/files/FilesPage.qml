@@ -16,6 +16,8 @@ Item {
     id: page
 
     property var backend: null
+    /// 搜索筛选变化：由 main.qml 接到搜索框的防抖，重跑当前关键词。
+    signal searchFilterChanged()
     // 清晰度菜单全应用只保留一个可见实例：文件页和离线任务页播放时共用它，
     // 资料库页使用自己的菜单。否则隐藏页面也会响应同一个 playMenu 信号。
     property bool playMenuEnabled: true
@@ -88,7 +90,11 @@ Item {
             return []
         if (page.holdingSearchEntries)
             return page.heldSearchEntries
-        return page.searching ? page.backend.searchResults : page.backend.files
+        if (page.searching)
+            return page.backend.searchResults
+        // 目录列表用 Rust 按筛选条件裁过的版本（旧测试替身没有该属性时退回原列表）
+        return page.backend.filteredFiles !== undefined
+                ? page.backend.filteredFiles : page.backend.files
     }
     readonly property bool backendSessionActive: page.backend === null
                                                  || typeof page.backend.authState === "undefined"
@@ -445,6 +451,7 @@ Item {
                        ? page.heldSearchTruncated
                        : (page.backend !== null
                           && page.backend.searchTruncated === true)
+            onFilterChanged: page.searchFilterChanged()
         }
 
         // —— 列表（当前目录 / 搜索结果共用这块区域）——
@@ -736,10 +743,42 @@ Item {
                          && page.backend.files.length === 0
             }
 
+            // 有筛选但全被筛掉：给出说明和清除入口，别让列表空着没解释
+            Column {
+                anchors.centerIn: parent
+                spacing: 8
+                visible: !page.showingSearchEntries && page.backend !== null
+                         && !page.backend.filesLoading
+                         && !page.showLoadingSkeleton
+                         && page.backend.files.length > 0
+                         && page.displayEntries.length === 0
+
+                Label {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: qsTr("当前筛选条件下没有可显示的条目")
+                    color: palette.placeholderText
+                }
+
+                KButton {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: qsTr("清除筛选")
+                    variant: "ghost"
+                    visible: page.backend !== null
+                             && page.backend.searchFilterActiveCount > 0
+                    onClicked: {
+                        if (!page.backend)
+                            return
+                        page.backend.clearSearchFilters()
+                        page.searchFilterChanged()
+                    }
+                }
+            }
+
             SearchEmptyState {
                 anchors.centerIn: parent
                 width: Math.min(parent.width - 40, 460)
                 backend: page.showingSearchEntries ? page.backend : null
+                onClearFiltersRequested: page.searchFilterChanged()
             }
 
             // 拖动提示：Linux 上 Drag 不会自动抓取源条目做拖影，光标处常常

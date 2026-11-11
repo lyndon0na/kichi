@@ -616,6 +616,18 @@ ApplicationWindow {
 
                         }
                     }
+
+                    // 文件页常驻的筛选入口：搜索状态行里的那个只在搜索时出现，
+                    // 这一处在浏览目录时也能先把条件设好，下次搜索直接用。
+                    SearchFilterButton {
+                        id: pageFilterButton
+
+                        Layout.alignment: Qt.AlignVCenter
+                        // 搜索时状态行已经有一个，避免同屏出现两个一模一样的按钮
+                        visible: !filesPage.searching
+                        backend: backend
+                        onFilterChanged: searchBar.rerunAfterFilterChange()
+                    }
                 }
 
                 // 内容区：与页头同一块底色（窗口色就是 palette.base），中间不画分隔线
@@ -633,6 +645,8 @@ ApplicationWindow {
                         windowVisible: root.visible
                         playMenuEnabled: root.currentPage === pageIds.files
                                          || root.currentPage === pageIds.transfers
+                        // 筛选变化后复用搜索框的同一条防抖重跑当前关键词
+                        onSearchFilterChanged: searchBar.rerunAfterFilterChange()
                     }
 
                     SharesPage {
@@ -1001,9 +1015,12 @@ ApplicationWindow {
             }
             if (backend.filesLoading)
                 return ""
+            // 有筛选时底栏报的是「看得见的条目数」，和列表一致
+            const shown = backend.filteredFiles !== undefined
+                        ? backend.filteredFiles.length : backend.files.length
             if (backend.filesRefreshing)
-                return qsTr("共 %1 项 · 正在刷新…").arg(backend.files.length)
-            return qsTr("共 %1 项").arg(backend.files.length)
+                return qsTr("共 %1 项 · 正在刷新…").arg(shown)
+            return qsTr("共 %1 项").arg(shown)
         }
         if (root.currentPage === pageIds.shares) {
             if (backend.sharesLoading)

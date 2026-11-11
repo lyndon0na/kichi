@@ -19,7 +19,8 @@ Menu {
     enabled: menu.backend !== null
 
     // 换排序列时用该列的常用方向：名称从 A 到 Z，大小和时间把大的 / 新的放前面。
-    // 与 FileListHeader.defaultAscending 是同一条规则，两处要一起改。
+    // 与 FileListHeader.defaultAscending、SearchFilterButton.defaultAscending
+    // 是同一条规则，三处要一起改。
     function defaultAscending(field) {
         return field === "name"
     }

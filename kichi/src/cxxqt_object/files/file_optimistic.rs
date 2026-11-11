@@ -11,7 +11,7 @@ use chrono::Utc;
 use cxx_qt::CxxQtType;
 use kichi_core::{EntryKind, FileEntry};
 
-use super::files::{list_from_with_pending, sort_entries};
+use super::files::{list_filtered, list_from_with_pending, sort_entries};
 use super::{qobject, KichiRust};
 use crate::session::SearchHit;
 
@@ -379,6 +379,12 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
             rust.files = list_from_with_pending(&entries, &rust.pending_entry_ids);
+            rust.filtered_files = list_filtered(
+                &entries,
+                &rust.pending_entry_ids,
+                &rust.search_filter,
+                chrono::Utc::now().timestamp(),
+            );
             rust.files_cache.replace_entries(dir_id, &entries);
             rust.entries = entries;
             rust.files_revision = rust.files_revision.wrapping_add(1);

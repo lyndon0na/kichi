@@ -191,3 +191,49 @@ fn equal_keys_fall_back_to_name_for_stable_output() {
     sort_entries(&mut entries, SortField::Size, true);
     assert_eq!(names(&entries), vec!["a", "b"]);
 }
+
+#[test]
+fn filtered_list_hides_non_matching_rows_and_keeps_the_rest_in_order() {
+    let entries = vec![
+        entry("合集", EntryKind::Folder, 0, 1),
+        entry("电影.mkv", EntryKind::File, 20, 1),
+        entry("笔记.txt", EntryKind::File, 1, 1),
+    ];
+    let pending = std::collections::HashSet::new();
+    let now = Utc
+        .with_ymd_and_hms(2026, 1, 3, 0, 0, 0)
+        .unwrap()
+        .timestamp();
+
+    assert_eq!(
+        list_filtered(
+            &entries,
+            &pending,
+            &kichi_core::SearchFilter::default(),
+            now
+        )
+        .len(),
+        entries.len(),
+        "没有筛选时和完整列表一致"
+    );
+
+    let video = kichi_core::SearchFilter {
+        types: vec![kichi_core::TypeFilter::Video],
+        ..Default::default()
+    };
+    assert_eq!(
+        list_filtered(&entries, &pending, &video, now).len(),
+        1,
+        "只看视频：文件夹与文档都被藏起来"
+    );
+
+    let small = kichi_core::SearchFilter {
+        sizes: vec![kichi_core::SizeFilter::Lt10MiB],
+        ..Default::default()
+    };
+    assert_eq!(
+        list_filtered(&entries, &pending, &small, now).len(),
+        2,
+        "按大小筛时文件夹没有大小，不显示"
+    );
+}

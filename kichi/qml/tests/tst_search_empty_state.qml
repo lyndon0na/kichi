@@ -21,10 +21,19 @@ TestCase {
         property bool localIndexEnabled: false
         property bool indexBuilding: false
         property int enableCalls: 0
+        property int clearFilterCalls: 0
+        property int searchFilterActiveCount: 0
+        property string searchFilterSummary: ""
 
         function setLocalIndexEnabled(enabled) {
             enableCalls += 1
             localIndexEnabled = enabled
+        }
+
+        function clearSearchFilters() {
+            clearFilterCalls += 1
+            searchFilterActiveCount = 0
+            searchFilterSummary = ""
         }
     }
 
@@ -39,19 +48,27 @@ TestCase {
     }
 
     property var state: null
+    property int clearRequests: 0
 
     function init() {
         state = stateComponent.createObject(parent)
+        state.clearFiltersRequested.connect(function () {
+            clearRequests += 1
+        })
     }
 
     function cleanup() {
         if (state)
             state.destroy()
         state = null
+        clearRequests = 0
         fakeBackend.searchSource = "fallback"
         fakeBackend.localIndexEnabled = false
         fakeBackend.indexBuilding = false
         fakeBackend.enableCalls = 0
+        fakeBackend.clearFilterCalls = 0
+        fakeBackend.searchFilterActiveCount = 0
+        fakeBackend.searchFilterSummary = ""
     }
 
     function advice() {
@@ -60,6 +77,10 @@ TestCase {
 
     function enableButton() {
         return findChild(state, "enableLocalIndexButton")
+    }
+
+    function clearButton() {
+        return findChild(state, "clearSearchFiltersButton")
     }
 
     function test_index_off_explains_scope_and_offers_enable() {
@@ -99,5 +120,34 @@ TestCase {
         wait(0)
         verify(!enableButton().visible, "索引搜索不应出现开启按钮")
         verify(advice().text.indexOf("可以试试") >= 0, "索引已工作时保留通用建议：" + advice().text)
+    }
+
+    function test_active_filters_explain_and_offer_clear() {
+        fakeBackend.searchFilterActiveCount = 2
+        fakeBackend.searchFilterSummary = "视频 · 最近 7 天"
+        wait(0)
+        verify(clearButton() !== null, "缺少清除筛选入口")
+        verify(clearButton().visible, "有筛选且无结果时应提供清除按钮")
+        verify(advice().text.indexOf("当前筛选条件") >= 0,
+               "空态要提示可能是被筛选筛掉的：" + advice().text)
+        verify(advice().text.indexOf("视频 · 最近 7 天") >= 0,
+               "摘要要写进提示里：" + advice().text)
+        verify(advice().text.indexOf("可以试试") < 0,
+               "有筛选时先给筛选建议，不要直接给通用建议：" + advice().text)
+    }
+
+    function test_clear_button_clears_filters_and_requests_rerun() {
+        fakeBackend.searchFilterActiveCount = 1
+        fakeBackend.searchFilterSummary = "文件夹"
+        wait(0)
+        mouseClick(clearButton())
+        compare(fakeBackend.clearFilterCalls, 1)
+        compare(clearRequests, 1, "清除筛选后要通知文件页重跑当前关键词")
+        verify(!clearButton().visible, "清除后不再显示清除入口")
+    }
+
+    function test_no_clear_entry_without_filters() {
+        wait(0)
+        verify(!clearButton().visible, "没有筛选时不显示清除入口")
     }
 }

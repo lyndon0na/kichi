@@ -12,6 +12,9 @@ ColumnLayout {
 
     property var backend: null
 
+    // 筛选变化后由文件页复用搜索框的防抖重跑当前关键词。
+    signal clearFiltersRequested()
+
     // 搜索源：index / fallback / network；空串 = 没有搜索。
     // 测试替身可能没有这个属性（undefined），按「没有搜索」处理。
     readonly property string source: backend !== null && backend.searchSource !== undefined
@@ -24,6 +27,13 @@ ColumnLayout {
     readonly property bool indexUnavailable: fallback
                                              && backend.localIndexEnabled === true
                                              && !indexBuilding
+    // 有筛选且没有结果时，第一句要提示可以清除筛选（可能只是筛没的）。
+    readonly property bool filtersActive: backend !== null
+                                          && typeof backend.searchFilterActiveCount !== "undefined"
+                                          && backend.searchFilterActiveCount > 0
+    readonly property string filterSummary: backend !== null
+                                            && typeof backend.searchFilterSummary !== "undefined"
+                                            ? (backend.searchFilterSummary || "") : ""
 
     visible: backend !== null
              && backend.searchActive === true
@@ -43,6 +53,9 @@ ColumnLayout {
         objectName: "searchEmptyStateAdvice"
         Layout.fillWidth: true
         text: {
+            if (root.filtersActive)
+                return qsTr("当前筛选条件（%1）下没有匹配项。可以清除筛选后再试。")
+                    .arg(root.filterSummary)
             if (root.indexOff)
                 return qsTr("这次只搜了当前文件夹，没有搜索整个网盘。开启本地索引后会先在后台建立一次目录索引；建好后重新输入关键词，就能在全盘范围搜索（不发出搜索请求）。")
             if (root.indexBuilding)
@@ -54,6 +67,20 @@ ColumnLayout {
         color: palette.placeholderText
         wrapMode: Text.Wrap
         font.pixelSize: 12
+    }
+
+    // 筛选可能把本来存在的条目全筛掉了：给一键清除入口。
+    KButton {
+        objectName: "clearSearchFiltersButton"
+        Layout.alignment: Qt.AlignHCenter
+        visible: root.filtersActive
+        text: qsTr("清除筛选")
+        variant: "secondary"
+        onClicked: {
+            if (root.backend && typeof root.backend.clearSearchFilters === "function")
+                root.backend.clearSearchFilters()
+            root.clearFiltersRequested()
+        }
     }
 
     // 只在「索引被用户关掉」时给一键开启；未就绪 / 建库中不给按钮，

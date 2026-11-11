@@ -22,6 +22,8 @@ TestCase {
         id: fakeBackend
 
         property var files: []
+        /// 旧替身默认 undefined：displayEntries 会退回 files
+        property var filteredFiles: undefined
         property var searchResults: []
         property string authState: "signedIn"
         property string contentView: "list"
@@ -319,6 +321,7 @@ TestCase {
         viewToggle = null
         headerActions = null
         fakeBackend.files = []
+        fakeBackend.filteredFiles = undefined
         fakeBackend.searchResults = []
         fakeBackend.contentView = "list"
         fakeBackend.searchActive = false
@@ -1928,5 +1931,17 @@ TestCase {
         const first = list.itemAtIndex(0)
         verify(first !== null && Math.round(first.y) === 0,
                "首项必须停在顶部，y=" + (first ? first.y : "null"))
+    }
+
+    function test_browsing_list_uses_filtered_files_when_present() {
+        fakeBackend.files = manyEntries(6)
+        fakeBackend.filteredFiles = [fakeBackend.files[2]]
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(30)
+        compare(page.displayEntries.length, 1, "目录列表只显示筛选后的条目")
+        compare(page.displayEntries[0].id, fakeBackend.files[2].id)
+        verify(page.displayEntries.length < fakeBackend.files.length,
+               "后端仍保留完整目录列表，筛选只是视图")
     }
 }

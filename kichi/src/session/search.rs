@@ -12,12 +12,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::Utc;
 use kichi_core::search::{matches, FileHit};
-use kichi_core::{MatchTier, SearchMatcher};
+use kichi_core::{FileEntry, MatchTier, SearchFilter, SearchMatcher};
 
 use super::download::Cancel;
 use super::tree_index;
 use super::{Failure, Session};
+use crate::settings::SortField;
 
 /// 本地搜索最多为多少条命中解析路径（界面也只显示这么多行）。
 pub const SEARCH_PATH_LIMIT: usize = 500;
@@ -96,11 +98,14 @@ impl SearchHit {
 impl Session {
     /// 全盘扫描（逐页；阻塞；可中断）。
     ///
-    /// `query` 按名字字面包含匹配；`on_batch` 每扫完一页调一次，
-    /// 调用方在这里把结果搬到界面上（不要在里面做慢操作：它跑在扫描线程上）。
+    /// `query` 按名字字面包含匹配；`filter` 在名字命中之后、回投之前再筛一次，
+    /// 因此界面拿到的每页结果已经过滤（排序与 500 条截断在更外层）；
+    /// `on_batch` 每扫完一页调一次，调用方在这里把结果搬到界面上
+    /// （不要在里面做慢操作：它跑在扫描线程上）。
     pub fn search_all(
         &self,
         query: &str,
+        filter: &SearchFilter,
         cancel: &Cancel,
         on_batch: &mut dyn FnMut(ScanBatch),
     ) -> Result<ScanEnd, Failure> {
@@ -112,6 +117,8 @@ impl Session {
         let mut path = PathCache::default();
         let mut scanned = 0usize;
         let mut page_token: Option<String> = None;
+        // 一轮扫描内时间窗口固定，避免翻页过程中边界抖动。
+        let now = Utc::now().timestamp();
 
         loop {
             if cancel.is_cancelled() {
@@ -127,7 +134,7 @@ impl Session {
             // 随机遍历上，同一页的结果顺序每次都不太一样（known-issues §4.1）。
             let page_start = scanned - entries.len();
             for (index, hit) in entries.into_iter().enumerate() {
-                if !matches(&hit.entry.name, query) {
+                if !matches(&hit.entry.name, query) || !filter.matches(&hit.entry, now) {
                     continue;
                 }
                 let (folder_id, folder_path) = folder_of(&client, &mut path, &hit);
@@ -153,10 +160,19 @@ impl Session {
     }
     /// 本地索引全盘搜索（阻塞；调用方放后台线程）。
     ///
-    /// 匹配包含回收站行；排序规则全部来自 [`SearchMatcher`]：完全同名 >
-    /// 前缀 > 词首 > 包含，同档按名字。只给界面显示的前
-    /// [`SEARCH_PATH_LIMIT`] 条解析路径，且路径全部来自索引，不回网络。
-    pub fn search_index_local(&self, query: &str) -> Result<IndexSearchResult, Failure> {
+    /// 匹配包含回收站行；排序规则：先按 [`SearchMatcher`] 的匹配档位
+    /// （完全同名 > 前缀 > 词首 > 包含），**同档内按用户选的列与方向**
+    /// （[`SortField::compare_entries`]，默认名称升序），再以名字 / id 兜底。
+    /// 筛选与排序都在截断之前完成（`kind` / 时间 / 大小已下推 SQL，扩展名分类
+    /// 在 Rust 侧），只给界面显示的前 [`SEARCH_PATH_LIMIT`] 条解析路径，
+    /// 且路径全部来自索引，不回网络。
+    pub fn search_index_local(
+        &self,
+        query: &str,
+        filter: &SearchFilter,
+        sort_field: SortField,
+        sort_ascending: bool,
+    ) -> Result<IndexSearchResult, Failure> {
         let query = query.trim();
         if query.is_empty() {
             return Err(Failure::Other("搜索关键词不能为空".into()));
@@ -173,15 +189,28 @@ impl Session {
         let matcher =
             SearchMatcher::new(query).ok_or_else(|| Failure::Other("搜索关键词不能为空".into()))?;
 
+        let now = Utc::now().timestamp();
         let mut rows: Vec<(Option<(MatchTier, String)>, tree_index::IndexSearchHit)> = index
-            .search_with_trash(query)
+            .search_with_trash(query, filter, now)
             .map_err(index_failure)?
             .into_iter()
             .map(|row| (matcher.sort_key(&row.entry.name), row))
             .filter(|(key, _)| key.is_some())
             .collect();
         rows.sort_by(|(left, a), (right, b)| {
-            left.cmp(right).then_with(|| a.entry.id.cmp(&b.entry.id))
+            // 只拿档位比：名字交给下面的排序列，否则选「大小」时同档内永远是名称序
+            let left_tier = left.as_ref().map(|(tier, _)| *tier);
+            let right_tier = right.as_ref().map(|(tier, _)| *tier);
+            left_tier
+                .cmp(&right_tier)
+                .then_with(|| sort_field.compare_entries(&a.entry, &b.entry, sort_ascending))
+                .then_with(|| {
+                    a.entry
+                        .name
+                        .to_lowercase()
+                        .cmp(&b.entry.name.to_lowercase())
+                })
+                .then_with(|| a.entry.id.cmp(&b.entry.id))
         });
 
         let folder_ids: Vec<String> = rows
@@ -222,6 +251,23 @@ impl Session {
             built_at,
         })
     }
+}
+
+/// 索引未就绪时的当前目录兜底：名字命中 + 筛选条件一起判断（0 请求）。
+///
+/// 保持当前目录原有顺序；`now` 是时间窗口基准。抽成纯函数便于单测，
+/// 桥接层只负责把结果铺到界面上。
+pub fn filter_entries(
+    entries: &[FileEntry],
+    query: &str,
+    filter: &SearchFilter,
+    now: i64,
+) -> Vec<FileEntry> {
+    entries
+        .iter()
+        .filter(|entry| matches(&entry.name, query) && filter.matches(entry, now))
+        .cloned()
+        .collect()
 }
 
 fn index_failure(err: tree_index::IndexError) -> Failure {

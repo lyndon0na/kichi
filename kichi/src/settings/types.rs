@@ -103,6 +103,35 @@ impl SortField {
             _ => Self::Name,
         }
     }
+
+    /// 两条条目在这一列上的先后（`ascending` 为 `false` 时整体反转）。
+    ///
+    /// 名称用自然排序（大小写不敏感、数字按数值），`第2集` 排在 `第10集` 前；
+    /// 大小 / 时间相同时回落到名称，保证同一批数据多次排序顺序稳定。
+    /// 目录列表（[`crate::cxxqt_object::files::sort_entries`]，文件夹另置顶）
+    /// 与搜索结果（同匹配档位内）共用这一条规则，改规则只改这里。
+    pub fn compare_entries(
+        self,
+        left: &kichi_core::FileEntry,
+        right: &kichi_core::FileEntry,
+        ascending: bool,
+    ) -> std::cmp::Ordering {
+        let name = || kichi_core::natural::natural_cmp(&left.name, &right.name);
+        let order = match self {
+            Self::Name => name(),
+            Self::Size => left.size.cmp(&right.size).then_with(name),
+            Self::Modified => {
+                let left = left.modified_at.map(|time| time.timestamp()).unwrap_or(0);
+                let right = right.modified_at.map(|time| time.timestamp()).unwrap_or(0);
+                left.cmp(&right).then_with(name)
+            }
+        };
+        if ascending {
+            order
+        } else {
+            order.reverse()
+        }
+    }
 }
 
 /// 文件类内容页共用的显示方式。

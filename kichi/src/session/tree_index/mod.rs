@@ -393,10 +393,16 @@ impl TreeIndex {
             .with_conn(|conn| query::search(conn, text, limit))
     }
 
-    /// 本地全盘搜索：包含回收站行，没有条数上限。
-    pub(crate) fn search_with_trash(&self, text: &str) -> Result<Vec<IndexSearchHit>, IndexError> {
+    /// 本地全盘搜索：包含回收站行，没有条数上限；筛选的
+    /// `kind` / 修改时间 / 大小直接下推进 SQL。
+    pub(crate) fn search_with_trash(
+        &self,
+        text: &str,
+        filter: &kichi_core::SearchFilter,
+        now: i64,
+    ) -> Result<Vec<IndexSearchHit>, IndexError> {
         self.store
-            .with_conn(|conn| query::search_with_trash(conn, text))
+            .with_conn(|conn| query::search_with_trash(conn, text, filter, now))
     }
 
     /// 一批文件夹 id → 真实路径（索引内解析 + 共享父目录缓存）。

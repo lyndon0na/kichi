@@ -75,6 +75,8 @@ pub mod qobject {
         #[qproperty(QString, task_folder_loading_id, cxx_name = "taskFolderLoadingId", READ, NOTIFY = changed)]
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
         #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
+        /// `files` 按当前筛选条件裁过的版本：文件页列表 / 网格直接用它
+        #[qproperty(QVariantList, filtered_files, cxx_name = "filteredFiles", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
         /// 与 `breadcrumb` 并列的目录 id（根目录为空串）：内部拖拽落到面包屑时用它
         #[qproperty(QStringList, breadcrumb_ids, cxx_name = "breadcrumbIds", READ, NOTIFY = changed)]
@@ -285,6 +287,16 @@ pub mod qobject {
         /// 结果来源："index"（本地索引）/ "fallback"（只筛当前目录）/ "network"（全盘扫描）；
         /// 空串 = 没有搜索。只有 network 才显示扫描进度与停止按钮。
         #[qproperty(QString, search_source, cxx_name = "searchSource", READ, NOTIFY = changed)]
+        /// 已勾选的类型线名（folder/file/video/audio/image/document/archive/other）；空 = 全部
+        #[qproperty(QStringList, search_filter_types, cxx_name = "searchFilterTypes", READ, NOTIFY = changed)]
+        /// 已勾选的修改时间线名（7d/30d/1y）；空 = 不限
+        #[qproperty(QStringList, search_filter_modifieds, cxx_name = "searchFilterModifieds", READ, NOTIFY = changed)]
+        /// 已勾选的大小线名（lt10m/10m-100m/100m-1g/gt1g）；空 = 不限
+        #[qproperty(QStringList, search_filter_sizes, cxx_name = "searchFilterSizes", READ, NOTIFY = changed)]
+        /// 激活的筛选条件组数（0–3），筛选按钮上显示
+        #[qproperty(i32, search_filter_active_count, cxx_name = "searchFilterActiveCount", READ, NOTIFY = changed)]
+        /// 状态行摘要，例如「视频 · 最近 7 天」；没有筛选时为空串
+        #[qproperty(QString, search_filter_summary, cxx_name = "searchFilterSummary", READ, NOTIFY = changed)]
         /// 磁链解析出的文件清单（QML 直接当 model 用）
         #[qproperty(QVariantList, magnet_files, cxx_name = "magnetFiles", READ, NOTIFY = changed)]
         /// 磁链解析在途
@@ -1170,6 +1182,22 @@ pub mod qobject {
         #[cxx_name = "searchRevealFolder"]
         fn search_reveal_folder(self: Pin<&mut Self>, id: QString);
 
+        /// 搜索：设置筛选（三组已勾选项的线名列表，空列表 = 该组不限制）。
+        /// 只改状态，界面随后复用现有防抖重跑当前关键词。
+        #[qinvokable]
+        #[cxx_name = "setSearchFilter"]
+        fn set_search_filter(
+            self: Pin<&mut Self>,
+            types: QStringList,
+            modified: QStringList,
+            sizes: QStringList,
+        );
+
+        /// 搜索：清除全部筛选（空态里的「清除筛选」）
+        #[qinvokable]
+        #[cxx_name = "clearSearchFilters"]
+        fn clear_search_filters(self: Pin<&mut Self>);
+
         /// 解析磁力链接的文件清单（不创建云下载任务）。
         #[qinvokable]
         #[cxx_name = "previewMagnetFiles"]
@@ -1380,6 +1408,8 @@ mod library;
 // 搜索
 #[path = "cxxqt_object/search/search.rs"]
 mod search;
+#[path = "cxxqt_object/search/search_filter.rs"]
+mod search_filter;
 #[path = "cxxqt_object/search/search_local.rs"]
 mod search_local;
 
@@ -1417,6 +1447,8 @@ pub struct KichiRust {
     pub(crate) quota_transfer_upload_ratio: f64,
     /// 当前目录的列表项（QML 直接当 model 用）
     pub(crate) files: QVariantList,
+    /// `files` 的筛选后版本（顺序与 `files` 一致，只少掉不匹配的行）
+    pub(crate) filtered_files: QVariantList,
     /// 当前目录 id（根为空串）：滚动记忆按它做 key
     pub(crate) current_dir_id: QString,
     /// 每次成功列目录 +1：界面据此做一次性滚动恢复
@@ -1800,6 +1832,13 @@ pub struct KichiRust {
     pub(crate) search_index: std::collections::HashMap<String, crate::session::SearchHit>,
     /// 结果来源："index" / "fallback" / "network"；空串 = 没有搜索
     pub(crate) search_source: QString,
+    /// 当前搜索的筛选条件（三组线名 + 摘要；只在本次搜索内有效）
+    pub(crate) search_filter: kichi_core::SearchFilter,
+    pub(crate) search_filter_types: QStringList,
+    pub(crate) search_filter_modifieds: QStringList,
+    pub(crate) search_filter_sizes: QStringList,
+    pub(crate) search_filter_active_count: i32,
+    pub(crate) search_filter_summary: QString,
     /// 本地索引搜索在途：单飞，最多一个后台查询
     pub(crate) search_local_running: bool,
     /// 在途期间用户又输入了关键词：只保留最后一个，完成后接着搜
@@ -1857,6 +1896,7 @@ impl Default for KichiRust {
             quota_transfer_download_ratio: -1.0,
             quota_transfer_upload_ratio: -1.0,
             files: QVariantList::default(),
+            filtered_files: QVariantList::default(),
             current_dir_id: QString::default(),
             files_revision: 0,
             files_cache: files_cache::FilesCache::default(),
@@ -2080,6 +2120,12 @@ impl Default for KichiRust {
             search_cancel: None,
             search_index: std::collections::HashMap::new(),
             search_source: QString::default(),
+            search_filter: kichi_core::SearchFilter::default(),
+            search_filter_types: QStringList::default(),
+            search_filter_modifieds: QStringList::default(),
+            search_filter_sizes: QStringList::default(),
+            search_filter_active_count: 0,
+            search_filter_summary: QString::default(),
             search_local_running: false,
             search_pending: None,
             magnet_files: QVariantList::default(),

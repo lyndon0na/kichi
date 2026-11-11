@@ -380,4 +380,6 @@ impl qobject::Kichi {
 
 // 条目映射与排序的实现在 [`super::files_view`]，这里重导出以保持
 // `files::entry_map` / `files::sort_entries` 等调用点不变。
-pub(crate) use super::files_view::{entry_map, list_from_with_pending, sort_entries};
+pub(crate) use super::files_view::{
+    entry_map, list_filtered, list_from_with_pending, sort_entries,
+};

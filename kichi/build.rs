@@ -60,6 +60,7 @@ const QML_FILES: &[&str] = &[
     "qml/components/NavIcon.qml",
     "qml/components/ScrollFirstClickArea.qml",
     "qml/components/SearchEmptyState.qml",
+    "qml/components/SearchFilterButton.qml",
     "qml/components/SearchNavigationOverlay.qml",
     "qml/components/SearchStatusBar.qml",
     "qml/components/VideoLoadingOverlay.qml",

@@ -11,15 +11,16 @@
 
 use std::pin::Pin;
 
+use chrono::Utc;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QVariant};
-use kichi_core::FileEntry;
 
 use super::actions::run_in_background;
 use super::qobject;
 use super::search::{hit_map, SEARCH_LIST_LIMIT};
 use super::QVariantList;
 use crate::session::download::Cancel;
+use crate::session::search::filter_entries;
 use crate::session::{Failure, IndexSearchResult, Session};
 
 /// 本地索引是否可以承担全盘搜索：已打开、未关闭、且成功建过库。
@@ -47,6 +48,11 @@ impl qobject::Kichi {
             self.as_mut().exit_search();
             return;
         }
+        // 已经看完全盘扫描结果、只是改了筛选：不重新扫网盘（ADR 0004），
+        // 直接按当前条件重筛已收集的命中。
+        let refilter_network = self.search_active
+            && self.search_source.to_string() == "network"
+            && self.search_query.to_string().trim() == trimmed;
         {
             let mut rust = self.as_mut().rust_mut();
             rust.search_active = true;
@@ -54,6 +60,8 @@ impl qobject::Kichi {
         }
         if local_index_ready(&self.backend.session) {
             self.as_mut().start_local_index_search(trimmed);
+        } else if refilter_network {
+            self.as_mut().refilter_network_hits();
         } else {
             let hint = fallback_hint(&self.backend.session);
             self.as_mut().run_local_fallback(&trimmed, hint);
@@ -69,6 +77,10 @@ impl qobject::Kichi {
             return;
         }
 
+        // 后台用发起时的筛选与排序列；完成时若已经变了，会按新条件重跑。
+        let filter = self.search_filter.clone();
+        let sort_field = self.sort_field;
+        let sort_ascending = self.sort_ascending;
         let mut pending_only = false;
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
@@ -103,17 +115,36 @@ impl qobject::Kichi {
         self.as_mut().maybe_probe_from_search();
 
         let worker_query = query.clone();
+        let worker_filter = filter.clone();
         run_in_background(
-            move || session.search_index_local(&worker_query),
-            move |mut qichi, result| qichi.as_mut().finish_local_search(epoch, query, result),
+            move || {
+                session.search_index_local(
+                    &worker_query,
+                    &worker_filter,
+                    sort_field,
+                    sort_ascending,
+                )
+            },
+            move |mut qichi, result| {
+                qichi.as_mut().finish_local_search(
+                    epoch,
+                    query,
+                    filter,
+                    (sort_field, sort_ascending),
+                    result,
+                )
+            },
         );
     }
 
-    /// 一轮索引查询结束：应用结果，或接着跑在途期间积压的最后一个关键词。
+    /// 一轮索引查询结束：应用结果，或接着跑在途期间积压的关键词 /
+    /// 在途期间改过的筛选、排序。
     fn finish_local_search(
         mut self: Pin<&mut Self>,
         epoch: u64,
         query: String,
+        used_filter: kichi_core::SearchFilter,
+        used_sort: (crate::settings::SortField, bool),
         result: Result<IndexSearchResult, Failure>,
     ) {
         {
@@ -134,6 +165,12 @@ impl qobject::Kichi {
         };
         if let Some(next) = next {
             self.as_mut().start_local_index_search(next);
+            return;
+        }
+        // 关键词没变但筛选 / 排序变了：按当前条件重跑，别把旧结果留在界面上。
+        if self.search_filter != used_filter || (self.sort_field, self.sort_ascending) != used_sort
+        {
+            self.as_mut().start_local_index_search(query);
             return;
         }
         match result {
@@ -188,20 +225,27 @@ impl qobject::Kichi {
 
     /// 索引不可用时的降级：只筛当前目录已加载的条目（0 请求）。
     fn run_local_fallback(mut self: Pin<&mut Self>, query: &str, reason: &str) {
-        let matched: Vec<FileEntry> = self
-            .entries
-            .iter()
-            .filter(|entry| kichi_core::search::matches(&entry.name, query))
-            .cloned()
-            .collect();
+        let now = Utc::now().timestamp();
+        let matched = filter_entries(&self.entries, query, &self.search_filter, now);
         let count = matched.len();
         let current = self.entries.len();
+        let filtered = self.search_filter.is_active();
         let status = if count == 0 {
+            let suffix = if filtered {
+                "；当前筛选条件下没有匹配"
+            } else {
+                ""
+            };
             format!(
-                "{reason}：本目录已加载的 {current} 项里没有名称包含「{query}」的条目（没有请求网盘）"
+                "{reason}：本目录已加载的 {current} 项里没有名称包含「{query}」的条目{suffix}（没有请求网盘）"
             )
         } else {
-            format!("{reason}：命中 {count} 项（本目录已加载 {current} 项，没有请求网盘）")
+            let suffix = if filtered {
+                "，已按筛选过滤"
+            } else {
+                ""
+            };
+            format!("{reason}：命中 {count} 项{suffix}（本目录已加载 {current} 项，没有请求网盘）")
         };
         {
             let mut rust = self.as_mut().rust_mut();

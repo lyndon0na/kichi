@@ -62,6 +62,15 @@ Item {
             bar.backend.exitSearch()
     }
 
+    // 筛选变化：复用同一条 120ms 防抖再跑当前关键词。
+    // 索引就绪时是本地索引重搜（0 请求）；未就绪时网络结果按已有命中重筛，
+    // 不会在这里触发新的全盘扫描（ADR 0004）。
+    function rerunAfterFilterChange() {
+        if (!bar.backend || searchField.text.trim().length === 0)
+            return
+        debounce.restart()
+    }
+
     KTextField {
         id: searchField
 

@@ -24,7 +24,7 @@ mod tests;
 
 pub(crate) use files::{audit_flagged, lenient_time, AuditDto, FileDto};
 pub use media::{is_image_name, is_media_name, is_video_name};
-pub(crate) use media::{is_media, is_video, VIDEO_EXTENSIONS};
+pub(crate) use media::{is_media, is_video, AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS};
 
 /// 单页最多返回的条目数（rclone 的 `ListLimit`）。
 ///

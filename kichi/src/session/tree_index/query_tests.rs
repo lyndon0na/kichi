@@ -4,6 +4,7 @@ use super::super::apply::{apply_change, put_listing, Change};
 use super::super::store::Store;
 use super::super::test_support::{file, folder};
 use super::*;
+use kichi_core::{ModifiedFilter, SearchFilter, SizeFilter, TypeFilter};
 
 fn with_store<T>(f: impl FnOnce(&Store) -> T) -> T {
     let store = Store::open_in_memory("u1").expect("打开内存库");
@@ -283,14 +284,14 @@ fn search_with_trash_returns_both_live_and_trashed_rows() {
             .expect("写入");
 
         let live = store
-            .with_conn(|conn| search_with_trash(conn, "a.mkv"))
+            .with_conn(|conn| search_with_trash(conn, "a.mkv", &SearchFilter::default(), 1000))
             .expect("搜在库");
         assert_eq!(live.len(), 1);
         assert!(!live[0].trashed);
         assert_eq!(live[0].deleted_at, None);
 
         let trashed = store
-            .with_conn(|conn| search_with_trash(conn, "动画"))
+            .with_conn(|conn| search_with_trash(conn, "动画", &SearchFilter::default(), 1000))
             .expect("搜回收站");
         let ids: Vec<&str> = trashed.iter().map(|hit| hit.entry.id.as_str()).collect();
         assert_eq!(ids, vec!["c", "d"], "在库与回收站行都要命中");
@@ -301,6 +302,132 @@ fn search_with_trash_returns_both_live_and_trashed_rows() {
         assert!(child.trashed, "递归移入的子孙也带回收站标记");
         assert_eq!(child.entry.parent_id, "d", "保留原始父目录");
         assert_eq!(child.deleted_at, DateTime::from_timestamp(500, 0));
+    });
+}
+
+#[test]
+fn search_filters_push_kind_time_and_size_into_sql() {
+    use chrono::{TimeZone, Utc};
+    use kichi_core::search_filter::{DAY_SECS, GIB, MIB};
+
+    const NOW: i64 = 1_000_000;
+    let at = |secs: i64| Utc.timestamp_opt(secs, 0).single().expect("合法时间");
+
+    with_store(|store| {
+        let mut recent = file("recent", "recentx.mkv", "");
+        recent.size = 50 * MIB;
+        recent.modified_at = Some(at(NOW - 2 * DAY_SECS));
+        let mut old = file("old", "oldx.mkv", "");
+        old.size = 50 * MIB;
+        old.modified_at = Some(at(NOW - 40 * DAY_SECS));
+        let mut tiny = file("tiny", "tinyx.pdf", "");
+        tiny.size = 5 * MIB;
+        tiny.modified_at = Some(at(NOW));
+        let mut huge = file("huge", "hugex.zip", "");
+        huge.size = 2 * GIB;
+        huge.modified_at = Some(at(NOW));
+        let no_time = file("note", "notext.txt", "");
+        store
+            .with_conn(|conn| {
+                put_listing(
+                    conn,
+                    "",
+                    &[folder("dir", "dirx", ""), recent, old, tiny, huge, no_time],
+                    true,
+                    100,
+                )
+            })
+            .expect("写入");
+
+        let run = |filter: &SearchFilter| {
+            store
+                .with_conn(|conn| search_with_trash(conn, "x", filter, NOW))
+                .expect("查询")
+                .into_iter()
+                .map(|hit| hit.entry.id)
+                .collect::<Vec<_>>()
+        };
+
+        let all = run(&SearchFilter::default());
+        assert_eq!(
+            all,
+            vec!["dir", "huge", "note", "old", "recent", "tiny"],
+            "默认筛选返回全部行（按名字排序）"
+        );
+
+        assert_eq!(
+            run(&SearchFilter {
+                types: vec![TypeFilter::Folder],
+                ..Default::default()
+            }),
+            vec!["dir"],
+            "kind 下推：只看文件夹"
+        );
+
+        let recent_only = run(&SearchFilter {
+            modified: vec![ModifiedFilter::Last7Days],
+            ..Default::default()
+        });
+        assert_eq!(
+            recent_only,
+            vec!["huge", "recent", "tiny"],
+            "超出 7 天的行与修改时间缺失的行都被 SQL 排除"
+        );
+
+        assert_eq!(
+            run(&SearchFilter {
+                sizes: vec![SizeFilter::Lt10MiB],
+                ..Default::default()
+            }),
+            vec!["note", "tiny"],
+            "按大小筛时 SQL 同时排除文件夹"
+        );
+
+        assert_eq!(
+            run(&SearchFilter {
+                types: vec![TypeFilter::Video],
+                modified: vec![ModifiedFilter::Last30Days],
+                sizes: vec![SizeFilter::MiB10To100],
+            }),
+            vec!["recent"],
+            "kind / 时间 / 大小组合下推"
+        );
+    });
+}
+
+#[test]
+fn search_filter_keeps_trashed_rows_only_when_they_match() {
+    with_store(|store| {
+        store
+            .with_conn(|conn| {
+                put_listing(
+                    conn,
+                    "",
+                    &[folder("d", "动画", ""), file("a", "a.mkv", "")],
+                    true,
+                    100,
+                )?;
+                apply_change(conn, Change::Trash(&["a".to_owned()]), 500)
+            })
+            .expect("写入");
+        let video = SearchFilter {
+            types: vec![TypeFilter::Video],
+            ..Default::default()
+        };
+        let hits = store
+            .with_conn(|conn| search_with_trash(conn, "a", &video, 1_000))
+            .expect("视频筛选");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].trashed, "回收站行同样参与筛选，并保留回收站标记");
+
+        let document = SearchFilter {
+            types: vec![TypeFilter::Document],
+            ..Default::default()
+        };
+        let hits = store
+            .with_conn(|conn| search_with_trash(conn, "a", &document, 1_000))
+            .expect("文档筛选");
+        assert!(hits.is_empty(), "类别不符的回收站行不命中");
     });
 }
 

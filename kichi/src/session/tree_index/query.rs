@@ -7,8 +7,9 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use kichi_core::{normalize_query, EntryKind, FileEntry, TrashEntry};
-use rusqlite::{Connection, OptionalExtension, Row};
+use kichi_core::{normalize_query, EntryKind, FileEntry, SearchFilter, TrashEntry};
+use rusqlite::types::Value;
+use rusqlite::{params_from_iter, Connection, OptionalExtension, Row};
 
 /// 父链最多回溯多少层（防止环形父目录把线程拖死）。
 pub(super) const MAX_PATH_DEPTH: usize = 64;
@@ -286,22 +287,75 @@ pub(crate) struct IndexSearchHit {
 /// 匹配用归一化后的 `norm_name`（`instr` 只做粗筛，档位排序在
 /// `kichi-core` 里做）；没有条数上限，调用方决定展示多少。SQL 先按
 /// `name COLLATE NOCASE, id` 排好，给同档结果一个稳定兜底。
+///
+/// 筛选里能直接下推的部分（`kind` / `modified_at` / `size`）进 `WHERE`，
+/// 扩展名分类没有下推：SQL 只保证 `kind = 0`，类别由调用方用
+/// [`SearchFilter::matches`] 再判。`now` 是时间窗口的基准（unix 秒）。
 pub(super) fn search_with_trash(
     conn: &Connection,
     query: &str,
+    filter: &SearchFilter,
+    now: i64,
 ) -> rusqlite::Result<Vec<IndexSearchHit>> {
     let needle = normalize_query(query);
     if needle.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = format!(
+    let mut sql = format!(
         "SELECT {NODE_COLUMNS}, trashed, deleted_at FROM nodes \
-         WHERE instr(norm_name, ?1) > 0 \
-         ORDER BY name COLLATE NOCASE, id"
+         WHERE instr(norm_name, ?1) > 0"
     );
+    let mut values = vec![Value::Text(needle)];
+    if let Some(kind) = filter.pushdown_kind() {
+        sql.push_str(" AND kind = ?");
+        values.push(Value::Integer(kind));
+    }
+    if let Some(after) = filter.pushdown_modified_after(now) {
+        // NULL 的修改时间无法判断是否在窗口内，与 Rust 侧语义一致地排除。
+        sql.push_str(" AND modified_at IS NOT NULL AND modified_at >= ?");
+        values.push(Value::Integer(after));
+    }
+    if let Some(ranges) = filter.pushdown_size_ranges() {
+        // 多选大小 = 若干区间取并集，用 OR 连起来；每段仍是 [low, high)。
+        let mut clauses = Vec::with_capacity(ranges.len());
+        for (low, high) in ranges {
+            let clause = match (low, high) {
+                (Some(low), Some(high)) => {
+                    values.push(Value::Integer(low as i64));
+                    values.push(Value::Integer(high as i64));
+                    "(size >= ? AND size < ?)"
+                }
+                (Some(low), None) => {
+                    values.push(Value::Integer(low as i64));
+                    "size >= ?"
+                }
+                (None, Some(high)) => {
+                    values.push(Value::Integer(high as i64));
+                    "size < ?"
+                }
+                (None, None) => continue,
+            };
+            clauses.push(clause);
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" AND (");
+            sql.push_str(&clauses.join(" OR "));
+            sql.push(')');
+        }
+    }
+    sql.push_str(" ORDER BY name COLLATE NOCASE, id");
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([needle], row_to_search_hit)?;
-    rows.collect()
+    let rows = stmt.query_map(params_from_iter(values.iter()), row_to_search_hit)?;
+    // kind / 时间 / 大小已经在 SQL 里裁过；扩展名分类（视频 / 文档 / 压缩包…）
+    // 只能看名字，在这里补齐，保证查询函数返回的就是最终命中。
+    let mut hits = Vec::new();
+    for row in rows {
+        let hit = row?;
+        if filter.matches(&hit.entry, now) {
+            hits.push(hit);
+        }
+    }
+    Ok(hits)
 }
 
 /// 一批文件夹 id → 「父/子/孙」路径；只读索引，不回网络。

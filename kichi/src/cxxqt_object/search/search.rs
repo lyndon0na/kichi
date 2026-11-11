@@ -16,12 +16,13 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use chrono::Utc;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
-use kichi_core::{EntryKind, FileEntry, SearchMatcher};
+use kichi_core::{EntryKind, FileEntry, MatchTier, SearchFilter, SearchMatcher};
 
 use super::actions::enqueue_ui;
-use super::files::{entry_map, ROOT_NAME};
+use super::files::{entry_map, sort_entries, ROOT_NAME};
 use super::qobject;
 use super::QVariantList;
 use crate::session::download::Cancel;
@@ -79,13 +80,15 @@ impl qobject::Kichi {
 
         let session = self.backend.session.clone();
         let post_cancel = Arc::clone(&cancel);
+        // 扫描线程用开始时的筛选；筛选之后变了由界面侧按当前条件重筛已扫结果。
+        let filter = self.search_filter.clone();
         let spawned = std::thread::Builder::new()
             .name("kichi-search".into())
             .spawn(move || {
                 let mut on_batch = |batch: ScanBatch| {
                     post_batch(epoch, batch, Arc::clone(&post_cancel));
                 };
-                let outcome = session.search_all(&query, &cancel, &mut on_batch);
+                let outcome = session.search_all(&query, &filter, &cancel, &mut on_batch);
                 let cancelled = cancel.is_cancelled();
                 post_finished(epoch, outcome, cancelled);
             });
@@ -139,6 +142,7 @@ impl qobject::Kichi {
             rust.search_source = QString::default();
             rust.search_local_running = false;
             rust.search_pending = None;
+            // 筛选是文件页的常驻视图条件：退出搜索后继续作用于目录列表。
         }
         // 当前目录的条目一直留在 Rust 侧：换个列表重画即可，不用重新拉网
         let entries = self.entries.clone();
@@ -256,6 +260,7 @@ impl qobject::Kichi {
             rust.search_source = QString::default();
             rust.search_local_running = false;
             rust.search_pending = None;
+            // 进入结果里的文件夹 = 搜索结束；筛选继续作用于新目录的列表。
             // 读失败时把面包屑退回跳转前（别指着一个没读到的目录）
             rust.crumb_backup = Some(rust.crumbs.clone());
             // 根目录：id 为空，目录栈回到只有根那一级
@@ -283,8 +288,10 @@ impl qobject::Kichi {
             .last()
             .map(|crumb| crumb.name.clone())
             .unwrap_or_else(|| ROOT_NAME.to_owned());
-        // 本地筛选保持当前目录的原有顺序（用户：搜索先出现的在前）。
-        // 目录列表自己的排序按钮是对「目录」的，不跟着搜索结果走。
+        // 兜底结果就是当前目录列表的裁剪：按目录的排序规则排（文件夹仍置顶），
+        // 用户改了排序也立刻影响这批命中。
+        let mut entries = entries;
+        sort_entries(&mut entries, self.sort_field, self.sort_ascending);
         // 本地筛出来的就是当前目录里的条目：所在文件夹直接写当前目录名
         let mut filtered = QVariantList::default();
         for entry in &entries {
@@ -311,7 +318,14 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.search_scanned = i32::try_from(batch.scanned).unwrap_or(i32::MAX);
+            let now = Utc::now().timestamp();
+            let filter = rust.search_filter.clone();
             for hit in batch.hits {
+                // 扫描线程用的是开始时的筛选；这里按当前条件再判一次，
+                // 用户在扫描中途改筛选也能立刻生效。
+                if !filter.matches(&hit.entry, now) {
+                    continue;
+                }
                 // 同一条目可能在官方分页里重复出现：按 id 去重
                 if rust.search_index.contains_key(hit.id()) {
                     continue;
@@ -319,7 +333,14 @@ impl qobject::Kichi {
                 rust.search_index.insert(hit.id().to_owned(), hit);
             }
             let query = rust.search_query.to_string();
-            let ordered = ordered_hits(&rust.search_index, &query);
+            let ordered = ordered_hits(
+                &rust.search_index,
+                &query,
+                &filter,
+                rust.sort_field,
+                rust.sort_ascending,
+                now,
+            );
             if ordered.len() > SEARCH_LIST_LIMIT {
                 rust.search_truncated = true;
             }
@@ -329,7 +350,7 @@ impl qobject::Kichi {
             }
             rust.search_results = list;
             rust.search_displayed = ordered.len().min(SEARCH_LIST_LIMIT);
-            rust.search_hits = i32::try_from(rust.search_index.len()).unwrap_or(i32::MAX);
+            rust.search_hits = i32::try_from(ordered.len()).unwrap_or(i32::MAX);
             rust.search_status = QString::from(
                 format!(
                     "正在扫描网盘……已扫 {} 条，命中 {} 条",
@@ -337,6 +358,25 @@ impl qobject::Kichi {
                 )
                 .as_str(),
             );
+        }
+        self.as_mut().notify();
+    }
+
+    /// 网络扫描结果已收集完、用户改了筛选时：不重新请求网盘（ADR 0004），
+    /// 只按当前条件重筛 `search_index` 里已有命中。
+    pub(super) fn refilter_network_hits(mut self: Pin<&mut Self>) {
+        self.as_mut().rebuild_search_view_from_state();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            if rust.search_settled {
+                rust.search_status = QString::from(
+                    format!(
+                        "已按筛选过滤：命中 {} 条（共扫 {} 条）",
+                        rust.search_hits, rust.search_scanned
+                    )
+                    .as_str(),
+                );
+            }
         }
         self.as_mut().notify();
     }
@@ -390,40 +430,62 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 改了排序：搜索视图里**不重排结果**（结果按扫到的先后），只给一句提示。
-    /// 目录列表的排序照旧由 `files.rs` 处理。
+    /// 改了排序：搜索视图按新列重排结果（档位仍优先，同档内换列）。
+    /// 目录列表由 `files.rs` 处理；这里只重排当前显示，不重新搜索。
     pub(crate) fn re_sort_search_results(mut self: Pin<&mut Self>) {
-        // 本地筛选与全盘扫描的结果都按「先出现的在前」，
-        // 搜索视图里没有可重排的东西：只解释一句，别让用户以为按钮坏了
         if !self.search_active {
             return;
         }
-        self.as_mut()
-            .set_message("搜索结果按扫描到的先后排列，不受目录排序影响；排序按钮只作用于当前目录");
+        self.as_mut().rebuild_search_view_from_state();
     }
 }
 
-/// 搜索结果的显示顺序：匹配质量优先（完全同名 > 前缀 > 词首 > 包含），
-/// 同档按名字（不区分大小写）；再相同才按扫到顺序 / id 兜底。
+/// 搜索结果的显示顺序：先按当前筛选过滤，再按匹配质量
+/// （完全同名 > 前缀 > 词首 > 包含）分档；**同档内按用户选的列与方向**
+/// （默认名称升序），再相同才按名字 / 扫到顺序 / id 兜底。文件夹不因类型插队。
 ///
-/// 规则本身在 `kichi_core::SearchMatcher`（纯函数、单测）；这里只接线。
-/// 不按文件夹优先分组：文件夹用行首的类型标签区分，不靠位置。
+/// 规则本身在 `kichi_core::SearchMatcher` / `SearchFilter` 与
+/// `SortField::compare_entries`（纯函数、单测）；这里只接线。
+/// **过滤与排序都必须发生在调用方截断之前**，否则命中会被先截掉。
 fn ordered_hits(
     index: &std::collections::HashMap<String, SearchHit>,
     query: &str,
+    filter: &SearchFilter,
+    sort_field: crate::settings::SortField,
+    sort_ascending: bool,
+    now: i64,
 ) -> Vec<SearchHit> {
-    let mut hits: Vec<SearchHit> = index.values().cloned().collect();
+    let mut hits: Vec<SearchHit> = index
+        .values()
+        .filter(|hit| filter.matches(&hit.entry, now))
+        .cloned()
+        .collect();
     let matcher = SearchMatcher::new(query);
+    let rank = |name: &str| matcher.as_ref().and_then(|matcher| matcher.tier(name));
     hits.sort_by(|left, right| {
-        let by_rank = match &matcher {
-            Some(matcher) => matcher.compare(&left.entry.name, &right.entry.name),
-            None => std::cmp::Ordering::Equal,
-        };
-        by_rank
+        // 只比档位：名字交给同档内的排序列，否则选「大小」时永不生效
+        compare_rank(rank(&left.entry.name), rank(&right.entry.name))
+            .then_with(|| sort_field.compare_entries(&left.entry, &right.entry, sort_ascending))
+            .then_with(|| {
+                left.entry
+                    .name
+                    .to_lowercase()
+                    .cmp(&right.entry.name.to_lowercase())
+            })
             .then_with(|| left.order.cmp(&right.order))
             .then_with(|| left.id().cmp(right.id()))
     });
     hits
+}
+
+/// 匹配档位先后；不匹配（`None`）排最后，与 [`SearchMatcher::compare`] 一致。
+fn compare_rank(left: Option<MatchTier>, right: Option<MatchTier>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 fn current_folder<'a>(entries: &'a [FileEntry], id: &str) -> Option<&'a FileEntry> {
@@ -444,17 +506,18 @@ fn current_dir_map(entry: &FileEntry, folder: &str) -> QVariantMap {
 /// 搜索视图按当前领域状态重建 QML 行。
 ///
 /// 调用方已经改完 `entries` / `search_index`；这里只同步展示计数，
-/// 不改扫描进度和结束状态。
+/// 不改扫描进度和结束状态。只有「只筛当前目录」的兜底结果才回退到
+/// `entries`；索引 / 网络结果即使 0 命中也不能拿当前目录顶替。
 fn rebuild_visible_search(rust: &mut super::KichiRust, folder: &str) {
     let query = rust.search_query.to_string();
+    let filter = rust.search_filter.clone();
+    let now = Utc::now().timestamp();
     let mut rows = QVariantList::default();
-    if rust.search_index.is_empty() {
-        let filtered: Vec<FileEntry> = rust
-            .entries
-            .iter()
-            .filter(|entry| kichi_core::search::matches(&entry.name, &query))
-            .cloned()
-            .collect();
+    if rust.search_source.to_string() == "fallback" {
+        let mut filtered =
+            crate::session::search::filter_entries(&rust.entries, &query, &filter, now);
+        // 兜底结果就是当前目录列表的裁剪：沿用目录的排序（文件夹置顶）
+        sort_entries(&mut filtered, rust.sort_field, rust.sort_ascending);
         for entry in &filtered {
             rows.append(QVariant::from(&current_dir_map(entry, folder)));
         }
@@ -462,7 +525,14 @@ fn rebuild_visible_search(rust: &mut super::KichiRust, folder: &str) {
         rust.search_displayed = filtered.len();
         rust.search_truncated = false;
     } else {
-        let ordered = ordered_hits(&rust.search_index, &query);
+        let ordered = ordered_hits(
+            &rust.search_index,
+            &query,
+            &filter,
+            rust.sort_field,
+            rust.sort_ascending,
+            now,
+        );
         for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
             rows.append(QVariant::from(&hit_map(hit)));
         }
@@ -553,6 +623,7 @@ fn post_finished(epoch: u64, outcome: Result<ScanEnd, Failure>, cancelled: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::SortField;
     use kichi_core::EntryKind;
 
     fn entry(name: &str, kind: EntryKind) -> FileEntry {
@@ -652,7 +723,14 @@ mod tests {
         folder.entry.id = "dir-1".to_owned();
         index.insert("dir-1".to_owned(), folder);
 
-        let ordered = ordered_hits(&index, "第");
+        let ordered = ordered_hits(
+            &index,
+            "第",
+            &SearchFilter::default(),
+            SortField::Name,
+            true,
+            0,
+        );
         assert_eq!(
             ordered.iter().map(|h| h.name()).collect::<Vec<_>>(),
             vec!["第", "第 1 集", "第 2 集", "第 3 季", "其它 第", "包含第"],
@@ -669,11 +747,88 @@ mod tests {
             h.order = order;
             index.insert(h.id().to_owned(), h);
         }
-        let ordered = ordered_hits(&index, "包含");
+        let ordered = ordered_hits(
+            &index,
+            "包含",
+            &SearchFilter::default(),
+            SortField::Name,
+            true,
+            0,
+        );
         assert_eq!(
             ordered.iter().map(|h| h.name()).collect::<Vec<_>>(),
             vec!["a 包含", "A 包含", "b 包含"],
             "同档按名字（不区分大小写）稳定排序，不能落到 HashMap 顺序"
+        );
+    }
+
+    #[test]
+    fn same_rank_follows_the_chosen_sort_column() {
+        // 三条都是「包含」档：换列只改同档内顺序，档位优先级不动
+        let mut index = std::collections::HashMap::new();
+        for (order, name, size) in [(1, "a 包含", 30), (2, "b 包含", 10), (3, "c 包含", 20)] {
+            let mut item = hit(name, "", None);
+            item.entry.size = size;
+            item.entry.modified_at = Some(
+                chrono::DateTime::from_timestamp(1_700_000_000 + size as i64, 0).expect("合法时间"),
+            );
+            item.order = order;
+            index.insert(item.id().to_owned(), item);
+        }
+
+        let names = |field, ascending| {
+            ordered_hits(
+                &index,
+                "包含",
+                &SearchFilter::default(),
+                field,
+                ascending,
+                0,
+            )
+            .iter()
+            .map(|hit| hit.name().to_string())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(SortField::Size, false),
+            vec!["a 包含", "c 包含", "b 包含"],
+            "按大小降序：大的在前"
+        );
+        assert_eq!(
+            names(SortField::Modified, true),
+            vec!["b 包含", "c 包含", "a 包含"],
+            "按时间升序：旧的在前"
+        );
+        assert_eq!(
+            names(SortField::Name, false),
+            vec!["c 包含", "b 包含", "a 包含"],
+            "按名称降序"
+        );
+    }
+
+    #[test]
+    fn sort_never_breaks_the_match_tier_order() {
+        // 即使「包含」档的文件更大、更新，也不能排到「完全同名」前面
+        let mut index = std::collections::HashMap::new();
+        let mut exact = hit("电影", "", None);
+        exact.entry.size = 1;
+        index.insert(exact.id().to_owned(), exact);
+        let mut contains = hit("电影合集", "", None);
+        contains.entry.size = 9_999;
+        index.insert(contains.id().to_owned(), contains);
+
+        let ordered = ordered_hits(
+            &index,
+            "电影",
+            &SearchFilter::default(),
+            SortField::Size,
+            false,
+            0,
+        );
+        assert_eq!(
+            ordered.iter().map(|h| h.name()).collect::<Vec<_>>(),
+            vec!["电影", "电影合集"],
+            "匹配质量优先于排序列"
         );
     }
 
@@ -741,5 +896,38 @@ mod tests {
         assert!(current_folder(&entries, "folder").is_some());
         assert!(current_folder(&entries, "file").is_none());
         assert!(current_folder(&entries, "missing").is_none());
+    }
+
+    #[test]
+    fn filter_runs_before_the_display_limit() {
+        // 600 条不属于目标的条目排在前，3 条视频排在最后。
+        // 若先截断 500 再筛选，视频会被整批丢掉。
+        let mut index = std::collections::HashMap::new();
+        for i in 0..600 {
+            let name = format!("a{i:04}.bin");
+            let mut item = hit(&name, "", None);
+            item.entry.id = format!("bin-{i}");
+            item.entry.name = name;
+            index.insert(item.id().to_owned(), item);
+        }
+        for i in 0..3 {
+            let name = format!("z{i}.mkv");
+            let mut item = hit(&name, "", None);
+            item.entry.id = format!("video-{i}");
+            item.entry.name = name;
+            index.insert(item.id().to_owned(), item);
+        }
+
+        let filter = SearchFilter {
+            types: vec![kichi_core::TypeFilter::Video],
+            ..Default::default()
+        };
+        let ordered = ordered_hits(&index, "a", &filter, SortField::Name, true, 0);
+        assert_eq!(ordered.len(), 3, "只留下视频");
+        let displayed = ordered.iter().take(SEARCH_LIST_LIMIT).count();
+        assert_eq!(
+            displayed, 3,
+            "先过滤再截断：视频不能被 600 条不匹配项挤出前 500"
+        );
     }
 }

@@ -23,6 +23,7 @@ pub mod playlist;
 pub mod rate_bucket;
 pub mod resource;
 pub mod search;
+pub mod search_filter;
 mod search_rank;
 pub mod share;
 pub mod share_open;
@@ -48,6 +49,9 @@ pub use normalize::{normalize_name, normalize_query};
 pub use playlist::{Playlist, PlaylistItem};
 pub use resource::{sanitize_drive_name, InstantSave, MagnetFile, MagnetListing};
 pub use search::FileHit;
+pub use search_filter::{
+    classify_name, FileCategory, ModifiedFilter, SearchFilter, SizeFilter, TypeFilter,
+};
 pub use search_rank::{match_tier, MatchTier, SearchMatcher};
 pub use share::{CreateShareOptions, CreatedShare, MyShare};
 pub use share_open::{

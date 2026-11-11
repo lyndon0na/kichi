@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
-use kichi_core::{EntryKind, FileEntry};
+use kichi_core::{EntryKind, FileEntry, SearchFilter};
 
 use crate::session::thumbnail_cache;
 
@@ -35,24 +35,36 @@ impl qobject::Kichi {
 
     /// 把目录列表写回属性（只在主线程调用）。
     pub(crate) fn show_entries(mut self: Pin<&mut Self>, entries: Vec<FileEntry>) {
+        // 时间窗口用同一个基准，列表里各条目不会各判各的。
+        let now = chrono::Utc::now().timestamp();
         let dir_id = self
             .crumbs
             .last()
             .map(|crumb| crumb.id.clone())
             .unwrap_or_default();
-        let (entries, files, changed, created_ids) = {
+        let (entries, files, filtered, changed, created_ids) = {
             let mut rust = self.as_mut().rust_mut();
             let (mut entries, created_ids) = merge_unresolved_create(&mut rust, entries);
             sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
             let changed = rust.entries != entries;
-            let files = changed.then(|| list_from_with_pending(&entries, &rust.pending_entry_ids));
-            (entries, files, changed, created_ids)
+            let (files, filtered) = if changed {
+                // `files` 保留整份目录；`filteredFiles` 是按当前筛选裁过的同一份顺序，
+                // 界面列表 / 网格只看后者。
+                let files = list_from_with_pending(&entries, &rust.pending_entry_ids);
+                let filtered =
+                    list_filtered(&entries, &rust.pending_entry_ids, &rust.search_filter, now);
+                (files, filtered)
+            } else {
+                (QVariantList::default(), QVariantList::default())
+            };
+            (entries, files, filtered, changed, created_ids)
         };
         let visible = {
             let mut rust = self.as_mut().rust_mut();
             let visible = rust.listing || rust.files_manual_refreshing;
             if changed {
-                rust.files = files.unwrap_or_default();
+                rust.files = files;
+                rust.filtered_files = filtered;
                 // 界面据此做一次性的滚动恢复（刷新 / 返回上级都靠这个节拍）
                 rust.files_revision = rust.files_revision.wrapping_add(1);
             }
@@ -74,16 +86,25 @@ impl qobject::Kichi {
 
     /// 恢复某个目录的旧快照；即使内容相同也推进 revision，让返回目录时恢复滚动位置。
     pub(crate) fn show_cached_entries(mut self: Pin<&mut Self>, mut entries: Vec<FileEntry>) {
-        let files = {
+        let (files, filtered) = {
             let this = self.as_ref();
             let rust = this.rust();
             sort_entries(&mut entries, rust.sort_field, rust.sort_ascending);
-            list_from_with_pending(&entries, &rust.pending_entry_ids)
+            (
+                list_from_with_pending(&entries, &rust.pending_entry_ids),
+                list_filtered(
+                    &entries,
+                    &rust.pending_entry_ids,
+                    &rust.search_filter,
+                    chrono::Utc::now().timestamp(),
+                ),
+            )
         };
         {
             let mut rust = self.as_mut().rust_mut();
             rust.entries = entries;
             rust.files = files;
+            rust.filtered_files = filtered;
             rust.files_revision = rust.files_revision.wrapping_add(1);
             rust.files_request_running = false;
             rust.listing = false;
@@ -106,10 +127,17 @@ impl qobject::Kichi {
         let mut entries = self.entries.clone();
         sort_entries(&mut entries, self.sort_field, self.sort_ascending);
         let files = list_from_with_pending(&entries, &self.pending_entry_ids);
+        let filtered = list_filtered(
+            &entries,
+            &self.pending_entry_ids,
+            &self.search_filter,
+            chrono::Utc::now().timestamp(),
+        );
         let dir_id = self.current_dir_id.to_string();
         {
             let mut rust = self.as_mut().rust_mut();
             rust.files = files;
+            rust.filtered_files = filtered;
             rust.files_cache.replace_entries(dir_id, &entries);
             rust.entries = entries;
         }
@@ -159,15 +187,13 @@ pub(crate) fn breadcrumb_lists(crumbs: &[Crumb]) -> (QStringList, QStringList) {
 
 /// 排序：文件夹永远在前，同类按设置字段比较，方向由 `ascending` 决定。
 ///
-/// 名称比较用自然排序（大小写不敏感、数字按数值），保证 `第2集` 排在
-/// `第10集` 前；大小 / 时间相同时回落到名称，保证同一目录多次刷新顺序稳定。
+/// 列内规则（名称自然排序、大小 / 时间相同的名称兜底）在
+/// [`SortField::compare_entries`]，搜索结果同档位内用的是同一个函数。
 pub(crate) fn sort_entries(
     entries: &mut [FileEntry],
     field: crate::settings::SortField,
     ascending: bool,
 ) {
-    use crate::settings::SortField;
-    let name = |a: &FileEntry, b: &FileEntry| kichi_core::natural::natural_cmp(&a.name, &b.name);
     let folder_first = |a: &FileEntry, b: &FileEntry| {
         (a.kind == EntryKind::Folder)
             .cmp(&(b.kind == EntryKind::Folder))
@@ -179,20 +205,7 @@ pub(crate) fn sort_entries(
         if group != std::cmp::Ordering::Equal {
             return group;
         }
-        let order = match field {
-            SortField::Name => name(a, b),
-            SortField::Size => a.size.cmp(&b.size).then_with(|| name(a, b)),
-            SortField::Modified => {
-                let left = a.modified_at.map(|time| time.timestamp()).unwrap_or(0);
-                let right = b.modified_at.map(|time| time.timestamp()).unwrap_or(0);
-                left.cmp(&right).then_with(|| name(a, b))
-            }
-        };
-        if ascending {
-            order
-        } else {
-            order.reverse()
-        }
+        field.compare_entries(a, b, ascending)
     });
 }
 
@@ -210,6 +223,24 @@ pub(crate) fn list_from_with_pending(
         files.append(QVariant::from(&map));
     }
     files
+}
+
+/// 按当前筛选条件裁一遍目录列表，顺序沿用已经排好的 `entries`。
+///
+/// 只藏不排：文件夹仍在前、不重新排序、不截断；没有筛选时结果与
+/// [`list_from_with_pending`] 完全一致。
+pub(crate) fn list_filtered(
+    entries: &[FileEntry],
+    pending_ids: &std::collections::HashSet<String>,
+    filter: &SearchFilter,
+    now: i64,
+) -> QVariantList {
+    let shown: Vec<FileEntry> = entries
+        .iter()
+        .filter(|entry| filter.matches(entry, now))
+        .cloned()
+        .collect();
+    list_from_with_pending(&shown, pending_ids)
 }
 
 /// 一条列表项 → QML 用的小 map（只带界面要显示的字段）。
