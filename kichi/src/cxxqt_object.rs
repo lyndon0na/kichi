@@ -116,6 +116,27 @@ pub mod qobject {
         #[qproperty(QString, share_created_url, cxx_name = "shareCreatedUrl", READ, NOTIFY = changed)]
         #[qproperty(QString, share_created_pass_code, cxx_name = "shareCreatedPassCode", READ, NOTIFY = changed)]
         #[qproperty(QString, share_created_expiration, cxx_name = "shareCreatedExpiration", READ, NOTIFY = changed)]
+        /// 正在解析 / 打开 / 浏览别人的分享
+        #[qproperty(bool, share_open_busy, cxx_name = "shareOpenBusy", READ, NOTIFY = changed)]
+        /// 分享已打开、当前目录已就绪（弹窗切到浏览态）
+        #[qproperty(bool, share_open_ready, cxx_name = "shareOpenReady", READ, NOTIFY = changed)]
+        /// 打开 / 浏览失败的提示（链接无效、需要密码、链接失效、网络错误）
+        #[qproperty(QString, share_open_error, cxx_name = "shareOpenError", READ, NOTIFY = changed)]
+        /// 上次失败是「需要访问密码」：弹窗据此聚焦密码框
+        #[qproperty(bool, share_open_needs_pass_code, cxx_name = "shareOpenNeedsPassCode", READ, NOTIFY = changed)]
+        #[qproperty(QString, share_open_title, cxx_name = "shareOpenTitle", READ, NOTIFY = changed)]
+        /// 分享者昵称（可能为空）
+        #[qproperty(QString, share_open_owner, cxx_name = "shareOpenOwner", READ, NOTIFY = changed)]
+        /// 「N 个条目 · 到期时间」摘要
+        #[qproperty(QString, share_open_meta, cxx_name = "shareOpenMeta", READ, NOTIFY = changed)]
+        /// 分享当前层的条目（QML 直接当 model 用：id / name / kind / isFolder / sizeText）
+        #[qproperty(QVariantList, share_open_rows, cxx_name = "shareOpenRows", READ, NOTIFY = changed)]
+        /// 浏览路径（根 → 当前），元素为 { id, name }
+        #[qproperty(QVariantList, share_open_path, cxx_name = "shareOpenPath", READ, NOTIFY = changed)]
+        /// 分页达到上限，只显示了前一部分条目
+        #[qproperty(bool, share_open_truncated, cxx_name = "shareOpenTruncated", READ, NOTIFY = changed)]
+        /// 转存请求在途
+        #[qproperty(bool, share_save_running, cxx_name = "shareSaveRunning", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, play_menu, cxx_name = "playMenu", READ, NOTIFY = changed)]
         #[qproperty(QString, play_title, cxx_name = "playTitle", READ, NOTIFY = changed)]
         /// 取链或等播放器就绪：文件缩略图据此显示加载状态
@@ -314,6 +335,11 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "shareActionDone"]
         fn share_action_done(self: Pin<&mut Self>, action: QString, ok: bool, message: QString);
+
+        /// 别人分享的条目转存结束：`ok = false` 时 `message` 是失败原因
+        #[qsignal]
+        #[cxx_name = "shareRestoreDone"]
+        fn share_restore_done(self: Pin<&mut Self>, ok: bool, message: QString);
 
         /// 已取到文件直链：`url` 是带签名的临时地址，仅供界面立即写剪贴板。
         /// 不写日志、不存属性；失败不加班信号，直接走底栏提示。
@@ -588,6 +614,35 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "revokeShares"]
         fn revoke_shares(self: Pin<&mut Self>, share_ids: QStringList);
+
+        /// 解析并打开一段别人的分享链接 / 分享文本。
+        #[qinvokable]
+        #[cxx_name = "openShareLink"]
+        fn open_share_link(self: Pin<&mut Self>, text: QString, pass_code: QString);
+
+        /// 进入分享内的文件夹。
+        #[qinvokable]
+        #[cxx_name = "openShareFolder"]
+        fn open_share_folder(self: Pin<&mut Self>, folder_id: QString, folder_name: QString);
+
+        /// 回到分享内的上一层（顶层时无操作）。
+        #[qinvokable]
+        #[cxx_name = "shareOpenGoUp"]
+        fn share_open_go_up(self: Pin<&mut Self>);
+
+        /// 关闭分享弹窗并清空浏览状态（在途结果作废）。
+        #[qinvokable]
+        #[cxx_name = "closeShareOpen"]
+        fn close_share_open(self: Pin<&mut Self>);
+
+        /// 把选中的分享条目转存到自己的目标目录（空 id = 根目录）。
+        #[qinvokable]
+        #[cxx_name = "restoreShareFiles"]
+        fn restore_share_files(
+            self: Pin<&mut Self>,
+            file_ids: QStringList,
+            parent_id: QString,
+        ) -> bool;
 
         #[qinvokable]
         #[cxx_name = "requestPlay"]
@@ -1319,11 +1374,14 @@ mod search;
 mod search_local;
 
 // 分享
+#[path = "cxxqt_object/shares/share_open.rs"]
+mod share_open;
 #[path = "cxxqt_object/shares/shares.rs"]
 mod shares;
 
 use backend::Backend;
 use files::Crumb;
+use share_open::ShareCrumb;
 
 /// QObject `Kichi` 的 Rust 载体。
 pub struct KichiRust {
@@ -1481,6 +1539,32 @@ pub struct KichiRust {
     pub(crate) share_created_url: QString,
     pub(crate) share_created_pass_code: QString,
     pub(crate) share_created_expiration: QString,
+    /// 打开别人分享：解析 / 打开 / 浏览请求在途
+    pub(crate) share_open_busy: bool,
+    /// 分享元数据与当前目录已就绪
+    pub(crate) share_open_ready: bool,
+    /// 上次失败是否因为缺少访问密码
+    pub(crate) share_open_needs_pass_code: bool,
+    pub(crate) share_open_error: QString,
+    pub(crate) share_open_title: QString,
+    pub(crate) share_open_owner: QString,
+    pub(crate) share_open_meta: QString,
+    /// 分享当前层的条目（QML 当 model 用）
+    pub(crate) share_open_rows: QVariantList,
+    /// 浏览路径（根 → 当前）
+    pub(crate) share_open_path: QVariantList,
+    pub(crate) share_open_truncated: bool,
+    /// 已打开的分享 id 与后续请求要带的令牌
+    pub(crate) share_open_share_id: String,
+    pub(crate) share_open_pass_code_token: String,
+    /// 浏览栈：首项固定为分享顶层，末项为当前目录
+    pub(crate) share_open_stack: Vec<ShareCrumb>,
+    /// 分享打开 / 浏览请求代数：关闭弹窗或退出登录后旧结果作废
+    pub(crate) share_open_epoch: u64,
+    /// 转存请求在途（防连点）
+    pub(crate) share_save_running: bool,
+    /// 转存请求代数：关闭弹窗或退出登录后旧结果作废
+    pub(crate) share_save_epoch: u64,
     /// 上一轮仍在进行中的任务（用于识别「刚结束」并只通知一次）
     pub(crate) known_running: std::collections::HashMap<String, bool>,
     /// 已经通知过的任务 id
@@ -1830,6 +1914,22 @@ impl Default for KichiRust {
             share_created_url: QString::default(),
             share_created_pass_code: QString::default(),
             share_created_expiration: QString::default(),
+            share_open_busy: false,
+            share_open_ready: false,
+            share_open_needs_pass_code: false,
+            share_open_error: QString::default(),
+            share_open_title: QString::default(),
+            share_open_owner: QString::default(),
+            share_open_meta: QString::default(),
+            share_open_rows: QVariantList::default(),
+            share_open_path: QVariantList::default(),
+            share_open_truncated: false,
+            share_open_share_id: String::new(),
+            share_open_pass_code_token: String::new(),
+            share_open_stack: Vec::new(),
+            share_open_epoch: 0,
+            share_save_running: false,
+            share_save_epoch: 0,
             known_running: std::collections::HashMap::new(),
             notified: std::collections::HashSet::new(),
             task_destinations: std::collections::HashMap::new(),

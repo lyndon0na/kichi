@@ -253,7 +253,7 @@ fn normalize_ids(ids: &[&str], subject: &str) -> Result<Vec<String>, Error> {
     Ok(set.into_iter().collect())
 }
 
-fn lenient_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+pub(crate) fn lenient_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -266,7 +266,7 @@ where
     })
 }
 
-fn lenient_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+pub(crate) fn lenient_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -278,7 +278,7 @@ where
     })
 }
 
-fn lenient_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+pub(crate) fn lenient_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -290,7 +290,7 @@ where
     })
 }
 
-fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+pub(crate) fn lenient_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where
     D: Deserializer<'de>,
 {

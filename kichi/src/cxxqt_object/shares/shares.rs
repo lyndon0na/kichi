@@ -286,6 +286,7 @@ impl qobject::Kichi {
             rust.share_created_pass_code = QString::default();
             rust.share_created_expiration = QString::default();
         }
+        self.as_mut().reset_share_open();
         self.as_mut().notify();
     }
 

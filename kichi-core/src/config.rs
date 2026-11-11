@@ -181,6 +181,18 @@ impl Config {
     pub fn share_list_url(&self) -> String {
         join(&self.drive_base, PATH_SHARE_LIST)
     }
+    /// 读取别人分享的元数据（`GET /drive/v1/share`）。
+    pub fn share_open_url(&self) -> String {
+        join(&self.drive_base, PATH_SHARE)
+    }
+    /// 浏览分享里的目录（`GET /drive/v1/share/detail`）。
+    pub fn share_detail_url(&self) -> String {
+        format!("{}/detail", self.share_open_url())
+    }
+    /// 转存分享内容（`POST /drive/v1/share/restore`）。
+    pub fn share_restore_url(&self) -> String {
+        format!("{}/restore", self.share_open_url())
+    }
     pub fn events_url(&self) -> String {
         join(&self.drive_base, PATH_EVENTS)
     }
@@ -241,6 +253,18 @@ mod tests {
         assert_eq!(
             cfg.share_action_url("batchDelete"),
             "https://api-drive.mypikpak.com/drive/v1/share:batchDelete"
+        );
+        assert_eq!(
+            cfg.share_open_url(),
+            "https://api-drive.mypikpak.com/drive/v1/share"
+        );
+        assert_eq!(
+            cfg.share_detail_url(),
+            "https://api-drive.mypikpak.com/drive/v1/share/detail"
+        );
+        assert_eq!(
+            cfg.share_restore_url(),
+            "https://api-drive.mypikpak.com/drive/v1/share/restore"
         );
         assert_eq!(
             cfg.events_url(),

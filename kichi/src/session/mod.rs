@@ -23,6 +23,7 @@ mod playback_history;
 pub(crate) mod private_fs;
 pub mod search;
 mod shards;
+mod share_open;
 mod shares;
 mod store;
 pub mod subtitle_cache;

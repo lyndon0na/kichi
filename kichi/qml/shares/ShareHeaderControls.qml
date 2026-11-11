@@ -33,6 +33,17 @@ RowLayout {
     }
 
     KButton {
+        objectName: "openShareLink"
+        Layout.alignment: Qt.AlignVCenter
+        text: qsTr("打开分享链接…")
+        iconName: "share"
+        iconSize: 14
+        variant: "secondary"
+        enabled: root.target !== null
+        onClicked: root.target.openShareDialog()
+    }
+
+    KButton {
         objectName: "revokeSelectedShares"
         Layout.alignment: Qt.AlignVCenter
         text: root.selectedCount > 1

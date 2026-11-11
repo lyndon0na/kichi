@@ -10,7 +10,7 @@
 
 use std::env;
 
-use kichi_core::{auth, captcha, Config, DriveClient};
+use kichi_core::{auth, captcha, Config, DriveClient, EntryKind, RestoreShareRequest, TaskPhase};
 
 fn test_config() -> Option<(Config, String, String)> {
     let user = env::var("KICHI_TEST_USER").ok()?.trim().to_owned();
@@ -242,5 +242,175 @@ fn real_move_copy_probe() {
             );
         }
         Err(err) => println!("复制失败（完整错误，未做任何映射）：{err:?}"),
+    }
+}
+
+/// 打开别人分享的只读探针：链接解析、`/share` 元数据、顶层与一层子目录。
+///
+/// 需要 `KICHI_TEST_SHARE_URL`（分享链接或整段分享文本）；
+/// 文本里没有密码时可用 `KICHI_TEST_SHARE_PASS` 单独给。
+/// 只读，不改动云端数据；输出不含令牌。
+#[test]
+#[ignore = "需要 KICHI_TEST_USER / KICHI_TEST_PASS / KICHI_TEST_SHARE_URL"]
+fn real_share_open_probe() {
+    let Some(raw) = env::var("KICHI_TEST_SHARE_URL").ok() else {
+        panic!("未设置 KICHI_TEST_SHARE_URL（分享链接或整段分享文本）");
+    };
+    let input = kichi_core::parse_share_input(&raw).expect("分享链接解析失败");
+    println!(
+        "解析成功：share_id 长度 {}，文本内密码={}",
+        input.share_id.len(),
+        input.pass_code.is_some()
+    );
+    let pass = env::var("KICHI_TEST_SHARE_PASS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| input.pass_code.clone());
+
+    let client = signed_in_client();
+    let info = match client.open_share(&input.share_id, pass.as_deref()) {
+        Ok(info) => info,
+        Err(kichi_core::Error::ShareUnavailable { status, message }) => {
+            println!("分享状态 {status}：{message}（预期内的「打不开」，说明请求形状已通）");
+            return;
+        }
+        Err(err) => panic!("打开分享失败：{err}"),
+    };
+    println!(
+        "已打开：标题={:?} 分享者={:?} 条目数={} 永久={} 到期={:?}",
+        info.title, info.owner, info.file_count, info.never_expires, info.expiration_at
+    );
+
+    let mut entries = info.entries.clone();
+    let mut token = info.next_page_token.clone();
+    let mut pages = 1;
+    while let Some(page_token) = token {
+        if pages >= 20 {
+            println!("⚠ 顶层分页到 20 页仍未结束，停止");
+            break;
+        }
+        let page = client
+            .list_share_files(
+                &info.share_id,
+                &info.pass_code_token,
+                None,
+                Some(&page_token),
+            )
+            .expect("顶层分页失败");
+        entries.extend(page.entries);
+        token = page.next_page_token;
+        pages += 1;
+    }
+    println!("顶层条目 {} 个（{pages} 页）", entries.len());
+
+    if let Some(folder) = entries.iter().find(|entry| entry.kind == EntryKind::Folder) {
+        match client.list_share_files(
+            &info.share_id,
+            &info.pass_code_token,
+            Some(&folder.id),
+            None,
+        ) {
+            Ok(page) => println!(
+                "子目录「{}」第一页 {} 个条目，还有下一页={}",
+                folder.name,
+                page.entries.len(),
+                page.next_page_token.is_some()
+            ),
+            Err(err) => println!("读取子目录失败：{err}"),
+        }
+    }
+}
+
+/// 转存探针：会真实改动云端数据（建临时目录 + 转存 + 回收站）。
+///
+/// 必须同时设置 `KICHI_TEST_SHARE_RESTORE=1` 才会执行，避免误跑。
+/// 只转存分享顶层的第一项，目标是自己根目录下新建的 `kichi-probe-share-*`。
+#[test]
+#[ignore = "会真实改动云端数据；设置 KICHI_TEST_SHARE_RESTORE=1 才会执行"]
+fn real_share_restore_probe() {
+    if env::var("KICHI_TEST_SHARE_RESTORE").ok().as_deref() != Some("1") {
+        println!("跳过：设置 KICHI_TEST_SHARE_RESTORE=1 才会真的转存");
+        return;
+    }
+    let Some(raw) = env::var("KICHI_TEST_SHARE_URL").ok() else {
+        panic!("未设置 KICHI_TEST_SHARE_URL（分享链接或整段分享文本）");
+    };
+    let input = kichi_core::parse_share_input(&raw).expect("分享链接解析失败");
+    let pass = env::var("KICHI_TEST_SHARE_PASS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| input.pass_code.clone());
+    let client = signed_in_client();
+    let info = client
+        .open_share(&input.share_id, pass.as_deref())
+        .expect("打开分享失败");
+    let Some(target) = info.entries.first() else {
+        println!("分享顶层没有条目，无法转存");
+        return;
+    };
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时间早于 1970")
+        .as_secs();
+    let dir_name = format!("kichi-probe-share-{stamp}");
+    client
+        .create_folder(None, &dir_name)
+        .expect("创建临时目标目录失败");
+    let dest = wait_for_id(&client, None, &dir_name).expect("找不到刚建的临时目标目录");
+    let mut cleanup = ProbeCleanup {
+        client: &client,
+        ids: vec![dest.clone()],
+    };
+
+    let request = RestoreShareRequest {
+        share_id: info.share_id.clone(),
+        pass_code_token: info.pass_code_token.clone(),
+        file_ids: vec![target.id.clone()],
+        parent_id: dest.clone(),
+        // 顶层条目的祖先链为空；子目录里的条目要带上文件夹 id。
+        ancestor_ids: Vec::new(),
+    };
+    let result = match client.restore_share(&request) {
+        Ok(result) => result,
+        Err(err) => {
+            println!("转存请求失败（完整错误，未做映射）：{err:?}");
+            return;
+        }
+    };
+    println!(
+        "转存响应：status={} 有任务 id={}",
+        result.status,
+        result.task_id.is_some()
+    );
+    if result.is_complete() {
+        println!("转存同步完成");
+    } else if let Some(task_id) = result.task_id {
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let state = match client.share_restore_task(&task_id) {
+                Ok(state) => state,
+                Err(err) => {
+                    println!("查询转存任务失败：{err}");
+                    break;
+                }
+            };
+            if state.phase == TaskPhase::Completed {
+                println!("转存任务完成");
+                break;
+            }
+            if state.phase == TaskPhase::Error {
+                println!("转存任务失败：{:?}", state.message);
+                break;
+            }
+        }
+    }
+
+    match find_id(&client, Some(&dest), &target.name) {
+        Some(id) => {
+            println!("目标目录里已出现「{}」，id 长度 {}", target.name, id.len());
+            cleanup.ids.push(id);
+        }
+        None => println!("目标目录里暂时没看到「{}」，稍后到文件页确认", target.name),
     }
 }

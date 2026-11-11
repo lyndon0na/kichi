@@ -17,6 +17,11 @@ pub enum Failure {
     RateLimited {
         detail: String,
     },
+    /// 别人的分享打不开：需要密码 / 密码错误 / 链接失效等。
+    ShareUnavailable {
+        status: String,
+        message: String,
+    },
     Other(String),
 }
 
@@ -26,6 +31,9 @@ impl From<CoreError> for Failure {
             CoreError::Captcha { url, .. } => Failure::Captcha { url },
             CoreError::Auth { reason } => Failure::Auth(reason),
             CoreError::RateLimited { reason } => Failure::RateLimited { detail: reason },
+            CoreError::ShareUnavailable { status, message } => {
+                Failure::ShareUnavailable { status, message }
+            }
             other => Failure::Other(other.to_string()),
         }
     }
@@ -43,6 +51,19 @@ impl Failure {
             self,
             Failure::Auth(_) | Failure::Captcha { .. } | Failure::RateLimited { .. }
         )
+    }
+
+    /// 分享打不开时的官方状态码。
+    pub fn share_status(&self) -> Option<&str> {
+        match self {
+            Failure::ShareUnavailable { status, .. } => Some(status),
+            _ => None,
+        }
+    }
+
+    /// 这个分享需要访问密码（界面据此切到密码输入）。
+    pub fn needs_pass_code(&self) -> bool {
+        self.share_status() == Some("PASS_CODE_EMPTY")
     }
 }
 
@@ -78,6 +99,7 @@ impl std::fmt::Display for Failure {
             Failure::Captcha { url: None } => write!(f, "需要完成人机验证"),
             Failure::Auth(reason) => write!(f, "登录状态失效：{reason}"),
             Failure::RateLimited { .. } => write!(f, "{}", rate_limit_text(self)),
+            Failure::ShareUnavailable { message, .. } => write!(f, "{message}"),
             Failure::Other(reason) => write!(f, "{reason}"),
         }
     }

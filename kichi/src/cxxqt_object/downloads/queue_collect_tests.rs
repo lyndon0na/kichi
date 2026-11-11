@@ -106,6 +106,8 @@ impl From<Failure> for FailureKind {
             Failure::Auth(reason) => Self::Auth(reason),
             Failure::RateLimited { detail } => Self::RateLimited(detail),
             Failure::Captcha { .. } => Self::Captcha,
+            // 这个测试替身只关心失败归类；分享类错误按普通失败处理。
+            Failure::ShareUnavailable { message, .. } => Self::Other(message),
         }
     }
 }

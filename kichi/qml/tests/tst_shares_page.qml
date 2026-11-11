@@ -17,9 +17,37 @@ TestCase {
         property int refreshCalls: 0
         property int revokeCalls: 0
         property var lastRevokeIds: []
+        // 打开别人分享（弹窗会被实例化，属性必须齐全）
+        property bool shareOpenBusy: false
+        property bool shareOpenReady: false
+        property bool shareOpenNeedsPassCode: false
+        property string shareOpenError: ""
+        property string shareOpenTitle: ""
+        property string shareOpenOwner: ""
+        property string shareOpenMeta: ""
+        property var shareOpenRows: []
+        property var shareOpenPath: []
+        property bool shareOpenTruncated: false
+        property bool shareSaveRunning: false
+        // 目标文件夹选择器
+        property var moveTargets: []
+        property bool moveTargetsLoading: false
+        property string moveTargetsError: ""
+        property int moveTargetsRevision: 0
 
         signal changed()
         signal shareActionDone(string action, bool ok, string message)
+        signal shareRestoreDone(bool ok, string message)
+
+        function openShareLink(text, passCode) {}
+        function openShareFolder(folderId, folderName) {}
+        function shareOpenGoUp() {}
+        function closeShareOpen() {}
+        function restoreShareFiles(ids, parentId) {
+            return false
+        }
+        function loadMoveTargets(parentId, force) {}
+        function cancelMoveTargets() {}
 
         function refreshShares() {
             refreshCalls += 1

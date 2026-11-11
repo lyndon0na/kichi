@@ -248,7 +248,7 @@ impl TaskDto {
 }
 
 /// 官方 `PHASE_TYPE_*` → 领域枚举；未识别的取值归 `Unknown`。
-fn phase_from(raw: &str) -> TaskPhase {
+pub(crate) fn phase_from(raw: &str) -> TaskPhase {
     match raw {
         "PHASE_TYPE_PENDING" => TaskPhase::Pending,
         "PHASE_TYPE_RUNNING" => TaskPhase::Running,

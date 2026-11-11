@@ -97,8 +97,14 @@ Item {
         onRevoked: page.onRevoked()
     }
 
+    ShareOpenDialog {
+        id: shareOpenView
+        backend: page.backend
+    }
+
     property alias shareMenu: shareMenuView
     property alias revokeDialog: revokeDialogView
+    property alias shareOpenDialog: shareOpenView
 
     Timer {
         id: copyNoticeTimer
@@ -389,6 +395,12 @@ Item {
     function refresh() {
         if (page.backend && !page.loading)
             page.backend.refreshShares()
+    }
+
+    function openShareDialog() {
+        if (!page.backend)
+            return
+        shareOpenView.openDialog()
     }
 
     function handleKey(event) {

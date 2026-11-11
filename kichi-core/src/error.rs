@@ -56,6 +56,14 @@ pub enum Error {
         total: Option<u64>,
     },
 
+    /// 别人的分享打不开：需要密码、密码错误、链接失效或被限制。
+    ///
+    /// `status` 是官方 `share_status` 原值（`PASS_CODE_EMPTY` /
+    /// `PASS_CODE_ERROR` / `DELETED` / `EXPIRED` / …），界面据此区分
+    /// 「提示输入密码」和「链接已失效」。
+    #[error("分享无法打开：{message}")]
+    ShareUnavailable { status: String, message: String },
+
     /// 本地/业务侧的普通失败（不是网络错误，也不属于官方限制）。
     #[error("{0}")]
     Other(String),
@@ -65,6 +73,24 @@ impl Error {
     /// 是否属于“需要人机验证”的失败（登录流程据此回到验证分支）。
     pub fn is_captcha(&self) -> bool {
         matches!(self, Error::Captcha { .. })
+    }
+
+    /// 分享打不开时的官方状态码。
+    pub fn share_status(&self) -> Option<&str> {
+        match self {
+            Error::ShareUnavailable { status, .. } => Some(status),
+            _ => None,
+        }
+    }
+
+    /// 这个分享需要密码（界面据此切到输入密码）。
+    pub fn needs_pass_code(&self) -> bool {
+        self.share_status() == Some("PASS_CODE_EMPTY")
+    }
+
+    /// 分享密码不正确。
+    pub fn wrong_pass_code(&self) -> bool {
+        self.share_status() == Some("PASS_CODE_ERROR")
     }
 
     /// 把 PikPak API 的错误负载（`error` + `error_code` + `error_description`）
@@ -87,6 +113,8 @@ impl Error {
             "file_space_not_enough" => Error::RateLimited { reason: desc },
             // 同目录已有同名文件/文件夹（3）：改名或新建时最常见
             "file_duplicated_name" => Error::DuplicateName,
+            // 不能转存自己创建的分享（9，与 captcha 同码，按名字区分）
+            "file_restore_own" => Error::InvalidInput("这是你自己创建的分享，不需要转存".into()),
             // 条目已被别处删除 / 移动（owner / 多端同时操作）
             "file_not_found" => {
                 Error::InvalidInput("这个条目已不存在（可能在其它设备上被删除或移动了）".into())

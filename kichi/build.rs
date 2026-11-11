@@ -158,9 +158,13 @@ const QML_FILES: &[&str] = &[
     "qml/shares/ShareContextMenu.qml",
     "qml/shares/ShareDialog.qml",
     "qml/shares/ShareHeaderControls.qml",
+    "qml/shares/ShareOpenBrowsePane.qml",
+    "qml/shares/ShareOpenDialog.qml",
+    "qml/shares/ShareOpenEntryRow.qml",
     "qml/shares/ShareResultPane.qml",
     "qml/shares/ShareRevokeDialog.qml",
     "qml/shares/ShareRow.qml",
+    "qml/shares/ShareSaveDialog.qml",
     "qml/shares/ShareTableHeader.qml",
     "qml/shares/SharesPage.qml",
     // 跨页面的选择对话框
