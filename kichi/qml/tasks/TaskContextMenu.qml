@@ -9,16 +9,20 @@ Item {
     property string targetId: ""
     property string targetName: ""
     property string targetFileId: ""
+    property string targetKind: ""
     property bool targetCanOpenFolder: false
     property bool targetCanRevealLocation: false
     property bool targetIsFolder: false
     property bool targetCanPlay: false
+    // 只有已完成的任务才有产物，才能看产物的属性
+    property bool targetHasProduct: false
     property point targetPoint: Qt.point(0, 0)
 
     signal deleteRequested(string id, string name)
     signal openFolderRequested(string fileId)
     signal revealLocationRequested(string fileId)
     signal playRequested(string fileId, point position)
+    signal propertiesRequested(string fileId, string name, string kind)
 
     Menu {
         id: contextMenu
@@ -59,7 +63,18 @@ Item {
 
         MenuSeparator {
             visible: root.targetCanOpenFolder || root.targetCanRevealLocation
-                     || root.targetCanPlay
+                     || root.targetCanPlay || root.targetHasProduct
+        }
+
+        // 只看产物本身的信息：任务进度 / 磁力链接之类不在属性里重复。
+        MenuItem {
+            objectName: "taskPropertiesItem"
+            text: qsTr("属性…")
+            visible: root.targetHasProduct
+            enabled: root.backend !== null
+            onTriggered: root.propertiesRequested(root.targetFileId,
+                                                  root.targetName,
+                                                  root.targetKind)
         }
 
         MenuItem {
@@ -74,6 +89,7 @@ Item {
         targetId = String(id || "")
         targetName = String(name || "")
         targetFileId = String(fileId || "")
+        targetKind = String(kind || "")
         targetIsFolder = kind === "folder"
         targetCanOpenFolder = phase === "completed"
                               && targetIsFolder
@@ -84,6 +100,7 @@ Item {
         targetCanPlay = phase === "completed"
                         && playable === true
                         && targetFileId.length > 0
+        targetHasProduct = phase === "completed" && targetFileId.length > 0
         targetPoint = point
         contextMenu.openAt(point)
     }

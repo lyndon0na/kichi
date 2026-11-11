@@ -38,6 +38,13 @@ Item {
         backend: root.backend
     }
 
+    // 属性是只读弹窗；资料库条目不在当前目录里，路径用条目自带的 folderPath，
+    // 缺字段时由弹窗后台按 id 补详情。
+    FilePropertiesDialog {
+        id: propertiesDialog
+        backend: root.backend
+    }
+
     Menu {
         id: rowMenu
 
@@ -120,6 +127,18 @@ Item {
                      && !root.backend.shareActionRunning
             onTriggered: root.shareRequested(root.targetEntry)
         }
+
+        MenuSeparator {
+        }
+
+        // 只读信息，和上面的写操作分开放
+        MenuItem {
+            objectName: "libraryPropertiesItem"
+            text: qsTr("属性…")
+            enabled: root.backend !== null
+            onTriggered: propertiesDialog.openFor(root.targetEntry, true,
+                                                  root.propertiesPathHint())
+        }
     }
 
     Menu {
@@ -159,5 +178,23 @@ Item {
         if (!root.backend)
             return
         blankPopup.popup(Qt.point(point.x, point.y))
+    }
+
+    /// 资料库只带相对父链 `folderPath`（如 `Movies/2026`）；拼不出完整路径时
+    /// 返回空串，让弹窗自己按 id 尝试还原，不拿 id 冒充路径。
+    function propertiesPathHint() {
+        const entry = root.targetEntry
+        const folder = String(entry && entry.folderPath || "").trim()
+        if (folder.length === 0)
+            return ""
+        const parts = folder.split("/")
+        const segments = [qsTr("全部文件")]
+        for (let i = 0; i < parts.length; i++) {
+            const part = String(parts[i] || "").trim()
+            if (part.length > 0)
+                segments.push(part)
+        }
+        segments.push(root.targetName)
+        return segments.join(" / ")
     }
 }

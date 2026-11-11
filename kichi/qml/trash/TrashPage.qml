@@ -420,6 +420,29 @@ Item {
                      && !page.selectedLocked && !page.clearing
             onTriggered: page.deleteSelected()
         }
+
+        MenuSeparator {
+            visible: page.selectedCount === 1
+        }
+
+        // 只读信息：只对单条开放，多选时没有「一个」属性可看。
+        // 回收站条目统一把位置标为「回收站」，不从列表上下文猜原路径。
+        MenuItem {
+            objectName: "trashPropertiesItem"
+            text: qsTr("属性…")
+            visible: page.selectedCount === 1
+            enabled: page.backend !== null
+            onTriggered: {
+                const entry = page.selectedEntry()
+                if (entry)
+                    propertiesDialog.openFor(entry, true, qsTr("回收站"))
+            }
+        }
+    }
+
+    FilePropertiesDialog {
+        id: propertiesDialog
+        backend: page.backend
     }
 
     TrashActionDialogs {

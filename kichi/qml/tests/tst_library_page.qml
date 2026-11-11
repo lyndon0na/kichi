@@ -50,6 +50,9 @@ TestCase {
         signal fileActionDone(string action, bool ok, string message, var ids)
         signal thumbnailReady(string id, string path)
         signal shareActionDone(string action, bool ok, string message)
+        signal entryPropertiesReady(string id, bool ok, string message, string name,
+                                    string kind, string size, string created,
+                                    string modified, string entryId, string path)
 
         function refreshLibrary(kind) {
             refreshCalls += 1
@@ -103,6 +106,11 @@ TestCase {
             return ""
         }
         function requestThumbnail(id) {}
+
+        property var propertiesRequested: []
+        function requestEntryProperties(id) {
+            propertiesRequested = propertiesRequested.concat([id])
+        }
     }
 
     Component {
@@ -149,6 +157,7 @@ TestCase {
         backend.copiedLinkId = ""
         backend.contentView = "list"
         backend.fileActionIds = []
+        backend.propertiesRequested = []
 
         page = pageComponent.createObject(parent, {
             visible: true,
@@ -1078,5 +1087,33 @@ TestCase {
         compare(Math.round(page.blankContextMenu.y), Math.round(expected.y),
                 "分区网格空白菜单纵向跟随光标")
         page.blankContextMenu.close()
+    }
+
+    function test_properties_menu_opens_for_a_library_entry() {
+        var item = row("lib-prop", false)
+        // 资料库条目带的是相对父链，不是当前目录的面包屑
+        item.folderPath = "Movies/2026"
+        publish([item], true)
+        var list = findChild(page, "libraryList")
+        var rowItem = list.itemAtIndex(0)
+        verify(rowItem !== null)
+
+        mouseClick(rowItem, 30, 20, Qt.RightButton)
+        tryCompare(page.contextMenu, "visible", true)
+        var properties = findChild(page, "libraryPropertiesItem")
+        verify(properties !== null && properties.visible, "资料库条目能看属性")
+        mouseClick(properties)
+        var dialog = findChild(page, "propertiesDialog")
+        tryCompare(dialog, "opened", true)
+
+        compare(dialog.nameText, "lib-prop.mkv")
+        compare(dialog.kindText, "文件")
+        compare(dialog.sizeText, "1.0 GB")
+        compare(dialog.createdText, "2026-10-29 12:00")
+        compare(dialog.pathText, "全部文件 / Movies / 2026 / lib-prop.mkv")
+        compare(dialog.loading, false, "字段齐全时不用等详情")
+        compare(backend.propertiesRequested.length, 0)
+        dialog.close()
+        wait(20)
     }
 }

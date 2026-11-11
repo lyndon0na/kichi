@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "../components"
 import "../core"
+import "../files"
 
 // 离线任务页：任务表格由后台轮询自动刷新；新任务从页头按钮打开弹窗添加。
 // 顶层用 Item 而非 Page：Page 自带 header/footer，放进 StackLayout 容易撑爆高度。
@@ -441,6 +442,23 @@ Item {
         onPlayRequested: function (fileId, point) {
             page.playRequested(fileId, point)
         }
+        onPropertiesRequested: function (fileId, name, kind) {
+            // 任务行只有产物 id / 名称 / 类型；任务自身的创建时间不是产物的时间，
+            // 所以其余字段一律留给详情接口补，缺的显示「—」。
+            propertiesDialog.openFor({
+                id: fileId,
+                name: name,
+                kind: kind,
+                sizeText: "",
+                createdText: "",
+                modifiedText: ""
+            }, true)
+        }
+    }
+
+    FilePropertiesDialog {
+        id: propertiesDialog
+        backend: page.backend
     }
 
     KDialog {

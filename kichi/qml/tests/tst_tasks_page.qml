@@ -43,6 +43,14 @@ TestCase {
         signal torrentParseFailed(string message)
         signal magnetPreviewFinished(bool ok, string message, bool canFallback,
                                      var fallbackLinks)
+        signal entryPropertiesReady(string id, bool ok, string message, string name,
+                                    string kind, string size, string created,
+                                    string modified, string entryId, string path)
+
+        property var propertiesRequested: []
+        function requestEntryProperties(id) {
+            propertiesRequested = propertiesRequested.concat([id])
+        }
 
         property int submitted: 0
         property string submittedText: ""
@@ -174,6 +182,7 @@ TestCase {
         backend.torrentPreviewUrls = []
         backend.magnetPreviewCalls = 0
         backend.magnetPreviewText = ""
+        backend.propertiesRequested = []
         page.width = 800
         page.active = true
         backend.refreshCalls = 0
@@ -727,6 +736,54 @@ TestCase {
         mouseClick(ok)
         wait(40)
         compare(backend.deletedId, "delete-me")
+    }
+
+    function test_completed_task_offers_product_properties() {
+        var completed = task("props-task", "completed", 100)
+        completed.kind = "file"
+        push([completed])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("props-task")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        var menu = findChild(page, "taskContextMenu")
+        var item = findChild(menu, "taskPropertiesItem")
+        verify(item !== null && item.visible, "已完成任务能看产物属性")
+        mouseClick(item)
+        wait(40)
+
+        var dialog = findChild(page, "propertiesDialog")
+        verify(dialog !== null && dialog.opened)
+        compare(dialog.nameText, "props-task.mkv")
+        compare(dialog.kindText, "文件")
+        // 任务自身的创建时间不是产物的时间，其余字段交给详情接口
+        verify(dialog.loading)
+        compare(backend.propertiesRequested.length, 1)
+        compare(backend.propertiesRequested[0], "props-task-file")
+        // 模态弹窗要收起，避免 overlay 拦住后续用例的鼠标事件
+        dialog.close()
+        wait(20)
+    }
+
+    function test_running_task_has_no_product_properties() {
+        push([task("running-task", "running", 40)])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("running-task")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        var menu = findChild(page, "taskContextMenu")
+        var item = findChild(menu, "taskPropertiesItem")
+        verify(item !== null)
+        compare(item.visible, false, "还没产物就没有属性可看")
+        menu.close()
     }
 
     function test_context_menu_matches_double_click_open_actions() {

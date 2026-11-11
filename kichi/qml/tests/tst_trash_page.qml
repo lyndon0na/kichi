@@ -32,11 +32,19 @@ TestCase {
         property int clearCount: 0
         property var deleteSnapshot: []
         property var clearSnapshot: []
+        property var propertiesRequested: []
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
+        signal entryPropertiesReady(string id, bool ok, string message, string name,
+                                    string kind, string size, string created,
+                                    string modified, string entryId, string path)
 
         function refreshTrash() {
             refreshCount += 1
+        }
+
+        function requestEntryProperties(id) {
+            propertiesRequested = propertiesRequested.concat([id])
         }
 
         function setContentView(view) {
@@ -149,6 +157,7 @@ TestCase {
         backend.clearCount = 0
         backend.deleteSnapshot = []
         backend.clearSnapshot = []
+        backend.propertiesRequested = []
         page = pageComponent.createObject(parent, {
             visible: true,
             backend: backend
@@ -345,6 +354,47 @@ TestCase {
                "菜单 x 错位：实际 " + menu.x + "，期望 " + expected.x)
         verify(Math.abs(menu.y - expected.y) <= 2,
                "菜单 y 错位：实际 " + menu.y + "，期望 " + expected.y)
+        menu.close()
+    }
+
+    function test_properties_is_offered_for_a_single_trash_entry() {
+        publish([entry("a", false)])
+        var row = list.itemAtIndex(0)
+        verify(row !== null)
+        row.contextMenu(Qt.point(24, 13))
+        wait(40)
+
+        var menu = findChild(page, "trashContextMenu")
+        var properties = findChild(menu, "trashPropertiesItem")
+        verify(properties !== null && properties.visible, "单条能看属性")
+        mouseClick(properties)
+        var dialog = findChild(page, "propertiesDialog")
+        tryCompare(dialog, "opened", true)
+
+        compare(dialog.nameText, "a.mkv")
+        compare(dialog.kindText, "文件")
+        compare(dialog.sizeText, "1.0 GB")
+        compare(dialog.pathText, "回收站", "回收站条目不拿原路径冒充")
+        compare(backend.propertiesRequested.length, 1,
+                "缺时间字段才请求一次详情")
+        compare(backend.propertiesRequested[0], "a")
+        dialog.close()
+        wait(20)
+    }
+
+    function test_properties_is_hidden_for_a_multi_selection() {
+        publish([entry("a", false), entry("b", false)])
+        selection.selectAll(backend.trashFiles)
+        compare(selection.count, 2)
+        var row = list.itemAtIndex(1)
+        verify(row !== null)
+        row.contextMenu(Qt.point(24, 13))
+        wait(40)
+
+        var menu = findChild(page, "trashContextMenu")
+        var properties = findChild(menu, "trashPropertiesItem")
+        verify(properties !== null)
+        compare(properties.visible, false, "多选时没有「一个」属性可看")
         menu.close()
     }
 
