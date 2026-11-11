@@ -116,6 +116,9 @@ AppImage **不打包 libmpv / FFmpeg**，内嵌播放使用宿主的 `libmpv.so.
 ```bash
 flatpak install flathub org.kde.Platform//6.11 org.kde.Sdk//6.11
 flatpak install flathub org.freedesktop.Sdk.Extension.rust-stable//25.08
+# H.264 / HEVC / E-AC-3 等编码由运行时的 codecs-extra 扩展提供；本地安装
+# .flatpak 包时不会自动拉取，需要手动装一次（Flathub 上的应用会自动装）。
+flatpak install flathub org.freedesktop.Platform.codecs-extra//25.08-extra
 # 如果发行版的 flathub 远程带过滤、装不到 rust extension：
 # flatpak remote-add --user --if-not-exists flathub-full https://dl.flathub.org/repo/flathub.flatpakrepo
 # flatpak install --user flathub-full org.freedesktop.Sdk.Extension.rust-stable//25.08

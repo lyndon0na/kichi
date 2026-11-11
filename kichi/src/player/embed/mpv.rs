@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use libmpv2::events::{Event, PropertyData};
-use libmpv2::{Format, Mpv};
+use libmpv2::{mpv_error, Error, Format, Mpv};
 
 use super::{
     color, conf, ChapterInfo, Control, Session, SessionSettings, SubtitleStyle, TrackInfo,
@@ -44,15 +44,19 @@ pub(super) fn run(
     let (mpv, mut current_target) = match create_mpv(title, &settings) {
         Ok(mpv) => mpv,
         Err(err) => {
-            eprintln!("[kichi] 内嵌播放器初始化失败：{err}");
-            notify(StartEvent::Failed(format!("内嵌播放器初始化失败：{err}")));
+            let reason = describe_error(&err);
+            eprintln!("[kichi] 内嵌播放器初始化失败：{reason}");
+            notify(StartEvent::Failed(format!(
+                "内嵌播放器初始化失败：{reason}"
+            )));
             return;
         }
     };
     if let Err(err) = mpv.command("loadfile", &[url, "replace"]) {
-        eprintln!("[kichi] 内嵌播放器加载失败：{err}");
-        notify(StartEvent::Failed(format!(
-            "内嵌播放器未能播放「{title}」：{err}"
+        eprintln!("[kichi] 内嵌播放器加载失败：{}", describe_error(&err));
+        notify(StartEvent::Failed(failure_message(
+            title,
+            &describe_error(&err),
         )));
         terminate(mpv);
         return;
@@ -75,6 +79,8 @@ pub(super) fn run(
     let mut late_held: Vec<SubtitleAssets> = Vec::new();
     let mut load_attempts = 0usize;
     let mut http_error: Option<String> = None;
+    // mpv 的错误日志是「为什么打不开」最直接的证据；失败提示会带上它。
+    let mut log_hint: Option<String> = None;
 
     loop {
         if session.cancel().is_cancelled() || session.proxy_stop.load(Ordering::Acquire) {
@@ -232,8 +238,9 @@ pub(super) fn run(
                     if !session.wayland_connected() {
                         // VO 配置成功却没走过内嵌代理：mpv 连到了别的地方，
                         // 画面不可能进 kichi 窗口。中止，绝不留黑浮层。
-                        failure = Some(format!(
-                            "内嵌播放器未能播放「{title}」：播放器没有接管内嵌画面，已中止"
+                        failure = Some(failure_message(
+                            title,
+                            "播放器没有接管内嵌画面（渲染器异常）",
                         ));
                         break;
                     }
@@ -241,10 +248,18 @@ pub(super) fn run(
                 }
                 _ => {}
             },
-            Some(Ok(Event::LogMessage { text, .. })) => {
+            Some(Ok(Event::LogMessage { prefix, text, .. })) => {
                 // HTTP 状态码只出现在日志里；只留状态码，不碰后面的 URL。
                 if let Some(reason) = crate::player::ipc::http_failure_from_text(text) {
                     http_error = Some(reason);
+                }
+                // 起播前的错误日志才归因于这一次加载；就绪后的日志（字幕 /
+                // 音频设备等）与「为什么打不开」无关。
+                if !ready {
+                    eprintln!("[kichi] mpv {prefix}: {}", sanitize_log_line(text));
+                    if let Some(hint) = hint_from_log(text) {
+                        log_hint = Some(hint);
+                    }
                 }
             }
             Some(Ok(Event::EndFile(reason))) => {
@@ -265,32 +280,63 @@ pub(super) fn run(
                         "[kichi] 内嵌播放加载失败（第 {load_attempts} 次），{delay:?} 后用同一链接重试"
                     );
                     http_error = None;
+                    log_hint = None;
                     if !crate::session::download::sleep_cancellable(session.cancel(), delay) {
                         break;
                     }
                     if let Err(err) = mpv.command("loadfile", &[url, "replace"]) {
-                        failure = Some(format!(
-                            "内嵌播放器未能播放「{title}」：无法重新加载（{err}）"
+                        failure = Some(failure_message(
+                            title,
+                            &format!("无法重新加载：{}", describe_error(&err)),
                         ));
                         break;
                     }
                     continue;
                 }
                 if !ready && reason == libmpv2_sys::mpv_end_file_reason_MPV_END_FILE_REASON_ERROR {
-                    failure = Some(match http_error.take() {
-                        Some(detail) => {
-                            format!("内嵌播放器未能播放「{title}」：链接加载失败（HTTP {detail}）")
-                        }
-                        None => format!("内嵌播放器未能播放「{title}」：链接加载失败"),
-                    });
+                    let reason = match http_error.take() {
+                        Some(detail) => format!("链接加载失败（HTTP {detail}）"),
+                        None => "链接加载失败".to_string(),
+                    };
+                    failure = Some(failure_message(title, &reason));
                 }
                 break;
             }
             Some(Ok(Event::Shutdown)) => break,
             Some(Ok(_)) => {}
             Some(Err(err)) => {
+                // libmpv2 的 wait_event 会把 `END_FILE(reason=error)` 的非零
+                // error 直接转成 Err（见该 crate 的实现），所以真正的「打不开
+                // 链接」都落在这一支，而不是上面的 EndFile 分支。
+                if !ready
+                    && is_retryable_load_error(&err)
+                    && load_attempts < crate::player::ipc::LOAD_RETRIES
+                {
+                    let delay = crate::player::ipc::retry_delay(load_attempts);
+                    load_attempts += 1;
+                    eprintln!(
+                        "[kichi] 内嵌播放加载失败（{}，第 {load_attempts} 次），{delay:?} 后用同一链接重试",
+                        describe_error(&err)
+                    );
+                    http_error = None;
+                    log_hint = None;
+                    if !crate::session::download::sleep_cancellable(session.cancel(), delay) {
+                        break;
+                    }
+                    if let Err(err) = mpv.command("loadfile", &[url, "replace"]) {
+                        failure = Some(failure_message(
+                            title,
+                            &format!("无法重新加载：{}", describe_error(&err)),
+                        ));
+                        break;
+                    }
+                    continue;
+                }
                 if !ready {
-                    failure = Some(format!("内嵌播放器未能播放「{title}」：{err}"));
+                    let reason = failure_reason(&err, http_error.take(), log_hint.take());
+                    // 界面上给人话，stderr 保留原始错误码，方便对照 mpv 文档排查。
+                    eprintln!("[kichi] 内嵌播放失败原因：{reason}（mpv: {err:?}）");
+                    failure = Some(failure_message(title, &reason));
                 }
                 break;
             }
@@ -320,19 +366,130 @@ pub(super) fn run(
     } else if session.cancel().is_cancelled() {
         notify(StartEvent::Cancelled);
     } else if let Some(reason) = session.proxy_error() {
-        notify(StartEvent::Failed(format!(
-            "内嵌播放器未能播放「{title}」：{reason}"
-        )));
+        notify(StartEvent::Failed(failure_message(title, &reason)));
     } else {
-        notify(StartEvent::Failed(format!(
-            "内嵌播放器未能播放「{title}」：播放提前结束"
-        )));
+        notify(StartEvent::Failed(failure_message(title, "播放提前结束")));
     }
 
     drop(late_held);
     drop(late);
     drop(subtitles);
     terminate(mpv);
+}
+
+/// 失败提示条文案：原因在前，文件名在后。
+///
+/// 提示条单行显示、右侧截断；文件名往往很长，放后面才不会把真正的原因挤掉。
+fn failure_message(title: &str, reason: &str) -> String {
+    format!("内嵌播放器播放失败：{reason}（「{title}」）")
+}
+
+/// 一次失败的原因：HTTP 状态最具体，其次是 mpv 的日志，最后按错误码兜底。
+fn failure_reason(err: &Error, http: Option<String>, hint: Option<String>) -> String {
+    if let Some(status) = http {
+        return format!("链接加载失败（HTTP {status}）");
+    }
+    hint.unwrap_or_else(|| describe_error(err))
+}
+
+/// 把 libmpv 的错误码翻译成用户能看懂的原因。
+///
+/// 直接显示 `Error::Display` 只会得到 `Raw(-16)` 这样的调试信息。
+fn describe_error(err: &Error) -> String {
+    match err {
+        Error::Raw(code) => match *code {
+            mpv_error::LoadingFailed => {
+                "链接加载失败（打不开链接，或服务器拒绝了请求）".to_string()
+            }
+            mpv_error::AoInitFailed => "音频输出初始化失败（检查系统音频设备）".to_string(),
+            mpv_error::VoInitFailed => "视频输出初始化失败（检查显卡驱动或渲染后端）".to_string(),
+            mpv_error::NothingToPlay => {
+                "没有可播放的音视频流（文件为空、已损坏，或链接返回的不是视频）".to_string()
+            }
+            mpv_error::UnknownFormat => {
+                "无法识别文件格式（链接可能已过期，或文件已损坏）".to_string()
+            }
+            mpv_error::Unsupported => "当前环境不支持所需的播放功能".to_string(),
+            mpv_error::NotImplemented => "当前播放器不支持这项功能".to_string(),
+            other => format!(
+                "播放器错误（{}，代码 {other}）",
+                libmpv2_sys::mpv_error_str(*code)
+            ),
+        },
+        Error::VersionMismatch { linked, loaded } => {
+            format!("libmpv 版本不匹配（链接 {linked}，加载 {loaded}）")
+        }
+        Error::InvalidUtf8 => "播放器返回了无效文本".to_string(),
+        Error::Null => "播放器返回了空结果".to_string(),
+    }
+}
+
+/// 只有「可能只是 CDN 暂时没准备好」的加载错误才值得用同一链接重试。
+fn is_retryable_load_error(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Raw(code)
+            if matches!(
+                *code,
+                mpv_error::LoadingFailed | mpv_error::NothingToPlay | mpv_error::UnknownFormat
+            )
+    )
+}
+
+/// 从 mpv 的错误日志里认出常见原因。
+///
+/// 只映射已知模式，不把原始日志直接塞进界面：日志里可能带签名直链。
+/// 未识别的日志仍然用 [`sanitize_log_line`] 打到 stderr，方便排查。
+fn hint_from_log(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    // Flatpak 运行时自带的 ffmpeg 是精简版，h264 / hevc / eac3 等编码需要
+    // codecs-extra 扩展；这条日志就是最直接的证据。
+    if lower.contains("failed to initialize a decoder for codec")
+        || lower.contains("failed to open codec")
+        || lower.contains("decoder not found")
+    {
+        return Some("缺少可用的音视频解码器（Flatpak 版请安装 codecs-extra 扩展）".to_string());
+    }
+    let hint = if lower.contains("failed to recognize file format")
+        || lower.contains("unrecognized file format")
+        || lower.contains("could not detect file format")
+    {
+        "无法识别文件格式（链接可能已过期，或服务器返回的不是视频内容）"
+    } else if lower.contains("invalid data found when processing input") {
+        "文件内容无效或已损坏"
+    } else if lower.contains("moov atom not found") || lower.contains("failed to read header") {
+        "文件不完整或已损坏"
+    } else if lower.contains("could not find codec parameters") {
+        "找不到可用的音视频编码信息（文件可能不完整）"
+    } else if lower.contains("no audio or video streams") {
+        "文件里没有音视频流"
+    } else if lower.contains("could not open codec") || lower.contains("unsupported codec") {
+        "缺少可用的解码器（当前播放器不支持这个视频编码）"
+    } else if lower.contains("protocol not found") {
+        "播放器不支持这个链接的协议"
+    } else {
+        return None;
+    };
+    Some(hint.to_string())
+}
+
+/// 日志脱敏：带协议的地址只留主机名，去掉控制字符并截断。
+fn sanitize_log_line(text: &str) -> String {
+    let mut out = String::new();
+    for token in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        if token.contains("://") {
+            out.push_str(&crate::player::mask_url(token));
+        } else {
+            out.extend(token.chars().filter(|ch| !ch.is_control()));
+        }
+        if out.chars().count() >= 200 {
+            break;
+        }
+    }
+    out.chars().take(200).collect()
 }
 
 /// 按合成器首选色彩（已归一化）决定 mpv 的 output target。
@@ -699,7 +856,11 @@ fn terminate(mpv: Mpv) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_gpu_backend;
+    use super::{
+        describe_error, failure_message, failure_reason, hint_from_log, is_retryable_load_error,
+        parse_gpu_backend, sanitize_log_line,
+    };
+    use libmpv2::{mpv_error, Error};
 
     #[test]
     fn gpu_backend_prefers_setting_and_env_override() {
@@ -717,5 +878,69 @@ mod tests {
             parse_gpu_backend(Some("metal"), false),
             ("wayland", "opengl")
         );
+    }
+
+    #[test]
+    fn raw_error_codes_become_readable_chinese() {
+        // 防回归：界面不再显示 Raw(-16) 这种调试信息。
+        let nothing = Error::Raw(mpv_error::NothingToPlay);
+        let text = describe_error(&nothing);
+        assert!(text.contains("音视频流"), "{text}");
+        assert!(!text.contains("Raw"), "{text}");
+        assert!(is_retryable_load_error(&nothing));
+
+        assert!(!is_retryable_load_error(&Error::Raw(
+            mpv_error::VoInitFailed
+        )));
+        assert!(describe_error(&Error::Raw(mpv_error::VoInitFailed)).contains("视频输出"));
+        assert!(describe_error(&Error::Raw(mpv_error::AoInitFailed)).contains("音频输出"));
+    }
+
+    #[test]
+    fn failure_message_puts_the_reason_before_the_title() {
+        // 提示条会在右侧截断；原因放前面才看得到。
+        let text = failure_message("很长的文件名.S02E04.1080p.mkv", "无法识别文件格式");
+        assert!(
+            text.starts_with("内嵌播放器播放失败：无法识别文件格式"),
+            "{text}"
+        );
+        assert!(text.contains("很长的文件名"), "{text}");
+    }
+
+    #[test]
+    fn http_status_wins_over_more_generic_hints() {
+        let err = Error::Raw(mpv_error::LoadingFailed);
+        let text = failure_reason(
+            &err,
+            Some("403 Forbidden".into()),
+            Some("无法识别文件格式".into()),
+        );
+        assert_eq!(text, "链接加载失败（HTTP 403 Forbidden）");
+    }
+
+    #[test]
+    fn known_mpv_log_lines_become_hints() {
+        assert!(hint_from_log("Failed to recognize file format.")
+            .unwrap()
+            .contains("无法识别文件格式"));
+        assert!(
+            hint_from_log("[ffmpeg] Could not open codec: Invalid argument")
+                .unwrap()
+                .contains("解码器")
+        );
+        // Flatpak 精简版 ffmpeg 的实际日志（真实复现过）。
+        let flatpak =
+            hint_from_log("vd: Failed to initialize a decoder for codec 'h264'.").unwrap();
+        assert!(flatpak.contains("codecs-extra"), "{flatpak}");
+        assert_eq!(hint_from_log("some unrelated error"), None);
+    }
+
+    #[test]
+    fn log_sanitizer_keeps_host_but_drops_signed_url() {
+        let line =
+            "http: HTTP error 403 Forbidden from https://cdn.example.com/a.mkv?sign=SECRET&x=1";
+        let clean = sanitize_log_line(line);
+        assert!(clean.contains("cdn.example.com/…"), "{clean}");
+        assert!(!clean.contains("SECRET"), "{clean}");
     }
 }

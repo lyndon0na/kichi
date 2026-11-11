@@ -52,3 +52,10 @@ sha256sum "$BUNDLE" > "$BUNDLE.sha256"
 echo
 echo "产物：$BUNDLE"
 echo "安装：flatpak install --user \"$BUNDLE\""
+echo
+# 本地 .flatpak 包不会自动拉取运行时扩展；缺了 codecs-extra 时
+# 内嵌播放器会报「缺少可用的音视频解码器」。
+if ! flatpak info org.freedesktop.Platform.codecs-extra//25.08-extra >/dev/null 2>&1; then
+    echo "提示：本地安装还需要编解码扩展（H.264 / HEVC / E-AC-3）："
+    echo "  flatpak install flathub org.freedesktop.Platform.codecs-extra//25.08-extra"
+fi
