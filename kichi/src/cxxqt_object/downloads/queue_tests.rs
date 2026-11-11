@@ -687,3 +687,33 @@ fn add_skipped_only_touches_the_current_batch() {
     transfers::reset();
     reset();
 }
+
+// —— 按次选目录（「下载到…」）——
+
+#[test]
+fn reserve_keeps_the_given_directory_for_each_batch() {
+    let _guard = lock();
+    reset_for_test();
+    let dir = PathBuf::from("/tmp/kichi-picked");
+    reserve(entry("a", EntryKind::File, "a.mkv"), dir.clone()).expect("a");
+    reserve(entry("b", EntryKind::File, "b.mkv"), dir.clone()).expect("b");
+
+    let first = next_start().expect("a 开跑");
+    let second = next_start().expect("b 接上");
+    assert_eq!(first.dir, dir, "自定义目录进入批次快照");
+    assert_eq!(second.dir, dir, "多选共用同一个目录，但各自一批");
+    assert_ne!(first.batch, second.batch, "每个条目仍是独立批次");
+    reset_for_test();
+}
+
+#[test]
+fn reserve_still_uses_the_global_directory_when_asked() {
+    let _guard = lock();
+    reset_for_test();
+    // 现有「下载」入口继续传全局目录；这条锁住新入口没有偷偷改掉它。
+    let global = PathBuf::from("/tmp/kichi-global");
+    reserve(entry("a", EntryKind::File, "a.mkv"), global.clone()).expect("a");
+    let start = next_start().expect("a 开跑");
+    assert_eq!(start.dir, global);
+    reset_for_test();
+}

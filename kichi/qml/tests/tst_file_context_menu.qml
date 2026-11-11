@@ -37,6 +37,8 @@ TestCase {
         property string copyLinkId: ""
         property int propertiesCount: 0
         property string propertiesId: ""
+        property int chooseDirCount: 0
+        property var chooseDirIds: []
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -68,6 +70,10 @@ TestCase {
             propertiesCount += 1
             propertiesId = id
         }
+        function chooseDownloadDirForEntries(ids) {
+            chooseDirCount += 1
+            chooseDirIds = ids.slice()
+        }
     }
 
     Component {
@@ -91,6 +97,8 @@ TestCase {
         backend.copyLinkId = ""
         backend.propertiesCount = 0
         backend.propertiesId = ""
+        backend.chooseDirCount = 0
+        backend.chooseDirIds = []
         backend.pending = []
         menu = menuComponent.createObject(parent, {
             width: 600, height: 400, visible: true, backend: backend
@@ -135,6 +143,59 @@ TestCase {
         compare(backend.singleCount, 1, "单条走 downloadEntry")
         compare(backend.singleId, "a")
         compare(backend.batchCount, 0, "单条不调批量入口")
+    }
+
+    function test_download_to_is_offered_for_a_single_file() {
+        openMenu(["a"])
+        var item = findChild(menu, "downloadToItem")
+        verify(item !== null, "菜单里有「下载到…」")
+        verify(item.visible, "单条文件可下载到自选目录")
+        compare(item.text, qsTr("下载到…"))
+
+        mouseClick(item)
+        wait(40)
+        compare(backend.chooseDirCount, 1, "点一次只请求一次系统选择器")
+        compare(backend.chooseDirIds.length, 1)
+        compare(backend.chooseDirIds[0], "a")
+        compare(backend.singleCount, 0, "不经过全局目录的下载入口")
+        compare(backend.batchCount, 0)
+    }
+
+    function test_download_to_is_offered_for_a_folder() {
+        menu.openContext({ id: "dir", name: "dir", kind: "folder" },
+                         Qt.point(20, 20), ["dir"], false)
+        wait(60)
+        var item = findChild(menu, "downloadToItem")
+        verify(item.visible, "文件夹也能下载到自选目录")
+        compare(item.text, qsTr("下载到…"))
+    }
+
+    function test_download_to_takes_the_whole_multi_selection() {
+        openMenu(["a", "b", "c"])
+        var item = findChild(menu, "downloadToItem")
+        verify(item.visible, "多选时「下载到…」可见")
+        verify(item.text.indexOf("3 项") >= 0, "文案带条数，实际：" + item.text)
+
+        mouseClick(item)
+        wait(40)
+        compare(backend.chooseDirCount, 1, "多选只弹一次选择器")
+        compare(backend.chooseDirIds.length, 3, "整组 id 一次交给后端")
+    }
+
+    function test_download_to_is_hidden_in_trash() {
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file", inTrash: true },
+                         Qt.point(20, 20), ["a"], false)
+        wait(60)
+        verify(!findChild(menu, "downloadToItem").visible, "回收站不提供下载到…")
+    }
+
+    function test_download_to_is_hidden_for_a_pending_single_entry() {
+        backend.pending = ["a"]
+        var item = openMenu(["a"])
+        compare(item.text, qsTr("已在下载队列中，去查看"),
+                "单条已在队列时「下载到本地」负责去查看")
+        verify(!findChild(menu, "downloadToItem").visible,
+               "单条已在队列时不再显示重复的「下载到…」入口")
     }
 
     function test_other_entry_action_does_not_gray_this_entry() {

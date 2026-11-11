@@ -12,6 +12,7 @@
 //! 逐条记录在 [`super::transfers`]；本文件只做：入口校验、发定位请求、
 //! 调度器推进、把记录表刷到 QML 属性。
 
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
@@ -105,29 +106,28 @@ impl qobject::Kichi {
     /// 跳转只在「这次没建新批次」时发生：说明这个条目已经在队列里了，
     /// 用户想去看看它；第一次下载不打断用户当前所在页面。
     pub fn download_entry(mut self: Pin<&mut Self>, id: QString) {
-        let id = id.to_string();
-        if is_unconfirmed_create(self.as_ref().rust(), &id) {
-            self.as_mut()
-                .set_message("文件夹正在同步真实 id，请稍后再下载");
-            return;
-        }
-        // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
-        let Some(entry) = self.as_ref().rust().find_entry(&id) else {
-            self.as_mut()
-                .set_message("该条目已不在当前列表中，请刷新后重试");
-            return;
-        };
         let dir = self.settings.download_dir_path();
-        let source_id = entry.id.clone();
-        // 登记成功后先推进队列：有空闲槽时这一下就把线程起来了；槽满就只是排队。
-        // `advance_downloads` 里已经 sync 过一次，这里不再重复。
-        if queue::reserve(entry, dir).is_some() {
-            self.as_mut().advance_downloads();
-            return;
+        self.as_mut().download_entry_to(id.to_string(), dir);
+    }
+
+    /// 下载一个条目到指定目录。`dir` 是本次下载的根目录快照。
+    pub(crate) fn download_entry_to(mut self: Pin<&mut Self>, id: String, dir: PathBuf) {
+        match self.as_ref().reserve_one(&id, dir) {
+            // 登记成功后先推进队列：有空闲槽时这一下就把线程起来了；槽满就只是排队。
+            // `advance_downloads` 里已经 sync 过一次，这里不再重复。
+            SingleDownload::Reserved => self.as_mut().advance_downloads(),
+            // 已经在排队 / 准备 / 下载中：再点一次 = 去传输任务页看它
+            SingleDownload::AlreadyPending(source_id) => {
+                self.as_mut()
+                    .locate_transfer(QString::from(source_id.as_str()));
+            }
+            SingleDownload::Syncing => self
+                .as_mut()
+                .set_message("文件夹正在同步真实 id，请稍后再下载"),
+            SingleDownload::Missing => self
+                .as_mut()
+                .set_message("该条目已不在当前列表中，请刷新后重试"),
         }
-        // 已经在排队 / 准备 / 下载中：再点一次 = 去传输任务页看它
-        self.as_mut()
-            .locate_transfer(QString::from(source_id.as_str()));
     }
 
     /// 批量下载（多选后右键「下载到本地」）。每个条目各自一批，按传入顺序排队；
@@ -138,6 +138,11 @@ impl qobject::Kichi {
     /// 那会打断用户正在看的目录。结果用状态栏一句话说清楚。
     pub fn download_entries(mut self: Pin<&mut Self>, ids: QStringList) {
         let dir = self.settings.download_dir_path();
+        self.as_mut().download_entries_to(ids, dir);
+    }
+
+    /// 批量下载到指定目录：所有条目共用同一个目录快照，但各自一批。
+    pub(crate) fn download_entries_to(mut self: Pin<&mut Self>, ids: QStringList, dir: PathBuf) {
         let (mut added, mut already, mut missing, mut pending) = (0u32, 0u32, 0u32, 0u32);
         for raw in ids.iter() {
             let id = raw.to_string();
@@ -145,19 +150,11 @@ impl qobject::Kichi {
             if id.is_empty() {
                 continue;
             }
-            if is_unconfirmed_create(self.as_ref().rust(), id) {
-                pending += 1;
-                continue;
-            }
-            // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
-            let Some(entry) = self.as_ref().rust().find_entry(id) else {
-                missing += 1;
-                continue;
-            };
-            if queue::reserve(entry, dir.clone()).is_some() {
-                added += 1;
-            } else {
-                already += 1;
+            match self.as_ref().reserve_one(id, dir.clone()) {
+                SingleDownload::Reserved => added += 1,
+                SingleDownload::AlreadyPending(_) => already += 1,
+                SingleDownload::Syncing => pending += 1,
+                SingleDownload::Missing => missing += 1,
             }
         }
         // 同一把锁里逐条登记完再推进：第一批发车，其余排着
@@ -177,6 +174,25 @@ impl qobject::Kichi {
         } else {
             let message = batch_message(added, already, missing);
             self.as_mut().set_message(&message);
+        }
+    }
+
+    /// 登记一个条目：查临时 id、找条目、按 `dir` 建一批。
+    ///
+    /// 单条与批量共用；「下载到…」在用户选完目录后也走同一条登记规则。
+    fn reserve_one(&self, id: &str, dir: PathBuf) -> SingleDownload {
+        if is_unconfirmed_create(self.rust(), id) {
+            return SingleDownload::Syncing;
+        }
+        // 搜索结果里的条目也能直接下：先在当前目录找，再找搜索命中
+        let Some(entry) = self.rust().find_entry(id) else {
+            return SingleDownload::Missing;
+        };
+        let source_id = entry.id.clone();
+        if queue::reserve(entry, dir).is_some() {
+            SingleDownload::Reserved
+        } else {
+            SingleDownload::AlreadyPending(source_id)
         }
     }
 
@@ -975,6 +991,18 @@ enum RetryOutcome {
     AlreadyPending(String),
     Invalid(String),
     Unavailable,
+}
+
+/// 单条下载登记的结果。
+enum SingleDownload {
+    /// 新建了一批
+    Reserved,
+    /// 同一条目已在排队 / 准备 / 下载 / 暂停（带客户端条目 id，用来定位）
+    AlreadyPending(String),
+    /// 临时文件夹还没有真实云端 id
+    Syncing,
+    /// 已经不在当前列表 / 搜索结果里
+    Missing,
 }
 
 /// 批量下载之后状态栏那句话。

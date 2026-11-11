@@ -903,6 +903,12 @@ pub mod qobject {
         #[cxx_name = "downloadEntries"]
         fn download_entries(self: Pin<&mut Self>, ids: QStringList);
 
+        /// 下载到…：先弹系统目录选择器，选中后按该目录入队（只对本次生效，
+        /// 不改全局下载目录）；已在队列里的条目不重复入队
+        #[qinvokable]
+        #[cxx_name = "chooseDownloadDirForEntries"]
+        fn choose_download_dir_for_entries(self: Pin<&mut Self>, ids: QStringList);
+
         /// 取单个文件的下载直链，成功后发 `fileLinkReady` 让界面复制到剪贴板。
         /// 文件夹没有直链，不会请求。
         #[qinvokable]
@@ -1294,6 +1300,8 @@ mod trash;
 // 下载：调度、目录遍历、下载循环
 #[path = "cxxqt_object/downloads/downloads.rs"]
 mod downloads;
+#[path = "cxxqt_object/downloads/pick_dir.rs"]
+mod pick_dir;
 #[path = "cxxqt_object/downloads/queue.rs"]
 mod queue;
 #[path = "cxxqt_object/downloads/queue_collect.rs"]

@@ -147,6 +147,24 @@ Item {
             }
         }
 
+        // 下载到…：只在本次下载使用所选目录，不改全局下载目录。
+        // 多选只弹一次选择器，整个选择共用该目录；已在队列的条目由后端跳过
+        // 并在汇总里说明。单条已在队列时这一项隐藏：上面的「下载到本地」已经
+        // 是「已在下载队列中，去查看」，不再显示重复入口。
+        MenuItem {
+            objectName: "downloadToItem"
+            text: root.targetCount > 1
+                  ? qsTr("下载到…（%1 项）").arg(root.targetCount)
+                  : qsTr("下载到…")
+            visible: !root.targetInTrash
+                     && !(root.targetCount === 1 && root.targetPending)
+            enabled: root.backend !== null
+            onTriggered: {
+                if (root.backend)
+                    root.backend.chooseDownloadDirForEntries(root.targetIds)
+            }
+        }
+
         MenuItem {
             objectName: "copyLinkItem"
             text: qsTr("复制下载链接")
