@@ -315,6 +315,24 @@ pub mod qobject {
         #[cxx_name = "fileLinkReady"]
         fn file_link_ready(self: Pin<&mut Self>, id: QString, url: QString);
 
+        /// 文件 / 文件夹属性读取结束：`ok` 为假时 `message` 是原因，其余字段为空。
+        /// 成功时各字段已是可直接显示的文本，缺失值统一是「—」。
+        #[qsignal]
+        #[cxx_name = "entryPropertiesReady"]
+        fn entry_properties_ready(
+            self: Pin<&mut Self>,
+            id: QString,
+            ok: bool,
+            message: QString,
+            name: QString,
+            kind: QString,
+            size: QString,
+            created: QString,
+            modified: QString,
+            entry_id: QString,
+            path: QString,
+        );
+
         /// 请求界面跳到传输任务页并定位这个条目的那一行（只对已占用的条目发）
         #[qsignal]
         #[cxx_name = "locateTransfer"]
@@ -823,6 +841,12 @@ pub mod qobject {
         #[cxx_name = "copyLink"]
         fn copy_link(self: Pin<&mut Self>, id: QString);
 
+        /// 属性弹窗打开时按 id 读一次详情（文件夹同样支持），结果走
+        /// `entryPropertiesReady`；失败不阻塞文件页。
+        #[qinvokable]
+        #[cxx_name = "requestEntryProperties"]
+        fn request_entry_properties(self: Pin<&mut Self>, id: QString);
+
         /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）
         #[qinvokable]
         #[cxx_name = "isDownloadPending"]
@@ -1165,6 +1189,8 @@ mod file_actions;
 mod file_link;
 #[path = "cxxqt_object/files/file_optimistic.rs"]
 mod file_optimistic;
+#[path = "cxxqt_object/files/file_properties.rs"]
+mod file_properties;
 #[path = "cxxqt_object/files/file_stars.rs"]
 mod file_stars;
 #[path = "cxxqt_object/files/file_targets.rs"]

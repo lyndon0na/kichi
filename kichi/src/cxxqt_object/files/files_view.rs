@@ -219,22 +219,8 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
         EntryKind::Folder => "—".to_owned(),
         EntryKind::File => format_size(entry.size),
     };
-    let modified = entry
-        .modified_at
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_default();
-    let created = entry
-        .created_at
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_default();
+    let modified = local_time_text(entry.modified_at);
+    let created = local_time_text(entry.created_at);
 
     let mut map = QVariantMap::default();
     map.insert_clone(&QString::from("id"), &text(&entry.id));
@@ -266,6 +252,16 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
     // 目录列表 / 资料库 / 手工筛出的行都不在回收站；搜索结果会覆盖这一项。
     map.insert_clone(&QString::from("inTrash"), &QVariant::from(&false));
     map
+}
+
+/// 列表与属性弹窗共用的本地时间文本；缺失时为空串（界面各自决定占位符）。
+pub(crate) fn local_time_text(time: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    time.map(|time| {
+        time.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    })
+    .unwrap_or_default()
 }
 
 /// 远程地址或本地缓存任一可用，界面就能先显示缩略图。

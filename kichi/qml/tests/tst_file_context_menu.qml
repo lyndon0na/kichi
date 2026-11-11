@@ -35,6 +35,8 @@ TestCase {
         property bool starValue: false
         property int copyLinkCalls: 0
         property string copyLinkId: ""
+        property int propertiesCount: 0
+        property string propertiesId: ""
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -62,6 +64,10 @@ TestCase {
             copyLinkCalls += 1
             copyLinkId = id
         }
+        function requestEntryProperties(id) {
+            propertiesCount += 1
+            propertiesId = id
+        }
     }
 
     Component {
@@ -83,6 +89,8 @@ TestCase {
         backend.starValue = false
         backend.copyLinkCalls = 0
         backend.copyLinkId = ""
+        backend.propertiesCount = 0
+        backend.propertiesId = ""
         backend.pending = []
         menu = menuComponent.createObject(parent, {
             width: 600, height: 400, visible: true, backend: backend
@@ -267,5 +275,34 @@ TestCase {
                          Qt.point(20, 20), ["a", "b"], false)
         wait(60)
         verify(!findChild(menu, "copyLinkItem").visible, "多选时不复制链接")
+    }
+
+    function test_properties_is_offered_for_a_single_file_or_folder() {
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file" },
+                         Qt.point(20, 20), ["a"], false)
+        wait(60)
+        var item = findChild(menu, "propertiesItem")
+        verify(item !== null, "菜单里有属性项")
+        verify(item.visible, "单个文件应显示属性")
+        compare(item.text, qsTr("属性…"))
+
+        menu.openContext({ id: "dir", name: "dir", kind: "folder" },
+                         Qt.point(20, 20), ["dir"], false)
+        wait(60)
+        verify(item.visible, "单个文件夹也应显示属性")
+
+        mouseClick(item)
+        wait(60)
+        var dialog = findChild(menu, "propertiesDialog")
+        verify(dialog !== null && dialog.opened, "点属性应打开弹窗")
+        compare(backend.propertiesCount, 1)
+        compare(backend.propertiesId, "dir")
+    }
+
+    function test_properties_is_hidden_for_multi_selection() {
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file" },
+                         Qt.point(20, 20), ["a", "b"], false)
+        wait(60)
+        verify(!findChild(menu, "propertiesItem").visible, "多选时没有单一属性可看")
     }
 }

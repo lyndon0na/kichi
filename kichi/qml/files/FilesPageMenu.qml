@@ -36,6 +36,8 @@ Item {
     property bool fromSearch: false
     // 回收站条目只提供「还原」：其它动作要么不适用，要么可能误伤
     property bool targetInTrash: false
+    // 新建文件夹的临时行还没有真实云端 id：没有可查看 / 可查询的属性
+    property bool targetUnresolvedCreate: false
 
     FileActionLocks {
         id: locks
@@ -52,6 +54,12 @@ Item {
 
     FileActionDialogs {
         id: dialogs
+        backend: root.backend
+    }
+
+    // 属性是只读弹窗，和写操作弹窗分开；打开后由它自己后台取详情
+    FilePropertiesDialog {
+        id: propertiesDialog
         backend: root.backend
     }
 
@@ -218,6 +226,22 @@ Item {
                      && root.backend.trashClearing !== true
             onTriggered: dialogs.openDelete(root.target, root.targetIds)
         }
+
+        MenuSeparator {
+            visible: !root.targetInTrash && root.targetCount === 1
+                     && !root.targetUnresolvedCreate
+        }
+
+        // 只对单条开放：多选时没有「一个」属性可看。
+        // 文件或文件夹都支持，详情接口两者都能查。
+        MenuItem {
+            objectName: "propertiesItem"
+            text: qsTr("属性…")
+            visible: !root.targetInTrash && root.targetCount === 1
+                     && !root.targetUnresolvedCreate
+            enabled: root.backend !== null
+            onTriggered: propertiesDialog.openFor(root.target, root.fromSearch)
+        }
     }
 
     // —— 空白处右键菜单（列表没有条目时也能新建 / 排序 / 刷新）——
@@ -258,6 +282,7 @@ Item {
         targetPlayable = entry.playable === true
         targetStarred = entry.starred === true
         targetInTrash = entry.inTrash === true
+        targetUnresolvedCreate = entry.pending === true
         // 每次打开都重新问一次：条目可能刚下完（已释放）或刚被排上
         targetPending = root.backend !== null && root.backend.isDownloadPending(entry.id)
         // 文件夹没有「单文件断点」；只有文件才可能显示「继续下载」
