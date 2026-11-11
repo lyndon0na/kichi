@@ -25,6 +25,35 @@ Item {
         objectName: "fileSelection"
     }
 
+    // 内部拖拽移动：只在文件页当前目录可用。搜索 / 退出搜索过渡 / 列表加载中
+    // 不启动拖拽；逐条目的写操作锁由控制器按 fileActionIds 检查。
+    readonly property alias internalDrag: dragController
+
+    FileInternalDrag {
+        id: dragController
+
+        objectName: "fileInternalDrag"
+        backend: page.backend
+        selection: selection
+        entries: page.displayEntries
+        dragPreview: previewCard
+        currentDirId: page.backend && page.backend.currentDirId
+                      ? page.backend.currentDirId : ""
+        enabled: page.visible && page.backend !== null
+                 && page.backend.authState === "signedIn"
+                 && !page.showingSearchEntries
+                 && page.backend.filesLoading !== true
+    }
+
+    // 拖影画布：始终不可见，只在按下时被 grabToImage 取景。放在页面根上
+    // 而不是每个委托里，列表再长也只有这一张。
+    FileDragPreview {
+        id: previewCard
+
+        objectName: "fileDragPreview"
+        visible: false
+    }
+
     // 搜索视图开着：同一套列表 / 网格切换 model 显示结果
     readonly property bool searching: page.backend !== null && page.backend.searchActive
     // 目录与搜索结果共用当前显示方式
@@ -508,6 +537,7 @@ Item {
                             id: row
                             width: ListView.view.width
                             backend: page.backend
+                            internalDrag: page.internalDrag
                             rowIndex: index
                             thumbnailSlotWidth: density.thumbnailSlotWidth
                             thumbnailSlotHeight: density.thumbnailSlotHeight
@@ -621,6 +651,7 @@ Item {
                         width: fileGrid.itemWidth
                         height: fileGrid.itemHeight
                         backend: page.backend
+                        internalDrag: page.internalDrag
                         rowIndex: index
                         contentPadding: density.gridCardPadding
                         cardSpacing: density.gridCardSpacing
@@ -709,6 +740,61 @@ Item {
                 anchors.centerIn: parent
                 width: Math.min(parent.width - 40, 460)
                 backend: page.showingSearchEntries ? page.backend : null
+            }
+
+            // 拖动提示：Linux 上 Drag 不会自动抓取源条目做拖影，光标处常常
+            // 看不到任何东西。这里固定说明「拖了几项」和「松手会移到哪」，
+            // 源条目同时原地淡出，避免用户不知道手里拿着什么。
+            Rectangle {
+                objectName: "internalDragHint"
+
+                KTheme { id: dragHintTheme }
+
+                anchors.top: parent.top
+                anchors.topMargin: 8
+                anchors.horizontalCenter: parent.horizontalCenter
+                z: 30
+                visible: page.internalDrag.dragging
+                width: dragHintRow.implicitWidth + 24
+                height: 30
+                radius: dragHintTheme.radiusSmall
+                color: dragHintTheme.mediaBadge
+                border.width: 1
+                border.color: dragHintTheme.accent
+
+                Row {
+                    id: dragHintRow
+
+                    anchors.centerIn: parent
+                    spacing: 8
+
+                    ElidedLabel {
+                        objectName: "internalDragCount"
+
+                        width: Math.min(implicitWidth, 280)
+                        // 只拖一条时直接报出文件名；多条只报数量，避免提示条变长。
+                        text: page.internalDrag.dragIds.length === 1
+                              && page.internalDrag.dragName.length > 0
+                              ? qsTr("拖动「%1」").arg(
+                                    page.internalDrag.dragName)
+                              : qsTr("拖动 %1 项").arg(
+                                    page.internalDrag.dragIds.length)
+                        elide: Text.ElideMiddle
+                        font.pixelSize: dragHintTheme.fontCaption
+                        font.weight: Font.DemiBold
+                        color: dragHintTheme.mediaForeground
+                    }
+
+                    Label {
+                        objectName: "internalDragTarget"
+
+                        visible: page.internalDrag.hoverName.length > 0
+                        text: qsTr("→ %1").arg(page.internalDrag.hoverName)
+                        font.pixelSize: dragHintTheme.fontCaption
+                        font.weight: Font.DemiBold
+                        color: dragHintTheme.accent
+                    }
+                }
             }
 
             SearchNavigationOverlay {

@@ -559,6 +559,46 @@ ApplicationWindow {
                                                                  : Qt.ArrowCursor
                                             onClicked: filesPage.goCrumb(crumb.crumbIndex)
                                         }
+
+                                        // 内部拖拽落到面包屑：目标 id 取并列的
+                                        // breadcrumbIds，名字只用于底栏文案。
+                                        DropArea {
+                                            objectName: "crumbDropArea"
+                                            anchors.fill: parent
+                                            anchors.margins: -4
+                                            keys: filesPage.internalDrag
+                                                  ? [filesPage.internalDrag.mimeType] : []
+                                            enabled: !crumb.ellipsis
+                                                     && root.currentPage === pageIds.files
+                                                     && filesPage.internalDrag.enabled
+                                            onEntered: function (drag) {
+                                                drag.accepted = filesPage.internalDrag
+                                                        .hoverCrumb(crumb.crumbIndex)
+                                            }
+                                            onExited: filesPage.internalDrag.clearHover()
+                                            onDropped: function (drop) {
+                                                filesPage.internalDrag.dropOnCrumb(
+                                                    crumb.crumbIndex,
+                                                    drop.getDataAsString(
+                                                        filesPage.internalDrag.mimeType))
+                                            }
+                                        }
+
+                                        // 悬停高亮：面包屑各级共用一个强调底 + 描边。
+                                        Rectangle {
+                                            objectName: "crumbDropHighlight"
+                                            anchors.fill: parent
+                                            anchors.margins: -4
+                                            radius: theme.radiusSmall
+                                            color: theme.accentSoft
+                                            border.width: 2
+                                            border.color: theme.accent
+                                            visible: !crumb.ellipsis
+                                                     && filesPage.internalDrag
+                                                        .isHoveredCrumb(
+                                                            crumb.crumbIndex)
+                                            z: -1
+                                        }
                                     }
 
                                     // 加载中转圈：只跟在当前目录名后面
@@ -852,6 +892,8 @@ ApplicationWindow {
     /// 面包屑的各级目录名。模板里的 model / 长度 / 折叠判断都从这里取，
     // 保证三者永远是同一份数据（分开读后端时，改一处容易忘另一处）
     readonly property var crumbs: backend ? backend.breadcrumb : []
+    /// 与 crumbs 下标一一对应的目录 id（根目录为空串）：拖到面包屑时用它定位目标
+    readonly property var crumbIds: backend ? backend.breadcrumbIds : []
 
     // 页面级尺寸常量（滚动条悬浮宽度 / 页边距），与各页共用同一套数字
     UiMetrics {

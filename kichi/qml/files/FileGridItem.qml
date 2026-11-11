@@ -29,6 +29,22 @@ ItemDelegate {
     property bool playing: false
     /// 刚创建成功：短暂铺一层强调色，不改变选择态。
     property bool createdFlash: false
+    /// 内部拖拽移动的协调器（只有文件页传入；资料库 / 回收站不传，拖拽随之关闭）
+    property var internalDrag: null
+    /// 当前卡片是不是本次拖动的落点（文件夹卡片才可能为真）
+    readonly property bool dropHovered: card.internalDrag !== null
+                                        && card.internalDrag.isHoveredFolder(
+                                            card.entry ? card.entry.id : "")
+    /// 当前卡片正在被拖走：原地淡出，让用户看清这次带走了哪几项
+    readonly property bool dragSource: card.internalDrag !== null
+                                       && card.internalDrag.isDragged(
+                                           card.entry ? card.entry.id : "")
+    /// 按下的条目已经准备好拖动数据（平台拖拽还没超过阈值）
+    property bool dragPrepared: false
+    /// 拖影抓图超时：不再等图片，允许光标下没有拖影地开始拖
+    property bool dragImageTimedOut: false
+    /// 本次按压期间真的启动过拖拽：松手后不能让这次拖动顺带选中一张卡片
+    property bool dragOccurred: false
     readonly property bool showPlayingState: card.playing && !card.playLoading
     /// 卡片底部的单行说明：普通文件显示大小 / 修改时间，搜索结果显示所在文件夹。
     property string detailText: ""
@@ -78,6 +94,16 @@ ItemDelegate {
     bottomPadding: contentPadding
     implicitHeight: cardHeight
 
+    // 拖动期间源卡片原地淡出，和列表行同一套「被拿起」反馈。
+    opacity: card.dragSource ? 0.45 : 1.0
+
+    Behavior on opacity {
+        NumberAnimation {
+            duration: theme.motionFast
+            easing: Easing.OutCubic
+        }
+    }
+
     icon.name: ""
     icon.source: ""
     icon.width: 0
@@ -115,13 +141,33 @@ ItemDelegate {
         }
     }
 
+    // 拖影抓图超时兜底：抓不到图也必须能拖，只是这次没有光标拖影。
+    Timer {
+        id: dragImageTimer
+
+        objectName: "gridDragImageTimer"
+        interval: 200
+        repeat: false
+        onTriggered: card.dragImageTimedOut = true
+    }
+
     MouseArea {
         id: mouseArea
 
+        objectName: "gridItemMouseArea"
         anchors.fill: parent
         z: 1
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
+        // 拖动源：只有按下时准备好了数据才挂 target；超过阈值后 MouseArea 才
+        // 真正进入拖动，Drag.Automatic 随即启动平台拖拽（见 dragHandle）。
+        drag.target: card.dragPrepared ? dragHandle : null
+        // 拖影要到下一帧才抓得出来：图没就绪前先把阈值拉高，免得平台拖拽
+        // 先启动、光标下空着；超时（抓不到图）后照常放行。
+        drag.threshold: card.dragPrepared && card.internalDrag
+                        && card.internalDrag.dragPreview !== null
+                        && card.internalDrag.dragImageUrl.length === 0
+                        && !card.dragImageTimedOut ? 100000 : 8
         cursorShape: card.detailHovered
                      || (!card.inTrash && card.activationEnabled && card.entry
                          && (card.entry.kind === "folder"
@@ -130,7 +176,37 @@ ItemDelegate {
                              || card.downloadNonPlayable))
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
+        onPressed: function (mouse) {
+            card.dragOccurred = false
+            card.dragImageTimedOut = false
+            card.dragPrepared = mouse.button === Qt.LeftButton
+                    && card.internalDrag !== null
+                    && card.internalDrag.begin(card.entry)
+            if (card.dragPrepared)
+                dragImageTimer.start()
+        }
+
+        onReleased: {
+            dragImageTimer.stop()
+            card.dragPrepared = false
+            if (card.internalDrag)
+                card.internalDrag.finishDrag()
+        }
+
+        onCanceled: {
+            dragImageTimer.stop()
+            card.dragPrepared = false
+            card.dragOccurred = false
+            if (card.internalDrag)
+                card.internalDrag.finishDrag()
+        }
+
         onClicked: function (mouse) {
+            // 拖动结束后平台可能仍补一个 click；它不该改变选择。
+            if (card.dragOccurred) {
+                card.dragOccurred = false
+                return
+            }
             if (card.gridView)
                 card.gridView.forceActiveFocus()
             if (mouse.button === Qt.RightButton) {
@@ -146,9 +222,79 @@ ItemDelegate {
         }
 
         onDoubleClicked: function (mouse) {
+            if (card.dragOccurred) {
+                card.dragOccurred = false
+                return
+            }
             if (mouse.button === Qt.LeftButton && !card.detailHovered)
                 card.activate(Qt.point(mouse.x, mouse.y))
         }
+    }
+
+    // 拖动源本体：卡片不能跟着指针走，所以 MouseArea 的 drag.target 指向这个
+    // 不可见 1×1 项；Drag.Automatic 在越过阈值时用 mimeData 启动平台拖拽。
+    Item {
+        id: dragHandle
+
+        objectName: "gridDragHandle"
+        width: 1
+        height: 1
+        opacity: 0
+        Drag.active: mouseArea.drag.active
+        Drag.dragType: Drag.Automatic
+        Drag.supportedActions: Qt.MoveAction
+        Drag.proposedAction: Qt.MoveAction
+        Drag.source: card
+        Drag.mimeData: card.dragPrepared && card.internalDrag
+                       ? card.internalDrag.mimeData : ({})
+        // 拖影：按下瞬间抓好的小卡片图。没有图也能拖，Cursor 下就是空的。
+        Drag.imageSource: card.dragPrepared && card.internalDrag
+                          ? card.internalDrag.dragImageUrl : ""
+        Drag.hotSpot: Qt.point(24, 24)
+        Drag.onDragStarted: {
+            card.dragOccurred = true
+            if (card.internalDrag)
+                card.internalDrag.dragStarted()
+        }
+        Drag.onDragFinished: function (dropAction) {
+            if (card.internalDrag)
+                card.internalDrag.finishDrag()
+        }
+    }
+
+    // 落点：文件夹卡片接受本应用的内部拖拽；文件 / 临时 / 写操作中的卡片不接受。
+    DropArea {
+        objectName: "gridDropArea"
+        anchors.fill: parent
+        keys: card.internalDrag ? [card.internalDrag.mimeType] : []
+        enabled: card.internalDrag !== null
+                 && card.internalDrag.folderTarget(card.entry).length > 0
+        onEntered: function (drag) {
+            drag.accepted = card.internalDrag !== null
+                    && card.internalDrag.hoverFolder(card.entry)
+        }
+        onExited: {
+            if (card.internalDrag)
+                card.internalDrag.clearHover()
+        }
+        onDropped: function (drop) {
+            if (card.internalDrag)
+                card.internalDrag.dropOnFolder(
+                            card.entry,
+                            drop.getDataAsString(card.internalDrag.mimeType))
+        }
+    }
+
+    // 悬停落点高亮：与列表行同一套强调色语言，松手前让用户看清会移到哪里。
+    Rectangle {
+        objectName: "gridDropHighlight"
+        anchors.fill: parent
+        radius: theme.radiusCard
+        color: theme.accentSoft
+        border.width: 2
+        border.color: theme.accent
+        visible: card.dropHovered
+        z: 3
     }
 
     // 盖住整块缩略图的中央加载层。放在委托根上而不是 contentItem 里：

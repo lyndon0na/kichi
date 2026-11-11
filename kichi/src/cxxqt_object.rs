@@ -76,6 +76,8 @@ pub mod qobject {
         /// 每次成功读取目录 +1；界面据此做一次性的滚动恢复
         #[qproperty(i32, files_revision, cxx_name = "filesRevision", READ, NOTIFY = changed)]
         #[qproperty(QStringList, breadcrumb, READ, NOTIFY = changed)]
+        /// 与 `breadcrumb` 并列的目录 id（根目录为空串）：内部拖拽落到面包屑时用它
+        #[qproperty(QStringList, breadcrumb_ids, cxx_name = "breadcrumbIds", READ, NOTIFY = changed)]
         /// 回收站表格（QML 直接当 model 用）。
         /// 不能叫 `trashEntries`：这个名字已被下面的移入回收站 invokable 占用。
         #[qproperty(QVariantList, trash_rows, cxx_name = "trashFiles", READ, NOTIFY = changed)]
@@ -1446,6 +1448,8 @@ pub struct KichiRust {
     pub(crate) pending_entry_ids: std::collections::HashSet<String>,
     /// 面包屑显示名（根 → 当前）
     pub(crate) breadcrumb: QStringList,
+    /// 与 `breadcrumb` 一一对应的目录 id（根为空串）
+    pub(crate) breadcrumb_ids: QStringList,
     /// 当前目录的条目（openDir 查名字用，避免 QML 传来路不明的显示名）
     pub(crate) entries: Vec<kichi_core::FileEntry>,
     /// 正在下载的缩略图 id：同一行反复重建时只发一次请求。
@@ -1813,6 +1817,9 @@ impl Default for KichiRust {
     fn default() -> Self {
         let mut breadcrumb = QStringList::default();
         breadcrumb.append(QString::from(files::ROOT_NAME));
+        // 只显示根目录时 id 也占一项：两条列表始终按下标一一对应
+        let mut breadcrumb_ids = QStringList::default();
+        breadcrumb_ids.append(QString::default());
 
         // 索引开关在会话启动前就要生效：关闭时启动期不创建也不打开索引库。
         // `load_settings` 之后还会再读一次设置，这里只为拿到这一个布尔值。
@@ -1863,6 +1870,7 @@ impl Default for KichiRust {
             unresolved_create: Vec::new(),
             pending_entry_ids: std::collections::HashSet::new(),
             breadcrumb,
+            breadcrumb_ids,
             entries: Vec::new(),
             thumbnail_requests: std::collections::HashSet::new(),
             thumbnail_epoch: 0,

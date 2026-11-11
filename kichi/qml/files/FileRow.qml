@@ -27,6 +27,22 @@ ItemDelegate {
     property bool playing: false
     /// 刚创建成功：短暂铺一层强调色，不改变选择态。
     property bool createdFlash: false
+    /// 内部拖拽移动的协调器（文件页传入；资料库 / 回收站不传，拖拽随之关闭）
+    property var internalDrag: null
+    /// 当前条目是不是本次拖动的落点（文件夹行才可能为真）
+    readonly property bool dropHovered: row.internalDrag !== null
+                                        && row.internalDrag.isHoveredFolder(
+                                            row.entry ? row.entry.id : "")
+    /// 当前条目正在被拖走：原地淡出，让用户看清这次带走了哪几项
+    readonly property bool dragSource: row.internalDrag !== null
+                                       && row.internalDrag.isDragged(
+                                           row.entry ? row.entry.id : "")
+    /// 按下的条目已经准备好拖动数据（平台拖拽还没超过阈值）
+    property bool dragPrepared: false
+    /// 拖影抓图超时：不再等图片，允许光标下没有拖影地开始拖
+    property bool dragImageTimedOut: false
+    /// 本次按压期间真的启动过拖拽：松手后不能让这次拖动顺带选中一行
+    property bool dragOccurred: false
     readonly property bool showPlayingState: row.playing && !row.playLoading
     /// 可选的第二行说明（搜索结果用它显示所在文件夹）。
     property string detailText: ""
@@ -69,6 +85,17 @@ ItemDelegate {
     // 内容仍是 RowLayout 填满整行，Label 默认 Text.AlignVCenter，文字自动居中。
     implicitHeight: row.rowHeight
 
+    // 拖动期间源条目原地淡出：平台拖影不保证存在（Linux 下 Drag 不会自动
+    // 抓取源条目），这里给出确定的「被拿起」反馈，配合页面顶部的拖动提示。
+    opacity: row.dragSource ? 0.45 : 1.0
+
+    Behavior on opacity {
+        NumberAnimation {
+            duration: theme.motionFast
+            easing: Easing.OutCubic
+        }
+    }
+
     // 右键：相对本行的位置（交给页面换算到菜单坐标系）
     signal contextMenu(point position)
     // 双击媒体文件：把条目 id 和行内锚点交给页面（清晰度菜单从这里弹出）
@@ -88,6 +115,16 @@ ItemDelegate {
     icon.height: 0
     icon.color: "transparent"
 
+    // 拖影抓图超时兜底：抓不到图也必须能拖，只是这次没有光标拖影。
+    Timer {
+        id: dragImageTimer
+
+        objectName: "fileRowDragImageTimer"
+        interval: 200
+        repeat: false
+        onTriggered: row.dragImageTimedOut = true
+    }
+
     // 整行手势。
     //
     // 为什么不用 ItemDelegate 自带的 onClicked / onDoubleClicked：它们拿不到
@@ -99,19 +136,59 @@ ItemDelegate {
     MouseArea {
         id: mouseArea
 
+        objectName: "fileRowMouseArea"
         anchors.fill: parent
         // 盖在 contentItem 之上，保证整行都可点
         z: 1
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         // 悬停底色要用 containsMouse，必须开 hoverEnabled（默认关闭）
         hoverEnabled: true
+        // 拖动源：只有按下时准备好了数据才挂 target；超过阈值后 MouseArea 才
+        // 真正进入拖动，Drag.Automatic 随即启动平台拖拽（见 dragHandle）。
+        drag.target: row.dragPrepared ? dragHandle : null
+        // 拖影要到下一帧才抓得出来：图没就绪前先把阈值拉高，免得平台拖拽
+        // 先启动、光标下空着；超时（抓不到图）后照常放行。
+        drag.threshold: row.dragPrepared && row.internalDrag
+                        && row.internalDrag.dragPreview !== null
+                        && row.internalDrag.dragImageUrl.length === 0
+                        && !row.dragImageTimedOut ? 100000 : 8
         cursorShape: row.detailHovered
                      || (!row.inTrash && row.entry
                          && (row.entry.kind === "folder"
                              || row.entry.image === true))
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
+        onPressed: function (mouse) {
+            row.dragOccurred = false
+            row.dragImageTimedOut = false
+            row.dragPrepared = mouse.button === Qt.LeftButton
+                    && row.internalDrag !== null
+                    && row.internalDrag.begin(row.entry)
+            if (row.dragPrepared)
+                dragImageTimer.start()
+        }
+
+        onReleased: {
+            dragImageTimer.stop()
+            row.dragPrepared = false
+            if (row.internalDrag)
+                row.internalDrag.finishDrag()
+        }
+
+        onCanceled: {
+            dragImageTimer.stop()
+            row.dragPrepared = false
+            row.dragOccurred = false
+            if (row.internalDrag)
+                row.internalDrag.finishDrag()
+        }
+
         onClicked: function (mouse) {
+            // 拖动结束后平台可能仍补一个 click；它不该改变选择。
+            if (row.dragOccurred) {
+                row.dragOccurred = false
+                return
+            }
             if (row.listView)
                 row.listView.forceActiveFocus()
             if (mouse.button === Qt.RightButton) {
@@ -127,9 +204,79 @@ ItemDelegate {
         }
 
         onDoubleClicked: function (mouse) {
+            if (row.dragOccurred) {
+                row.dragOccurred = false
+                return
+            }
             if (mouse.button === Qt.LeftButton && !row.detailHovered)
                 row.activate(Qt.point(mouse.x, mouse.y))
         }
+    }
+
+    // 拖动源本体：列表行不能跟着指针走，所以 MouseArea 的 drag.target 指向这个
+    // 不可见 1×1 项；Drag.Automatic 在越过阈值时用 mimeData 启动平台拖拽。
+    Item {
+        id: dragHandle
+
+        objectName: "fileRowDragHandle"
+        width: 1
+        height: 1
+        opacity: 0
+        Drag.active: mouseArea.drag.active
+        Drag.dragType: Drag.Automatic
+        Drag.supportedActions: Qt.MoveAction
+        Drag.proposedAction: Qt.MoveAction
+        Drag.source: row
+        Drag.mimeData: row.dragPrepared && row.internalDrag
+                       ? row.internalDrag.mimeData : ({})
+        // 拖影：按下瞬间抓好的小卡片图。没有图也能拖，Cursor 下就是空的。
+        Drag.imageSource: row.dragPrepared && row.internalDrag
+                          ? row.internalDrag.dragImageUrl : ""
+        Drag.hotSpot: Qt.point(24, 24)
+        Drag.onDragStarted: {
+            row.dragOccurred = true
+            if (row.internalDrag)
+                row.internalDrag.dragStarted()
+        }
+        Drag.onDragFinished: function (dropAction) {
+            if (row.internalDrag)
+                row.internalDrag.finishDrag()
+        }
+    }
+
+    // 落点：文件夹行接受本应用的内部拖拽；文件行、临时行和写操作中的行不接受。
+    DropArea {
+        objectName: "fileRowDropArea"
+        anchors.fill: parent
+        keys: row.internalDrag ? [row.internalDrag.mimeType] : []
+        enabled: row.internalDrag !== null
+                 && row.internalDrag.folderTarget(row.entry).length > 0
+        onEntered: function (drag) {
+            drag.accepted = row.internalDrag !== null
+                    && row.internalDrag.hoverFolder(row.entry)
+        }
+        onExited: {
+            if (row.internalDrag)
+                row.internalDrag.clearHover()
+        }
+        onDropped: function (drop) {
+            if (row.internalDrag)
+                row.internalDrag.dropOnFolder(
+                            row.entry,
+                            drop.getDataAsString(row.internalDrag.mimeType))
+        }
+    }
+
+    // 悬停落点高亮：只铺在文件夹行上，松手前让用户看清会移到哪里。
+    Rectangle {
+        objectName: "fileRowDropHighlight"
+        anchors.fill: parent
+        radius: theme.radiusCard
+        color: theme.accentSoft
+        border.width: 2
+        border.color: theme.accent
+        visible: row.dropHovered
+        z: 2
     }
 
     // 列表缩略图太小，放不下文字状态条；转圈覆盖整块缩略图，点击即取消。

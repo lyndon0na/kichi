@@ -1,6 +1,7 @@
 //! 文件列表排序与条目映射的单元测试。
 
 use super::*;
+use crate::cxxqt_object::files::Crumb;
 use crate::settings::SortField;
 use chrono::{TimeZone, Utc};
 
@@ -24,6 +25,48 @@ fn entry(name: &str, kind: EntryKind, size: u64, day: u32) -> FileEntry {
 
 fn names(entries: &[FileEntry]) -> Vec<&str> {
     entries.iter().map(|entry| entry.name.as_str()).collect()
+}
+
+fn crumb(id: &str, name: &str) -> Crumb {
+    Crumb {
+        id: id.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+fn list_values(list: &QStringList) -> Vec<String> {
+    list.iter().map(|value| value.to_string()).collect()
+}
+
+#[test]
+fn breadcrumb_ids_mirror_names_at_root() {
+    let (names, ids) = breadcrumb_lists(&[Crumb::root()]);
+
+    assert_eq!(list_values(&names), vec!["全部文件"]);
+    assert_eq!(list_values(&ids), vec![""], "根目录 id 必须是空串");
+    assert_eq!(names.len(), ids.len(), "两条面包屑必须一一对应");
+}
+
+#[test]
+fn breadcrumb_ids_mirror_names_in_deep_directories() {
+    let crumbs = [Crumb::root(), crumb("id-a", "A"), crumb("id-b", "B")];
+    let (names, ids) = breadcrumb_lists(&crumbs);
+
+    assert_eq!(list_values(&names), vec!["全部文件", "A", "B"]);
+    assert_eq!(list_values(&ids), vec!["", "id-a", "id-b"]);
+    assert_eq!(names.len(), ids.len());
+}
+
+#[test]
+fn breadcrumb_ids_stay_in_sync_across_search_round_trip() {
+    // 搜索只切换列表 model，不改目录栈；退出搜索后两条面包屑仍要指向同一组目录。
+    let crumbs = [Crumb::root(), crumb("id-a", "A")];
+    let (before_names, before_ids) = breadcrumb_lists(&crumbs);
+    let (after_names, after_ids) = breadcrumb_lists(&crumbs);
+
+    assert_eq!(list_values(&before_names), list_values(&after_names));
+    assert_eq!(list_values(&before_ids), list_values(&after_ids));
+    assert_eq!(list_values(&after_ids), vec!["", "id-a"]);
 }
 
 #[test]

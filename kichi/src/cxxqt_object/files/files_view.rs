@@ -11,6 +11,7 @@ use crate::session::thumbnail_cache;
 
 use super::actions::format_size;
 use super::file_optimistic::merge_unresolved_create;
+use super::files::Crumb;
 use super::qobject;
 use super::QVariantList;
 
@@ -120,35 +121,40 @@ impl qobject::Kichi {
         self.as_mut().sync_breadcrumb();
     }
 
-    /// 目录栈 → 面包屑属性（显示名，顺序从根到当前）。
+    /// 目录栈 → 面包屑属性（显示名 + 并列的目录 id，顺序从根到当前）。
     pub(crate) fn sync_breadcrumb(mut self: Pin<&mut Self>) {
-        let (crumb_names, current_id) = {
+        let (crumbs, current_id) = {
             let this = self.as_ref();
-            let names = this
-                .rust()
-                .crumbs
-                .iter()
-                .map(|crumb| crumb.name.clone())
-                .collect::<Vec<_>>();
-            let id = this
-                .rust()
-                .crumbs
+            let crumbs = this.rust().crumbs.clone();
+            let id = crumbs
                 .last()
                 .map(|crumb| crumb.id.clone())
                 .unwrap_or_default();
-            (names, id)
+            (crumbs, id)
         };
-        let mut names = QStringList::default();
-        for name in crumb_names {
-            names.append(QString::from(name.as_str()));
-        }
+        let (names, ids) = breadcrumb_lists(&crumbs);
         {
             let mut rust = self.as_mut().rust_mut();
             rust.breadcrumb = names;
+            rust.breadcrumb_ids = ids;
             rust.current_dir_id = QString::from(current_id);
         }
         self.as_mut().notify();
     }
+}
+
+/// 目录栈 → (显示名, 目录 id) 两条并列列表，顺序从根到当前。
+///
+/// 两条列表必须同时生成、长度一致：QML 的面包屑落点按下标取 id，
+/// 只更新名字而忘了 id 会让拖拽落到错误的祖先目录。
+pub(crate) fn breadcrumb_lists(crumbs: &[Crumb]) -> (QStringList, QStringList) {
+    let mut names = QStringList::default();
+    let mut ids = QStringList::default();
+    for crumb in crumbs {
+        names.append(QString::from(crumb.name.as_str()));
+        ids.append(QString::from(crumb.id.as_str()));
+    }
+    (names, ids)
 }
 
 /// 排序：文件夹永远在前，同类按设置字段比较，方向由 `ascending` 决定。
