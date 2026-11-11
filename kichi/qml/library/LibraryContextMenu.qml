@@ -16,6 +16,9 @@ Item {
     property bool targetIsFolder: false
     property bool targetPlayable: false
     property bool targetStarred: false
+    /// 「预览…」只在本页支持图片预览时出现（最近保存 / 已加星标）。
+    property bool previewEnabled: false
+    property bool targetImage: false
     property bool targetPending: false
     property bool targetHasPartial: false
     property point targetPoint: Qt.point(0, 0)
@@ -23,6 +26,7 @@ Item {
     readonly property bool hasOpenAction: root.targetPlayable || root.targetIsFolder
 
     signal playRequested(string id, point position)
+    signal previewRequested(string id)
     signal openFolderRequested(string id)
     signal revealLocationRequested(string id)
     signal starRequested(string id, bool starred)
@@ -54,6 +58,14 @@ Item {
 
         function openAt(point) {
             popup(Qt.point(point.x, point.y))
+        }
+
+        MenuItem {
+            objectName: "libraryPreviewItem"
+            text: qsTr("预览…")
+            visible: root.previewEnabled && root.targetImage
+            enabled: root.backend !== null && !root.backend.filesLoading
+            onTriggered: root.previewRequested(root.targetId)
         }
 
         MenuItem {
@@ -164,6 +176,7 @@ Item {
         root.targetName = String(entry.name || "")
         root.targetIsFolder = entry.kind === "folder"
         root.targetPlayable = entry.playable === true
+        root.targetImage = !root.targetIsFolder && entry.image === true
         root.targetStarred = entry.starred === true
         root.targetPending = typeof root.backend.isDownloadPending === "function"
                              && root.backend.isDownloadPending(root.targetId)

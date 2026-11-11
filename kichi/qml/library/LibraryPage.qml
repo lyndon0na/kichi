@@ -41,6 +41,9 @@ Item {
                                      && page.backend.contentView === "grid"
     readonly property bool dateGrouped: page.dateSectionsEnabled
                                         && page.kind === "playback-history"
+    /// 图片预览只在有图片条目的两页提供；播放历史只有视频 / 音频。
+    readonly property bool imagePreviewEnabled: page.kind === "recent-saved"
+                                                || page.kind === "starred"
     readonly property var libraryRows: entryRows.model
     readonly property var activeView: page.gridMode
                                       ? (page.dateGrouped ? libraryGroupedGrid : libraryGrid)
@@ -192,6 +195,26 @@ Item {
         page.backend.requestPlay(id)
     }
 
+    /// 图片预览：取图仍由 Rust 完成（直链留后端），这里只负责开浮层。
+    function openImagePreview(id) {
+        if (!page.imagePreviewEnabled || !page.backend)
+            return
+        const target = String(id)
+        let entry = null
+        for (let i = 0; i < page.entries.length; ++i) {
+            const item = page.entries[i]
+            if (item && String(item.id) === target) {
+                entry = item
+                break
+            }
+        }
+        if (!entry || entry.kind === "folder" || entry.image !== true)
+            return
+        if (typeof page.backend.previewImage === "function")
+            page.backend.previewImage(target)
+        imagePreview.openFor(target, String(entry.name || ""))
+    }
+
     function activateCurrent() {
         if (!page.backend || entries.length === 0)
             return
@@ -208,6 +231,8 @@ Item {
                                null,
                                page.activeView.width / 2,
                                Math.max(24, page.activeView.height / 2)))
+        } else if (page.imagePreviewEnabled && entry.image === true) {
+            page.openImagePreview(entry.id)
         }
     }
 
@@ -306,6 +331,9 @@ Item {
             playMenu.close()
             page.contextMenu.close()
             page.blankContextMenu.close()
+            // 离开资料库页时收起预览，并让后端删掉本地临时文件。
+            if (imagePreview.opened)
+                imagePreview.dismiss()
             return
         }
         page.ensureFresh()
@@ -434,10 +462,14 @@ Item {
                             videoBadgeMargin: density.listVideoBadgeMargin
                             playLoading: page.isPlayLoading(entry.id)
                             playing: page.isPlaying(entry.id)
+                            previewImages: page.imagePreviewEnabled
 
                             onActivateRequested: function (id) {
                                 if (page.backend)
                                     page.backend.openLibraryEntry(id)
+                            }
+                            onPreviewRequested: function (id) {
+                                page.openImagePreview(id)
                             }
                             onSelectRequested: function (index) {
                                 page.selectIndex(index)
@@ -515,6 +547,7 @@ Item {
                         libraryPage: page
                         entryIndex: index
                         density: density
+                        previewImages: page.imagePreviewEnabled
 
                         onEntrySelected: function (entryIndex, modifiers) {
                             if (entryIndex < 0 || entryIndex >= page.entries.length)
@@ -528,6 +561,9 @@ Item {
                         }
                         onEntryPlayRequested: function (id, position) {
                             page.playEntry(id, position)
+                        }
+                        onPreviewRequested: function (id) {
+                            page.openImagePreview(id)
                         }
                         onEntryContextMenuRequested: function (entry, position) {
                             if (!entry)
@@ -615,8 +651,12 @@ Item {
     LibraryContextMenu {
         id: libraryMenu
         backend: page.backend
+        previewEnabled: page.imagePreviewEnabled
         onPlayRequested: function (id, point) {
             page.playEntry(id, point)
+        }
+        onPreviewRequested: function (id) {
+            page.openImagePreview(id)
         }
         onOpenFolderRequested: function (id) {
             if (page.backend)
@@ -643,6 +683,12 @@ Item {
 
     ShareDialog {
         id: shareDialog
+        backend: page.backend
+    }
+
+    ImagePreviewOverlay {
+        id: imagePreview
+        objectName: "libraryImagePreview"
         backend: page.backend
     }
 

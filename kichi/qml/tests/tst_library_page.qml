@@ -45,6 +45,11 @@ TestCase {
         property bool starredValue: false
         property int copyLinkCalls: 0
         property string copiedLinkId: ""
+        property bool imagePreviewLoading: false
+        property string imagePreviewPath: ""
+        property string imagePreviewError: ""
+        property int previewCalls: 0
+        property string previewedId: ""
 
         signal changed()
         signal fileActionDone(string action, bool ok, string message, var ids)
@@ -111,6 +116,11 @@ TestCase {
         function requestEntryProperties(id) {
             propertiesRequested = propertiesRequested.concat([id])
         }
+        function previewImage(id) {
+            previewCalls += 1
+            previewedId = id
+        }
+        function closeImagePreview() {}
     }
 
     Component {
@@ -155,6 +165,8 @@ TestCase {
         backend.starredValue = false
         backend.copyLinkCalls = 0
         backend.copiedLinkId = ""
+        backend.previewCalls = 0
+        backend.previewedId = ""
         backend.contentView = "list"
         backend.fileActionIds = []
         backend.propertiesRequested = []
@@ -1115,5 +1127,45 @@ TestCase {
         compare(backend.propertiesRequested.length, 0)
         dialog.close()
         wait(20)
+    }
+
+    // 图片预览只挂在最近保存 / 已加星标：双击图片交给后端取图并打开浮层。
+    function test_image_preview_on_saved_and_starred() {
+        const imageRow = row("photo-a", false)
+        imageRow.name = "photo-a.png"
+        imageRow.image = true
+        publish([imageRow])
+
+        verify(page.imagePreviewEnabled)
+        const list = findChild(page, "libraryList")
+        verify(list !== null)
+        tryVerify(function () { return list.itemAtIndex(0) !== null })
+        compare(list.itemAtIndex(0).previewImages, true)
+
+        page.openImagePreview("photo-a")
+        compare(backend.previewCalls, 1)
+        compare(backend.previewedId, "photo-a")
+        const overlay = findChild(page, "libraryImagePreview")
+        verify(overlay !== null)
+        compare(overlay.visible, true)
+        overlay.dismiss()
+        wait(20)
+    }
+
+    // 播放历史只有视频 / 音频，不提供入口也不向后端发请求。
+    function test_playback_history_has_no_image_preview() {
+        page.kind = "playback-history"
+        backend.libraryKind = "playback-history"
+        const imageRow = row("photo-b", false)
+        imageRow.name = "photo-b.png"
+        imageRow.image = true
+        publish([imageRow])
+
+        verify(!page.imagePreviewEnabled)
+        page.openImagePreview("photo-b")
+        compare(backend.previewCalls, 0)
+        const overlay = findChild(page, "libraryImagePreview")
+        verify(overlay !== null)
+        compare(overlay.visible, false)
     }
 }

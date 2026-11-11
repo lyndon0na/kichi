@@ -19,7 +19,11 @@ ItemDelegate {
     readonly property bool showPlayingState: row.playing && !row.playLoading
     readonly property bool activatable: row.entry !== null
                                         && (row.entry.kind === "folder"
-                                            || row.entry.playable === true)
+                                            || row.entry.playable === true
+                                            || (row.previewImages
+                                                && row.entry.image === true))
+    /// 只有最近保存 / 已加星标开启图片预览；播放历史没有图片条目。
+    property bool previewImages: false
 
     property int thumbnailSlotWidth: 36
     property int thumbnailSlotHeight: 24
@@ -38,6 +42,7 @@ ItemDelegate {
 
     signal activateRequested(string id)
     signal playRequested(string id, point position)
+    signal previewRequested(string id)
     signal contextMenu(point position)
     signal selectRequested(int index)
 
@@ -62,6 +67,8 @@ ItemDelegate {
             row.activateRequested(row.entry.id)
         else if (row.entry.playable === true)
             row.playRequested(row.entry.id, point)
+        else if (row.previewImages && row.entry.image === true)
+            row.previewRequested(row.entry.id)
     }
 
     function firstClick(modifiers, x, y) {
