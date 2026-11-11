@@ -130,6 +130,12 @@ pub mod qobject {
         #[qproperty(QString, play_error, cxx_name = "playError", READ, NOTIFY = changed)]
         /// 非空 = 提示条短提示（档位回退说明），几秒后由界面自动收起
         #[qproperty(QString, play_notice, cxx_name = "playNotice", READ, NOTIFY = changed)]
+        /// 图片预览正在取详情 / 下载原图
+        #[qproperty(bool, image_preview_loading, cxx_name = "imagePreviewLoading", READ, NOTIFY = changed)]
+        /// 图片预览失败原因；空串 = 没有错误
+        #[qproperty(QString, image_preview_error, cxx_name = "imagePreviewError", READ, NOTIFY = changed)]
+        /// 已下载到本地的预览图 `file://` URI；空串 = 还没准备好
+        #[qproperty(QString, image_preview_path, cxx_name = "imagePreviewPath", READ, NOTIFY = changed)]
         /// 内嵌播放画面已出图：界面据此显示整窗视频浮层
         #[qproperty(bool, embed_active, cxx_name = "embedActive", READ, NOTIFY = changed)]
         /// 当前内嵌播放的标题（浮层文字）
@@ -852,6 +858,17 @@ pub mod qobject {
         #[cxx_name = "requestEntryProperties"]
         fn request_entry_properties(self: Pin<&mut Self>, id: QString);
 
+        /// 预览图片：按 id 取详情与直链，Rust 下载到本地临时文件后回填
+        /// `imagePreviewPath`；失败写 `imagePreviewError`。QML 从不见远程 URL。
+        #[qinvokable]
+        #[cxx_name = "previewImage"]
+        fn preview_image(self: Pin<&mut Self>, id: QString);
+
+        /// 关闭图片预览：作废在途结果并删除本地临时文件。
+        #[qinvokable]
+        #[cxx_name = "closeImagePreview"]
+        fn close_image_preview(self: Pin<&mut Self>);
+
         /// 这个条目是否已在排队 / 准备 / 下载中（右键菜单文案用）
         #[qinvokable]
         #[cxx_name = "isDownloadPending"]
@@ -1210,6 +1227,8 @@ mod files_cache;
 mod files_nav;
 #[path = "cxxqt_object/files/files_view.rs"]
 mod files_view;
+#[path = "cxxqt_object/files/image_preview.rs"]
+mod image_preview;
 
 // 回收站
 #[path = "cxxqt_object/trash/trash.rs"]
@@ -1375,6 +1394,14 @@ pub struct KichiRust {
     pub(crate) thumbnail_requests: std::collections::HashSet<String>,
     /// 缩略图请求代数：退出登录后丢弃旧账号在途结果。
     pub(crate) thumbnail_epoch: u64,
+    /// 图片预览：在途 / 失败原因 / 本地 `file://` URI
+    pub(crate) image_preview_loading: bool,
+    pub(crate) image_preview_error: QString,
+    pub(crate) image_preview_path: QString,
+    /// 当前预览的临时文件；关闭 / 换图 / 登出时删除
+    pub(crate) image_preview_file: Option<std::path::PathBuf>,
+    /// 预览请求代数：关闭 / 换图 / 登出后丢弃在途结果
+    pub(crate) image_preview_epoch: u64,
     /// 目录栈；根目录 id 为空串
     pub(crate) crumbs: Vec<Crumb>,
     /// 进 / 退目录前的目录栈快照：列表失败就回滚，面包屑别指着一个没读到的目录
@@ -1755,6 +1782,11 @@ impl Default for KichiRust {
             entries: Vec::new(),
             thumbnail_requests: std::collections::HashSet::new(),
             thumbnail_epoch: 0,
+            image_preview_loading: false,
+            image_preview_error: QString::default(),
+            image_preview_path: QString::default(),
+            image_preview_file: None,
+            image_preview_epoch: 0,
             crumbs: vec![Crumb::root()],
             crumb_backup: None,
             listing: false,

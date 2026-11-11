@@ -11,6 +11,7 @@ mod download_resume;
 pub(crate) mod file_cache;
 mod folder_trail;
 mod identity;
+pub mod image_preview;
 pub(crate) mod library;
 pub(crate) mod limits;
 pub mod magnet;

@@ -87,6 +87,7 @@ const QML_FILES: &[&str] = &[
     "qml/files/FileSelection.qml",
     "qml/files/FileSortMenu.qml",
     "qml/files/FileThumbnail.qml",
+    "qml/files/ImagePreviewOverlay.qml",
     "qml/files/FilesPage.qml",
     "qml/files/FilesPageHeaderActions.qml",
     "qml/files/FilesPageMenu.qml",

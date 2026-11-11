@@ -126,6 +126,7 @@ impl qobject::Kichi {
                 }
                 self.as_mut().reset_files();
                 self.as_mut().reset_thumbnails();
+                self.as_mut().reset_image_preview();
                 self.as_mut().reset_trash();
                 self.as_mut().reset_play();
                 self.as_mut().reset_uploads();

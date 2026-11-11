@@ -21,6 +21,8 @@ ItemDelegate {
     property bool activationEnabled: true
     /// 双击普通不可播放文件是否直接下载；资料库页只打开或播放，不在这里下载。
     property bool downloadNonPlayable: true
+    /// 双击图片是否打开预览；只有文件页开启（资料库 / 回收站没有预览入口）。
+    property bool previewImages: false
     /// 当前条目正在取播放直链 / 等待播放器窗口
     property bool playLoading: false
     /// 播放器已经真正开播、尚未退出
@@ -59,6 +61,7 @@ ItemDelegate {
 
     signal contextMenu(point position)
     signal playRequested(string id, point position)
+    signal previewRequested(string id)
     signal selectRequested(int modifiers, int index)
     signal folderOpenRequested(string id)
     signal detailRequested()
@@ -123,6 +126,7 @@ ItemDelegate {
                      || (!card.inTrash && card.activationEnabled && card.entry
                          && (card.entry.kind === "folder"
                              || card.entry.playable === true
+                             || (card.previewImages && card.entry.image === true)
                              || card.downloadNonPlayable))
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
@@ -177,6 +181,10 @@ ItemDelegate {
         }
         if (card.entry.playable === true) {
             card.playRequested(card.entry.id, point)
+            return
+        }
+        if (card.previewImages && card.entry.image === true) {
+            card.previewRequested(card.entry.id)
             return
         }
         if (card.downloadNonPlayable)

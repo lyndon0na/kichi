@@ -22,6 +22,7 @@ Item {
     property string targetName: ""
     property bool targetIsFolder: false
     property bool targetPlayable: false
+    property bool targetImage: false
     property bool targetStarred: false
     // 这个条目是否已在下载队列里（打开菜单时问一次后端；见 openContext）
     property bool targetPending: false
@@ -46,6 +47,8 @@ Item {
 
     // 菜单里点「播放」：页面把位置交给清晰度菜单，再让后端取档位
     signal playRequested(point anchor)
+    // 菜单里点「预览…」：交给文件页打开图片预览浮层
+    signal previewRequested(string id)
     signal moveRequested(var entry, var ids)
     signal copyRequested(var entry, var ids)
     signal shareRequested(var entry, var ids)
@@ -92,6 +95,15 @@ Item {
                 if (root.backend)
                     root.backend.untrashEntries([root.targetId])
             }
+        }
+
+        // 图片预览：只对单张图片出现；多选时没有「预览整组」的语义
+        MenuItem {
+            objectName: "previewItem"
+            text: qsTr("预览…")
+            visible: !root.targetInTrash && root.targetImage && root.targetCount === 1
+            enabled: root.backend !== null && !root.backend.filesLoading
+            onTriggered: root.previewRequested(root.targetId)
         }
 
         // 只有视频/音频才有播放入口；多选时只对单条开放
@@ -280,6 +292,7 @@ Item {
         targetName = entry.name
         targetIsFolder = entry.kind === "folder"
         targetPlayable = entry.playable === true
+        targetImage = entry.image === true
         targetStarred = entry.starred === true
         targetInTrash = entry.inTrash === true
         targetUnresolvedCreate = entry.pending === true

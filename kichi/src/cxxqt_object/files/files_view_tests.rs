@@ -46,6 +46,28 @@ fn qml_map_exposes_media_flags_but_not_the_remote_url() {
     assert!(map.get(&QString::from("thumbnailUrl")).is_none());
 }
 
+#[test]
+fn qml_map_marks_image_files_only() {
+    let image = entry("cover.JPG", EntryKind::File, 10, 1);
+    assert_eq!(
+        entry_map(&image)
+            .get(&QString::from("image"))
+            .and_then(|value| value.value::<bool>()),
+        Some(true)
+    );
+    for not_image in [
+        entry("movie.mkv", EntryKind::File, 10, 1),
+        entry("album.png", EntryKind::Folder, 0, 1),
+    ] {
+        assert_eq!(
+            entry_map(&not_image)
+                .get(&QString::from("image"))
+                .and_then(|value| value.value::<bool>()),
+            Some(false)
+        );
+    }
+}
+
 fn sample() -> Vec<FileEntry> {
     vec![
         entry("Beta.mkv", EntryKind::File, 300, 3),

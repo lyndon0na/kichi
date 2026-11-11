@@ -239,6 +239,19 @@ Item {
         playMenu.anchorPoint = anchor
     }
 
+    /// 双击图片 / 右键「预览…」：先让 Rust 取详情与直链，再打开深色预览浮层。
+    function openImagePreview(id) {
+        if (!page.backend || page.holdingSearchEntries)
+            return
+        const entry = interaction.entryForId(id)
+        if (!entry || entry.inTrash === true || entry.kind === "folder")
+            return
+        if (entry.image !== true)
+            return
+        page.backend.previewImage(String(entry.id))
+        imagePreview.openFor(String(entry.id), String(entry.name || ""))
+    }
+
     /// 离线任务定位到条目：等父目录模型显示后选中并滚动到目标。
     function revealEntryById(id) {
         interaction.revealEntryById(id)
@@ -333,6 +346,7 @@ Item {
             interaction.rememberScroll()
             interaction.rememberSelection()
             page.clearHeldSearchEntries()
+            imagePreview.dismiss()
             if (page.searching && page.backend)
                 page.backend.exitSearch()
             return
@@ -542,6 +556,9 @@ Item {
                                 if (page.backend)
                                     page.backend.requestPlay(id)
                             }
+                            onPreviewRequested: function (id) {
+                                page.openImagePreview(id)
+                            }
                             // FileRow 给的是行内坐标：换算成窗口坐标再交给右键菜单。
                             // 右键未选中的行时先收窄成这一条（文件管理器的惯例）
                             onContextMenu: function (point) {
@@ -620,6 +637,8 @@ Item {
                         videoBadgeMargin: density.gridVideoBadgeMargin
                         playLoading: page.isEntryPlayLoading(entry.id)
                         playing: page.isEntryPlaying(entry.id)
+                        // 搜索结果与目录共用网格卡片；资料库 / 回收站不经过这里。
+                        previewImages: true
                         selected: !!entry && selection.isSelected(entry.id)
                         createdFlash: !!entry
                                       && entry.id === interaction.createdFlashId
@@ -647,6 +666,9 @@ Item {
                                 null, point.x, point.y)
                             if (page.backend)
                                 page.backend.requestPlay(id)
+                        }
+                        onPreviewRequested: function (id) {
+                            page.openImagePreview(id)
                         }
                         onContextMenu: function (point) {
                             selection.ensureSelected(entry)
@@ -723,6 +745,9 @@ Item {
         onShareRequested: function (entry, ids) {
             shareDialog.openFor(entry, ids, page.shareNamesFor(ids))
         }
+        onPreviewRequested: function (id) {
+            page.openImagePreview(id)
+        }
         onRefreshRequested: interaction.refreshFiles()
     }
 
@@ -785,5 +810,11 @@ Item {
     FilesPagePlayMenu {
         id: playMenu
         backend: page.playMenuEnabled ? page.backend : null
+    }
+
+    // —— 图片预览浮层（内容在 ImagePreviewOverlay.qml）——
+    ImagePreviewOverlay {
+        id: imagePreview
+        backend: page.backend
     }
 }

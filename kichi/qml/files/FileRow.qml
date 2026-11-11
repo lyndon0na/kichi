@@ -73,6 +73,8 @@ ItemDelegate {
     signal contextMenu(point position)
     // 双击媒体文件：把条目 id 和行内锚点交给页面（清晰度菜单从这里弹出）
     signal playRequested(string id, point position)
+    // 双击图片：交给页面打开图片预览（Rust 下载原图到本地）
+    signal previewRequested(string id)
     // 单击：把修饰键（Ctrl / Shift）与行下标交给页面做多选
     signal selectRequested(int modifiers, int index)
     // 双击文件夹：交给页面先记滚动位置再进目录
@@ -104,7 +106,9 @@ ItemDelegate {
         // 悬停底色要用 containsMouse，必须开 hoverEnabled（默认关闭）
         hoverEnabled: true
         cursorShape: row.detailHovered
-                     || (!row.inTrash && row.entry && row.entry.kind === "folder")
+                     || (!row.inTrash && row.entry
+                         && (row.entry.kind === "folder"
+                             || row.entry.image === true))
                      ? Qt.PointingHandCursor : Qt.ArrowCursor
 
         onClicked: function (mouse) {
@@ -160,6 +164,10 @@ ItemDelegate {
         }
         if (row.entry.playable === true) {
             row.playRequested(row.entry.id, point)
+            return
+        }
+        if (row.entry.image === true) {
+            row.previewRequested(row.entry.id)
             return
         }
         row.backend.downloadEntry(row.entry.id)

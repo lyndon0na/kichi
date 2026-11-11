@@ -243,6 +243,12 @@ pub(crate) fn entry_map(entry: &FileEntry) -> QVariantMap {
         &QString::from("video"),
         &QVariant::from(&(entry.kind == EntryKind::File && entry.video)),
     );
+    // 图片按扩展名判定（列表不带 kind 过滤时官方分类字段为空）。
+    // QML 只据此决定双击是否打开预览，不参与缩略图 / 播放入口。
+    map.insert_clone(
+        &QString::from("image"),
+        &QVariant::from(&(entry.kind == EntryKind::File && kichi_core::is_image_name(&entry.name))),
+    );
     // 只告诉界面「有没有可尝试的缩略图」，远程 URL 永远不离开 Rust。
     map.insert_clone(
         &QString::from("hasThumbnail"),

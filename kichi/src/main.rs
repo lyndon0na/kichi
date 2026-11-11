@@ -54,6 +54,8 @@ fn main() {
     session::thumbnail_cache::sweep();
     // 账号头像：删 30 天前的，并把总大小收到 8 MiB 以内。
     session::avatar_cache::sweep();
+    // 图片预览临时文件：上次崩溃可能留下的旧图，只清 24 小时前的。
+    session::image_preview::sweep_stale(std::time::Duration::from_secs(24 * 60 * 60));
 
     let mut app = QGuiApplication::new();
 
