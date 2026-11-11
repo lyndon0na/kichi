@@ -426,7 +426,13 @@ impl qobject::Kichi {
     /// 退出登录：清空搜索并作废在途扫描。
     pub(crate) fn reset_search(mut self: Pin<&mut Self>) {
         self.as_mut().exit_search();
-        self.as_mut().rust_mut().search_status = QString::default();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.search_status = QString::default();
+            // 筛选是文件页常驻条件，但如果退出登录不清，换账号后会把上一个账号
+            // 设的条件带过去。
+            super::search_filter::reset_filter(&mut rust);
+        }
         self.as_mut().notify();
     }
 

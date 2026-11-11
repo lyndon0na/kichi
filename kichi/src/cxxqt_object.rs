@@ -1832,7 +1832,8 @@ pub struct KichiRust {
     pub(crate) search_index: std::collections::HashMap<String, crate::session::SearchHit>,
     /// 结果来源："index" / "fallback" / "network"；空串 = 没有搜索
     pub(crate) search_source: QString,
-    /// 当前搜索的筛选条件（三组线名 + 摘要；只在本次搜索内有效）
+    /// 文件页常驻的筛选条件（三组线名 + 摘要）：同时裁目录列表与搜索结果，
+    /// 跨目录 / 跨搜索保留，只有「清除筛选」或退出登录才清空。
     pub(crate) search_filter: kichi_core::SearchFilter,
     pub(crate) search_filter_types: QStringList,
     pub(crate) search_filter_modifieds: QStringList,
