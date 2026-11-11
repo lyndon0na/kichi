@@ -62,6 +62,7 @@ mod tests {
         OfflineTask {
             id: "task".into(),
             name: "file.bin".into(),
+            source_url: None,
             phase,
             progress: 0,
             message: message.map(str::to_owned),

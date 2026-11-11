@@ -9,7 +9,7 @@ use kichi_core::{OfflineTask, TaskPhase};
 use crate::cxxqt_object::actions::run_in_background;
 use crate::cxxqt_object::qobject;
 use crate::cxxqt_object::tasks_submit::{
-    parse_input, submit, submit_torrents, summary, torrent_summary,
+    parse_input, retry_url, submit, submit_torrents, summary, torrent_summary,
 };
 use crate::session::Failure;
 
@@ -116,6 +116,72 @@ impl qobject::Kichi {
                     qichi.as_mut().clear_status_message();
                 } else {
                     qichi.as_mut().set_message(&torrent_summary(&outcome));
+                }
+                qichi
+                    .as_mut()
+                    .remember_task_destinations(&outcome.created, destination.as_deref());
+                qichi.as_mut().show_submitted_tasks(outcome.created);
+                qichi.as_mut().refresh_tasks_force();
+            },
+        );
+    }
+
+    /// 重新提交失败 / 状态未知的离线任务。
+    ///
+    /// 来源链接取任务响应里的 `params.url`；目标目录优先沿用本次会话提交时记下的
+    /// 目录，其次是任务资源下发的父目录，都确定不了时才回到任务页默认的 My Pack。
+    pub fn retry_task(mut self: Pin<&mut Self>, id: QString) {
+        let id = id.to_string();
+        let task = self.task_list.iter().find(|task| task.id == id).cloned();
+        let Some(task) = task else {
+            self.as_mut()
+                .set_message("任务不在当前列表中，请刷新后重试");
+            return;
+        };
+        if !is_retryable(&task) {
+            self.as_mut()
+                .set_message("只有失败或状态未知的任务可以重新提交");
+            return;
+        }
+        let Some(url) = retry_url(task.source_url.as_deref()) else {
+            self.as_mut()
+                .set_message("该任务没有可用的来源链接，无法重新提交");
+            return;
+        };
+        let destination = self
+            .task_destinations
+            .get(&id)
+            .cloned()
+            .or_else(|| task.output_parent_id.clone());
+
+        let session = self.backend.session.clone();
+        let my_epoch = self.tasks_epoch;
+        let request_destination = destination.clone();
+        self.as_mut().set_message("正在重新提交离线任务……");
+        run_in_background(
+            move || {
+                let urls = [url];
+                Ok::<_, Failure>(submit(&session, &urls, request_destination.as_deref()))
+            },
+            move |mut qichi, result| {
+                if qichi.as_ref().rust().tasks_epoch != my_epoch {
+                    return;
+                }
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        qichi.as_mut().on_tasks_failure(err);
+                        return;
+                    }
+                };
+                if let Some(failure) = outcome.auth_failure {
+                    qichi.as_mut().on_tasks_failure(failure);
+                    return;
+                }
+                if outcome.errors.is_empty() && !outcome.stopped_early {
+                    qichi.as_mut().set_message("已重新提交离线任务");
+                } else {
+                    qichi.as_mut().set_message(&summary(&outcome));
                 }
                 qichi
                     .as_mut()

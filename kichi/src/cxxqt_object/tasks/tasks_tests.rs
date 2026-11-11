@@ -12,6 +12,7 @@ fn task(id: &str, phase: TaskPhase) -> OfflineTask {
     OfflineTask {
         id: id.to_owned(),
         name: id.to_owned(),
+        source_url: None,
         phase,
         progress: 0,
         message: None,
@@ -258,6 +259,67 @@ fn settled_flag_matches_phase() {
     assert_eq!(read(&running), Some(false));
     assert_eq!(read(&done), Some(true));
     assert_eq!(read(&deleted), Some(true));
+}
+
+#[test]
+fn retryable_flag_is_limited_to_failed_and_unknown() {
+    let read = |phase| {
+        task_map(&task("id", phase))
+            .get(&QString::from("retryable"))
+            .and_then(|value| value.value::<bool>())
+    };
+    assert_eq!(read(TaskPhase::Error), Some(true));
+    assert_eq!(read(TaskPhase::Unknown), Some(true));
+    assert_eq!(read(TaskPhase::Running), Some(false));
+    assert_eq!(read(TaskPhase::Pending), Some(false));
+    assert_eq!(read(TaskPhase::Paused), Some(false));
+    assert_eq!(read(TaskPhase::Completed), Some(false));
+
+    let mut deleted = task("deleted", TaskPhase::Error);
+    deleted.message = Some("File deleted".into());
+    assert!(
+        !is_retryable(&deleted),
+        "产物已删除不是下载失败，不能重新提交"
+    );
+}
+
+#[test]
+fn failed_task_destination_survives_until_it_leaves_the_list() {
+    let mut destinations = HashMap::from([
+        ("failed".to_owned(), "folder-failed".to_owned()),
+        ("running".to_owned(), "folder-running".to_owned()),
+        ("unknown".to_owned(), "folder-unknown".to_owned()),
+        ("completed".to_owned(), "folder-completed".to_owned()),
+        ("gone".to_owned(), "folder-gone".to_owned()),
+    ]);
+    prune_task_destinations(
+        &[
+            task("failed", TaskPhase::Error),
+            task("running", TaskPhase::Running),
+            task("unknown", TaskPhase::Unknown),
+            task("completed", TaskPhase::Completed),
+        ],
+        &mut destinations,
+    );
+
+    assert_eq!(
+        destinations.get("failed").map(String::as_str),
+        Some("folder-failed"),
+        "失败任务要保留目标目录，重新提交时沿用"
+    );
+    assert_eq!(
+        destinations.get("unknown").map(String::as_str),
+        Some("folder-unknown")
+    );
+    assert_eq!(
+        destinations.get("running").map(String::as_str),
+        Some("folder-running")
+    );
+    assert!(
+        !destinations.contains_key("completed"),
+        "完成后不再需要目标"
+    );
+    assert!(!destinations.contains_key("gone"), "已不在列表的任务要淘汰");
 }
 
 #[test]

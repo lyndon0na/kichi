@@ -16,6 +16,7 @@ Item {
     property bool targetCanPlay: false
     // 只有已完成的任务才有产物，才能看产物的属性
     property bool targetHasProduct: false
+    property bool targetCanRetry: false
     property point targetPoint: Qt.point(0, 0)
 
     signal deleteRequested(string id, string name)
@@ -23,6 +24,7 @@ Item {
     signal revealLocationRequested(string fileId)
     signal playRequested(string fileId, point position)
     signal propertiesRequested(string fileId, string name, string kind)
+    signal retryRequested(string id)
 
     Menu {
         id: contextMenu
@@ -61,9 +63,18 @@ Item {
             onTriggered: root.revealLocationRequested(root.targetFileId)
         }
 
+        MenuItem {
+            objectName: "taskRetryItem"
+            text: qsTr("重新提交…")
+            visible: root.targetCanRetry
+            enabled: root.backend !== null && root.targetId.length > 0
+            onTriggered: root.retryRequested(root.targetId)
+        }
+
         MenuSeparator {
             visible: root.targetCanOpenFolder || root.targetCanRevealLocation
-                     || root.targetCanPlay || root.targetHasProduct
+                     || root.targetCanPlay || root.targetCanRetry
+                     || root.targetHasProduct
         }
 
         // 只看产物本身的信息：任务进度 / 磁力链接之类不在属性里重复。
@@ -85,7 +96,7 @@ Item {
         }
     }
 
-    function openFor(id, name, point, fileId, kind, phase, playable) {
+    function openFor(id, name, point, fileId, kind, phase, playable, retryable) {
         targetId = String(id || "")
         targetName = String(name || "")
         targetFileId = String(fileId || "")
@@ -101,6 +112,7 @@ Item {
                         && playable === true
                         && targetFileId.length > 0
         targetHasProduct = phase === "completed" && targetFileId.length > 0
+        targetCanRetry = retryable === true
         targetPoint = point
         contextMenu.openAt(point)
     }

@@ -146,6 +146,9 @@ struct TaskDto {
     id: String,
     #[serde(default)]
     name: String,
+    /// 离线任务的提交参数；`url` 是创建时使用的原始链接（磁力 / ed2k / HTTP）。
+    #[serde(default)]
+    params: Option<TaskParamsDto>,
     #[serde(default)]
     phase: String,
     #[serde(default)]
@@ -162,11 +165,18 @@ struct TaskDto {
     created_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[derive(Deserialize)]
+struct TaskParamsDto {
+    #[serde(default)]
+    url: Option<String>,
+}
+
 impl TaskDto {
     fn into_task(self) -> OfflineTask {
         let TaskDto {
             id,
             name,
+            params,
             phase,
             progress,
             file_id,
@@ -175,6 +185,10 @@ impl TaskDto {
             reference_resource,
             created_time,
         } = self;
+        let source_url = params
+            .and_then(|params| params.url)
+            .map(|url| url.trim().to_owned())
+            .filter(|url| !url.is_empty());
         let output_parent_id = reference_resource.as_ref().and_then(FileDto::parent_id);
         let resource = reference_resource.map(FileDto::into_entry);
         let name = if name.trim().is_empty() {
@@ -217,6 +231,7 @@ impl TaskDto {
         OfflineTask {
             id,
             name,
+            source_url,
             phase: phase_from(&phase),
             progress,
             message: message.filter(|msg| !msg.is_empty()),
@@ -404,11 +419,13 @@ mod tests {
             "tasks": [
                 {"id":"T1","name":"电影","phase":"PHASE_TYPE_RUNNING","progress":42,
                  "file_size":"123456","file_id":"F1","message":"downloading",
+                 "params":{"url":"magnet:?xt=urn:btih:0123456789abcdef"},
                  "reference_resource":{"id":"D1","name":"电影","kind":"drive#folder",
                  "parent_id":"folder-9"},
                  "created_time":"2026-10-20T12:34:56.789+08:00"},
                 {"id":"T2","name":"done.zip","phase":"PHASE_TYPE_COMPLETE",
                  "progress":100,"file_size":null,"message":"",
+                 "params":{"url":"   "},
                  "reference_resource":{"id":"F2","name":"done.zip","kind":"drive#file",
                  "size":"42","file_category":"VIDEO","mime_type":"video/mp4",
                  "thumbnail_link":"https://thumb.invalid/done.jpg"}},
@@ -425,6 +442,11 @@ mod tests {
 
         assert_eq!(tasks[0].phase, TaskPhase::Running);
         assert_eq!(tasks[0].progress, 42);
+        assert_eq!(
+            tasks[0].source_url.as_deref(),
+            Some("magnet:?xt=urn:btih:0123456789abcdef"),
+            "任务响应应从 params.url 取回原始提交链接"
+        );
         assert_eq!(tasks[0].file_size, 123_456, "字符串 file_size 应可解析");
         assert_eq!(tasks[0].file_id.as_deref(), Some("F1"));
         assert_eq!(tasks[0].output_parent_id.as_deref(), Some("folder-9"));
@@ -438,6 +460,10 @@ mod tests {
         );
 
         assert_eq!(tasks[1].phase, TaskPhase::Completed);
+        assert_eq!(
+            tasks[1].source_url, None,
+            "params.url 只有空白时不能当成可用链接"
+        );
         assert_eq!(
             tasks[1].output_parent_id, None,
             "资源缺少 parent_id 时不能冒充根目录"
@@ -455,6 +481,7 @@ mod tests {
         assert!(tasks[1].media);
         assert!(tasks[1].video);
         assert_eq!(tasks[2].kind, None, "缺 reference_resource 时应兜底");
+        assert_eq!(tasks[2].source_url, None, "缺 params 时不能凭空补链接");
         assert!(!tasks[2].media);
         assert!(!tasks[2].video);
         assert!(tasks[3].media, "资源缺失时仍按产物后缀识别音频");

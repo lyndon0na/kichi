@@ -499,6 +499,11 @@ pub mod qobject {
         #[cxx_name = "addTaskToFolder"]
         fn add_task_to_folder(self: Pin<&mut Self>, url: QString, folder_id: QString);
 
+        /// 重新提交失败 / 状态未知的离线任务（沿用原来源链接与已知目标目录）。
+        #[qinvokable]
+        #[cxx_name = "retryTask"]
+        fn retry_task(self: Pin<&mut Self>, id: QString);
+
         /// 解析拖入添加任务弹窗的 `.torrent`，结果通过 `torrentParsed` 回投。
         #[qinvokable]
         #[cxx_name = "previewTorrentFiles"]

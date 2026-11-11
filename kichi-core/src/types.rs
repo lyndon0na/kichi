@@ -112,6 +112,11 @@ impl TaskPhase {
 pub struct OfflineTask {
     pub id: String,
     pub name: String,
+    /// 创建任务时提交的原始链接（任务响应里的 `params.url`）。
+    ///
+    /// 只用于「重新提交」；旧快照没有该字段时为 `None`，空串按未下发处理。
+    #[serde(default)]
+    pub source_url: Option<String>,
     pub phase: TaskPhase,
     /// 进度百分比 0-100
     pub progress: u8,

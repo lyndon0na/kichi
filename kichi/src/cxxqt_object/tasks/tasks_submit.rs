@@ -50,6 +50,18 @@ pub(super) fn parse_input(text: &str) -> ParsedInput {
     }
 }
 
+/// 从任务记录里取出可重新提交的来源链接。
+///
+/// 只接受「恰好一条能识别的链接」：`params.url` 缺失、为空、或塞了多行 /
+/// 无法识别的文本都返回 `None`，绝不凭空提交或提交空磁力。
+pub(super) fn retry_url(source_url: Option<&str>) -> Option<String> {
+    let mut parsed = parse_input(source_url?);
+    if !parsed.invalid_lines.is_empty() || parsed.urls.len() != 1 {
+        return None;
+    }
+    parsed.urls.pop()
+}
+
 pub(super) fn submit(session: &Session, urls: &[String], parent_id: Option<&str>) -> SubmitOutcome {
     let mut outcome = SubmitOutcome {
         requested: urls.len(),
@@ -239,6 +251,42 @@ mod tests {
             ]
         );
         assert!(parsed.invalid_lines.is_empty());
+    }
+
+    #[test]
+    fn retry_url_accepts_exactly_one_recognized_link() {
+        assert_eq!(
+            retry_url(Some("  magnet:?xt=urn:btih:abc  ")).as_deref(),
+            Some("magnet:?xt=urn:btih:abc")
+        );
+        assert_eq!(
+            retry_url(Some("0123456789ABCDEF0123456789ABCDEF01234567")).as_deref(),
+            Some("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"),
+            "裸 infohash 沿用提交链路的规范化"
+        );
+        assert_eq!(
+            retry_url(Some("https://example.com/file.zip")).as_deref(),
+            Some("https://example.com/file.zip")
+        );
+    }
+
+    #[test]
+    fn retry_url_rejects_missing_blank_or_multiple_links() {
+        assert_eq!(retry_url(None), None);
+        assert_eq!(retry_url(Some("")), None);
+        assert_eq!(retry_url(Some("   ")), None);
+        assert_eq!(retry_url(Some("不是链接")), None);
+        assert_eq!(retry_url(Some("magnet:?dn=no-hash")), None);
+        assert_eq!(
+            retry_url(Some("magnet:?xt=urn:btih:abc\nmagnet:?xt=urn:btih:def")),
+            None,
+            "响应里若混进多行，不能一次提交多条"
+        );
+        assert_eq!(
+            retry_url(Some("magnet:?xt=urn:btih:abc\n垃圾行")),
+            None,
+            "任何无法识别的行都拒绝整条链接"
+        );
     }
 
     #[test]

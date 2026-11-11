@@ -75,11 +75,7 @@ impl qobject::Kichi {
                 }
             }
             let completed_folders = completed_task_folders(&fresh, &rust.task_destinations);
-            for task in &tasks {
-                if task.status().is_settled() {
-                    rust.task_destinations.remove(&task.id);
-                }
-            }
+            prune_task_destinations(&tasks, &mut rust.task_destinations);
             (fresh, completed_folders)
         };
 
@@ -125,6 +121,27 @@ impl qobject::Kichi {
 
 pub(crate) fn sort_tasks_newest_first(tasks: &mut [OfflineTask]) {
     tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+}
+
+/// 只有失败 / 状态未知的任务可以重新提交。
+pub(crate) fn is_retryable(task: &OfflineTask) -> bool {
+    matches!(task.status(), TaskStatus::Failed | TaskStatus::Unknown)
+}
+
+/// 只保留仍在列表里的任务目标；已完成 / 产物已删除的任务不再需要。
+///
+/// 失败任务的目标要留着：「重新提交」沿用它；任务被清理后不在列表里，
+/// 会在这里一起淘汰，不会无限增长。
+pub(crate) fn prune_task_destinations(
+    tasks: &[OfflineTask],
+    destinations: &mut HashMap<String, String>,
+) {
+    let keep: HashSet<&str> = tasks
+        .iter()
+        .filter(|task| is_retryable(task) || !task.status().is_settled())
+        .map(|task| task.id.as_str())
+        .collect();
+    destinations.retain(|id, _| keep.contains(id.as_str()));
 }
 
 /// 任务完成后应校准的目录；优先用提交时记下的目标，重启后回退到资源父目录。
@@ -263,6 +280,10 @@ pub(crate) fn task_map(task: &OfflineTask) -> QVariantMap {
     map.insert_clone(
         &QString::from("settled"),
         &QVariant::from(&status.is_settled()),
+    );
+    map.insert_clone(
+        &QString::from("retryable"),
+        &QVariant::from(&is_retryable(task)),
     );
     map
 }

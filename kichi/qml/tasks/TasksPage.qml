@@ -22,6 +22,9 @@ Item {
     property alias scrollRestoreAttempts: scrollMemory.attempts
     property string pendingDeleteId: ""
     property string pendingDeleteName: ""
+    property string pendingRetryId: ""
+    property string pendingRetryName: ""
+    property string pendingRetryPhase: ""
 
     signal openFolderRequested(string fileId)
     signal revealLocationRequested(string fileId)
@@ -202,7 +205,8 @@ Item {
                     onContextMenu: function (point) {
                         taskMenu.openFor(row.key, row.name,
                                          row.mapToItem(null, point.x, point.y),
-                                         row.fileId, row.kind, row.phase, row.playable)
+                                         row.fileId, row.kind, row.phase, row.playable,
+                                         row.retryable)
                     }
                     onOpenFolderRequested: function (id) {
                         page.openFolderRequested(id)
@@ -298,6 +302,15 @@ Item {
     function refresh() {
         if (page.backend && !page.tasksLoading)
             page.backend.refreshTasks()
+    }
+
+    function taskById(id) {
+        const tasks = page.backend && page.backend.tasks ? page.backend.tasks : []
+        for (var i = 0; i < tasks.length; i++) {
+            if (String(tasks[i].id) === String(id))
+                return tasks[i]
+        }
+        return null
     }
 
     function confirmClearFinished() {
@@ -421,7 +434,8 @@ Item {
             fileId: task.fileId || "",
             hasThumbnail: task.hasThumbnail === true,
             video: task.video === true,
-            playable: task.playable === true
+            playable: task.playable === true,
+            retryable: task.retryable === true
         }
     }
 
@@ -453,6 +467,13 @@ Item {
                 createdText: "",
                 modifiedText: ""
             }, true)
+        }
+        onRetryRequested: function (id) {
+            const task = page.taskById(id)
+            page.pendingRetryId = id
+            page.pendingRetryName = task ? String(task.name || "") : ""
+            page.pendingRetryPhase = task ? String(task.phase || "") : ""
+            retryTaskDialog.open()
         }
     }
 
@@ -491,6 +512,36 @@ Item {
         onAccepted: {
             if (page.backend)
                 page.backend.clearFinishedTasks()
+        }
+    }
+
+    KDialog {
+        id: retryTaskDialog
+        objectName: "retryTaskDialog"
+        title: qsTr("重新提交任务")
+        modal: true
+        anchors.centerIn: parent
+        width: 380 + leftPadding + rightPadding
+        footer: DialogFooter {
+            outerMargin: retryTaskDialog.padding
+            okText: qsTr("重新提交")
+            onOkClicked: {
+                if (page.backend)
+                    page.backend.retryTask(page.pendingRetryId)
+                retryTaskDialog.close()
+            }
+            onCancelClicked: retryTaskDialog.close()
+        }
+
+        Label {
+            objectName: "retryTaskText"
+            width: 380
+            wrapMode: Text.Wrap
+            text: qsTr("确定使用原链接重新提交任务「%1」吗？\n"
+                       + "会新建一条任务记录，原任务记录保留。").arg(page.pendingRetryName)
+                  + (page.pendingRetryPhase === "unknown"
+                     ? qsTr("\n该任务状态未知，可能仍在下载；重新提交会再建一条任务。")
+                     : "")
         }
     }
 

@@ -25,6 +25,7 @@ ItemDelegate {
     required property bool hasThumbnail
     required property bool video
     required property bool playable
+    required property bool retryable
 
     property var backend: null
     property int rowHeight: 48

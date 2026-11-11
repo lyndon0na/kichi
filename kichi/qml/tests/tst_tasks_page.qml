@@ -57,6 +57,7 @@ TestCase {
         property string submittedFolderId: ""
         property bool submittedToFolder: false
         property string deletedId: ""
+        property string retriedId: ""
         property int refreshCalls: 0
         property int thumbnailRequests: 0
         property int cancelPlayLoadingCalls: 0
@@ -81,6 +82,9 @@ TestCase {
         }
         function deleteTask(id) {
             deletedId = id
+        }
+        function retryTask(id) {
+            retriedId = id
         }
         function refreshTasks() {
             refreshCalls += 1
@@ -177,6 +181,7 @@ TestCase {
         backend.cancelPlayLoadingCalls = 0
         backend.cancelMoveTargetsCalls = 0
         backend.clearFinishedCalls = 0
+        backend.retriedId = ""
         backend.torrentPickerCalls = 0
         backend.torrentPreviewCalls = 0
         backend.torrentPreviewUrls = []
@@ -216,7 +221,8 @@ TestCase {
             fileId: id + "-file",
             hasThumbnail: false,
             video: false,
-            playable: false
+            playable: false,
+            retryable: false
         }
     }
 
@@ -784,6 +790,71 @@ TestCase {
         verify(item !== null)
         compare(item.visible, false, "还没产物就没有属性可看")
         menu.close()
+    }
+
+    function test_retry_is_offered_only_for_failed_and_unknown_tasks() {
+        var failed = task("retry-failed", "error", 0)
+        failed.retryable = true
+        push([failed])
+        var row = null
+        tryVerify(function () {
+            row = visibleRow("retry-failed")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+
+        var menu = findChild(page, "taskContextMenu")
+        verify(menu)
+        verify(menu.opened)
+        var retryItem = findChild(menu, "taskRetryItem")
+        verify(retryItem)
+        compare(retryItem.visible, true)
+        compare(retryItem.text, "重新提交…")
+        mouseClick(retryItem)
+        wait(40)
+
+        var dialog = findChild(page, "retryTaskDialog")
+        verify(dialog)
+        verify(dialog.opened)
+        compare(page.pendingRetryId, "retry-failed")
+        var ok = findChild(dialog, "dialogFooterOk")
+        verify(ok !== null, "重新提交弹窗有确认按钮")
+        compare(ok.text, "重新提交")
+        mouseClick(ok)
+        wait(40)
+        compare(backend.retriedId, "retry-failed")
+
+        // 状态未知同样可以重试，并在弹窗里提醒可能仍在下载
+        var unknown = task("retry-unknown", "unknown", 0)
+        unknown.retryable = true
+        push([unknown])
+        tryVerify(function () {
+            row = visibleRow("retry-unknown")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+        retryItem = findChild(menu, "taskRetryItem")
+        compare(retryItem.visible, true)
+        mouseClick(retryItem)
+        wait(40)
+        var text = findChild(dialog, "retryTaskText")
+        verify(text !== null)
+        verify(text.text.indexOf("可能仍在下载") >= 0)
+        mouseClick(findChild(dialog, "dialogFooterCancel"))
+        wait(40)
+
+        // 已完成 / 运行中不提供重试
+        push([task("retry-completed", "completed", 100)])
+        tryVerify(function () {
+            row = visibleRow("retry-completed")
+            return row !== null
+        })
+        row.contextMenu(Qt.point(40, 20))
+        wait(40)
+        retryItem = findChild(menu, "taskRetryItem")
+        compare(retryItem.visible, false)
     }
 
     function test_context_menu_matches_double_click_open_actions() {

@@ -162,6 +162,7 @@ mod tests {
         let task = OfflineTask {
             id: "task".to_owned(),
             name: "movie.mkv".to_owned(),
+            source_url: None,
             phase: TaskPhase::Completed,
             progress: 100,
             message: None,

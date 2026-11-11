@@ -5,6 +5,16 @@
 
 use super::*;
 use kichi_core::TaskPhase;
+
+/// 只打印「有没有来源链接」，不打印链接本身（避免把用户链接写进日志）。
+fn source_link_label(task: &kichi_core::OfflineTask) -> &'static str {
+    if task.source_url.is_some() {
+        "有"
+    } else {
+        "无"
+    }
+}
+
 /// 真实会话的自动刷新验证（默认忽略）。
 ///
 /// 前置条件：先在本机用 GUI 登录一次，令牌已存进 KWallet。
@@ -84,7 +94,13 @@ fn live_offline_task_roundtrip() {
     let before = session.offline_tasks().expect("读取离线任务失败");
     println!("现有离线任务 {} 条", before.len());
     for task in before.iter().take(5) {
-        println!("- [{:?}] {} ({}%)", task.phase, task.name, task.progress);
+        println!(
+            "- [{:?}] {} ({}%) 来源链接: {}",
+            task.phase,
+            task.name,
+            task.progress,
+            source_link_label(task)
+        );
     }
 
     // Blender 官方的 4.4MB 预告片：稳定、体积小，适合验证链路
@@ -94,8 +110,11 @@ fn live_offline_task_roundtrip() {
         .add_offline_task(TEST_URL, None)
         .expect("提交离线任务失败");
     println!(
-        "任务已创建：id={} 名称={:?} 阶段={:?}",
-        created.id, created.name, created.phase
+        "任务已创建：id={} 名称={:?} 阶段={:?} 来源链接: {}",
+        created.id,
+        created.name,
+        created.phase,
+        source_link_label(&created)
     );
     assert!(!created.id.is_empty(), "新建任务没有 id");
 
@@ -109,11 +128,12 @@ fn live_offline_task_roundtrip() {
             break;
         };
         println!(
-            "第 {round} 轮：[{:?}] {} ({}%) {}",
+            "第 {round} 轮：[{:?}] {} ({}%) {} 来源链接: {}",
             task.phase,
             task.name,
             task.progress,
-            task.message.as_deref().unwrap_or("")
+            task.message.as_deref().unwrap_or(""),
+            source_link_label(task)
         );
         if matches!(task.phase, TaskPhase::Completed | TaskPhase::Error) {
             final_phase = Some(task.phase);
