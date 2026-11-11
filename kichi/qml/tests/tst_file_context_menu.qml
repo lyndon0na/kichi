@@ -297,7 +297,7 @@ TestCase {
         compare(backend.starValue, false)
     }
 
-    function test_context_menu_does_not_offer_open_containing_directory() {
+    function test_search_result_offers_open_containing_directory() {
         var entry = {
             id: "result-file",
             name: "a.mkv",
@@ -307,8 +307,33 @@ TestCase {
         }
         menu.openContext(entry, Qt.point(20, 20), [entry.id], true)
         wait(60)
-        compare(findChild(menu, "revealFolderItem"), null,
-                "文件页右键菜单不应再有「打开所在目录」")
+        var item = findChild(menu, "revealFolderItem")
+        verify(item !== null, "菜单里有「打开所在目录」")
+        verify(item.visible, "搜索结果应显示「打开所在目录」")
+        compare(item.text, qsTr("打开所在目录"))
+
+        var spy = Qt.createQmlObject(
+            "import QtTest; SignalSpy { signalName: 'revealFolderRequested' }", menu)
+        spy.target = menu
+        mouseClick(item)
+        wait(40)
+        compare(spy.count, 1)
+        compare(String(spy.signalArguments[0][0].id), "result-file")
+        spy.destroy()
+    }
+
+    function test_open_containing_directory_is_hidden_outside_search_and_trash() {
+        menu.openContext({ id: "a", name: "a.mkv", kind: "file" },
+                         Qt.point(20, 20), ["a"], false)
+        wait(60)
+        var item = findChild(menu, "revealFolderItem")
+        verify(item !== null, "菜单里有「打开所在目录」")
+        verify(!item.visible, "当前目录里的条目不需要「打开所在目录」")
+
+        menu.openContext({ id: "b", name: "b.mkv", kind: "file", inTrash: true },
+                         Qt.point(20, 20), ["b"], true)
+        wait(60)
+        verify(!item.visible, "回收站结果不提供跳转")
     }
 
     function test_copy_link_is_offered_for_a_single_file() {

@@ -363,12 +363,25 @@ Item {
         if (!page.backend || !entry || page.holdingSearchEntries)
             return
         const fromSearch = page.searching
+        // 「只筛当前目录」的兜底结果：父目录就是当前目录，folderId 为空并不代表
+        // 根目录。直接退出搜索并选中这一条，不能按空 id 跳到根目录。
+        if (fromSearch && page.backend.searchSource === "fallback") {
+            page.backend.exitSearch()
+            page.revealEntryById(entry.id)
+            return
+        }
         const entries = fromSearch ? page.displayEntries.slice() : []
         const statusText = fromSearch ? page.backend.searchStatus : ""
         const truncated = fromSearch && page.backend.searchTruncated === true
+        // 和「搜索结果里进文件夹」同一套导航：标记这次是显式定位，退出搜索时
+        // 不恢复原目录的选中 / 滚动位置，否则 endSearch 的恢复会把刚选中的目标盖掉。
+        if (fromSearch)
+            interaction.beginSearchChildNavigation()
         // 文件夹结果也传它自己的父目录 id，不能再进入结果文件夹本身。
-        page.revealEntryById(entry.id)
         page.backend.searchRevealFolder(String(entry.folderId || ""))
+        // 必须等父目录开始加载后再排定位：若先排，退出搜索触发的目录恢复会排在
+        // 定位之后执行，把刚选中的行冲掉（表现为只跳目录、不高亮 / 不滚到目标）。
+        page.revealEntryById(entry.id)
         if (fromSearch)
             page.holdSearchEntriesUntilLoaded(entries, statusText, truncated)
     }
@@ -872,6 +885,9 @@ Item {
         }
         onPreviewRequested: function (id) {
             page.openImagePreview(id)
+        }
+        onRevealFolderRequested: function (entry) {
+            page.revealSearchFolder(entry)
         }
         onRefreshRequested: interaction.refreshFiles()
     }

@@ -49,6 +49,8 @@ Item {
     signal playRequested(point anchor)
     // 菜单里点「预览…」：交给文件页打开图片预览浮层
     signal previewRequested(string id)
+    // 搜索结果里点「打开所在目录」：交给文件页进入条目所在的父目录
+    signal revealFolderRequested(var entry)
     signal moveRequested(var entry, var ids)
     signal copyRequested(var entry, var ids)
     signal shareRequested(var entry, var ids)
@@ -95,6 +97,17 @@ Item {
                 if (root.backend)
                     root.backend.untrashEntries([root.targetId])
             }
+        }
+
+        // 搜索结果不在当前目录的层级里：给一个明确的跳转入口。
+        // 行内那行「所在文件夹」也能点，这里只是把同一件事放进右键菜单。
+        // 多选时父目录可能不同，只对单条开放。
+        MenuItem {
+            objectName: "revealFolderItem"
+            text: qsTr("打开所在目录")
+            visible: root.fromSearch && !root.targetInTrash && root.targetCount === 1
+            enabled: root.backend !== null && !root.backend.filesLoading
+            onTriggered: root.revealFolderRequested(root.target)
         }
 
         // 图片预览：只对单张图片出现；多选时没有「预览整组」的语义

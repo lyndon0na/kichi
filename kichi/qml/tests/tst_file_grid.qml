@@ -79,6 +79,8 @@ TestCase {
         property int searchRevealCalls: 0
         /// 目录导航测试用：打开目录时按 filesByDir 真的换一批条目。
         property bool autoNavigate: false
+        /// 「打开所在目录」测试用：定位时真的切到 folderId 对应的目录。
+        property bool autoReveal: false
         property var filesByDir: ({})
         property var dirStack: [""]
 
@@ -185,6 +187,18 @@ TestCase {
         }
         function searchRevealFolder(id) {
             searchRevealCalls += 1
+            if (!autoReveal)
+                return
+            // 模拟真实桥接：退出搜索、进入结果所在父目录（缓存命中时同步换条目）
+            const key = dirKey(id)
+            searchActive = false
+            searchResults = []
+            searchStatus = ""
+            searchSettled = true
+            currentDirId = String(id || "")
+            files = filesByDir[key] || []
+            filesRevision += 1
+            changed()
         }
         function requestPlay(id) {}
         function downloadEntry(id) {}
@@ -362,6 +376,7 @@ TestCase {
         fakeBackend.searchOpenCalls = 0
         fakeBackend.searchRevealCalls = 0
         fakeBackend.autoNavigate = false
+        fakeBackend.autoReveal = false
         fakeBackend.filesByDir = ({})
         fakeBackend.dirStack = [""]
     }
@@ -1438,6 +1453,58 @@ TestCase {
         compare(statusBar.visible, false)
         compare(list.count, 1)
         compare(list.itemAtIndex(0).entry.id, loaded.id)
+    }
+
+    function test_search_reveal_highlights_entry_after_parent_loads() {
+        const origin = dirEntries("origin", 6)
+        // 目标放在长目录靠后的位置：只选中不够，必须真的滚到那一行，
+        // 否则“退出搜索时恢复原目录滚动位置”会把它冲回顶部。
+        const targetEntries = dirEntries("target", 60)
+        const result = targetEntries[40]
+        result.folderId = "target-folder"
+        result.folderText = "资料/target"
+        fakeBackend.files = origin
+        fakeBackend.currentDirId = ""
+        fakeBackend.filesByDir = ({})
+        fakeBackend.filesByDir["root"] = origin
+        fakeBackend.filesByDir["target-folder"] = targetEntries
+        fakeBackend.autoReveal = true
+        fakeBackend.contentView = "list"
+        page = pageComponent.createObject(parent, { visible: true })
+        verify(page !== null)
+        wait(80)
+
+        const list = findChild(page, "fileList")
+        const selection = findChild(page, "fileSelection")
+        verify(list !== null && selection !== null)
+
+        // 原目录留一条选择：退出搜索时若按目录记忆恢复，会把定位结果盖掉
+        selection.click(origin[1].id, 1, Qt.NoModifier, origin)
+        compare(selectedIds(selection), origin[1].id)
+
+        fakeBackend.searchResults = [result]
+        fakeBackend.searchActive = true
+        fakeBackend.searchSettled = true
+        fakeBackend.searchStatus = "搜索完成"
+        fakeBackend.searchQuery = "target"
+        wait(80)
+        compare(selection.count, 0, "进入搜索先清空原目录选择")
+
+        page.revealSearchFolder(result)
+        wait(150)
+
+        compare(fakeBackend.currentDirId, "target-folder")
+        compare(fakeBackend.searchRevealCalls, 1)
+        compare(fakeBackend.searchActive, false)
+        compare(selectedIds(selection), result.id,
+                "父目录加载完成后必须选中并高亮搜索结果，不能被原目录的选择恢复盖掉")
+        compare(list.currentIndex, 40)
+        tryVerify(function () {
+            return list.contentY > 0
+        }, 2000, "必须滚到目标行，不能停在目录顶部")
+        const row = list.itemAtIndex(40)
+        verify(row !== null)
+        verify(row.highlighted, "目标行必须有选中高亮")
     }
 
     function test_header_actions_show_add_menu_and_keep_refresh_last() {
