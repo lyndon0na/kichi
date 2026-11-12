@@ -19,6 +19,7 @@ TestCase {
         property string searchQuery: "电影"
         property string searchSource: "fallback"
         property bool localIndexEnabled: false
+        property bool localIndexReady: false
         property bool indexBuilding: false
         property int enableCalls: 0
         property int clearFilterCalls: 0
@@ -64,6 +65,7 @@ TestCase {
         clearRequests = 0
         fakeBackend.searchSource = "fallback"
         fakeBackend.localIndexEnabled = false
+        fakeBackend.localIndexReady = false
         fakeBackend.indexBuilding = false
         fakeBackend.enableCalls = 0
         fakeBackend.clearFilterCalls = 0
@@ -113,6 +115,17 @@ TestCase {
         wait(0)
         verify(!enableButton().visible, "已开启但未就绪时不应提示开启")
         verify(advice().text.indexOf("尚未就绪") >= 0, "要说清索引尚未就绪：" + advice().text)
+    }
+
+    function test_ready_index_explains_input_scope_and_enter_search() {
+        fakeBackend.localIndexEnabled = true
+        fakeBackend.localIndexReady = true
+        wait(0)
+        verify(!enableButton().visible, "索引就绪时不应出现开启按钮")
+        verify(advice().text.indexOf("按回车") >= 0,
+               "索引就绪时仍只筛当前目录，要提示回车才能全盘：" + advice().text)
+        verify(advice().text.indexOf("尚未就绪") < 0,
+               "索引就绪时不能说成尚未就绪：" + advice().text)
     }
 
     function test_index_search_keeps_generic_advice() {

@@ -10,8 +10,8 @@ import "../shares"
 // 只调 backend 的 Q_INVOKABLE；配额只在侧栏账号区里显示（AccountCard.qml），这里不重复。
 // 播放（S5）：右键菜单点「播放」→ 立刻弹固定的清晰度菜单（原画 / 1080P / 720P / 480P），
 // 选中某一档后才去请求直链。
-// 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入即搜全盘
-// （优先本地索引；未就绪时只筛当前目录）；结果直接复用当前列表 / 网格视图。
+// 搜索（S9）：搜索框在标题行（main.qml 里的 FilesPageSearchBar），输入只筛当前目录，
+// 回车 / 搜索按钮才全盘（优先本地索引）；结果直接复用当前列表 / 网格视图。
 Item {
     id: page
 
@@ -256,8 +256,8 @@ Item {
 
     // —— 搜索入口 ——
     //
-    // 搜索框本身在标题行（FilesPageSearchBar.qml）：输入即搜全盘（本地索引优先），
-    // 回车 / 内嵌按钮再跑一次。本页只负责显示结果和从结果跳转。
+    // 搜索框本身在标题行（FilesPageSearchBar.qml）：输入只筛当前目录，
+    // 回车 / 内嵌按钮才全盘（本地索引优先）。本页只负责显示结果和从结果跳转。
 
     // 标题行的「＋ 新建文件夹」调这里：弹窗和菜单都在本页（FilesPageMenu）
     function beginNewFolder() {

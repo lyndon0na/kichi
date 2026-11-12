@@ -1,7 +1,7 @@
-//! 输入即搜：本地索引全盘搜索的桥接入口。
+//! 搜索桥接：输入阶段只筛当前目录，回车 / 搜索按钮才全盘。
 //!
-//! 索引就绪时，每次有效输入都直接在本地库里搜（0 请求）；未就绪或读取失败
-//! 时退回「只筛当前目录已加载条目」，并在状态行说清楚。
+//! 输入阶段和没有索引时完全一致：只筛当前目录已加载条目（0 请求）。
+//! `searchAll` 才发起全盘搜索：索引就绪读本地库（0 请求），未就绪逐页扫网盘。
 //!
 //! 线程纪律：
 //! - 单飞：最多一个索引查询在途，期间的新关键词只保留最后一个；
@@ -28,10 +28,12 @@ pub(crate) fn local_index_ready(session: &Session) -> bool {
     session.local_index_ready()
 }
 
-/// 本地索引不可用时的状态行：区分「还没建好」和「用户关掉了」，
-/// 默认关闭时不能让用户以为后台一直在建库。
-fn fallback_hint(session: &Session) -> &'static str {
-    if session.local_index_enabled() {
+/// 输入阶段的状态行：索引就绪也仍然只筛当前目录，并提示回车可搜全盘；
+/// 未就绪 / 关闭时沿用原来的原因说明。
+fn local_scope_hint(session: &Session) -> &'static str {
+    if local_index_ready(session) {
+        "只筛了当前目录（回车可搜整个网盘）"
+    } else if session.local_index_enabled() {
         "本地索引尚未就绪，只筛了当前目录"
     } else {
         "本地索引已关闭，只筛了当前目录（可在设置中开启）"
@@ -48,31 +50,39 @@ impl qobject::Kichi {
             self.as_mut().exit_search();
             return;
         }
-        // 已经看完全盘扫描结果、只是改了筛选：不重新扫网盘（ADR 0004），
-        // 直接按当前条件重筛已收集的命中。
-        let refilter_network = self.search_active
-            && self.search_source.to_string() == "network"
-            && self.search_query.to_string().trim() == trimmed;
+        // 已经看完全盘结果、只是改了筛选（关键词没变）：按当前条件重筛，
+        // 不重新起一轮扫描。网络结果直接用已收集的命中（ADR 0004）；
+        // 索引结果因为筛选下推到了 SQL，必须重跑查询。
+        let source = self.search_source.to_string();
+        let refilter_full = self.search_active
+            && self.search_query.to_string().trim() == trimmed
+            && (source == "network" || source == "index");
         {
             let mut rust = self.as_mut().rust_mut();
             rust.search_active = true;
             rust.search_query = QString::from(raw.as_str());
         }
-        if local_index_ready(&self.backend.session) {
-            self.as_mut().start_local_index_search(trimmed);
-        } else if refilter_network {
-            self.as_mut().refilter_network_hits();
-        } else {
-            let hint = fallback_hint(&self.backend.session);
-            self.as_mut().run_local_fallback(&trimmed, hint);
+        if refilter_full {
+            if source == "index" && local_index_ready(&self.backend.session) {
+                self.as_mut().start_local_index_search(trimmed);
+            } else if source == "network" {
+                self.as_mut().refilter_network_hits();
+            } else {
+                let hint = local_scope_hint(&self.backend.session);
+                self.as_mut().run_local_fallback(&trimmed, hint);
+            }
+            return;
         }
+        // 改关键词 = 和没有索引时一样：只筛当前目录，不碰网盘。
+        let hint = local_scope_hint(&self.backend.session);
+        self.as_mut().run_local_fallback(&trimmed, hint);
     }
 
-    /// 起一轮本地索引搜索（`searchAll` 在索引就绪时也走这里）。
+    /// 起一轮本地索引全盘搜索（`searchAll` 在索引就绪时走这里）。
     pub(crate) fn start_local_index_search(mut self: Pin<&mut Self>, query: String) {
         let session = self.backend.session.clone();
         if !local_index_ready(&session) {
-            let hint = fallback_hint(&session);
+            let hint = local_scope_hint(&session);
             self.as_mut().run_local_fallback(&query, hint);
             return;
         }

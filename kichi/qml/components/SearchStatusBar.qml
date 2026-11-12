@@ -3,7 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "../core"
 
-// 全盘搜索的状态行。结果列表本身复用文件页的 ListView / GridView，
+// 搜索状态行（输入阶段只筛当前目录 / 全盘结果共用）。结果列表本身复用
+// 文件页的 ListView / GridView，
 // 这里只显示扫描进度、筛选入口 / 摘要、截断提示和停止按钮。
 RowLayout {
     id: root

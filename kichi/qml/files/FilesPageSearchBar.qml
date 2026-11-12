@@ -5,10 +5,9 @@ import "../components"
 
 // 文件页的搜索框（挂在 main.qml 标题行中间；这里只管「搜索」这一件事）。
 //
-// 输入即搜：
-// - 本地索引就绪 = 每次有效输入都在索引里搜全盘（0 请求），清空 = 回当前目录；
-// - 索引未就绪 = 退回只筛当前目录已加载条目，状态行会说明；
-// - 回车 / 放大镜 = 再跑一次搜索；索引未就绪时才真正遍历网盘。
+// 输入行为：
+// - 输入阶段和没有索引时一致：只筛当前目录已加载条目（0 请求），清空 = 回当前目录；
+// - 回车 / 放大镜 = 全盘搜索；索引就绪读本地库（0 请求），未就绪才遍历网盘。
 Item {
     id: bar
 
@@ -19,11 +18,6 @@ Item {
                                       && backend.searchActive
                                       && !backend.searchSettled
                                       && backend.searchSource === "network"
-
-    // 索引就绪 = 输入即搜全盘；未就绪 = 输入只筛当前目录，回车才遍历网盘。
-    // 占位文案必须跟着这个状态走，否则「搜索整个网盘」会骗人。
-    readonly property bool indexReady: backend !== null
-                                       && backend.localIndexReady === true
 
     implicitHeight: searchField.implicitHeight
     implicitWidth: 330
@@ -37,7 +31,7 @@ Item {
         onTriggered: bar.applyLocalFilter()
     }
 
-    // 输入即搜：清空就回到目录视图
+    // 输入防抖：清空就回到目录视图
     function applyLocalFilter() {
         if (!bar.backend)
             return
@@ -47,7 +41,7 @@ Item {
             bar.backend.searchLocal(searchField.text)
     }
 
-    // 再跑一次搜索：索引就绪时等价于本地重搜，未就绪时才遍历网盘。
+    // 全盘搜索：索引就绪时读本地库，未就绪才遍历网盘。
     // 先 searchLocal 把关键词同步给后端（防抖可能还没触发），再 searchAll。
     function startFullScan() {
         if (!bar.backend || searchField.text.trim().length === 0)
@@ -76,9 +70,7 @@ Item {
 
         objectName: "filesSearchField"
         anchors.fill: parent
-        placeholderText: bar.indexReady
-                         ? qsTr("搜索整个网盘")
-                         : qsTr("搜索当前文件夹，回车全盘搜索")
+        placeholderText: qsTr("搜索当前文件夹，回车全盘搜索")
         selectByMouse: true
         // 右边给内嵌的清空 / 搜索按钮让位，文字不钻到按钮底下
         rightPadding: buttonRow.width + 8
@@ -129,7 +121,7 @@ Item {
             onClicked: bar.clearAndExit()
         }
 
-        // 全盘搜索：内嵌在输入框里，唯一会发请求的按钮
+        // 全盘搜索：内嵌在输入框里，唯一会发起全盘搜索的按钮
         KIconButton {
             id: searchButton
 

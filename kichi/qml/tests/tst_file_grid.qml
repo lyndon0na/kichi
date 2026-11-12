@@ -1279,7 +1279,7 @@ TestCase {
                 "整行必须排满计算出的列数")
     }
 
-    function test_search_placeholder_follows_local_index() {
+    function test_search_placeholder_is_stable_across_local_index() {
         fakeBackend.localIndexReady = false
         searchBar = searchBarComponent.createObject(parent, { visible: true })
         verify(searchBar !== null)
@@ -1288,10 +1288,12 @@ TestCase {
         const field = findChild(searchBar, "filesSearchField")
         verify(field !== null)
         compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索",
-                "索引未就绪时输入只能筛当前文件夹，占位文案要说清回车才全盘")
+                "输入只筛当前文件夹，占位文案要说清回车才全盘")
 
         fakeBackend.localIndexReady = true
-        tryCompare(field, "placeholderText", "搜索整个网盘")
+        wait(20)
+        compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索",
+                "索引就绪也不改变输入阶段的范围，占位文案保持一致")
     }
 
     function test_view_toggle_switches_with_one_click_and_stays_available_during_search() {

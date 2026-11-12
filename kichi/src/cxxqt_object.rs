@@ -284,7 +284,7 @@ pub mod qobject {
         #[qproperty(bool, search_settled, cxx_name = "searchSettled", READ, NOTIFY = changed)]
         #[qproperty(QString, search_status, cxx_name = "searchStatus", READ, NOTIFY = changed)]
         #[qproperty(bool, search_truncated, cxx_name = "searchTruncated", READ, NOTIFY = changed)]
-        /// 结果来源："index"（本地索引）/ "fallback"（只筛当前目录）/ "network"（全盘扫描）；
+        /// 结果来源："index"（本地索引全盘）/ "fallback"（输入阶段只筛当前目录）/ "network"（全盘扫描）；
         /// 空串 = 没有搜索。只有 network 才显示扫描进度与停止按钮。
         #[qproperty(QString, search_source, cxx_name = "searchSource", READ, NOTIFY = changed)]
         /// 已勾选的类型线名（folder/file/video/audio/image/document/archive/other）；空 = 全部
@@ -1830,7 +1830,7 @@ pub struct KichiRust {
     pub(crate) search_cancel: Option<std::sync::Arc<crate::session::download::Cancel>>,
     /// 搜索命中的领域数据（结果清单里的 id → 条目 / 路径）
     pub(crate) search_index: std::collections::HashMap<String, crate::session::SearchHit>,
-    /// 结果来源："index" / "fallback" / "network"；空串 = 没有搜索
+    /// 结果来源："index"（本地索引全盘）/ "fallback"（只筛当前目录）/ "network"；空串 = 没有搜索
     pub(crate) search_source: QString,
     /// 文件页常驻的筛选条件（三组线名 + 摘要）：同时裁目录列表与搜索结果，
     /// 跨目录 / 跨搜索保留，只有「清除筛选」或退出登录才清空。
