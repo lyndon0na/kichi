@@ -306,7 +306,7 @@ TestCase {
         verify(!dialog.opened, "成功后保持关闭")
     }
 
-    function test_permanent_checkbox_resets_each_open() {
+    function test_permanent_checkbox_resets_before_dialog_opens() {
         menu.openDelete({ id: "id-1", name: "a.mkv", kind: "file" }, ["id-1"])
         wait(60)
         var dialog = findChild(menu, "deleteDialog")
@@ -317,7 +317,12 @@ TestCase {
         wait(20)
 
         menu.openDelete({ id: "id-1", name: "a.mkv", kind: "file" }, ["id-1"])
+        // 不等待打开动画：open() 返回时首帧就应是默认状态，
+        // 否则会先按上一次的勾选画成「彻底删除」再跳回「移到回收站」。
+        verify(!check.checked, "打开那一刻就回到默认：移到回收站")
+        compare(findChild(dialog, "dialogFooterOk").text, qsTr("移到回收站"),
+                "确定按钮首帧就是移到回收站")
         wait(60)
-        verify(!check.checked, "每次打开都回到默认：移到回收站")
+        verify(dialog.opened, "删除对话框正常打开")
     }
 }

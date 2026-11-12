@@ -178,11 +178,6 @@ Item {
 
         property string errorText: ""
 
-        onOpened: {
-            errorText = ""
-            permanentCheck.checked = false
-        }
-
         ColumnLayout {
             width: root.dialogWidth
             spacing: 8
@@ -233,6 +228,10 @@ Item {
             return
         const list = ids && ids.length > 0 ? ids.slice() : [entry.id]
         root.snapshot(entry, list)
+        // 必须在 open() 之前复位：onOpened 要等打开动画结束才触发，
+        // 放在那里会让首帧沿用上一次的勾选状态，看起来像从「彻底删除」闪回。
+        deleteDialog.errorText = ""
+        permanentCheck.checked = false
         deleteDialog.open()
     }
 
