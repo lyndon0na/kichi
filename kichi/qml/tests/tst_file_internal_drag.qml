@@ -76,7 +76,6 @@ TestCase {
         }
         function searchLocal(text) {}
         function searchAll() {}
-        function stopSearch() {}
         function searchOpenFolder(id) {}
         function searchRevealFolder(id) {}
         function requestPlay(id) {}

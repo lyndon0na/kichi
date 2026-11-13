@@ -39,6 +39,10 @@ TestCase {
         property bool autoResumeDownloads: true
         property bool autoResumeUploads: false
         property bool localIndexEnabled: false
+        property bool localIndexReady: false
+        property bool indexBuilding: false
+        property int indexBuildScanned: 0
+        property string localIndexBuiltAt: ""
         property bool notifyEnabled: true
         property bool closeToTray: false
         property string storageBackend: "系统钥匙串"
@@ -55,6 +59,8 @@ TestCase {
         property int openDownloadDirCalls: 0
         property int openMpvConfCalls: 0
         property int openInputConfCalls: 0
+        property int buildLocalIndexCalls: 0
+        property bool lastBuildRebuild: false
 
         // SettingsPlayback / SettingsTransfers 监听后端的 `changed`
         signal changed()
@@ -85,6 +91,10 @@ TestCase {
         function setAutoResumeDownloads(value) { autoResumeDownloads = value }
         function setAutoResumeUploads(value) { autoResumeUploads = value }
         function setLocalIndexEnabled(value) { localIndexEnabled = value }
+        function buildLocalIndex(rebuild) {
+            buildLocalIndexCalls += 1
+            lastBuildRebuild = rebuild
+        }
         function chooseDownloadDir() { chooseDownloadDirCalls += 1 }
         function openDownloadDir() { openDownloadDirCalls += 1 }
         function setNotifyEnabled(value) { notifyEnabled = value }
@@ -112,6 +122,13 @@ TestCase {
         backend.flatpak = false
         backend.playerCommand = ""
         backend.playerArgs = ""
+        backend.localIndexEnabled = false
+        backend.localIndexReady = false
+        backend.indexBuilding = false
+        backend.indexBuildScanned = 0
+        backend.localIndexBuiltAt = ""
+        backend.buildLocalIndexCalls = 0
+        backend.lastBuildRebuild = false
         backend.downloadDir = ""
         backend.downloadParallel = 3
         backend.downloadConnections = 4
@@ -553,6 +570,36 @@ TestCase {
         box.toggled()
         wait(40)
         compare(backend.localIndexEnabled, true, "打开后写回后端")
+    }
+
+    function test_local_index_build_and_rebuild_entries() {
+        backend.localIndexEnabled = true
+        backend.localIndexReady = false
+        openSection(page.generalSection)
+
+        var build = findChild(page, "settingsBuildIndex")
+        verify(build !== null, "未建好时有建立索引入口")
+        compare(build.text, "建立索引")
+        mouseClick(build)
+        wait(20)
+        compare(backend.buildLocalIndexCalls, 1)
+        compare(backend.lastBuildRebuild, false)
+
+        backend.localIndexReady = true
+        backend.localIndexBuiltAt = "2026-11-13 10:00"
+        wait(20)
+        compare(build.text, "重建索引")
+        mouseClick(build)
+        wait(20)
+        var dialog = findChild(page, "settingsRebuildIndexDialog")
+        verify(dialog !== null, "重建前要确认")
+        verify(dialog.visible, "确认框应打开")
+        var ok = findChild(dialog, "dialogFooterOk")
+        verify(ok !== null)
+        mouseClick(ok)
+        wait(20)
+        compare(backend.buildLocalIndexCalls, 2)
+        compare(backend.lastBuildRebuild, true)
     }
 
     function test_settings_path_is_right_aligned() {

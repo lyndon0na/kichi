@@ -179,6 +179,7 @@ Item {
 
         SettingsGeneral {
             backend: page.backend
+            onRebuildIndexRequested: rebuildIndexDialog.open()
         }
     }
 
@@ -196,6 +197,34 @@ Item {
 
         SettingsAbout {
             backend: page.backend
+        }
+    }
+
+    KDialog {
+        id: rebuildIndexDialog
+
+        objectName: "settingsRebuildIndexDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: Overlay.overlay
+        title: qsTr("重建本地索引")
+        modal: true
+        width: 400 + leftPadding + rightPadding
+
+        footer: DialogFooter {
+            outerMargin: rebuildIndexDialog.padding
+            okText: qsTr("重建")
+            onOkClicked: {
+                rebuildIndexDialog.close()
+                if (page.backend)
+                    page.backend.buildLocalIndex(true)
+            }
+            onCancelClicked: rebuildIndexDialog.close()
+        }
+
+        Label {
+            width: 400
+            wrapMode: Text.Wrap
+            text: qsTr("会重新遍历整个网盘建立索引；扫描期间旧索引继续服务，完成后整体替换。")
         }
     }
 

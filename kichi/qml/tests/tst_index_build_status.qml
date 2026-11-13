@@ -2,8 +2,8 @@ import QtQuick
 import QtTest
 import "../components"
 
-// 底栏建库状态：只在建库中占位，进度不确定（官方不给总数），
-// 点「取消」要把请求交给后端，而不是让用户跑去设置里关总开关。
+// 底栏建库状态：只在建库中占位，进度不确定（官方不给总数）。
+// 全盘搜索和建库共用同一次遍历，不提供停止入口。
 TestCase {
     name: "IndexBuildStatus"
     when: windowShown
@@ -14,11 +14,6 @@ TestCase {
         id: fakeBackend
 
         property bool indexBuilding: false
-        property int cancelCalls: 0
-
-        function cancelLocalIndexBuild() {
-            cancelCalls += 1
-        }
     }
 
     Component {
@@ -40,7 +35,6 @@ TestCase {
             status.destroy()
         status = null
         fakeBackend.indexBuilding = false
-        fakeBackend.cancelCalls = 0
     }
 
     function test_hidden_until_building() {
@@ -62,12 +56,10 @@ TestCase {
         verify(bar.indeterminate, "全盘建库没有总数，只能是不确定进度")
     }
 
-    function test_cancel_calls_backend() {
+    function test_has_no_stop_entry() {
         fakeBackend.indexBuilding = true
         wait(0)
         const button = findChild(status, "indexBuildCancel")
-        verify(button !== null, "缺少取消入口")
-        mouseClick(button)
-        compare(fakeBackend.cancelCalls, 1)
+        verify(button === null, "建库与全盘扫描共用一次遍历，不应提供停止按钮")
     }
 }

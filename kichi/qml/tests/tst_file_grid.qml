@@ -31,6 +31,9 @@ TestCase {
         property bool searchSettled: true
         property bool searchTruncated: false
         property bool localIndexReady: true
+        property bool localIndexEnabled: true
+        property int searchLocalCalls: 0
+        property int searchAllCalls: 0
         property string searchStatus: ""
         property string searchQuery: ""
         property bool filesLoading: false
@@ -169,9 +172,8 @@ TestCase {
             newTaskDialogStartPath = startPath ? startPath.slice() : []
         }
         function exitSearch() {}
-        function searchLocal(text) {}
-        function searchAll() {}
-        function stopSearch() {}
+        function searchLocal(text) { searchLocalCalls += 1 }
+        function searchAll() { searchAllCalls += 1 }
         function searchOpenFolder(id) {
             searchOpenCalls += 1
             searchActive = false
@@ -1294,6 +1296,39 @@ TestCase {
         wait(20)
         compare(field.placeholderText, "搜索当前文件夹，回车全盘搜索",
                 "索引就绪也不改变输入阶段的范围，占位文案保持一致")
+    }
+
+    function test_full_scan_with_index_off_asks_before_building_the_index() {
+        fakeBackend.localIndexEnabled = false
+        fakeBackend.localIndexReady = false
+        fakeBackend.searchAllCalls = 0
+        fakeBackend.searchLocalCalls = 0
+        searchBar = searchBarComponent.createObject(parent, { visible: true })
+        verify(searchBar !== null)
+        wait(20)
+
+        const field = findChild(searchBar, "filesSearchField")
+        const button = findChild(searchBar, "filesSearchButton")
+        verify(field !== null)
+        verify(button !== null)
+        field.text = "剧集"
+        wait(20)
+
+        mouseClick(button)
+        wait(20)
+        compare(fakeBackend.searchAllCalls, 0, "索引关闭时先确认，不能直接开始全盘建库")
+        compare(fakeBackend.localIndexEnabled, false, "用户确认前不能打开索引")
+
+        const prompt = findChild(searchBar, "searchIndexPrompt")
+        verify(prompt !== null, "应弹出开启索引的确认框")
+        compare(prompt.visible, true)
+
+        searchBar.runFullScan()
+        wait(20)
+        compare(fakeBackend.searchLocalCalls, 1)
+        compare(fakeBackend.searchAllCalls, 1)
+        prompt.close()
+        fakeBackend.localIndexEnabled = true
     }
 
     function test_view_toggle_switches_with_one_click_and_stays_available_during_search() {

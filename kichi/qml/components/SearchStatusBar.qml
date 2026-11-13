@@ -5,7 +5,7 @@ import "../core"
 
 // 搜索状态行（输入阶段只筛当前目录 / 全盘结果共用）。结果列表本身复用
 // 文件页的 ListView / GridView，
-// 这里只显示扫描进度、筛选入口 / 摘要、截断提示和停止按钮。
+// 这里只显示扫描进度、筛选入口 / 摘要和截断提示。
 RowLayout {
     id: root
 
@@ -16,7 +16,7 @@ RowLayout {
     // 筛选变化只改 Rust 状态；这里发信号让文件页复用搜索框的防抖再跑一次。
     signal filterChanged()
 
-    // 只有网络全盘扫描才转圈 / 提供停止；本地索引搜索不显示这些
+    // 只有网络全盘扫描才转圈；本地索引查询不显示。
     readonly property bool scanning: backend !== null
                                      && backend.searchActive === true
                                      && backend.searchSettled !== true
@@ -74,16 +74,5 @@ RowLayout {
         backend: root.backend
         Layout.alignment: Qt.AlignVCenter
         onFilterChanged: root.filterChanged()
-    }
-
-    KButton {
-        text: qsTr("停止")
-        visible: root.scanning
-        variant: "ghost"
-        implicitHeight: 28
-        onClicked: {
-            if (root.backend)
-                root.backend.stopSearch()
-        }
     }
 }

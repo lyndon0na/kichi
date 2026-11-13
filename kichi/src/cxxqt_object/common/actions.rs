@@ -115,6 +115,8 @@ impl qobject::Kichi {
                         cancel.cancel();
                     }
                     rust.index_building = false;
+                    rust.index_build_scanned = 0;
+                    rust.index_scan_tap = None;
                     rust.local_index_ready = false;
                     rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
                     if let Some(cancel) = rust.index_probe_cancel.take() {
@@ -266,6 +268,8 @@ impl qobject::Kichi {
                 cancel.cancel();
             }
             rust.index_building = false;
+            rust.index_build_scanned = 0;
+            rust.index_scan_tap = None;
             rust.local_index_ready = false;
             rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
             // 上一个账号的探针结果绝不能落到新库上

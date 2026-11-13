@@ -60,7 +60,6 @@ TestCase {
                 function searchOpenFolder() {}
                 function searchRevealFolder() {}
                 function downloadEntry() {}
-                function stopSearch() {}
 
                 function cancelPlayLoading() {
                     cancelPlayCalls += 1

@@ -94,7 +94,7 @@ pub(crate) struct ProbeInput {
 }
 
 /// 全盘翻页的保护上限（约 200 万条，防止异常分页吃光内存）。
-const MAX_FULL_BUILD_PAGES: usize = 5000;
+pub(crate) const MAX_FULL_BUILD_PAGES: usize = 5000;
 
 type Page = (Vec<FileEntry>, Option<String>);
 type PageFetch<'a> = dyn FnMut(Option<&str>) -> Result<Page, Failure> + 'a;

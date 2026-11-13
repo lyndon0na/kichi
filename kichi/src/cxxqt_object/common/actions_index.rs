@@ -1,13 +1,65 @@
 //! 本地树索引：建库、canary 探针与索引错误提示。
 
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use cxx_qt::CxxQtType;
+use cxx_qt_lib::QString;
 
 use super::actions::{enqueue_ui, run_in_background};
 use super::qobject;
+use crate::session::search::{ScanBuildReport, ScanTapSnapshot};
 use crate::session::tree_index::sync::ProbeOutcome;
-use crate::session::Failure;
+use crate::session::{Failure, ScanEnd};
+use kichi_core::SearchFilter;
+
+/// 全盘扫描期间共享给后台线程的搜索条件。
+///
+/// 后台每页读一次；`revision` 变了就重新匹配已收集的整份数据。界面退出搜索
+/// 时只把 `active` 关掉，建库继续跑。
+pub(crate) struct ScanTap {
+    pub active: bool,
+    pub query: String,
+    pub filter: SearchFilter,
+    pub revision: u64,
+}
+
+impl ScanTap {
+    pub(crate) fn inactive() -> Self {
+        Self {
+            active: false,
+            query: String::new(),
+            filter: SearchFilter::default(),
+            revision: 0,
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> ScanTapSnapshot {
+        ScanTapSnapshot {
+            active: self.active,
+            query: self.query.clone(),
+            filter: self.filter.clone(),
+            revision: self.revision,
+        }
+    }
+
+    pub(crate) fn activate(&mut self, query: String, filter: SearchFilter) {
+        if self.active && self.query == query && self.filter == filter {
+            return;
+        }
+        self.active = true;
+        self.query = query;
+        self.filter = filter;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub(crate) fn deactivate(&mut self) {
+        if self.active {
+            self.active = false;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+}
 
 impl qobject::Kichi {
     pub(crate) fn report_index_error(mut self: Pin<&mut Self>) {
@@ -64,10 +116,23 @@ impl qobject::Kichi {
     /// 切换这些时点重算，避免每次 `notify` 都去查一次库。
     pub(crate) fn refresh_local_index_ready(mut self: Pin<&mut Self>) {
         let ready = self.backend.session.local_index_ready();
+        let built_at = self
+            .backend
+            .session
+            .index_built_at()
+            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+            .map(|time| {
+                time.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_default();
         let changed = {
             let mut rust = self.as_mut().rust_mut();
-            let changed = rust.local_index_ready != ready;
+            let changed = rust.local_index_ready != ready
+                || rust.local_index_built_at.to_string() != built_at;
             rust.local_index_ready = ready;
+            rust.local_index_built_at = QString::from(built_at.as_str());
             changed
         };
         if changed {
@@ -75,36 +140,42 @@ impl qobject::Kichi {
         }
     }
 
-    /// 起一次全量建库；调用方已确认需要建库（首次 / 探针判为 suspect）。
-    fn start_tree_index_build(
+    /// 起一次全量建库；调用方已确认需要建库（首次 / 手动重建 / 探针 suspect）。
+    ///
+    /// 如果搜索已经把关键词挂上来，这一次遍历同时回投命中；否则只建库。
+    /// 没有「取消」入口：登出、关闭索引、退出应用会通过 `index_build_cancel`
+    /// 中止，旧库保持原样。
+    pub(crate) fn start_tree_index_build(
         mut self: Pin<&mut Self>,
-        session: std::sync::Arc<crate::session::Session>,
-        index: std::sync::Arc<crate::session::tree_index::TreeIndex>,
+        session: Arc<crate::session::Session>,
+        index: Arc<crate::session::tree_index::TreeIndex>,
     ) {
         if self.index_building {
             return;
         }
-        let cancel = std::sync::Arc::new(crate::session::download::Cancel::default());
-        index.begin_build_tracking();
+        let tap = self
+            .index_scan_tap
+            .clone()
+            .unwrap_or_else(|| Arc::new(Mutex::new(ScanTap::inactive())));
+        let cancel = Arc::new(crate::session::download::Cancel::default());
         let epoch = {
             let mut rust = self.as_mut().rust_mut();
+            rust.index_scan_tap = Some(Arc::clone(&tap));
             rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
             rust.index_building = true;
-            rust.index_build_cancel = Some(std::sync::Arc::clone(&cancel));
+            rust.index_build_cancel = Some(Arc::clone(&cancel));
+            rust.index_build_scanned = 0;
             rust.index_build_epoch
         };
         self.as_mut().set_message("正在建立本地索引……");
         let work_session = session.clone();
-        let done_session = session.clone();
-        let tracking_index = std::sync::Arc::clone(&index);
         run_in_background(
             move || {
-                let client = work_session.drive()?;
                 let mut last_reported = 0usize;
-                crate::session::tree_index::sync::full_build(
+                work_session.scan_and_build(
                     &index,
-                    &client,
                     &cancel,
+                    &mut || tap.lock().ok().map(|tap| tap.snapshot()),
                     &mut |scanned| {
                         if scanned == last_reported {
                             return;
@@ -115,73 +186,148 @@ impl qobject::Kichi {
                             if qichi.as_ref().rust().index_build_epoch != epoch {
                                 return;
                             }
+                            qichi.as_mut().rust_mut().index_build_scanned =
+                                i32::try_from(scanned).unwrap_or(i32::MAX);
                             qichi
                                 .as_mut()
-                                .set_message(&format!("正在建立本地索引（{scanned}/?）……"));
+                                .set_message(&format!("正在扫描并建立本地索引（{scanned}/?）……"));
+                        });
+                    },
+                    &mut |progress| {
+                        enqueue_ui(move |mut qichi| {
+                            qichi.as_mut().apply_scan_progress(epoch, progress);
                         });
                     },
                 )
             },
-            move |mut qichi, result| {
-                // 建库成功会用扫描快照整库替换：先把建库期间的用户写操作
-                // 重放到新快照上，否则扫描后才删除 / 改名的条目会复活。
-                let succeeded = matches!(
-                    &result,
-                    Ok(crate::session::tree_index::sync::BuildOutcome::Built(_))
-                );
-                let replay = tracking_index.finish_build_tracking(succeeded);
-                if qichi.as_ref().rust().index_build_epoch != epoch {
-                    return;
-                }
-                if let Err(err) = replay {
-                    if !tracking_index.is_closed() {
-                        done_session.record_tree_index_error(format!("本地索引写入失败：{err}"));
-                    }
-                }
-                {
-                    let mut rust = qichi.as_mut().rust_mut();
-                    rust.index_building = false;
-                    rust.index_build_cancel = None;
-                    // 建库失败 / 取消时旧库可能仍然可用（重建场景），统一按
-                    // 库的真实状态重算，而不是固定写成 true / false。
-                    rust.local_index_ready = done_session.local_index_ready();
-                }
-                match result {
-                    Ok(crate::session::tree_index::sync::BuildOutcome::Built(count)) => {
-                        qichi
-                            .as_mut()
-                            .set_message(&format!("本地索引已建立（{count} 条）"));
-                    }
-                    Ok(crate::session::tree_index::sync::BuildOutcome::Cancelled) => {
-                        // 登出 / 关闭开关会推进 epoch，走不到这里；能到这里的
-                        // 只有用户点了底栏的「取消」。
-                        qichi
-                            .as_mut()
-                            .set_message("已取消建立本地索引（可在设置里关闭再开启重试）");
-                    }
-                    Err(err) => {
-                        qichi
-                            .as_mut()
-                            .set_message(&format!("本地索引建立失败：{err}"));
-                    }
-                }
-                qichi.as_mut().report_index_error();
-            },
+            move |mut qichi, result| qichi.as_mut().finish_index_scan(epoch, result),
         );
     }
 
-    /// 底栏进度条上的「取消」：中止在途全量建库。
-    ///
-    /// 只置取消信号、不推进 epoch，让后台线程正常收尾并走完成回调
-    /// （清 index_building、把提示换成「已取消」）；旧库保持原样，开关仍是
-    /// 开启状态，用户之后在设置里关闭再开启即可重试。
-    pub fn cancel_local_index_build(mut self: Pin<&mut Self>) {
-        let cancel = self.as_mut().rust_mut().index_build_cancel.take();
-        let Some(cancel) = cancel else {
+    /// 设置页的「建立 / 重建索引」：开关没开就先打开，再从空库或断点建。
+    pub fn build_local_index(mut self: Pin<&mut Self>, rebuild: bool) {
+        if self.index_building {
             return;
+        }
+        if !self.backend.session.local_index_enabled() {
+            self.as_mut().enable_local_index_for_search();
+        }
+        let session = self.backend.session.clone();
+        let index = match session.ensure_tree_index_open() {
+            Ok(index) => index,
+            Err(_) => {
+                self.as_mut().refresh_local_index_ready();
+                self.as_mut().report_index_error();
+                return;
+            }
         };
-        cancel.cancel();
-        self.as_mut().set_message("正在取消建立本地索引……");
+        if !rebuild {
+            match index.needs_full_build() {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.as_mut().refresh_local_index_ready();
+                    self.as_mut().probe_tree_index();
+                    return;
+                }
+                Err(err) => {
+                    session.record_tree_index_error(format!("本地索引读取失败：{err}"));
+                    self.as_mut().refresh_local_index_ready();
+                    self.as_mut().report_index_error();
+                    return;
+                }
+            }
+        }
+        self.as_mut().refresh_local_index_ready();
+        self.as_mut().start_tree_index_build(session, index);
+    }
+
+    /// 全盘搜索首次确认开启索引：只打开开关并落盘，不另起一次建库；
+    /// 调用方紧接着会启动「扫描兼建库」，同一次遍历负责回投结果和建库。
+    pub(crate) fn enable_local_index_for_search(mut self: Pin<&mut Self>) {
+        if self.backend.session.local_index_enabled() {
+            return;
+        }
+        self.backend.session.set_local_index_enabled(true);
+        self.as_mut().update_settings(|settings| {
+            settings.local_index_enabled = true;
+        });
+        self.as_mut().rust_mut().index_error_reported = false;
+        self.as_mut().refresh_local_index_ready();
+    }
+
+    /// 一轮「扫描兼建库」收尾：提交状态、处理失败，搜索还在时做一次本地查询
+    /// 把最终结果（含扫描末尾才变化的筛选 / 排序）收敛成同一份。
+    pub(crate) fn finish_index_scan(
+        mut self: Pin<&mut Self>,
+        epoch: u64,
+        result: Result<ScanBuildReport, Failure>,
+    ) {
+        if self.index_build_epoch != epoch {
+            return;
+        }
+        let (search_active, query) = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            (rust.search_active, rust.search_query.to_string())
+        };
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.index_building = false;
+            rust.index_build_cancel = None;
+            rust.index_scan_tap = None;
+            rust.index_build_scanned = 0;
+        }
+        self.as_mut().refresh_local_index_ready();
+
+        match result {
+            Ok(report) => match report.end {
+                ScanEnd::Finished => match report.built {
+                    Some(Ok(count)) => {
+                        if search_active {
+                            self.as_mut().start_local_index_search(query);
+                        }
+                        self.as_mut()
+                            .set_message(&format!("本地索引已建立（{count} 条）"));
+                    }
+                    Some(Err(err)) => {
+                        let message = format!("本地索引建立失败：{err}");
+                        self.as_mut().set_message(&message);
+                        self.as_mut().settle_search(format!(
+                            "全盘扫描完成，但{message}；当前结果只来自已扫条目"
+                        ));
+                    }
+                    None => {
+                        self.as_mut()
+                            .set_message("全盘扫描完成，但本次没有提交本地索引");
+                        self.as_mut()
+                            .settle_search("全盘扫描完成，本次没有提交本地索引".to_owned());
+                    }
+                },
+                ScanEnd::Stopped => {
+                    self.as_mut()
+                        .settle_search("扫描已取消，本次没有提交本地索引".to_owned());
+                }
+                ScanEnd::BrokenPaging => {
+                    let message = "官方分页异常（下一页标记原地打转），扫描已停止，结果可能不全";
+                    self.as_mut().set_message(message);
+                    self.as_mut().settle_search(message.to_owned());
+                }
+            },
+            Err(err) => {
+                let reason = err.to_string();
+                let message = format!("全盘扫描中断：{reason}");
+                self.as_mut().settle_search(format!(
+                    "扫描中断：{reason}（已扫出的结果保留，结果可能不全）"
+                ));
+                if matches!(err, Failure::Auth(_)) {
+                    self.as_mut().on_failure(err);
+                } else {
+                    self.as_mut().set_message(&message);
+                }
+            }
+        }
+        self.as_mut().report_index_error();
+        self.as_mut().notify();
     }
 
     /// 窗口重新获得焦点：触发一次 canary 探针（冷却 / 单飞都在探针入口挡）。

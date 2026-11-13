@@ -1,7 +1,7 @@
 //! 搜索桥接：输入阶段只筛当前目录，回车 / 搜索按钮才全盘。
 //!
-//! 输入阶段和没有索引时完全一致：只筛当前目录已加载条目（0 请求）。
-//! `searchAll` 才发起全盘搜索：索引就绪读本地库（0 请求），未就绪逐页扫网盘。
+//! 输入阶段只筛当前目录已加载条目（0 请求）。`searchAll` 才发起全盘搜索：
+//! 索引就绪读本地库（0 请求），未就绪则挂到「扫描兼建库」任务上边扫边出结果。
 //!
 //! 线程纪律：
 //! - 单飞：最多一个索引查询在途，期间的新关键词只保留最后一个；
@@ -34,9 +34,9 @@ fn local_scope_hint(session: &Session) -> &'static str {
     if local_index_ready(session) {
         "只筛了当前目录（回车可搜整个网盘）"
     } else if session.local_index_enabled() {
-        "本地索引尚未就绪，只筛了当前目录"
+        "本地索引尚未就绪，只筛了当前目录（回车会建立索引并全盘搜索）"
     } else {
-        "本地索引已关闭，只筛了当前目录（可在设置中开启）"
+        "本地索引已关闭，只筛了当前目录（回车会开启索引并全盘搜索）"
     }
 }
 
@@ -61,6 +61,16 @@ impl qobject::Kichi {
             let mut rust = self.as_mut().rust_mut();
             rust.search_active = true;
             rust.search_query = QString::from(raw.as_str());
+        }
+        // 搜索已经挂在这轮全盘扫描上（正在边扫边出结果）：改关键词 / 筛选
+        // 只更新共享条件，不取消建库，也不退回「只筛当前目录」。
+        // 只有挂着的这一轮才这么走——后台建库时的普通输入仍然只筛当前目录。
+        let scan_attached = self.index_scan_tap.as_ref().is_some_and(|tap| {
+            tap.lock().map(|tap| tap.active).unwrap_or(false)
+        });
+        if scan_attached && !local_index_ready(&self.backend.session) {
+            self.as_mut().attach_search_to_scan(trimmed);
+            return;
         }
         if refilter_full {
             if source == "index" && local_index_ready(&self.backend.session) {

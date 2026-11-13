@@ -7,17 +7,12 @@ import "../components"
 //
 // 输入行为：
 // - 输入阶段和没有索引时一致：只筛当前目录已加载条目（0 请求），清空 = 回当前目录；
-// - 回车 / 放大镜 = 全盘搜索；索引就绪读本地库（0 请求），未就绪才遍历网盘。
+// - 回车 / 放大镜 = 全盘搜索；索引关闭时先让用户确认开启，索引未就绪时
+//   一次扫描同时出结果和建库，就绪后直接读本地库（0 请求）。
 Item {
     id: bar
 
     property var backend: null
-
-    // 只有网络全盘扫描才算「扫描中」：本地索引搜索不显示进度条 / 停止按钮
-    readonly property bool scanning: backend !== null
-                                      && backend.searchActive
-                                      && !backend.searchSettled
-                                      && backend.searchSource === "network"
 
     implicitHeight: searchField.implicitHeight
     implicitWidth: 330
@@ -41,10 +36,19 @@ Item {
             bar.backend.searchLocal(searchField.text)
     }
 
-    // 全盘搜索：索引就绪时读本地库，未就绪才遍历网盘。
-    // 先 searchLocal 把关键词同步给后端（防抖可能还没触发），再 searchAll。
+    // 全盘搜索入口：索引关闭时先确认，避免用户不知道这次会写本地库。
     function startFullScan() {
         if (!bar.backend || searchField.text.trim().length === 0)
+            return
+        if (bar.backend.localIndexEnabled === false) {
+            indexPrompt.open()
+            return
+        }
+        bar.runFullScan()
+    }
+
+    function runFullScan() {
+        if (!bar.backend)
             return
         bar.backend.searchLocal(searchField.text)
         bar.backend.searchAll()
@@ -125,11 +129,12 @@ Item {
         KIconButton {
             id: searchButton
 
+            objectName: "filesSearchButton"
             iconName: "search"
             iconSize: 16
             iconOpacity: 1
             iconColor: palette.placeholderText
-            enabled: searchField.text.trim().length > 0 && !bar.scanning
+            enabled: searchField.text.trim().length > 0
             onClicked: bar.startFullScan()
         }
     }
@@ -144,6 +149,34 @@ Item {
                 return
             if (!bar.backend.searchActive && searchField.text.length > 0)
                 searchField.text = ""
+        }
+    }
+
+    // 索引关闭时第一次全盘搜索：说明这次会同时建库，确认后由后端打开开关。
+    KDialog {
+        id: indexPrompt
+
+        objectName: "searchIndexPrompt"
+        parent: Overlay.overlay
+        anchors.centerIn: Overlay.overlay
+        title: qsTr("开启本地索引并全盘搜索")
+        modal: true
+        width: 440 + leftPadding + rightPadding
+
+        footer: DialogFooter {
+            outerMargin: indexPrompt.padding
+            okText: qsTr("开启索引并全盘搜索")
+            onOkClicked: {
+                indexPrompt.close()
+                bar.runFullScan()
+            }
+            onCancelClicked: indexPrompt.close()
+        }
+
+        Label {
+            width: 440
+            wrapMode: Text.Wrap
+            text: qsTr("全盘搜索会同时建立本地索引，首次需要遍历整个网盘；之后的全盘搜索直接读本地库，不再请求网盘。")
         }
     }
 }

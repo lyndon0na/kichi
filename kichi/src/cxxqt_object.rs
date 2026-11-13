@@ -93,6 +93,8 @@ pub mod qobject {
         #[qproperty(bool, files_stale, cxx_name = "filesStale", READ, NOTIFY = changed)]
         /// 本地索引正在全量建库（资料库与选择器据此暂缓读索引）
         #[qproperty(bool, index_building, cxx_name = "indexBuilding", READ, NOTIFY = changed)]
+        /// 本次全量扫描已读到的条目数（官方不给总数）
+        #[qproperty(i32, index_build_scanned, cxx_name = "indexBuildScanned", READ, NOTIFY = changed)]
         #[qproperty(QVariantList, tasks, READ, NOTIFY = changed)]
         /// 首次读取或用户手动刷新在途：QML 据此显示可见加载态
         #[qproperty(bool, tasks_loading, cxx_name = "tasksLoading", READ, NOTIFY = changed)]
@@ -261,6 +263,8 @@ pub mod qobject {
         /// 本地索引已成功建库、可承担全盘本地搜索；搜索框据此切换占位文案。
         /// 开关打开但尚未建好 / 正在首次建库 / 读取失败时都为 false。
         #[qproperty(bool, local_index_ready, cxx_name = "localIndexReady", READ, NOTIFY = changed)]
+        /// 最近一次全量建库时间（本地时区，空串 = 尚未建好）
+        #[qproperty(QString, local_index_built_at, cxx_name = "localIndexBuiltAt", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_parallel, cxx_name = "uploadParallel", READ, NOTIFY = changed)]
         #[qproperty(i32, upload_rate_mib, cxx_name = "uploadRateMib", READ, NOTIFY = changed)]
         #[qproperty(bool, file_action_running, cxx_name = "fileActionRunning", READ, NOTIFY = changed)]
@@ -1048,10 +1052,10 @@ pub mod qobject {
         #[cxx_name = "setLocalIndexEnabled"]
         fn set_local_index_enabled(self: Pin<&mut Self>, enabled: bool);
 
-        /// 取消正在进行的本地索引全量建库（开关保持开启，旧库不动）
+        /// 建立本地索引；`rebuild` = true 时即使已有库也重新扫一遍
         #[qinvokable]
-        #[cxx_name = "cancelLocalIndexBuild"]
-        fn cancel_local_index_build(self: Pin<&mut Self>);
+        #[cxx_name = "buildLocalIndex"]
+        fn build_local_index(self: Pin<&mut Self>, rebuild: bool);
 
         #[qinvokable]
         #[cxx_name = "setUploadParallel"]
@@ -1157,15 +1161,10 @@ pub mod qobject {
         #[cxx_name = "searchLocal"]
         fn search_local(self: Pin<&mut Self>, query: QString);
 
-        /// 搜索：遍历整个网盘（结果先到先显示，可随时停止）
+        /// 搜索：全盘搜索并建立索引（结果边扫边出，扫完提交）
         #[qinvokable]
         #[cxx_name = "searchAll"]
         fn search_all(self: Pin<&mut Self>);
-
-        /// 搜索：停止全盘扫描（已扫出的结果保留）
-        #[qinvokable]
-        #[cxx_name = "stopSearch"]
-        fn stop_search(self: Pin<&mut Self>);
 
         /// 搜索：退出搜索视图，回到当前目录
         #[qinvokable]
@@ -1687,6 +1686,10 @@ pub struct KichiRust {
     pub(crate) index_build_epoch: u64,
     /// 有全量建库在后台跑（期间读路径不再同步查索引）
     pub(crate) index_building: bool,
+    /// 本次全量扫描已读到的条目数
+    pub(crate) index_build_scanned: i32,
+    /// 后台扫描当前挂着的搜索条件；退出搜索只关 active，不取消建库
+    pub(crate) index_scan_tap: Option<std::sync::Arc<std::sync::Mutex<actions_index::ScanTap>>>,
     /// 本次会话已提示过索引错误（只提示一次）
     pub(crate) index_error_reported: bool,
     /// canary 探针在途（与全量建库单飞）
@@ -1778,6 +1781,8 @@ pub struct KichiRust {
     pub(crate) local_index_enabled: bool,
     /// 本地索引已成功建库、可承担全盘本地搜索
     pub(crate) local_index_ready: bool,
+    /// 最近一次全量建库时间（本地时区，空串 = 尚未建好）
+    pub(crate) local_index_built_at: QString,
     pub(crate) upload_parallel: i32,
     pub(crate) upload_rate_mib: i32,
     /// 启动时自动续跑标记是否已经处理过（每进程一次）
@@ -2025,6 +2030,8 @@ impl Default for KichiRust {
             index_build_cancel: None,
             index_build_epoch: 0,
             index_building: false,
+            index_build_scanned: 0,
+            index_scan_tap: None,
             index_error_reported: false,
             index_probing: false,
             index_probe_epoch: 0,
@@ -2091,6 +2098,7 @@ impl Default for KichiRust {
             auto_resume_uploads: false,
             local_index_enabled,
             local_index_ready: false,
+            local_index_built_at: QString::default(),
             upload_parallel: i32::try_from(crate::session::limits::DEFAULT_UPLOAD_PARALLEL)
                 .unwrap_or(2),
             upload_rate_mib: 0,

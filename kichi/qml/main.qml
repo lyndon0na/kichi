@@ -974,7 +974,7 @@ ApplicationWindow {
                     // 本地索引没有「已扫多少条」的进度，别借用网络扫描的文案
                     if (backend.searchSource === "index")
                         return qsTr("正在本地索引里搜索…")
-                    return qsTr("全盘搜索")
+                    return qsTr("全盘搜索并建立索引")
                 }
                 return qsTr("搜索「%1」").arg(backend.searchQuery)
             }

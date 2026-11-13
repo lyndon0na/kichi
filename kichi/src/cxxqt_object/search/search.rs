@@ -1,4 +1,4 @@
-//! 搜索桥接的共用部分：云端逐页扫描的线程 / 回投，以及结果行构造。
+//! 搜索桥接的共用部分：扫描兼建库的回投、结果行构造，以及本地索引查询。
 //!
 //! 分工：
 //! - `session::search`：本地索引搜索与云端逐页扫描；
@@ -9,9 +9,10 @@
 //! - **每条命中都保留在 `search_index` 里**（用户明确：不设固定条数上限），
 //!   `search_results` 只放前 [`SEARCH_LIST_LIMIT`] 条给界面滚——几千行 QVariant
 //!   只会让 ListView 卡住，计数与状态行用的是全部命中。
-//! - 后台线程只回投「进度 + 本页命中」，不碰 Qt 对象；页码退避用官方给的
-//!   `next_page_token`，因此不需要缓存页数据。
-//! - 停止 / 退出搜索 / 登出都让 `search_epoch` +1：在途页的结果直接丢弃。
+//! - 后台线程只回投「进度 + 本页命中」，不碰 Qt 对象；建库收集全部条目，
+//!   搜索只回投命中，扫完再整体提交索引。
+//! - 退出搜索 / 关键词变化让 `search_epoch` +1，在途的本地查询结果直接丢弃；
+//!   建库线程不因退出搜索而停止。
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -21,12 +22,11 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QMap, QMapPair_QString_QVariant, QString, QVariant};
 use kichi_core::{EntryKind, FileEntry, MatchTier, SearchFilter, SearchMatcher};
 
-use super::actions::enqueue_ui;
+use super::actions_index::ScanTap;
 use super::files::{entry_map, sort_entries, ROOT_NAME};
 use super::qobject;
 use super::QVariantList;
-use crate::session::download::Cancel;
-use crate::session::{Failure, ScanBatch, ScanEnd, SearchHit};
+use crate::session::{ScanProgress, SearchHit};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
 
@@ -34,8 +34,10 @@ type QVariantMap = QMap<QMapPair_QString_QVariant>;
 pub(super) const SEARCH_LIST_LIMIT: usize = 500;
 
 impl qobject::Kichi {
-    /// 搜索整个网盘：索引就绪时等价于再跑一次本地索引搜索（0 请求），
-    /// 未就绪时回退到逐页遍历网盘。回车或点搜索框里的放大镜触发。
+    /// 搜索整个网盘：索引就绪时直接查本地库（0 请求）；未就绪时启动一次
+    /// 「扫描兼建库」，边扫边回投结果，扫完原子提交索引。
+    ///
+    /// 索引关闭时这里会先打开开关（QML 已让用户确认过），不另起一次建库。
     pub fn search_all(mut self: Pin<&mut Self>) {
         let query = self.search_query.to_string().trim().to_owned();
         if query.is_empty() {
@@ -47,19 +49,38 @@ impl qobject::Kichi {
             self.as_mut().start_local_index_search(query);
             return;
         }
-        if !self.search_settled {
-            // 已经在扫了：防连点，重复起线程只会让两轮互抢
+
+        if !self.backend.session.local_index_enabled() {
+            self.as_mut().enable_local_index_for_search();
+        }
+        if self.index_building {
+            // 已经有建库在跑：把关键词挂上去，不另起一轮扫描。
+            self.as_mut().attach_search_to_scan(query);
             return;
         }
-        let cancel = Arc::new(Cancel::default());
-        let epoch = {
+
+        let session = self.backend.session.clone();
+        let index = match session.ensure_tree_index_open() {
+            Ok(index) => index,
+            Err(err) => {
+                self.as_mut()
+                    .set_message(&format!("本地索引打开失败：{err}"));
+                return;
+            }
+        };
+        let tap = Arc::new(std::sync::Mutex::new(ScanTap::inactive()));
+        {
+            let mut tap = tap.lock().unwrap_or_else(|err| err.into_inner());
+            tap.activate(query.clone(), self.search_filter.clone());
+        }
+        {
             let mut rust = self.as_mut().rust_mut();
+            rust.index_scan_tap = Some(Arc::clone(&tap));
             rust.search_active = true;
+            rust.search_epoch = rust.search_epoch.wrapping_add(1);
             if let Some(previous) = rust.search_cancel.take() {
                 previous.cancel();
             }
-            rust.search_epoch = rust.search_epoch.wrapping_add(1);
-            rust.search_cancel = Some(Arc::clone(&cancel));
             rust.search_settled = false;
             rust.search_scanned = 0;
             rust.search_results = QVariantList::default();
@@ -67,57 +88,128 @@ impl qobject::Kichi {
             rust.search_hits = 0;
             rust.search_index.clear();
             rust.search_truncated = false;
-            rust.search_status = QString::from("正在扫描网盘……");
+            rust.search_status = QString::from("正在扫描网盘并建立索引……");
             rust.search_source = QString::from("network");
             rust.search_local_running = false;
             rust.search_pending = None;
-            // 底栏不承担扫描进度；清掉上一轮筛选/校验留下的文案，避免看起来
-            // 像当前扫描还在沿用旧状态。
             rust.status_message = QString::default();
-            rust.search_epoch
-        };
-        self.as_mut().notify();
-
-        let session = self.backend.session.clone();
-        let post_cancel = Arc::clone(&cancel);
-        // 扫描线程用开始时的筛选；筛选之后变了由界面侧按当前条件重筛已扫结果。
-        let filter = self.search_filter.clone();
-        let spawned = std::thread::Builder::new()
-            .name("kichi-search".into())
-            .spawn(move || {
-                let mut on_batch = |batch: ScanBatch| {
-                    post_batch(epoch, batch, Arc::clone(&post_cancel));
-                };
-                let outcome = session.search_all(&query, &filter, &cancel, &mut on_batch);
-                let cancelled = cancel.is_cancelled();
-                post_finished(epoch, outcome, cancelled);
-            });
-        if let Err(err) = spawned {
-            eprintln!("[kichi] 无法创建搜索线程：{err}");
-            self.as_mut().finish_scan(ScanEnd::Stopped);
-            self.as_mut()
-                .set_message("无法创建搜索线程，全盘搜索没有开始");
         }
+        self.as_mut().notify();
+        self.as_mut().start_tree_index_build(session, index);
     }
 
-    /// 停止扫描：按 `Cancel`，已扫出的结果保留。
-    pub fn stop_search(mut self: Pin<&mut Self>) {
-        if self.search_settled {
+    /// 把当前搜索挂到正在跑的全盘扫描上。
+    ///
+    /// 只改共享条件，不碰建库线程；后台下一轮会拿已收集的整份数据重新匹配。
+    pub(crate) fn attach_search_to_scan(mut self: Pin<&mut Self>, query: String) {
+        let filter = self.search_filter.clone();
+        let Some(tap) = self.index_scan_tap.as_ref().cloned() else {
+            return;
+        };
+        {
+            let mut tap = tap.lock().unwrap_or_else(|err| err.into_inner());
+            tap.activate(query.clone(), filter);
+        }
+        let changed = self.search_query.to_string().trim() != query;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            // 作废可能还在回投的本地索引查询，别让它盖掉扫描结果。
+            rust.search_epoch = rust.search_epoch.wrapping_add(1);
+            if let Some(previous) = rust.search_cancel.take() {
+                previous.cancel();
+            }
+            rust.search_active = true;
+            rust.search_query = QString::from(query.as_str());
+            rust.search_source = QString::from("network");
+            rust.search_settled = false;
+            rust.search_scanned = rust.index_build_scanned;
+            if changed {
+                rust.search_index.clear();
+                rust.search_results = QVariantList::default();
+                rust.search_hits = 0;
+                rust.search_displayed = 0;
+                rust.search_truncated = false;
+            }
+            rust.search_status = QString::from("正在扫描网盘并建立索引……");
+            rust.search_local_running = false;
+            rust.search_pending = None;
+        }
+        self.as_mut().notify();
+    }
+
+    /// 扫描线程回投的一页：按当前关键词 / 筛选铺到结果列表。
+    pub(crate) fn apply_scan_progress(
+        mut self: Pin<&mut Self>,
+        epoch: u64,
+        progress: ScanProgress,
+    ) {
+        if self.index_build_epoch != epoch || !self.search_active {
+            return;
+        }
+        let current_revision = self
+            .index_scan_tap
+            .as_ref()
+            .and_then(|tap| tap.lock().ok().map(|tap| tap.revision));
+        if current_revision != Some(progress.revision) {
+            // 关键词又变了：等下一轮的整份重匹配，别把旧关键词的结果塞进来。
             return;
         }
         {
             let mut rust = self.as_mut().rust_mut();
-            if let Some(cancel) = rust.search_cancel.take() {
-                cancel.cancel();
+            rust.search_scanned = i32::try_from(progress.scanned).unwrap_or(i32::MAX);
+            if progress.replace {
+                rust.search_index.clear();
             }
-            // 本地索引查询无法中途打断：推进代数让结果回来即作废
-            rust.search_local_running = false;
-            rust.search_pending = None;
-            // 线程下一轮检查到取消就退出；界面立刻宣告「已停止」，
-            // 已扫出的结果原地保留
-            rust.search_epoch = rust.search_epoch.wrapping_add(1);
+            for hit in progress.hits {
+                if rust.search_index.contains_key(hit.id()) {
+                    continue;
+                }
+                rust.search_index.insert(hit.id().to_owned(), hit);
+            }
+            let query = rust.search_query.to_string();
+            let filter = rust.search_filter.clone();
+            let now = Utc::now().timestamp();
+            let ordered = ordered_hits(
+                &rust.search_index,
+                &query,
+                &filter,
+                rust.sort_field,
+                rust.sort_ascending,
+                now,
+            );
+            let mut list = QVariantList::default();
+            for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
+                list.append(QVariant::from(&hit_map(hit)));
+            }
+            rust.search_results = list;
+            rust.search_displayed = ordered.len().min(SEARCH_LIST_LIMIT);
+            rust.search_hits = i32::try_from(ordered.len()).unwrap_or(i32::MAX);
+            rust.search_truncated = ordered.len() > SEARCH_LIST_LIMIT;
+            rust.search_source = QString::from("network");
+            rust.search_settled = false;
+            rust.search_status = QString::from(
+                format!(
+                    "正在扫描网盘并建立索引……已扫 {} 条，命中 {} 条",
+                    rust.search_scanned, rust.search_hits
+                )
+                .as_str(),
+            );
         }
-        self.as_mut().finish_scan(ScanEnd::Stopped);
+        self.as_mut().notify();
+    }
+
+    /// 建库收尾时把搜索状态钉住；已出的结果保留，不提交半成品。
+    pub(crate) fn settle_search(mut self: Pin<&mut Self>, status: String) {
+        if !self.search_active {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.search_settled = true;
+            rust.search_cancel = None;
+            rust.search_status = QString::from(status.as_str());
+        }
+        self.as_mut().notify();
     }
 
     /// 退出搜索视图，回到当前目录。
@@ -128,6 +220,12 @@ impl qobject::Kichi {
             rust.search_epoch = rust.search_epoch.wrapping_add(1);
             if let Some(cancel) = rust.search_cancel.take() {
                 cancel.cancel();
+            }
+            // 建库任务继续跑，只是不再回投命中 / 解析路径；下次搜索再挂上去。
+            if let Some(tap) = rust.index_scan_tap.as_ref() {
+                if let Ok(mut tap) = tap.lock() {
+                    tap.deactivate();
+                }
             }
             rust.search_active = false;
             rust.search_query = QString::default();
@@ -313,55 +411,6 @@ impl qobject::Kichi {
         self.as_mut().notify();
     }
 
-    /// 全盘扫描的一页到达：标进度、追加命中、刷新列表（主线程）。
-    pub(crate) fn apply_batch(mut self: Pin<&mut Self>, batch: ScanBatch) {
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.search_scanned = i32::try_from(batch.scanned).unwrap_or(i32::MAX);
-            let now = Utc::now().timestamp();
-            let filter = rust.search_filter.clone();
-            for hit in batch.hits {
-                // 扫描线程用的是开始时的筛选；这里按当前条件再判一次，
-                // 用户在扫描中途改筛选也能立刻生效。
-                if !filter.matches(&hit.entry, now) {
-                    continue;
-                }
-                // 同一条目可能在官方分页里重复出现：按 id 去重
-                if rust.search_index.contains_key(hit.id()) {
-                    continue;
-                }
-                rust.search_index.insert(hit.id().to_owned(), hit);
-            }
-            let query = rust.search_query.to_string();
-            let ordered = ordered_hits(
-                &rust.search_index,
-                &query,
-                &filter,
-                rust.sort_field,
-                rust.sort_ascending,
-                now,
-            );
-            if ordered.len() > SEARCH_LIST_LIMIT {
-                rust.search_truncated = true;
-            }
-            let mut list = QVariantList::default();
-            for hit in ordered.iter().take(SEARCH_LIST_LIMIT) {
-                list.append(QVariant::from(&hit_map(hit)));
-            }
-            rust.search_results = list;
-            rust.search_displayed = ordered.len().min(SEARCH_LIST_LIMIT);
-            rust.search_hits = i32::try_from(ordered.len()).unwrap_or(i32::MAX);
-            rust.search_status = QString::from(
-                format!(
-                    "正在扫描网盘……已扫 {} 条，命中 {} 条",
-                    rust.search_scanned, rust.search_hits
-                )
-                .as_str(),
-            );
-        }
-        self.as_mut().notify();
-    }
-
     /// 网络扫描结果已收集完、用户改了筛选时：不重新请求网盘（ADR 0004），
     /// 只按当前条件重筛 `search_index` 里已有命中。
     pub(super) fn refilter_network_hits(mut self: Pin<&mut Self>) {
@@ -395,30 +444,6 @@ impl qobject::Kichi {
         {
             let mut rust = self.as_mut().rust_mut();
             rebuild_visible_search(&mut rust, &folder);
-        }
-        self.as_mut().notify();
-    }
-
-    /// 全盘扫描结束：三态文案（扫完 / 用户停止 / 官方分页异常）。
-    fn finish_scan(mut self: Pin<&mut Self>, end: ScanEnd) {
-        {
-            let mut rust = self.as_mut().rust_mut();
-            rust.search_settled = true;
-            rust.search_cancel = None;
-            let scanned = rust.search_scanned;
-            let hits = rust.search_hits;
-            let text = match end {
-                ScanEnd::Finished => {
-                    format!("全盘扫描完成：共扫 {scanned} 条，命中 {hits} 条")
-                }
-                ScanEnd::Stopped => {
-                    format!("已停止：当前结果基于已扫的前 {scanned} 条，命中 {hits} 条")
-                }
-                ScanEnd::BrokenPaging => format!(
-                    "官方分页异常（下一页标记原地打转），扫描已停止，结果可能不全：已扫 {scanned} 条，命中 {hits} 条"
-                ),
-            };
-            rust.search_status = QString::from(text.as_str());
         }
         self.as_mut().notify();
     }
@@ -571,59 +596,6 @@ pub(super) fn hit_map(hit: &SearchHit) -> QVariantMap {
     map.insert_clone(&QString::from("folderId"), &text(&hit.folder_id));
     map.insert_clone(&QString::from("inTrash"), &QVariant::from(&hit.in_trash));
     map
-}
-
-// —— 后台线程 → 主线程（不碰 Qt 对象，只入队）——
-
-fn post_batch(epoch: u64, batch: ScanBatch, cancel: Arc<Cancel>) {
-    enqueue_ui(move |mut qichi: Pin<&mut qobject::Kichi>| {
-        // 停止 / 退出搜索 / 登出后旧页作废；线程自己的取消也算
-        if qichi.as_ref().rust().search_epoch != epoch || cancel.is_cancelled() {
-            return;
-        }
-        qichi.as_mut().apply_batch(batch);
-    });
-}
-
-fn post_finished(epoch: u64, outcome: Result<ScanEnd, Failure>, cancelled: bool) {
-    enqueue_ui(move |mut qichi: Pin<&mut qobject::Kichi>| {
-        if qichi.as_ref().rust().search_epoch != epoch {
-            return;
-        }
-        match outcome {
-            // 停止之后线程才拿到结果 / 错误：界面早就是「已停止」，不再改口
-            Ok(_) | Err(_) if cancelled => qichi.as_mut().finish_scan(ScanEnd::Stopped),
-            Ok(end) => qichi.as_mut().finish_scan(end),
-            Err(err) => {
-                // 接口异常：已扫出的结果保留，如实说明为什么停
-                let reason = err.to_string();
-                let (scanned, hits) = {
-                    let this = qichi.as_ref();
-                    let rust = this.rust();
-                    (rust.search_scanned, rust.search_hits)
-                };
-                qichi.as_mut().finish_scan(ScanEnd::Stopped);
-                {
-                    let mut rust = qichi.as_mut().rust_mut();
-                    rust.search_status = QString::from(
-                        format!(
-                            "扫描中断：{reason}（已扫 {scanned} 条，命中 {hits} 条，结果可能不全）"
-                        )
-                        .as_str(),
-                    );
-                }
-                qichi.as_mut().notify();
-                // 登录态失效要切回登录页；其余只提示，不打断结果
-                if matches!(err, Failure::Auth(_)) {
-                    qichi.as_mut().on_failure(err);
-                } else {
-                    qichi
-                        .as_mut()
-                        .set_message(&format!("全盘搜索中断：{reason}"));
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]

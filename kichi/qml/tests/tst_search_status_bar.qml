@@ -75,7 +75,6 @@ TestCase {
             sortAscending = ascending
         }
 
-        function stopSearch() {}
     }
 
     Component {

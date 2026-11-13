@@ -39,7 +39,7 @@ mod client_cache;
 mod refresh;
 
 pub use paths::{config_dir, store_path, transfers_path};
-pub use search::{IndexSearchResult, ScanBatch, ScanEnd, SearchHit};
+pub use search::{IndexSearchResult, ScanEnd, ScanProgress, SearchHit};
 pub use tasks::has_active;
 
 mod failure;

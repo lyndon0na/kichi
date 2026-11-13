@@ -1,11 +1,11 @@
-//! 搜索的会话面：本地索引全盘搜索 + 云端逐页扫描（回退）。
+//! 搜索的会话面：本地索引查询 + 云端逐页扫描兼建库。
 //!
 //! 输入阶段只筛当前目录已加载条目（和没有索引时一致）；回车 / 搜索按钮才
 //! 全盘搜索：索引就绪走 [`Session::search_index_local`]（0 请求），
-//! 未就绪才用 `search_all` 遍历网盘。
+//! 未就绪则走 [`Session::scan_and_build`]：同一次遍历边回投命中边建立索引。
 //!
-//! 云端扫描每页回调一次进度（调用方决定怎么显示），`Cancel` 随时可中断，
-//! 结束时给出三态之一。线程、回投、界面状态在
+//! 云端扫描每页回调一次进度（调用方决定怎么显示）；只有登出 / 关闭索引
+//! 会中断。线程、回投、界面状态在
 //! `kichi/src/cxxqt_object/search.rs`。
 //!
 //! 全部函数阻塞，调用方负责丢到后台线程。
@@ -19,6 +19,7 @@ use kichi_core::{FileEntry, MatchTier, SearchFilter, SearchMatcher};
 
 use super::download::Cancel;
 use super::tree_index;
+use super::tree_index::sync::MAX_FULL_BUILD_PAGES;
 use super::{Failure, Session};
 use crate::settings::SortField;
 
@@ -30,7 +31,7 @@ pub const SEARCH_PATH_LIMIT: usize = 500;
 pub enum ScanEnd {
     /// 官方不再给 `next_page_token`：全盘扫完
     Finished,
-    /// 用户按了停止（已扫出的结果保留）
+    /// 登出 / 关闭索引 / 应用退出：旧库保留，不提交半成品
     Stopped,
     /// 官方分页异常（token 原地打转），结果可能不全
     BrokenPaging,
@@ -45,15 +46,6 @@ impl ScanEnd {
             ScanEnd::BrokenPaging => "broken",
         }
     }
-}
-
-/// 一批扫描进度（一页一投）。
-#[derive(Debug, Clone)]
-pub struct ScanBatch {
-    /// 目前为止扫过的条目总数（不是页数）
-    pub scanned: usize,
-    /// 本页的命中（已按关键词过滤）
-    pub hits: Vec<SearchHit>,
 }
 
 /// 一条搜索命中：条目 + 所在文件夹 + 扫到的顺序。
@@ -82,6 +74,37 @@ pub struct IndexSearchResult {
     pub built_at: Option<i64>,
 }
 
+/// 后台扫描读取到的当前搜索请求。
+///
+/// 扫描线程每页读一次；`revision` 变了就说明关键词 / 筛选 / 启停变了，
+/// 需要拿已收集的整份数据重新匹配，而不是只匹配新的一页。
+#[derive(Debug, Clone)]
+pub struct ScanTapSnapshot {
+    pub active: bool,
+    pub query: String,
+    pub filter: SearchFilter,
+    pub revision: u64,
+}
+
+/// 扫描的一页进度：本页新增命中，或关键词 / 筛选变化后的整份命中。
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    pub scanned: usize,
+    pub hits: Vec<SearchHit>,
+    /// true = 用这批命中替换界面里的旧结果（关键词 / 筛选变了）
+    pub replace: bool,
+    /// 生成这批结果时对应的 [`ScanTapSnapshot::revision`]
+    pub revision: u64,
+}
+
+/// 一轮「扫描兼建库」的结局。
+#[derive(Debug, Clone)]
+pub struct ScanBuildReport {
+    pub end: ScanEnd,
+    /// 只有自然扫完才会尝试提交；`Err` 是本地库写入失败
+    pub built: Option<Result<usize, String>>,
+}
+
 impl SearchHit {
     pub fn id(&self) -> &str {
         &self.entry.id
@@ -97,64 +120,117 @@ impl SearchHit {
 }
 
 impl Session {
-    /// 全盘扫描（逐页；阻塞；可中断）。
+    /// 全盘扫描并建立索引（逐页；阻塞；只由登出 / 关闭索引中断）。
     ///
-    /// `query` 按名字字面包含匹配；`filter` 在名字命中之后、回投之前再筛一次，
-    /// 因此界面拿到的每页结果已经过滤（排序与 500 条截断在更外层）；
-    /// `on_batch` 每扫完一页调一次，调用方在这里把结果搬到界面上
-    /// （不要在里面做慢操作：它跑在扫描线程上）。
-    pub fn search_all(
+    /// 一次遍历同时做两件事：把所有条目收集起来，扫完后原子替换本地索引；
+    /// 同时按 [`ScanTapSnapshot`] 里的当前关键词 / 筛选匹配命中并逐页回投。
+    /// `tap` 为 `None` 或 `active == false` 时只建库、不做搜索匹配，也不解析
+    /// 文件夹路径（建库不需要额外请求）。
+    ///
+    /// `on_batch` 跑在扫描线程上，调用方只应入队，不要做慢操作。
+    pub fn scan_and_build(
         &self,
-        query: &str,
-        filter: &SearchFilter,
+        index: &tree_index::TreeIndex,
         cancel: &Cancel,
-        on_batch: &mut dyn FnMut(ScanBatch),
-    ) -> Result<ScanEnd, Failure> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Err(Failure::Other("搜索关键词不能为空".into()));
-        }
+        tap: &mut dyn FnMut() -> Option<ScanTapSnapshot>,
+        on_progress: &mut dyn FnMut(usize),
+        on_batch: &mut dyn FnMut(ScanProgress),
+    ) -> Result<ScanBuildReport, Failure> {
         let client = self.drive()?;
         let mut path = PathCache::default();
+        let mut collected: Vec<FileHit> = Vec::new();
         let mut scanned = 0usize;
         let mut page_token: Option<String> = None;
+        let mut pages = 0usize;
+        let mut last_revision: Option<u64> = None;
         // 一轮扫描内时间窗口固定，避免翻页过程中边界抖动。
         let now = Utc::now().timestamp();
+        index.begin_build_tracking();
 
         loop {
-            if cancel.is_cancelled() {
-                return Ok(ScanEnd::Stopped);
-            }
-            let (entries, next) = client
-                .search_page(query, page_token.as_deref())
-                .map_err(Failure::from)?;
-            scanned += entries.len();
-
-            let mut hits = Vec::new();
-            // 页内每条都要有自己的顺序号：同页共用一个值会让排序落到 HashMap 的
-            // 随机遍历上，同一页的结果顺序每次都不太一样（known-issues §4.1）。
-            let page_start = scanned - entries.len();
-            for (index, hit) in entries.into_iter().enumerate() {
-                if !matches(&hit.entry.name, query) || !filter.matches(&hit.entry, now) {
-                    continue;
-                }
-                let (folder_id, folder_path) = folder_of(&client, &mut path, &hit);
-                hits.push(SearchHit {
-                    entry: hit.entry,
-                    folder_id,
-                    folder_path,
-                    order: page_start + index,
-                    in_trash: false,
+            if cancel.is_cancelled() || index.is_closed() {
+                let _ = index.finish_build_tracking(false);
+                return Ok(ScanBuildReport {
+                    end: ScanEnd::Stopped,
+                    built: None,
                 });
             }
-            on_batch(ScanBatch { scanned, hits });
+            pages += 1;
+            if pages > MAX_FULL_BUILD_PAGES {
+                let _ = index.finish_build_tracking(false);
+                return Err(Failure::Other(
+                    "全盘列举页数超过上限，已停止建库（旧索引保留）".to_owned(),
+                ));
+            }
+            let (entries, next) = match client.list_all_page(page_token.as_deref()) {
+                Ok(page) => page,
+                Err(err) => {
+                    let _ = index.finish_build_tracking(false);
+                    return Err(Failure::from(err));
+                }
+            };
+            let page_start = scanned;
+            scanned += entries.len();
+            collected.extend(entries.iter().cloned());
+            on_progress(collected.len());
+
+            if let Some(snapshot) = tap() {
+                if snapshot.active && !snapshot.query.trim().is_empty() {
+                    // 关键词 / 筛选变了：拿整份已收集数据重匹配；否则只处理新页。
+                    let replace = last_revision != Some(snapshot.revision);
+                    let source: &[FileHit] = if replace { &collected } else { &entries };
+                    let order_base = if replace { 0 } else { page_start };
+                    let hits = match_hits(
+                        source,
+                        &snapshot.query,
+                        &snapshot.filter,
+                        order_base,
+                        now,
+                        |hit| folder_of(&client, &mut path, hit),
+                    );
+                    on_batch(ScanProgress {
+                        scanned,
+                        hits,
+                        replace,
+                        revision: snapshot.revision,
+                    });
+                    last_revision = Some(snapshot.revision);
+                } else {
+                    last_revision = None;
+                }
+            } else {
+                last_revision = None;
+            }
 
             let Some(next) = next else {
-                return Ok(ScanEnd::Finished);
+                let entries: Vec<FileEntry> =
+                    collected.iter().map(|hit| hit.entry.clone()).collect();
+                let built = match index.replace_all(&entries) {
+                    Ok(()) => {
+                        if let Err(err) = index.finish_build_tracking(true) {
+                            self.record_tree_index_error(format!(
+                                "本地索引已建立，但重放建库期间的写操作失败：{err}"
+                            ));
+                        }
+                        Ok(entries.len())
+                    }
+                    Err(err) => {
+                        let _ = index.finish_build_tracking(false);
+                        Err(format!("本地索引写入失败：{err}"))
+                    }
+                };
+                return Ok(ScanBuildReport {
+                    end: ScanEnd::Finished,
+                    built: Some(built),
+                });
             };
             // 同一个 token 再取一次还是同一页：官方分页卡住了，别无限循环
             if page_token.as_deref() == Some(next.as_str()) {
-                return Ok(ScanEnd::BrokenPaging);
+                let _ = index.finish_build_tracking(false);
+                return Ok(ScanBuildReport {
+                    end: ScanEnd::BrokenPaging,
+                    built: None,
+                });
             }
             page_token = Some(next);
         }
@@ -290,6 +366,39 @@ fn folder_of(
     (folder_id, folder_path)
 }
 
+/// 按当前关键词 / 筛选匹配一批条目，并补齐「所在文件夹」。
+///
+/// `source` 要么是刚扫到的一页，要么是整份已收集数据；`order_base` 让
+/// 命中顺序在两种模式下都对应全盘扫描顺序。
+fn match_hits(
+    source: &[FileHit],
+    query: &str,
+    filter: &SearchFilter,
+    order_base: usize,
+    now: i64,
+    mut resolve_folder: impl FnMut(&FileHit) -> (String, Option<String>),
+) -> Vec<SearchHit> {
+    let matcher = SearchMatcher::new(query);
+    let Some(matcher) = matcher else {
+        return Vec::new();
+    };
+    let mut hits = Vec::new();
+    for (offset, hit) in source.iter().enumerate() {
+        if !matcher.matches(&hit.entry.name) || !filter.matches(&hit.entry, now) {
+            continue;
+        }
+        let (folder_id, folder_path) = resolve_folder(hit);
+        hits.push(SearchHit {
+            entry: hit.entry.clone(),
+            folder_id,
+            folder_path,
+            order: order_base + offset,
+            in_trash: false,
+        });
+    }
+    hits
+}
+
 /// id → (名字, 父目录 id) 的缓存，用来把 `parent_id` 还原成真实路径。
 ///
 /// 全盘扫描里每条命中都要拼路径，逐条回溯会重复请求同一批文件夹——
@@ -351,6 +460,25 @@ pub type SharedCancel = Arc<Cancel>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kichi_core::EntryKind;
+
+    fn entry(name: &str, kind: EntryKind) -> FileEntry {
+        FileEntry {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            kind,
+            size: 1024,
+            created_at: None,
+            modified_at: None,
+            parent_id: String::new(),
+            md5: None,
+            audit_flagged: false,
+            starred: false,
+            media: kind == EntryKind::File,
+            video: false,
+            thumbnail_url: String::new(),
+        }
+    }
 
     #[test]
     fn scan_end_names_are_stable_for_qml() {
@@ -369,5 +497,33 @@ mod tests {
             .join()
             .expect("线程正常结束");
         assert!(cancel.is_cancelled(), "扫描线程下一轮就能看到取消");
+    }
+
+    #[test]
+    fn match_hits_uses_the_current_query_and_global_order() {
+        let source = vec![
+            FileHit {
+                entry: entry("Alpha.mkv", EntryKind::File),
+                parent_id: "f1".to_owned(),
+            },
+            FileHit {
+                entry: entry("Beta.mkv", EntryKind::File),
+                parent_id: "f2".to_owned(),
+            },
+            FileHit {
+                entry: entry("alpha folder", EntryKind::Folder),
+                parent_id: String::new(),
+            },
+        ];
+
+        let hits = match_hits(&source, "alpha", &SearchFilter::default(), 10, 0, |hit| {
+            let folder = hit.parent_id.clone();
+            (folder, Some("目录".to_owned()))
+        });
+
+        assert_eq!(hits.len(), 2, "名字包含匹配，文件夹也参与");
+        assert_eq!(hits[0].order, 10, "命中顺序要接在全盘扫描位置上");
+        assert_eq!(hits[1].order, 12);
+        assert_eq!(hits[1].entry.kind, EntryKind::Folder);
     }
 }

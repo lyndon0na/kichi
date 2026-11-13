@@ -415,6 +415,8 @@ impl qobject::Kichi {
                 cancel.cancel();
             }
             rust.index_building = false;
+            rust.index_build_scanned = 0;
+            rust.index_scan_tap = None;
             rust.local_index_ready = false;
             rust.index_build_epoch = rust.index_build_epoch.wrapping_add(1);
             if let Some(cancel) = rust.index_probe_cancel.take() {
@@ -428,6 +430,11 @@ impl qobject::Kichi {
             settings.local_index_enabled = false;
         });
         if was_busy {
+            // 建库和全盘搜索共用一次遍历：关掉索引就是唯一的「中断」入口，
+            // 已扫出的结果保留，但搜索状态必须收尾，别让转圈一直挂着。
+            self.as_mut().settle_search(
+                "本地索引已关闭，扫描已停止；当前结果只来自已扫出的条目".to_owned(),
+            );
             self.as_mut().set_message("");
         }
     }
