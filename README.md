@@ -36,7 +36,7 @@ Flatpak 走同一套逻辑。
 
 | 模块 | 内容 |
 | --- | --- |
-| 账号 | 登录 / 退出、人机验证、令牌存入系统钥匙串、自动刷新、容量与会员信息 |
+| 账号 | 登录 / 退出、记住密码、人机验证、令牌存系统钥匙串、临期自刷新、失效静默重登、容量与会员信息 |
 | 文件 | 列表 / 网格浏览、面包屑、排序、搜索、新建文件夹、重命名、移动、复制、回收站 |
 | 离线任务 | HTTP 链接、磁力链接、`.torrent` 文件，多行批量提交，任务进度与删除 |
 | 下载 | 队列、暂停 / 继续、断点续传、并发与分片、限速、历史记录、系统通知 |
@@ -49,7 +49,7 @@ Flatpak 走同一套逻辑。
 ## 环境要求
 
 - Linux，推荐 Wayland 会话
-- 系统钥匙串（KWallet / Secret Service）用于保存登录令牌；不可用时降级为 0600 文件
+- 系统钥匙串（KWallet / Secret Service）用于保存登录令牌与「记住密码」；令牌在钥匙串不可用时降级为 0600 文件，密码不落盘
 - XDG Desktop Portal（文件选择、目录选择）
 - 内嵌播放需要 Wayland 会话和宿主 libmpv；AppImage 不打包 libmpv，
   需先安装 `mpv-libs`（Fedora）/ `mpv`（Arch）/ `libmpv2`（Debian）。
@@ -144,7 +144,7 @@ cargo test --workspace      # 单元测试
 ## 数据位置
 
 - 设置与传输记录：`$XDG_CONFIG_HOME/kichi/`（默认 `~/.config/kichi/`）
-- 登录令牌：系统钥匙串（`kichi` service）；钥匙串不可用时才落到 0600 文件
+- 登录令牌与记住的密码：系统钥匙串（`kichi` service）；钥匙串不可用时只有令牌落到 0600 文件，密码不会保存
 - 下载断点：下载根目录下的 `.kichi-part` 与配置目录下的 `partials.json`
 
 所有网络请求只发往 `user.mypikpak.com`、`api-drive.mypikpak.com` 及下载 CDN；

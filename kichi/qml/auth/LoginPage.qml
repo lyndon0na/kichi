@@ -14,6 +14,16 @@ Item {
 
     property var backend: null
 
+    // 登录页可见时才读钥匙串：已自动登录的用户不该在启动时被 KWallet 拦一下
+    onVisibleChanged: {
+        if (visible)
+            page.fillRemembered()
+    }
+    Component.onCompleted: {
+        if (visible)
+            page.fillRemembered()
+    }
+
     KTheme { id: theme }
 
     ColumnLayout {
@@ -83,6 +93,18 @@ Item {
                     onAccepted: page.submit()
                 }
 
+                CheckBox {
+                    id: rememberBox
+                    objectName: "rememberPasswordCheckBox"
+                    text: qsTr("记住密码")
+                    enabled: page.backend && !page.backend.loginRunning
+                    checked: page.backend ? page.backend.rememberPassword : true
+                    onToggled: {
+                        if (page.backend && page.backend.rememberPassword !== checked)
+                            page.backend.setRememberPassword(checked)
+                    }
+                }
+
                 // —— 人机验证分支 ——
                 ColumnLayout {
                     visible: page.backend && page.backend.captchaRequired
@@ -149,11 +171,25 @@ Item {
         Label {
             Layout.fillWidth: true
             Layout.topMargin: theme.gapMd
-            text: qsTr("登录令牌保存在系统钥匙串中，密码不会被保存。")
+            text: page.backend && page.backend.rememberPassword
+                  ? qsTr("登录令牌和密码都保存在系统钥匙串中，仅用于自动续期登录。")
+                  : qsTr("登录令牌保存在系统钥匙串中，密码不会被保存。")
             color: theme.textMuted
             font.pixelSize: theme.fontMeta
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
+        }
+    }
+
+    function fillRemembered() {
+        if (!backend || backend.authState === "signedIn")
+            return
+        var saved = backend.rememberedLogin()
+        if (saved && saved.length === 2) {
+            userField.text = saved[0]
+            passField.text = saved[1]
+        } else if (userField.text.length === 0 && backend.account) {
+            userField.text = backend.account
         }
     }
 

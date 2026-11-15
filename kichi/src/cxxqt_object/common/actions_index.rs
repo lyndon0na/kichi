@@ -335,6 +335,8 @@ impl qobject::Kichi {
         if self.auth_state.to_string() != "signedIn" {
             return;
         }
+        // 休眠 / 切回窗口时顺手把临期令牌刷掉，别等下一次请求才发现过期
+        self.as_mut().maybe_session_keepalive(true);
         self.as_mut().probe_tree_index();
     }
 

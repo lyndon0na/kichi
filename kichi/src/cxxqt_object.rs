@@ -39,6 +39,8 @@ pub mod qobject {
         #[qproperty(QString, status_message, cxx_name = "statusMessage", READ, NOTIFY = changed)]
         /// 登录请求在途：只给登录页用，后台任务不得修改
         #[qproperty(bool, login_running, cxx_name = "loginRunning", READ, NOTIFY = changed)]
+        /// 登录后把密码存进系统钥匙串；令牌被拒时据此静默重登
+        #[qproperty(bool, remember_password, cxx_name = "rememberPassword", READ, NOTIFY = changed)]
         #[qproperty(QString, account, READ, NOTIFY = changed)]
         /// `/v1/user/me` 的昵称；空串时 QML 从账号里取用户名兜底
         #[qproperty(QString, display_name, cxx_name = "displayName", READ, NOTIFY = changed)]
@@ -1047,6 +1049,16 @@ pub mod qobject {
         #[cxx_name = "setAutoResumeUploads"]
         fn set_auto_resume_uploads(self: Pin<&mut Self>, enabled: bool);
 
+        /// 记住的登录凭据 `[用户名, 密码]`；没有记录时返回空列表。
+        #[qinvokable]
+        #[cxx_name = "rememberedLogin"]
+        fn remembered_login(self: Pin<&mut Self>) -> QStringList;
+
+        /// 开关「记住密码」；关闭时立即删除钥匙串里的密码。
+        #[qinvokable]
+        #[cxx_name = "setRememberPassword"]
+        fn set_remember_password(self: Pin<&mut Self>, enabled: bool);
+
         /// 打开 / 关闭本地目录索引与页面快照（关闭后不读写本地库，库文件保留）
         #[qinvokable]
         #[cxx_name = "setLocalIndexEnabled"]
@@ -1281,6 +1293,8 @@ mod folder_picker;
 mod notifications;
 #[path = "cxxqt_object/common/reveal.rs"]
 mod reveal;
+#[path = "cxxqt_object/common/session_keepalive.rs"]
+mod session_keepalive;
 #[path = "cxxqt_object/common/thumbnails.rs"]
 mod thumbnails;
 
@@ -1427,7 +1441,12 @@ pub struct KichiRust {
     pub(crate) auth_state: QString,
     pub(crate) status_message: QString,
     pub(crate) login_running: bool,
+    pub(crate) remember_password: bool,
     pub(crate) session_restoring: bool,
+    /// 启动后是否已经尝试过用记住的密码恢复登录（只试一次）
+    pub(crate) auto_relogin_checked: bool,
+    /// 服务端 401 后的自动恢复在途（界面先别急着回登录页）
+    pub(crate) relogin_running: bool,
     pub(crate) captcha_required: bool,
     pub(crate) account: QString,
     pub(crate) display_name: QString,
@@ -1884,7 +1903,10 @@ impl Default for KichiRust {
             auth_state: QString::from("signedOut"),
             status_message: QString::default(),
             login_running: false,
+            remember_password: true,
             session_restoring: false,
+            auto_relogin_checked: false,
+            relogin_running: false,
             captcha_required: false,
             account: QString::default(),
             display_name: QString::default(),
@@ -2258,6 +2280,7 @@ impl KichiRust {
         self.download_rate_mib = i32::try_from(settings.download_rate_mib).unwrap_or(i32::MAX);
         self.auto_resume_downloads = settings.auto_resume_downloads;
         self.auto_resume_uploads = settings.auto_resume_uploads;
+        self.remember_password = settings.remember_password;
         self.local_index_enabled = settings.local_index_enabled;
         self.upload_parallel = i32::try_from(settings.upload_parallel)
             .unwrap_or(crate::session::limits::DEFAULT_UPLOAD_PARALLEL as i32);
@@ -2303,6 +2326,10 @@ impl KichiRust {
                 self.quota_vip = quota.vip;
             }
             return;
+        }
+        // 登录失效时把上次的账号带回登录页，至少不用重输邮箱
+        if let Some(email) = self.backend.session.email() {
+            self.account = QString::from(email.as_str());
         }
         let notice = self.backend.restored_notice().to_owned();
         self.status_message = QString::from(if notice.is_empty() {

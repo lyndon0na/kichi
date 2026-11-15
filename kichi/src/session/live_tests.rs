@@ -73,6 +73,71 @@ fn live_auto_refresh_with_stored_session() {
     println!("刷新结果已写回存储");
 }
 
+/// 「记住密码」的静默重登验证（默认忽略）。
+///
+/// 前置条件：先在 GUI 登录并勾选「记住密码」。
+/// 会真的用钥匙串里的密码登录一次，换到新令牌后用新令牌查一次容量。
+#[test]
+#[ignore = "会用钥匙串里记住的密码真实登录一次"]
+fn live_silent_relogin_with_remembered_password() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, backend)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    println!("会话来源：{backend:?}");
+
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+    assert!(
+        session.remembered_login().is_some(),
+        "钥匙串里没有记住的密码，请先在登录页勾选「记住密码」再登录一次"
+    );
+    let before = session.access_token().expect("当前应有会话");
+
+    let relogged = session.force_relogin().expect("静默重登失败");
+    assert!(relogged, "应该走记住密码的重登路径");
+
+    let after = session.access_token().expect("重登后会话应仍在");
+    assert_ne!(before, after, "重登后 access_token 没有变化");
+    println!("重登成功，新令牌已落盘");
+
+    session.quota().expect("用重登后的令牌查询容量失败");
+    println!("新令牌可用");
+}
+
+/// 服务端 401 后的恢复：先强制刷新令牌（默认忽略）。
+///
+/// 验证 `recover_rejected_token` 在不重新登录的前提下换到新 access token。
+#[test]
+#[ignore = "会真实刷新一次令牌"]
+fn live_recover_rejected_token_refreshes() {
+    let path = store_path();
+    let loaded = store::load(&path).expect("读取会话存储失败");
+    let Some((saved, backend)) = loaded else {
+        panic!("KWallet 里没有会话，请先在 GUI 登录一次再跑这个测试");
+    };
+    println!("会话来源：{backend:?}");
+
+    let device_id = saved.device_id.clone();
+    let session = Session::new(Config::from_env(), path, Some(saved), device_id);
+    let before = session.access_token().expect("当前应有会话");
+
+    let recovery = session.recover_rejected_token().expect("恢复失败");
+    assert_eq!(
+        recovery,
+        Recovery::Refreshed,
+        "应先用 refresh token 恢复，而不是重新登录"
+    );
+    assert_ne!(
+        session.access_token().as_deref(),
+        Some(before.as_str()),
+        "恢复后 access_token 没有变化"
+    );
+    session.quota().expect("用恢复后的令牌查询容量失败");
+    println!("强制刷新成功，新令牌可用");
+}
+
 /// 真实会话的离线任务验证（默认忽略）。
 ///
 /// 前置条件：先在本机用 GUI 登录一次。流程：

@@ -432,9 +432,8 @@ impl qobject::Kichi {
         if was_busy {
             // 建库和全盘搜索共用一次遍历：关掉索引就是唯一的「中断」入口，
             // 已扫出的结果保留，但搜索状态必须收尾，别让转圈一直挂着。
-            self.as_mut().settle_search(
-                "本地索引已关闭，扫描已停止；当前结果只来自已扫出的条目".to_owned(),
-            );
+            self.as_mut()
+                .settle_search("本地索引已关闭，扫描已停止；当前结果只来自已扫出的条目".to_owned());
             self.as_mut().set_message("");
         }
     }
@@ -561,6 +560,7 @@ impl qobject::Kichi {
         rust.download_rate_mib = i32::try_from(snapshot.download_rate_mib).unwrap_or(i32::MAX);
         rust.auto_resume_downloads = snapshot.auto_resume_downloads;
         rust.auto_resume_uploads = snapshot.auto_resume_uploads;
+        rust.remember_password = snapshot.remember_password;
         rust.local_index_enabled = snapshot.local_index_enabled;
         rust.upload_parallel = i32::try_from(snapshot.upload_parallel)
             .unwrap_or(limits::DEFAULT_UPLOAD_PARALLEL as i32);

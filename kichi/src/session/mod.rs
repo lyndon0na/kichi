@@ -53,6 +53,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,8 @@ use kichi_core::{
 /// 目录最多翻 40 页（20,000 条），防止异常分页把内存打满。
 const MAX_LIST_PAGES: usize = 40;
 const LIST_PAGE_SIZE: usize = 500;
+/// 静默重登失败后的冷却：官方有风控，不能让每次请求都撞一次登录接口。
+const RELOGIN_COOLDOWN: Duration = Duration::from_secs(60);
 
 pub use store::{Backend, StoreError};
 
@@ -122,6 +125,17 @@ pub enum State {
     Expired,
 }
 
+/// 服务端拒绝令牌后的恢复结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// 只换到了新令牌，界面无需变化
+    Refreshed,
+    /// 用记住的密码重新登录了
+    Relogged,
+    /// 没有可用的恢复手段（没记住密码 / 冷却中）：只能回登录页
+    Unavailable,
+}
+
 /// 会话门面。
 pub struct Session {
     config: Config,
@@ -131,6 +145,8 @@ pub struct Session {
     clients: ClientCache,
     /// 令牌刷新单飞（并发下载线程同时发现临期时只刷一次）
     refresh_lock: Mutex<()>,
+    /// 静默重登串行 + 冷却（锁里记录上次尝试时间）
+    relogin_lock: Mutex<Option<Instant>>,
     /// 当前账号的本地目录树索引；未登录 / 已登出 / 开关关闭时为 `None`
     tree_index: Mutex<Option<Arc<tree_index::TreeIndex>>>,
     /// 本地索引总开关：关掉后连库文件都不打开（页面快照同库，一起停用）
@@ -219,12 +235,19 @@ impl Session {
                             }
                         }
                         Err(err) => {
-                            let _ = store::clear(&session.store_path);
-                            session.clear_tokens();
+                            let failure = Failure::from(err);
+                            // 只有「refresh token 被官方拒绝」才算会话真没了；
+                            // 断网 / 超时不能把磁盘上的会话也抹掉，否则下次
+                            // 启动连重试的机会都没有。
+                            if matches!(failure, Failure::Auth(_)) {
+                                let _ = store::clear(&session.store_path);
+                            }
+                            // 内存里保留这份（已过期的）会话，登录态才能显示
+                            // Expired 而不是 SignedOut；记住的密码仍可静默恢复。
                             RestoredState {
                                 state: State::Expired,
                                 backend,
-                                notice: Some(Failure::from(err).to_string()),
+                                notice: Some(failure.to_string()),
                                 email,
                             }
                         }
@@ -270,6 +293,7 @@ impl Session {
             inner: Mutex::new(Inner { current, device_id }),
             clients: ClientCache::default(),
             refresh_lock: Mutex::new(()),
+            relogin_lock: Mutex::new(None),
             tree_index: Mutex::new(None),
             index_enabled: AtomicBool::new(local_index_enabled),
             tree_index_error: Mutex::new(None),
@@ -332,6 +356,7 @@ impl Session {
         username: &str,
         password: &str,
         manual_captcha: Option<&str>,
+        remember_password: bool,
     ) -> Result<(), Failure> {
         let device_id = self.device_id();
         let outcome = auth::sign_in(&self.config, &device_id, username, password, manual_captcha)?;
@@ -350,12 +375,141 @@ impl Session {
             quota_vip: false,
         };
         store::save(&self.store_path, &saved)?;
+        self.set_remembered_password(username, password, remember_password);
         // 可能是换账号登录：旧账号的 client（以及里面的连接）不能留着
         self.clients.clear();
         self.with_inner(|inner| inner.current = Some(saved));
         // 索引是缓存：打不开不影响登录，错误留给界面提示一次
         let _ = self.open_tree_index();
         Ok(())
+    }
+
+    /// 按勾选状态保存 / 删除记住的密码。
+    ///
+    /// 密码只进钥匙串；失败不影响已经成功的登录，只记日志（下次登录会再试）。
+    fn set_remembered_password(&self, username: &str, password: &str, remember: bool) {
+        #[cfg(test)]
+        if self.store_disabled {
+            return;
+        }
+        let outcome = if remember {
+            store::save_password(username, password)
+        } else {
+            store::clear_password()
+        };
+        if let Err(err) = outcome {
+            eprintln!("[kichi] 记住密码未能保存：{err}");
+        }
+    }
+
+    /// 已记住的登录凭据（用户名 + 密码）。钥匙串不可用时返回 `None`。
+    pub(crate) fn remembered_login(&self) -> Option<(String, String)> {
+        match store::load_password() {
+            Ok(login) => login,
+            Err(err) => {
+                eprintln!("[kichi] 读取记住的密码失败：{err}");
+                None
+            }
+        }
+    }
+
+    /// 删除记住的密码（用户取消勾选）。
+    pub(crate) fn forget_password(&self) {
+        if let Err(err) = store::clear_password() {
+            eprintln!("[kichi] 删除记住的密码失败：{err}");
+        }
+    }
+
+    /// 令牌已被官方拒绝：清掉内存与持久化会话，但保留记住的密码。
+    pub(crate) fn expire(&self) {
+        let _ = store::clear(&self.store_path);
+        self.clear_tokens();
+    }
+
+    /// 用记住的密码静默重登一次（仅在令牌临期 / 缺失时动手）。
+    ///
+    /// 返回 `Ok(true)` = 已恢复登录（含「别的线程刚恢复好」），
+    /// `Ok(false)` = 没有记住密码 / 冷却中。冷却期内不重复撞登录接口。
+    pub(crate) fn silent_relogin(&self) -> Result<bool, Failure> {
+        self.relogin(false)
+    }
+
+    /// 用记住的密码强制重登一次。
+    ///
+    /// 用于「服务端已经明确拒绝令牌，但本地时钟还没到期」：这时不能再用
+    /// 临期判断跳过，否则会以为会话没事、实际每个请求都 401。
+    pub(crate) fn force_relogin(&self) -> Result<bool, Failure> {
+        self.relogin(true)
+    }
+
+    fn relogin(&self, force: bool) -> Result<bool, Failure> {
+        // 主动登出 / 已经被踢下线后不再自动登录，避免后台请求把用户又登回去
+        if !self.has_session() {
+            return Ok(false);
+        }
+        // 没记住密码就不必拿锁（钥匙串读取最贵，放在最前面）
+        let Some((username, password)) = self.remembered_login() else {
+            return Ok(false);
+        };
+        // 与并发刷新互斥：refresh_token 会轮换，两边同时提交会让先到的失效
+        let _refresh = self
+            .refresh_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.relogin_locked(&username, &password, force)
+    }
+
+    /// 已持有 `refresh_lock` 的重登主体。
+    fn relogin_locked(&self, username: &str, password: &str, force: bool) -> Result<bool, Failure> {
+        let mut last_attempt = self
+            .relogin_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // 等锁期间别的线程可能已经重登成功
+        if !force && !self.tokens_need_refresh() {
+            return Ok(true);
+        }
+        if last_attempt.is_some_and(|at| at.elapsed() < RELOGIN_COOLDOWN) {
+            return Ok(false);
+        }
+        *last_attempt = Some(Instant::now());
+        self.sign_in(username, password, None, true)?;
+        Ok(true)
+    }
+
+    /// 当前 access token；未登录时为 `None`（给「是否已被别人换掉」判重用）。
+    pub(crate) fn access_token(&self) -> Option<String> {
+        self.with_inner(|inner| {
+            inner
+                .current
+                .as_ref()
+                .map(|saved| saved.access_token.clone())
+        })
+    }
+
+    /// 当前 refresh token；未登录 / 为空时为 `None`。
+    pub(crate) fn refresh_token(&self) -> Option<String> {
+        self.with_inner(|inner| {
+            inner
+                .current
+                .as_ref()
+                .map(|saved| saved.refresh_token.clone())
+                .filter(|token| !token.is_empty())
+        })
+    }
+
+    /// 当前令牌是否仍需登录 / 刷新（会话不存在也算「需要」）。
+    fn tokens_need_refresh(&self) -> bool {
+        self.with_inner(|inner| {
+            inner
+                .current
+                .as_ref()
+                .is_none_or(|saved| saved.tokens().needs_refresh(REFRESH_MARGIN))
+        })
+    }
+
+    fn has_session(&self) -> bool {
+        self.with_inner(|inner| inner.current.is_some())
     }
 
     fn replace_tokens(&self, tokens: kichi_core::TokenPair) -> Result<(), StoreError> {
@@ -413,11 +567,23 @@ impl Session {
     /// 令牌一换就重建，因此长批次跨刷新也安全。
     pub fn drive(&self) -> Result<Arc<DriveClient>, Failure> {
         if let Err(err) = self.ensure_tokens() {
-            if matches!(err, Failure::Auth(_)) {
-                let _ = store::clear(&self.store_path);
-                self.clear_tokens();
+            if !matches!(err, Failure::Auth(_)) {
+                return Err(err);
             }
-            return Err(err);
+            // 刷新令牌被拒：有记住的密码就静默重登一次，再把原请求继续下去
+            match self.silent_relogin() {
+                Ok(true) => self.ensure_tokens()?,
+                Ok(false) => {
+                    self.expire();
+                    return Err(err);
+                }
+                Err(relogin) => {
+                    if matches!(relogin, Failure::Auth(_) | Failure::Captcha { .. }) {
+                        self.expire();
+                    }
+                    return Err(relogin);
+                }
+            }
         }
         let (access, user_id, device_id) = self.current_credentials()?;
         if let Some(client) = self.clients.get(&access) {
@@ -761,5 +927,14 @@ mod tests {
 
         assert!(session.local_index_enabled());
         assert!(session.tree_index().is_none(), "只放开开关，不主动开库");
+    }
+
+    #[test]
+    fn signed_out_session_never_relogs_by_itself() {
+        let session = Session::for_test(Config::from_env(), "token");
+        session.clear_tokens();
+        assert_eq!(session.state(), State::SignedOut);
+        // 主动登出后没有会话，静默重登必须直接放弃（不能读钥匙串、不能发请求）
+        assert!(!session.silent_relogin().expect("不应发起网络请求"));
     }
 }

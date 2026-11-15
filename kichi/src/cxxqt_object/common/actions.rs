@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::QString;
+use cxx_qt_lib::{QString, QStringList};
 
 use super::qobject;
 use crate::session::Failure;
@@ -37,10 +37,11 @@ impl qobject::Kichi {
         let captcha = (!captcha.trim().is_empty()).then(|| captcha.trim().to_owned());
 
         let session = self.backend.session.clone();
+        let remember = self.remember_password;
         self.as_mut().rust_mut().login_running = true;
         self.as_mut().set_message("正在登录……");
         run_in_background(
-            move || session.sign_in(&user, &password, captcha.as_deref()),
+            move || session.sign_in(&user, &password, captcha.as_deref(), remember),
             |mut qichi, result| match result {
                 Ok(()) => qichi.as_mut().on_logged_in(),
                 Err(err) => {
@@ -61,6 +62,11 @@ impl qobject::Kichi {
 
     /// 启动恢复后的补全（QML 界面就绪时调用一次）。
     pub fn warm_up(mut self: Pin<&mut Self>) {
+        // 启动时令牌就被拒：别急着让用户重输密码，有记住的密码就后台恢复一次
+        if self.auth_state.to_string() == "expired" && !self.auto_relogin_checked {
+            self.as_mut().rust_mut().auto_relogin_checked = true;
+            self.as_mut().attempt_silent_relogin();
+        }
         let restored = self.auth_state.to_string() == "signedIn" && self.session_restoring;
         if !self.auto_resume_checked {
             self.as_mut().rust_mut().auto_resume_checked = true;
@@ -163,6 +169,8 @@ impl qobject::Kichi {
             self.as_mut()
                 .handle_tray_event(super::tray::TrayEvent::Show);
         }
+        // 登录保活：临期令牌在空闲时也自己刷新（60 秒检查一次）
+        self.as_mut().maybe_session_keepalive(false);
         loop {
             let task = {
                 let mut queue = tasks().lock().unwrap_or_else(|e| e.into_inner());
@@ -291,6 +299,113 @@ impl qobject::Kichi {
         self.as_mut().ensure_tree_index_build();
         self.as_mut().refresh_files_background();
         self.as_mut().start_task_polling();
+    }
+
+    /// 记住的登录凭据 `[用户名, 密码]`；没有记录时返回空列表。
+    pub fn remembered_login(self: Pin<&mut Self>) -> QStringList {
+        let mut list = QStringList::default();
+        if let Some((username, password)) = self.backend.session.remembered_login() {
+            list.append(QString::from(username.as_str()));
+            list.append(QString::from(password.as_str()));
+        }
+        list
+    }
+
+    /// 开关「记住密码」；关闭时立即删除钥匙串里的密码。
+    pub fn set_remember_password(mut self: Pin<&mut Self>, enabled: bool) {
+        if self.remember_password == enabled {
+            return;
+        }
+        if !enabled {
+            self.backend.session.forget_password();
+        }
+        self.as_mut().update_settings(|settings| {
+            settings.remember_password = enabled;
+        });
+    }
+
+    /// 用记住的密码在后台恢复登录（启动恢复失败时调用一次）。
+    fn attempt_silent_relogin(mut self: Pin<&mut Self>) {
+        if !self.remember_password {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.login_running = true;
+            rust.status_message = QString::from("正在恢复登录……");
+        }
+        self.as_mut().notify();
+        let session = self.backend.session.clone();
+        run_in_background(
+            move || session.force_relogin(),
+            |mut qichi, result| match result {
+                Ok(true) => qichi.as_mut().on_session_renewed("登录状态已自动续期"),
+                Ok(false) => {
+                    qichi.as_mut().rust_mut().login_running = false;
+                    qichi.as_mut().set_message("");
+                }
+                Err(err) => {
+                    qichi.as_mut().rust_mut().login_running = false;
+                    qichi.as_mut().on_failure(err);
+                }
+            },
+        );
+    }
+
+    /// 静默重登成功后的轻量恢复：不重置上传 / 磁力队列，
+    /// 正在跑的任务不会被一次续期打断。
+    pub(crate) fn on_session_renewed(mut self: Pin<&mut Self>, note: &str) {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.auth_state = QString::from("signedIn");
+            rust.login_running = false;
+            rust.session_restoring = false;
+            rust.captcha_required = false;
+            rust.captcha_url.clear();
+            rust.status_message = QString::from(note);
+        }
+        self.as_mut().notify();
+        self.as_mut().sync_identity_from_session();
+        self.as_mut().refresh_identity_and_quota();
+        self.as_mut().ensure_tree_index_build();
+        self.as_mut().refresh_files_background();
+        self.as_mut().start_task_polling();
+    }
+
+    /// 空闲保活：到点才起线程，避免 100ms 的 pump 反复创建任务。
+    pub(crate) fn maybe_session_keepalive(self: Pin<&mut Self>, force: bool) {
+        if self.auth_state.to_string() != "signedIn" {
+            return;
+        }
+        let begun = if force {
+            super::session_keepalive::begin_now()
+        } else {
+            super::session_keepalive::begin()
+        };
+        if !begun {
+            return;
+        }
+        if !self.backend.session.refresh_due() {
+            super::session_keepalive::finish();
+            return;
+        }
+        let session = self.backend.session.clone();
+        run_in_background(
+            move || session.refresh_or_relogin(),
+            |mut qichi, result| {
+                super::session_keepalive::finish();
+                match result {
+                    // 只是提前刷新了令牌：界面不需要任何变化
+                    Ok(false) => {}
+                    Ok(true) => qichi.as_mut().on_session_renewed("登录状态已自动续期"),
+                    Err(err @ Failure::Auth(_)) | Err(err @ Failure::Captcha { .. }) => {
+                        qichi.as_mut().on_failure(err);
+                    }
+                    // 网络抖动：保持现状，下一分钟再试
+                    Err(_) => {}
+                }
+            },
+        );
     }
 }
 

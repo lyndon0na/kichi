@@ -47,6 +47,7 @@ fn roundtrip_keeps_every_field() {
         player_command: "mpv".into(),
         player_args: "--fs --vo=gpu".into(),
         notify_enabled: false,
+        remember_password: false,
         auto_play_next: false,
         player_audio_lang: PreferredLanguage::Japanese,
         player_sub_lang: PreferredLanguage::Chinese,

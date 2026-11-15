@@ -62,6 +62,8 @@ pub struct Settings {
     pub player_args: String,
     /// 离线任务完成/失败时弹系统通知
     pub notify_enabled: bool,
+    /// 登录时把密码存进系统钥匙串，令牌失效后静默重新登录（默认开启）
+    pub remember_password: bool,
     /// 播放时自动加载同目录字幕（只对 mpv 生效）
     pub auto_subtitles: bool,
     /// 播完自动播放同文件夹下一集（默认开启）
@@ -132,6 +134,7 @@ impl Default for Settings {
             player_command: String::new(),
             player_args: String::new(),
             notify_enabled: true,
+            remember_password: true,
             auto_subtitles: true,
             auto_play_next: true,
             player_audio_lang: PreferredLanguage::default(),

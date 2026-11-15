@@ -1,6 +1,7 @@
 //! KWallet（Secret Service）存取令牌；不可用时降级到 0600 权限文件。
 //!
 //! 降级文件只在没有可用钥匙串时兜底，界面必须把降级状态明确告诉使用者。
+//! 「记住密码」只进钥匙串，**没有**降级文件：密码比令牌敏感，宁可不记住。
 
 use std::fs;
 use std::io::Write;
@@ -8,11 +9,13 @@ use std::path::Path;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use serde::{Deserialize, Serialize};
 
 use crate::session::PersistedSession;
 
 const SERVICE: &str = "kichi";
 const ACCOUNT: &str = "session";
+const PASSWORD_ACCOUNT: &str = "password";
 
 /// 令牌落盘位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +147,50 @@ fn save_file(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// 「记住密码」里保存的登录凭据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedLogin {
+    username: String,
+    password: String,
+}
+
+/// 保存记住的密码。只写钥匙串，失败直接冒泡给调用方提示。
+pub fn save_password(username: &str, password: &str) -> Result<(), StoreError> {
+    let entry = keyring::Entry::new(SERVICE, PASSWORD_ACCOUNT)?;
+    let json = serde_json::to_vec(&SavedLogin {
+        username: username.to_string(),
+        password: password.to_string(),
+    })
+    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    entry.set_password(&BASE64.encode(json))?;
+    Ok(())
+}
+
+/// 读取记住的密码；没有记录时返回 `Ok(None)`，钥匙串不可用时报错。
+pub fn load_password() -> Result<Option<(String, String)>, StoreError> {
+    let entry = keyring::Entry::new(SERVICE, PASSWORD_ACCOUNT)?;
+    match entry.get_password() {
+        Ok(text) => {
+            let saved = decode_login(&text)?;
+            if saved.username.is_empty() || saved.password.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some((saved.username, saved.password)))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// 删除记住的密码（取消勾选 / 重新登录时没勾）。
+pub fn clear_password() -> Result<(), StoreError> {
+    let entry = keyring::Entry::new(SERVICE, PASSWORD_ACCOUNT)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// 编码为 Base64(JSON)，避免钥匙串对特殊字符的兼容性问题。
 fn encode(session: &PersistedSession) -> Result<String, StoreError> {
     let json = serde_json::to_vec(session).map_err(|e| StoreError::Corrupt(e.to_string()))?;
@@ -151,6 +198,13 @@ fn encode(session: &PersistedSession) -> Result<String, StoreError> {
 }
 
 fn decode(text: &str) -> Result<PersistedSession, StoreError> {
+    let raw = BASE64
+        .decode(text.trim())
+        .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    serde_json::from_slice(&raw).map_err(|e| StoreError::Corrupt(e.to_string()))
+}
+
+fn decode_login(text: &str) -> Result<SavedLogin, StoreError> {
     let raw = BASE64
         .decode(text.trim())
         .map_err(|e| StoreError::Corrupt(e.to_string()))?;
@@ -191,6 +245,28 @@ mod tests {
     #[test]
     fn corrupt_payload_is_reported() {
         assert!(matches!(decode("不是 base64"), Err(StoreError::Corrupt(_))));
+    }
+
+    #[test]
+    fn saved_login_roundtrip() {
+        let text = BASE64.encode(
+            serde_json::to_vec(&SavedLogin {
+                username: "a@example.com".into(),
+                password: "dummy".into(),
+            })
+            .unwrap_or_else(|e| panic!("{e}")),
+        );
+        let back = decode_login(&text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back.username, "a@example.com");
+        assert_eq!(back.password, "dummy");
+    }
+
+    #[test]
+    fn corrupt_saved_login_is_reported() {
+        assert!(matches!(
+            decode_login("不是 base64"),
+            Err(StoreError::Corrupt(_))
+        ));
     }
 
     #[test]

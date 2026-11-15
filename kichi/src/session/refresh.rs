@@ -14,7 +14,7 @@
 
 use kichi_core::{auth, REFRESH_MARGIN};
 
-use super::{Failure, Session};
+use super::{Failure, Recovery, Session};
 
 /// 测试注入的刷新实现（生产路径永远走 [`auth::refresh`]）。
 #[cfg(test)]
@@ -23,6 +23,78 @@ pub(super) type RefreshHook = dyn Fn(&kichi_core::Config, &str, &str) -> Result<
     + Sync;
 
 impl Session {
+    /// 是否到了该主动刷新的时间（未登录 / 已登出 = false）。
+    ///
+    /// 界面保活每分钟查一次；真正发请求仍由 [`Session::ensure_tokens`] 单飞。
+    pub(crate) fn refresh_due(&self) -> bool {
+        self.needs_refresh().unwrap_or(false)
+    }
+
+    /// 保活：临期就刷新；刷新被官方拒绝则用记住的密码静默重登。
+    ///
+    /// 返回 `true` = 走了静默重登，界面需要把登录态切回已登录并刷新身份。
+    /// 返回 `false` = 只是提前刷新了令牌（界面无需变化）。
+    pub(crate) fn refresh_or_relogin(&self) -> Result<bool, Failure> {
+        match self.ensure_tokens() {
+            Ok(()) => Ok(false),
+            Err(err @ Failure::Auth(_)) => match self.silent_relogin() {
+                Ok(true) => Ok(true),
+                Ok(false) => {
+                    self.expire();
+                    Err(err)
+                }
+                Err(relogin) => {
+                    if matches!(relogin, Failure::Auth(_) | Failure::Captcha { .. }) {
+                        self.expire();
+                    }
+                    Err(relogin)
+                }
+            },
+            Err(err) => Err(err),
+        }
+    }
+
+    /// 服务端明确拒绝了当前令牌（HTTP 401），但本地时钟可能还没到期。
+    ///
+    /// 先强制刷新一次 refresh token：比整次密码登录轻，也不容易触发人机验证。
+    /// 刷新也被拒才用记住的密码重登。
+    pub(crate) fn recover_rejected_token(&self) -> Result<Recovery, Failure> {
+        let Some(rejected) = self.access_token() else {
+            return Ok(Recovery::Unavailable);
+        };
+        let _guard = self
+            .refresh_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // 等锁期间别的线程可能已经换过令牌：手上这个 401 已经不代表现状了
+        if self.access_token().as_deref() != Some(rejected.as_str()) {
+            return Ok(Recovery::Refreshed);
+        }
+        if let Some(refresh_token) = self.refresh_token() {
+            match auth::refresh(&self.config, &self.device_id(), &refresh_token) {
+                Ok(tokens) => {
+                    self.replace_tokens(tokens)?;
+                    return Ok(Recovery::Refreshed);
+                }
+                Err(err) => {
+                    let failure = Failure::from(err);
+                    // 网络 / 限流不是「令牌被拒」：保持登录态，交给界面提示
+                    if !matches!(failure, Failure::Auth(_)) {
+                        return Err(failure);
+                    }
+                }
+            }
+        }
+        let Some((username, password)) = self.remembered_login() else {
+            return Ok(Recovery::Unavailable);
+        };
+        if self.relogin_locked(&username, &password, true)? {
+            Ok(Recovery::Relogged)
+        } else {
+            Ok(Recovery::Unavailable)
+        }
+    }
+
     /// 确保令牌可用（到期前 5 分钟自动刷新）。阻塞。
     pub fn ensure_tokens(&self) -> Result<(), Failure> {
         // 快路径：绝大多数调用都不需要刷新，连锁都不用拿
@@ -166,5 +238,17 @@ mod tests {
         });
         assert_eq!(access, "new-access");
         assert_eq!(refresh, "new-refresh", "所有线程共享同一份新令牌");
+    }
+
+    #[test]
+    fn rejected_token_without_a_session_is_not_recoverable() {
+        let session = Session::for_test(kichi_core::Config::default(), "access");
+        session.clear_tokens();
+        assert_eq!(
+            session
+                .recover_rejected_token()
+                .expect("没有会话时不该发请求"),
+            Recovery::Unavailable
+        );
     }
 }

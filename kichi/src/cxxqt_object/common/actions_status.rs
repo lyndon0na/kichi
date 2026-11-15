@@ -8,7 +8,7 @@ use cxx_qt_lib::QString;
 use super::actions::run_in_background;
 use super::actions_display::{quota_display, transfer_display};
 use super::qobject;
-use crate::session::Failure;
+use crate::session::{Failure, Recovery};
 
 impl qobject::Kichi {
     fn set_captcha(mut self: Pin<&mut Self>, url: Option<&str>) {
@@ -30,6 +30,51 @@ impl qobject::Kichi {
         self.as_mut().on_failure_inner(failure, false);
     }
 
+    /// 服务端 401：先别把界面踢回登录页，后台试一次「刷新令牌 / 记住密码重登」。
+    pub(crate) fn recover_login(mut self: Pin<&mut Self>, reason: String) {
+        self.as_mut().rust_mut().relogin_running = true;
+        self.as_mut()
+            .set_message("登录状态失效，正在尝试自动恢复……");
+        let session = self.backend.session.clone();
+        run_in_background(
+            move || session.recover_rejected_token(),
+            move |mut qichi, result| {
+                qichi.as_mut().rust_mut().relogin_running = false;
+                match result {
+                    // 只换了令牌：保持原界面，不用重排列表
+                    Ok(Recovery::Refreshed) => qichi.as_mut().set_message(""),
+                    Ok(Recovery::Relogged) => {
+                        qichi.as_mut().on_session_renewed("登录状态已自动恢复");
+                    }
+                    Ok(Recovery::Unavailable) => qichi
+                        .as_mut()
+                        .mark_session_expired(&format!("登录状态失效：{reason}")),
+                    Err(err @ (Failure::Auth(_) | Failure::Captcha { .. })) => {
+                        qichi.as_mut().mark_session_expired("");
+                        qichi.as_mut().on_failure_inner(err, true);
+                    }
+                    // 网络抖动：保留登录态，下次请求会再试
+                    Err(other) => {
+                        qichi
+                            .as_mut()
+                            .set_message(&format!("自动恢复登录失败：{other}"));
+                    }
+                }
+            },
+        );
+    }
+
+    /// 恢复失败：清掉会话，回到登录页（记住的密码不清）。
+    fn mark_session_expired(mut self: Pin<&mut Self>, message: &str) {
+        self.backend.session.expire();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.auth_state = QString::from("expired");
+            rust.status_message = QString::from(message);
+        }
+        self.as_mut().notify();
+    }
+
     fn on_failure_inner(mut self: Pin<&mut Self>, failure: Failure, notify_limited: bool) {
         match failure {
             Failure::Captcha { url } => {
@@ -43,6 +88,15 @@ impl qobject::Kichi {
                 self.as_mut().set_captcha(url.as_deref());
             }
             Failure::Auth(reason) => {
+                // 服务端 401 不一定真没救：先试刷新令牌 / 用记住的密码重登
+                // 手动登录 / 自动恢复在途时，旧请求的 401 不能把界面先踢回登录页
+                if self.relogin_running || self.login_running {
+                    return;
+                }
+                if self.auth_state.to_string() == "signedIn" && self.remember_password {
+                    self.as_mut().recover_login(reason);
+                    return;
+                }
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.auth_state = QString::from("expired");
