@@ -65,9 +65,10 @@ impl qobject::Kichi {
         // 搜索已经挂在这轮全盘扫描上（正在边扫边出结果）：改关键词 / 筛选
         // 只更新共享条件，不取消建库，也不退回「只筛当前目录」。
         // 只有挂着的这一轮才这么走——后台建库时的普通输入仍然只筛当前目录。
-        let scan_attached = self.index_scan_tap.as_ref().is_some_and(|tap| {
-            tap.lock().map(|tap| tap.active).unwrap_or(false)
-        });
+        let scan_attached = self
+            .index_scan_tap
+            .as_ref()
+            .is_some_and(|tap| tap.lock().map(|tap| tap.active).unwrap_or(false));
         if scan_attached && !local_index_ready(&self.backend.session) {
             self.as_mut().attach_search_to_scan(trimmed);
             return;
