@@ -296,6 +296,9 @@ TestCase {
         compare(findChild(thumbnail, "thumbnailEffect").maskEnabled, true)
         compare(findChild(thumbnail, "thumbnailEffect").maskSource,
                 findChild(thumbnail, "thumbnailMask"))
+        compare(findChild(thumbnail, "thumbnailEffect").maskThresholdMin, 0.5)
+        compare(findChild(thumbnail, "thumbnailEffect").maskSpreadAtMin, 1.0)
+        compare(findChild(thumbnail, "thumbnailMask").layer.samples, 16)
         compare(findChild(thumbnail, "thumbnailMaskShape").radius, 3)
         const badge = findChild(thumbnail, "videoBadge")
         verify(badge !== null)

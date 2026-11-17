@@ -131,6 +131,9 @@ Item {
             anchors.fill: parent
             visible: false
             layer.enabled: true
+            // Qt 社区 Rounded Image (Anti Aliasing Fixed) 做法：让遮罩层自身带 MSAA，
+            // 否则 MultiEffect 的 smoothstep 会给圆角留下锯齿。
+            layer.samples: 16
 
             Rectangle {
                 objectName: "thumbnailMaskShape"
@@ -151,6 +154,8 @@ Item {
             autoPaddingEnabled: false
             maskEnabled: true
             maskSource: roundedMask
+            maskThresholdMin: 0.5
+            maskSpreadAtMin: 1.0
         }
     }
 
