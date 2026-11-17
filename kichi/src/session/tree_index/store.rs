@@ -13,11 +13,13 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection};
 
-/// schema 版本；不兼容的表结构改动必须 +1。
+/// schema 版本；不兼容的表结构或索引基线语义改动必须 +1。
 ///
 /// 纯追加表不提升版本：新旧的 kichi 二进制共用同一账号库时，互相不会把对方的库
 /// 当成「未知版本」删掉重扫。
-pub(super) const SCHEMA_VERSION: i64 = 2;
+///
+/// 3：全量建库开始记录服务端 `sync_time` 游标，旧库没有基线，升级后重建一次。
+pub(super) const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE nodes (

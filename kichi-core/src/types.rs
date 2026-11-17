@@ -72,6 +72,25 @@ pub struct FileEntry {
     pub thumbnail_url: String,
 }
 
+/// 增量同步的一行：条目本身 + 服务端是否已把它标记为删除 / 回收站。
+///
+/// 与 [`FileEntry`] 分开，是因为普通列表本来就不含回收站条目；增量流则故意
+/// 不带 `trashed=false` 过滤，让删除墓碑也能到达客户端。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub entry: FileEntry,
+    pub trashed: bool,
+}
+
+/// 一页增量变更。`sync_time` 是服务端的扫描水位，只应在整批成功落库后保存。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileChangePage {
+    pub changes: Vec<FileChange>,
+    pub next_page_token: Option<String>,
+    pub sync_time: String,
+    pub version_outdated: bool,
+}
+
 /// 回收站条目：普通文件字段 + 原父目录与删除时间。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrashEntry {

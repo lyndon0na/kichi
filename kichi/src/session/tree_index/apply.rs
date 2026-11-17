@@ -12,7 +12,7 @@
 //! `UNION` 同时去重并挡住环。
 
 use chrono::{DateTime, Utc};
-use kichi_core::{normalize_name, EntryKind, FileEntry, TrashEntry};
+use kichi_core::{normalize_name, EntryKind, FileChange, FileEntry, TrashEntry};
 use rusqlite::{params, Connection, Statement};
 
 /// 节点 upsert。全量建库与目录列表共用同一份字段映射。
@@ -361,6 +361,48 @@ pub(super) fn apply_change(
             }
         }
     }
+    tx.commit()?;
+    Ok(dirty)
+}
+
+/// 增量变更整批落库，并与服务端游标同一事务提交。
+///
+/// 删除行在 kichi 里仍保留为 `trashed = 1`（回收站视图要用），所以这里走
+/// `TRASH_SUBTREE_SQL` 而不是直接 `DELETE`。先 upsert 未删除行、再处理删除，
+/// 保证同一批里“先移出、后删父目录”的子树不会被误删。
+pub(super) fn apply_delta(
+    conn: &Connection,
+    changes: &[FileChange],
+    sync_cursor: &str,
+    now: i64,
+) -> rusqlite::Result<Vec<String>> {
+    let tx = conn.unchecked_transaction()?;
+    let mut dirty = Vec::new();
+    {
+        let mut stmt = tx.prepare(UPSERT_NODE_SQL)?;
+        for change in changes.iter().filter(|change| !change.trashed) {
+            let old_parent = parent_of_id(&tx, &change.entry.id)?;
+            insert_entry(&mut stmt, &change.entry, false)?;
+            touch_dir(&tx, change.entry.parent_id.trim(), &mut dirty)?;
+            if let Some(old_parent) = old_parent {
+                if old_parent.trim() != change.entry.parent_id.trim() {
+                    touch_dir(&tx, &old_parent, &mut dirty)?;
+                }
+            }
+        }
+    }
+    for change in changes.iter().filter(|change| change.trashed) {
+        if let Some(parent) = parent_of_id(&tx, &change.entry.id)? {
+            touch_dir(&tx, &parent, &mut dirty)?;
+        }
+        tx.execute(TRASH_SUBTREE_SQL, params![change.entry.id, now])?;
+    }
+    if changes.iter().any(|change| change.trashed) {
+        invalidate_trash_snapshot(&tx)?;
+    }
+    super::store::meta_set(&tx, "sync_cursor", sync_cursor)?;
+    super::store::meta_set(&tx, "last_probe_at", &now.to_string())?;
+    tx.execute("DELETE FROM meta WHERE key = 'probe_unavailable'", [])?;
     tx.commit()?;
     Ok(dirty)
 }

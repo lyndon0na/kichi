@@ -1,4 +1,4 @@
-//! 全量建库 + canary 探针。
+//! 全量建库 + 游标增量 + canary 兜底。
 //!
 //! ## 全量建库
 //!
@@ -7,11 +7,20 @@
 //! 旧库」是结构保证，而不是靠回滚补救。全盘列举官方不给总数，进度只能报已
 //! 扫描条数（界面显示 `x/?`）。
 //!
-//! ## canary 探针
+//! ## 游标增量
 //!
-//! 每次只发两个请求（配额用量 + `parent_id=*` 最近修改第一页），用三样东西
-//! 对账：官方 `usage`、本地未删除文件大小和、最近页。对得上就是 fresh；
-//! 差值能被最近页的变化完全解释就打补丁；对不上才怀疑并请求全量重建。
+//! 全量建库成功后会记下末页的 `sync_time` 作为服务端扫描水位。之后的同步
+//! 只请求 `modified_time > 游标` 的变更页：新增 / 修改 / 移动按 id upsert，
+//! 回收站里的行以 `trashed=true` 墓碑回来并标记整棵子树。所有分页收齐后
+//! 才在一个事务里落库并推进游标；任何一页失败、取消或 `version_outdated`
+//! 都不落库、不推进，下一轮从原游标重试。游标失效时请求全量重建。
+//!
+//! ## canary 兜底
+//!
+//! 只有没有游标的旧索引（或首次建库失败）才走这里：每次只发两个请求
+//! （配额用量 + `parent_id=*` 最近修改第一页），用三样东西对账：官方
+//! `usage`、本地未删除文件大小和、最近页。对得上就是 fresh；差值能被最近页
+//! 的变化完全解释就打补丁；对不上才怀疑并请求全量重建。
 //!
 //! ⚠️ **未验证假设**：`order=modified_time desc` 是否被官方真正执行还没有用
 //! 真实账号确认过（未知查询参数历史上会被静默忽略）。因此这里不信任该参数：
@@ -21,7 +30,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use kichi_core::{DriveClient, EntryKind, FileEntry};
+use kichi_core::{DriveClient, EntryKind, FileChangePage, FileEntry};
 
 use crate::session::download::Cancel;
 use crate::session::Failure;
@@ -70,6 +79,8 @@ pub enum SuspectReason {
     WindowOverflow,
     /// 用量差无法由最近页的变化解释
     UnexplainedDelta,
+    /// 服务端表示增量游标已过期，必须重新建立完整基线
+    CursorOutdated,
 }
 
 impl SuspectReason {
@@ -79,6 +90,7 @@ impl SuspectReason {
             Self::ExternalDeletion => "本地索引里的文件比网盘还多，可能是在别处删除了文件",
             Self::WindowOverflow => "最近修改第一页可能装不下上次同步以来的全部变化",
             Self::UnexplainedDelta => "网盘用量与本地索引的差值无法由最近修改条目解释",
+            Self::CursorOutdated => "增量同步游标已过期，需要重新扫描全盘",
         }
     }
 }
@@ -95,8 +107,12 @@ pub(crate) struct ProbeInput {
 
 /// 全盘翻页的保护上限（约 200 万条，防止异常分页吃光内存）。
 pub(crate) const MAX_FULL_BUILD_PAGES: usize = 5000;
+/// 一轮增量最多跟进这么多页；超过说明积压太多，宁愿报错让下次重试。
+const MAX_DELTA_PAGES: usize = 200;
+/// 一轮增量最多在内存里攒这么多行；正常增量远小于此。
+const MAX_DELTA_ROWS: usize = 100_000;
 
-type Page = (Vec<FileEntry>, Option<String>);
+type Page = (Vec<FileEntry>, Option<String>, String);
 type PageFetch<'a> = dyn FnMut(Option<&str>) -> Result<Page, Failure> + 'a;
 
 /// 从网盘全量建库（阻塞；调用方放后台线程）。
@@ -106,10 +122,16 @@ pub fn full_build(
     cancel: &Cancel,
     on_progress: &mut dyn FnMut(usize),
 ) -> Result<BuildOutcome, Failure> {
-    let mut fetch = |token: Option<&str>| -> Result<(Vec<FileEntry>, Option<String>), Failure> {
+    let mut fetch = |token: Option<&str>| -> Result<Page, Failure> {
         client
-            .list_all_page(token)
-            .map(|(hits, next)| (hits.into_iter().map(|hit| hit.entry).collect(), next))
+            .list_all_page_meta(token)
+            .map(|page| {
+                (
+                    page.files.into_iter().map(|hit| hit.entry).collect(),
+                    page.next_page_token,
+                    page.sync_time,
+                )
+            })
             .map_err(Failure::from)
     };
     build_with_pages(index, cancel, &mut fetch, on_progress)
@@ -124,6 +146,7 @@ pub(super) fn build_with_pages(
 ) -> Result<BuildOutcome, Failure> {
     let mut collected = Vec::new();
     let mut token: Option<String> = None;
+    let mut sync_cursor: Option<String> = None;
     let mut pages = 0usize;
     loop {
         if stopped(index, cancel) {
@@ -135,7 +158,10 @@ pub(super) fn build_with_pages(
                 "全盘列举页数超过上限，已停止建库（旧索引保留）".to_owned(),
             ));
         }
-        let (entries, next) = fetch(token.as_deref())?;
+        let (entries, next, sync_time) = fetch(token.as_deref())?;
+        if !sync_time.trim().is_empty() {
+            sync_cursor = Some(sync_time);
+        }
         collected.extend(entries);
         on_progress(collected.len());
         match next {
@@ -156,7 +182,7 @@ pub(super) fn build_with_pages(
     }
     let count = collected.len();
     index
-        .replace_all(&collected)
+        .replace_all_with_cursor(&collected, sync_cursor.as_deref())
         .map_err(|err| Failure::Other(format!("本地索引写入失败：{err}")))?;
     Ok(BuildOutcome::Built(count))
 }
@@ -187,6 +213,95 @@ pub fn run_canary(
         has_next: next.is_some(),
     };
     probe_with_data(index, input, Utc::now().timestamp())
+}
+
+/// 有服务端游标就走增量变更流；没有游标（旧索引 / 首次建库失败）退回 canary。
+pub fn run_incremental(
+    index: &TreeIndex,
+    client: &DriveClient,
+    cancel: &Cancel,
+) -> Result<ProbeOutcome, Failure> {
+    match index.sync_cursor().map_err(index_failure)? {
+        Some(cursor) => {
+            let mut fetch = |since: &str, token: Option<&str>| {
+                client
+                    .list_file_changes_page(since, token)
+                    .map_err(Failure::from)
+            };
+            delta_with_pages(index, &cursor, cancel, &mut fetch, Utc::now().timestamp())
+        }
+        None => run_canary(index, client, cancel),
+    }
+}
+
+/// 与网络解耦的增量主体：收齐所有分页后一次落库，游标只随整批提交前进。
+#[allow(unused_assignments)]
+pub(super) fn delta_with_pages(
+    index: &TreeIndex,
+    cursor: &str,
+    cancel: &Cancel,
+    fetch: &mut dyn FnMut(&str, Option<&str>) -> Result<FileChangePage, Failure>,
+    now: i64,
+) -> Result<ProbeOutcome, Failure> {
+    if stopped(index, cancel) {
+        return Ok(ProbeOutcome::Cancelled);
+    }
+    let mut changes = Vec::new();
+    let mut token: Option<String> = None;
+    let mut sync_time: Option<String> = None;
+    let mut pages = 0usize;
+    loop {
+        if stopped(index, cancel) {
+            return Ok(ProbeOutcome::Cancelled);
+        }
+        let page = fetch(cursor, token.as_deref())?;
+        if page.version_outdated {
+            return Ok(ProbeOutcome::Suspect {
+                reason: SuspectReason::CursorOutdated,
+                rebuild: true,
+            });
+        }
+        if page.sync_time.trim().is_empty() {
+            return Err(Failure::Other("增量同步响应缺少 sync_time".to_owned()));
+        }
+        sync_time = Some(page.sync_time);
+        changes.extend(page.changes);
+        pages += 1;
+        if pages > MAX_DELTA_PAGES {
+            return Err(Failure::Other(
+                "增量同步页数超过上限，已停止本轮（游标未前进，下次重试）".to_owned(),
+            ));
+        }
+        if changes.len() > MAX_DELTA_ROWS {
+            return Err(Failure::Other(
+                "增量同步条目数超过上限，已停止本轮（游标未前进，下次重试）".to_owned(),
+            ));
+        }
+        match page.next_page_token {
+            Some(next) if token.as_deref() == Some(next.as_str()) => {
+                return Err(Failure::Other(
+                    "官方分页异常：增量同步的翻页令牌原地打转".to_owned(),
+                ));
+            }
+            Some(next) => token = Some(next),
+            None => break,
+        }
+    }
+    if stopped(index, cancel) {
+        return Ok(ProbeOutcome::Cancelled);
+    }
+    let Some(sync_time) = sync_time else {
+        return Err(Failure::Other("增量同步没有返回任何分页".to_owned()));
+    };
+    let patched = changes.len();
+    index
+        .apply_delta(&changes, &sync_time, now)
+        .map_err(index_failure)?;
+    if patched == 0 {
+        Ok(ProbeOutcome::Fresh { patched })
+    } else {
+        Ok(ProbeOutcome::Patched { patched })
+    }
 }
 
 /// 与网络解耦的探针主体：读本地快照 → 判定 → 落补丁与冷却标记。
@@ -440,6 +555,7 @@ fn stopped(index: &TreeIndex, cancel: &Cancel) -> bool {
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
+    use kichi_core::FileChange;
 
     use super::super::store;
     use super::super::test_support::{file, folder};
@@ -493,11 +609,11 @@ mod tests {
         let mut served = 0usize;
         move |_token| {
             let Some(entries) = queue.pop_front() else {
-                return Ok((Vec::new(), None));
+                return Ok((Vec::new(), None, String::new()));
             };
             served += 1;
             let next = (!queue.is_empty()).then(|| format!("page-{served}"));
-            Ok((entries, next))
+            Ok((entries, next, format!("sync-{served}")))
         }
     }
 
@@ -793,10 +909,14 @@ mod tests {
             .put_listing("", &[file("old", "old.mkv", "")], true)
             .expect("旧快照");
         let mut calls = 0;
-        let mut fetch = |_: Option<&str>| -> Result<(Vec<FileEntry>, Option<String>), Failure> {
+        let mut fetch = |_: Option<&str>| -> Result<Page, Failure> {
             calls += 1;
             if calls == 1 {
-                Ok((vec![file("new", "new.mkv", "")], Some("next".to_owned())))
+                Ok((
+                    vec![file("new", "new.mkv", "")],
+                    Some("next".to_owned()),
+                    "sync-1".to_owned(),
+                ))
             } else {
                 Err(Failure::Other("网络中断".to_owned()))
             }
@@ -823,11 +943,15 @@ mod tests {
             .expect("旧快照");
         let cancel = Cancel::default();
         let mut calls = 0;
-        let mut fetch = |_: Option<&str>| -> Result<(Vec<FileEntry>, Option<String>), Failure> {
+        let mut fetch = |_: Option<&str>| -> Result<Page, Failure> {
             calls += 1;
             // 第一页读完就取消：替换事务不能开始
             cancel.cancel();
-            Ok((vec![file("new", "new.mkv", "")], Some("next".to_owned())))
+            Ok((
+                vec![file("new", "new.mkv", "")],
+                Some("next".to_owned()),
+                "sync-1".to_owned(),
+            ))
         };
         let outcome = build_with_pages(&index, &cancel, &mut fetch, &mut |_| {}).expect("取消");
         assert_eq!(outcome, BuildOutcome::Cancelled);
@@ -845,8 +969,12 @@ mod tests {
         index
             .put_listing("", &[file("old", "old.mkv", "")], true)
             .expect("旧快照");
-        let mut fetch = |_: Option<&str>| -> Result<(Vec<FileEntry>, Option<String>), Failure> {
-            Ok((vec![file("a", "a", "")], Some("stuck".to_owned())))
+        let mut fetch = |_: Option<&str>| -> Result<Page, Failure> {
+            Ok((
+                vec![file("a", "a", "")],
+                Some("stuck".to_owned()),
+                "sync-1".to_owned(),
+            ))
         };
         let result = build_with_pages(&index, &Cancel::default(), &mut fetch, &mut |_| {});
         assert!(result.is_err(), "token 原地打转要报错");
@@ -861,11 +989,163 @@ mod tests {
     fn closed_index_cancels_without_writing() {
         let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
         index.close();
-        let mut fetch = |_: Option<&str>| -> Result<(Vec<FileEntry>, Option<String>), Failure> {
+        let mut fetch = |_: Option<&str>| -> Result<Page, Failure> {
             panic!("关闭后不应再发请求");
         };
         let outcome =
             build_with_pages(&index, &Cancel::default(), &mut fetch, &mut |_| {}).expect("取消");
         assert_eq!(outcome, BuildOutcome::Cancelled);
+    }
+
+    // —— 游标增量 ——
+
+    #[test]
+    fn delta_applies_upserts_moves_and_trash_in_one_batch() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index
+            .replace_all_with_cursor(
+                &[
+                    file("a", "a.mkv", ""),
+                    folder("dir", "dir", ""),
+                    file("b", "b.mkv", "dir"),
+                    file("gone", "gone.mkv", ""),
+                ],
+                Some("cursor-1"),
+            )
+            .expect("初始快照");
+
+        let mut renamed = file("a", "a.mkv", "");
+        renamed.name = "renamed.mkv".to_owned();
+        let changes = vec![
+            FileChange {
+                entry: renamed,
+                trashed: false,
+            },
+            FileChange {
+                entry: file("b", "b.mkv", ""),
+                trashed: false,
+            },
+            FileChange {
+                entry: file("gone", "gone.mkv", ""),
+                trashed: true,
+            },
+        ];
+        let dirty = index
+            .apply_delta(&changes, "cursor-2", 2_000)
+            .expect("落增量");
+
+        assert_eq!(
+            index.sync_cursor().expect("读游标"),
+            Some("cursor-2".to_owned())
+        );
+        let root = index.listing_any("").expect("读根目录").expect("根目录");
+        assert!(root
+            .iter()
+            .any(|entry| entry.id == "a" && entry.name == "renamed.mkv"));
+        assert!(
+            root.iter().any(|entry| entry.id == "b"),
+            "移出的条目要落到新父目录"
+        );
+        assert!(
+            !root.iter().any(|entry| entry.id == "gone"),
+            "墓碑不能留在列表里"
+        );
+        let dir = index.listing_any("dir").expect("读子目录");
+        assert!(dir.is_none_or(|rows| rows.is_empty()), "旧父目录也要失效");
+        assert!(dirty.contains(&"".to_owned()));
+        assert!(dirty.contains(&"dir".to_owned()));
+    }
+
+    #[test]
+    fn delta_outdated_does_not_apply_or_advance_the_cursor() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index
+            .replace_all_with_cursor(&[file("old", "old.mkv", "")], Some("cursor-1"))
+            .expect("初始快照");
+        let mut fetch = |_: &str, _: Option<&str>| {
+            Ok::<FileChangePage, Failure>(FileChangePage {
+                changes: vec![FileChange {
+                    entry: file("new", "new.mkv", ""),
+                    trashed: false,
+                }],
+                next_page_token: None,
+                sync_time: "cursor-2".to_owned(),
+                version_outdated: true,
+            })
+        };
+        let outcome = delta_with_pages(&index, "cursor-1", &Cancel::default(), &mut fetch, 2_000)
+            .expect("增量");
+        assert_eq!(
+            outcome,
+            ProbeOutcome::Suspect {
+                reason: SuspectReason::CursorOutdated,
+                rebuild: true,
+            }
+        );
+        assert_eq!(
+            index.sync_cursor().expect("读游标"),
+            Some("cursor-1".to_owned())
+        );
+        let root = index.listing_any("").expect("读根目录").expect("根目录");
+        assert!(!root.iter().any(|entry| entry.id == "new"));
+    }
+
+    #[test]
+    fn delta_failure_keeps_the_old_cursor_and_rows() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index
+            .replace_all_with_cursor(&[file("old", "old.mkv", "")], Some("cursor-1"))
+            .expect("初始快照");
+        let mut calls = 0;
+        let mut fetch = |_: &str, _: Option<&str>| {
+            calls += 1;
+            if calls == 1 {
+                Ok::<FileChangePage, Failure>(FileChangePage {
+                    changes: vec![FileChange {
+                        entry: file("new", "new.mkv", ""),
+                        trashed: false,
+                    }],
+                    next_page_token: Some("page-2".to_owned()),
+                    sync_time: "cursor-mid".to_owned(),
+                    version_outdated: false,
+                })
+            } else {
+                Err(Failure::Other("网络中断".to_owned()))
+            }
+        };
+        let result = delta_with_pages(&index, "cursor-1", &Cancel::default(), &mut fetch, 2_000);
+        assert!(result.is_err(), "后续页失败要向上报错");
+        assert_eq!(
+            index.sync_cursor().expect("读游标"),
+            Some("cursor-1".to_owned())
+        );
+        let root = index.listing_any("").expect("读根目录").expect("根目录");
+        assert!(
+            !root.iter().any(|entry| entry.id == "new"),
+            "失败前收到的页不能落库"
+        );
+    }
+
+    #[test]
+    fn empty_delta_still_advances_the_watermark() {
+        let index = TreeIndex::open_in_memory("u1").expect("打开内存库");
+        index
+            .replace_all_with_cursor(&[file("old", "old.mkv", "")], Some("cursor-1"))
+            .expect("初始快照");
+        let mut fetch = |_: &str, _: Option<&str>| {
+            Ok::<FileChangePage, Failure>(FileChangePage {
+                changes: Vec::new(),
+                next_page_token: None,
+                sync_time: "cursor-2".to_owned(),
+                version_outdated: false,
+            })
+        };
+        let outcome = delta_with_pages(&index, "cursor-1", &Cancel::default(), &mut fetch, 2_000)
+            .expect("增量");
+        assert_eq!(outcome, ProbeOutcome::Fresh { patched: 0 });
+        assert_eq!(
+            index.sync_cursor().expect("读游标"),
+            Some("cursor-2".to_owned())
+        );
     }
 }

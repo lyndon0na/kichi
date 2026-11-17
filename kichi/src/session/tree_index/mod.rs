@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use chrono::Utc;
-use kichi_core::{EntryKind, FileEntry, TrashEntry};
+use kichi_core::{EntryKind, FileChange, FileEntry, TrashEntry};
 use rusqlite::params;
 
 pub(crate) use apply::Change;
@@ -189,6 +189,26 @@ impl TreeIndex {
             build.dirty_dirs.extend(dirty);
         }
         Ok(())
+    }
+
+    /// 服务端扫描水位；没有游标时只能走 canary 或全量重建。
+    pub(crate) fn sync_cursor(&self) -> Result<Option<String>, IndexError> {
+        self.store
+            .with_conn(|conn| store::meta_get(conn, "sync_cursor"))
+    }
+
+    /// 把一批变更与新的游标在同一个事务里落库。
+    ///
+    /// 调用方必须先收齐所有分页；任何一页失败都不能调用这里。返回被改动的
+    /// 父目录，供界面把这些目录的列表快照标脏。
+    pub(crate) fn apply_delta(
+        &self,
+        changes: &[FileChange],
+        sync_cursor: &str,
+        now: i64,
+    ) -> Result<Vec<String>, IndexError> {
+        self.store
+            .with_conn(|conn| apply::apply_delta(conn, changes, sync_cursor, now))
     }
 
     /// 目录内容已不可信（新建 / 上传 / 离线任务产物等没有具体行可改的场景）。
@@ -432,6 +452,15 @@ impl TreeIndex {
     /// 旧库原样保留。根目录、每个条目的父目录、每个文件夹自身都标记为完整，
     /// 因为 `parent_id=*` 枚举的本来就是全盘条目。
     pub(crate) fn replace_all(&self, entries: &[FileEntry]) -> Result<(), IndexError> {
+        self.replace_all_with_cursor(entries, None)
+    }
+
+    /// 整库替换，并把全量扫描最后一页的水位写成后续增量游标。
+    pub(crate) fn replace_all_with_cursor(
+        &self,
+        entries: &[FileEntry],
+        sync_cursor: Option<&str>,
+    ) -> Result<(), IndexError> {
         let now = Utc::now().timestamp();
         self.store.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
@@ -466,6 +495,15 @@ impl TreeIndex {
             // 下次探针不必立刻怀疑；suspect 冷却时间保留（防止系统性对不上
             // 时每次探针都全盘重建）。
             store::meta_set(&tx, "last_probe_at", &now.to_string())?;
+            match sync_cursor
+                .map(str::trim)
+                .filter(|cursor| !cursor.is_empty())
+            {
+                Some(cursor) => store::meta_set(&tx, "sync_cursor", cursor)?,
+                None => {
+                    tx.execute("DELETE FROM meta WHERE key = 'sync_cursor'", [])?;
+                }
+            }
             let local_bytes: u64 = entries
                 .iter()
                 .filter(|entry| entry.kind == EntryKind::File)

@@ -482,7 +482,7 @@ pub mod qobject {
         #[cxx_name = "refreshFilesBackground"]
         fn refresh_files_background(self: Pin<&mut Self>);
 
-        /// 窗口重新获得焦点：触发一次 canary 探针（自带冷却与单飞）。
+        /// 窗口重新获得焦点：触发一次索引同步（游标增量；无游标时 canary）。
         #[qinvokable]
         #[cxx_name = "onWindowActivated"]
         fn on_window_activated(self: Pin<&mut Self>);

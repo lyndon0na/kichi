@@ -28,6 +28,13 @@ impl DriveClient {
         self.list_everything_page(&search_query(page_token), "全盘列举")
     }
 
+    /// 全盘列举的一页，额外带回服务端的扫描水位。
+    ///
+    /// 全量建库结束时保存最后一页的 `sync_time`，后续就能按游标做增量对账。
+    pub fn list_all_page_meta(&self, page_token: Option<&str>) -> Result<FilePage, Error> {
+        self.list_everything_page_meta(&search_query(page_token), "全盘列举")
+    }
+
     /// 已加星标的一页（`parent_id=*` + `system_tag in STAR`）。
     ///
     /// PikPak 的星标落成系统标签 `STAR`，不是列表项上的 `starred` 布尔值。
@@ -45,6 +52,15 @@ impl DriveClient {
         query_params: &[(String, String)],
         label: &str,
     ) -> Result<(Vec<FileHit>, Option<String>), Error> {
+        let page = self.list_everything_page_meta(query_params, label)?;
+        Ok((page.files, page.next_page_token))
+    }
+
+    fn list_everything_page_meta(
+        &self,
+        query_params: &[(String, String)],
+        label: &str,
+    ) -> Result<FilePage, Error> {
         let response: PageResponse =
             self.get_with_query(&self.config().files_url(), query_params)?;
         if !response.kind.is_empty() && response.kind != "drive#fileList" {
@@ -55,7 +71,11 @@ impl DriveClient {
         }
         let files = response.files.into_iter().map(FileDto::into_hit).collect();
         let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
-        Ok((files, next))
+        Ok(FilePage {
+            files,
+            next_page_token: next,
+            sync_time: response.sync_time,
+        })
     }
 
     /// 全盘列举的一页（`parent_id=*`：根目录 + 所有子目录里的条目）。
@@ -94,6 +114,14 @@ pub struct FileHit {
     pub entry: FileEntry,
     /// `parent_id`：拼「所在文件夹」的真实路径要用；官方偶尔不给，按根目录处理
     pub parent_id: String,
+}
+
+/// 全盘列举的一页：条目 + 下一页令牌 + 服务端扫描水位。
+#[derive(Debug, Clone)]
+pub struct FilePage {
+    pub files: Vec<FileHit>,
+    pub next_page_token: Option<String>,
+    pub sync_time: String,
 }
 
 /// 名字包含匹配（归一化后大小写不敏感）；文件与文件夹一视同仁。
@@ -141,6 +169,8 @@ struct PageResponse {
     files: Vec<FileDto>,
     #[serde(default)]
     next_page_token: String,
+    #[serde(default)]
+    sync_time: String,
 }
 
 #[cfg(test)]

@@ -48,7 +48,7 @@ pub use media::{FileInfo, NoLinkReason};
 pub use normalize::{normalize_name, normalize_query};
 pub use playlist::{Playlist, PlaylistItem};
 pub use resource::{sanitize_drive_name, InstantSave, MagnetFile, MagnetListing};
-pub use search::FileHit;
+pub use search::{FileHit, FilePage};
 pub use search_filter::{
     classify_name, FileCategory, ModifiedFilter, SearchFilter, SizeFilter, TypeFilter,
 };
@@ -60,8 +60,8 @@ pub use share_open::{
 };
 pub use tasks::{infohash_magnet, is_supported_task_url, normalize_task_url, TaskStatus};
 pub use types::{
-    EntryKind, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase, TokenPair, TransferAllowance,
-    TransferQuota, TrashEntry,
+    EntryKind, FileChange, FileChangePage, FileEntry, OfflineTask, PlayOption, Quota, TaskPhase,
+    TokenPair, TransferAllowance, TransferQuota, TrashEntry,
 };
 pub use upload::{UploadProgress, UploadResult, UploadStage};
 pub use upload_rate::UploadRateLimiter;

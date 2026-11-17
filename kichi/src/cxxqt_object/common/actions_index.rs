@@ -386,7 +386,7 @@ impl qobject::Kichi {
         run_in_background(
             move || {
                 let client = session.drive()?;
-                crate::session::tree_index::sync::run_canary(&index, &client, &cancel)
+                crate::session::tree_index::sync::run_incremental(&index, &client, &cancel)
             },
             move |mut qichi, result| {
                 if qichi.as_ref().rust().index_probe_epoch != epoch {
@@ -448,8 +448,13 @@ impl qobject::Kichi {
     /// 应用探针结论：只有 suspect 且过了冷却才启动全量重建。
     fn apply_probe_outcome(mut self: Pin<&mut Self>, outcome: ProbeOutcome) {
         match outcome {
-            ProbeOutcome::Fresh { .. } | ProbeOutcome::Patched { .. } | ProbeOutcome::Cancelled => {
+            ProbeOutcome::Fresh { patched } | ProbeOutcome::Patched { patched } => {
+                if patched > 0 {
+                    // 增量已经改了索引；界面缓存的目录快照要下次进入时重读索引。
+                    self.as_mut().invalidate_file_caches();
+                }
             }
+            ProbeOutcome::Cancelled => {}
             ProbeOutcome::Unavailable { first_time, .. } => {
                 // 只提示一次，避免每次窗口获得焦点都弹同一句
                 if first_time {

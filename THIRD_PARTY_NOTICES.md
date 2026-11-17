@@ -10,6 +10,7 @@ kichi 自身以 `GPL-3.0-or-later` 发布，完整文本见 `LICENSE`。本文�
 | [rclone](https://github.com/rclone/rclone) 的 PikPak 后端 | MIT | `kichi-core` 的端点常量、设备 ID / captcha 签名算法及部分请求形状；相关文件已标注来源 |
 | pikpaktui 0.0.58 | Apache-2.0 | 分享、任务和选链等请求形状的行为参考；未复制的部分不产生额外义务 |
 | pikpak-kotlin | MIT | 部分接口字段与请求形状的行为参考 |
+| [NihilDigit/piko](https://github.com/NihilDigit/piko) | AGPL-3.0 | 增量同步协议行为参考；未复制其实现代码 |
 | [Tabler Icons](https://github.com/tabler/tabler-icons) | MIT | `kichi/qml/NavIcon.qml` 中使用的路径数据 |
 | [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) | MIT | `kichi/cpp/protocol/` 下由 `wayland-scanner` 生成的 linux-dmabuf / viewporter / color-management / presentation-time / content-type 客户端协议代码；版权归 Collabora、Intel 等各协议作者 |
 

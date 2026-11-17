@@ -1,5 +1,7 @@
 use super::account::{AboutResponse, TransferQuotaResponse};
-use super::files::{list_query, recent_query, trash_query, FileDto, FileListResponse};
+use super::files::{
+    changes_query, list_query, recent_query, trash_query, FileDto, FileListResponse,
+};
 use super::media::{is_image, is_media, is_video};
 use super::*;
 use crate::types::{EntryKind, FileEntry, TrashEntry};
@@ -89,6 +91,44 @@ fn recent_query_pins_everything_parent_and_tries_modified_order() {
 
     let second = recent_query(Some(" page-2 "));
     assert!(second.contains(&("page_token".to_owned(), "page-2".to_owned())));
+}
+
+#[test]
+fn change_query_uses_modified_time_without_trashed_filter() {
+    let query = changes_query("2026-11-10T00:14:38.891+08:00", None);
+    let get = |key: &str| {
+        query
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    assert_eq!(get("parent_id"), Some("*"));
+    assert_eq!(get("with_audit"), Some("true"));
+    assert_eq!(get("limit"), Some("500"));
+    assert_eq!(get("page_token"), None);
+    let filters: serde_json::Value =
+        serde_json::from_str(get("filters").expect("filters")).expect("合法 JSON");
+    assert_eq!(filters["phase"]["eq"], "PHASE_TYPE_COMPLETE");
+    assert_eq!(
+        filters["modified_time"]["gt"], "2026-11-10T00:14:38.891+08:00",
+        "下界必须原样带回服务端水位"
+    );
+    assert!(
+        filters.get("trashed").is_none(),
+        "增量流不能过滤 trashed，否则删除墓碑到不了客户端"
+    );
+
+    let second = changes_query("cursor", Some(" page-2 "));
+    assert!(second.contains(&("page_token".to_owned(), "page-2".to_owned())));
+}
+
+#[test]
+fn delta_row_keeps_the_trash_marker() {
+    let dto: FileDto = serde_json::from_str(
+        r#"{"id":"x","name":"x.mkv","kind":"drive#file","delete_time":"2026-11-10T00:00:00+08:00"}"#,
+    )
+    .expect("增量条目应可解析");
+    assert!(dto.into_change().trashed, "回收站 / 永久删除都要标成墓碑");
 }
 
 #[test]

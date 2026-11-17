@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer};
 
-use crate::types::{EntryKind, FileEntry, TrashEntry};
+use crate::types::{EntryKind, FileChange, FileChangePage, FileEntry, TrashEntry};
 use crate::Error;
 
 use super::account::lenient_u64;
@@ -61,6 +61,42 @@ impl DriveClient {
             .collect();
         let next = (!response.next_page_token.is_empty()).then_some(response.next_page_token);
         Ok((files, next))
+    }
+
+    /// 增量同步的一页：`modified_time > since_sync_time` 的已完成行。
+    ///
+    /// 刻意不带 `trashed` 过滤：回收站移动与永久删除都会以 `trashed = true`
+    /// 的墓碑返回。`sync_time` 是服务端扫描水位，只能在全部分页成功落库后保存；
+    /// `version_outdated` 为真时游标已失效，必须重新全量扫描。
+    pub fn list_file_changes_page(
+        &self,
+        since_sync_time: &str,
+        page_token: Option<&str>,
+    ) -> Result<FileChangePage, Error> {
+        let response: FileChangeResponse = self.get_with_query(
+            &self.config.files_url(),
+            &changes_query(since_sync_time, page_token),
+        )?;
+        if !response.kind.is_empty() && response.kind != "drive#fileList" {
+            return Err(Error::ApiChanged(format!(
+                "增量同步返回了意外的类型：{}",
+                response.kind
+            )));
+        }
+        if !response.version_outdated && response.sync_time.trim().is_empty() {
+            return Err(Error::ApiChanged("增量同步响应缺少 sync_time".to_owned()));
+        }
+        Ok(FileChangePage {
+            changes: response
+                .files
+                .into_iter()
+                .map(FileDto::into_change)
+                .collect(),
+            next_page_token: (!response.next_page_token.is_empty())
+                .then_some(response.next_page_token),
+            sync_time: response.sync_time,
+            version_outdated: response.version_outdated,
+        })
     }
 
     /// 只读读取一个条目的完整列表形状。
@@ -140,6 +176,33 @@ pub(super) fn recent_query(page_token: Option<&str>) -> Vec<(String, String)> {
     query
 }
 
+/// 增量同步查询：只按 `params.db_modify_time` 取下界，不依赖任何排序。
+///
+/// 注意 `modified_time` 这个过滤名实际比较的是 `params.db_modify_time`；
+/// 加星等不改可见修改时间的操作也会进入变更流。
+pub(super) fn changes_query(
+    since_sync_time: &str,
+    page_token: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut filter = serde_json::json!({
+        "phase": {"eq": "PHASE_TYPE_COMPLETE"},
+    });
+    if !since_sync_time.trim().is_empty() {
+        filter["modified_time"] = serde_json::json!({"gt": since_sync_time.trim()});
+    }
+    let mut query = vec![
+        ("limit".to_owned(), LIST_LIMIT.to_string()),
+        ("thumbnail_size".to_owned(), "SIZE_MEDIUM".to_owned()),
+        ("with_audit".to_owned(), "true".to_owned()),
+        ("filters".to_owned(), filter.to_string()),
+        ("parent_id".to_owned(), "*".to_owned()),
+    ];
+    if let Some(token) = page_token.map(str::trim).filter(|token| !token.is_empty()) {
+        query.push(("page_token".to_owned(), token.to_owned()));
+    }
+    query
+}
+
 /// 回收站查询参数。单独成函数，测试能直接锁住这两个容易漏的条件。
 pub(super) fn trash_query(page_token: Option<&str>) -> Vec<(String, String)> {
     let mut query = vec![
@@ -165,6 +228,20 @@ pub(super) struct FileListResponse {
     pub(super) next_page_token: String,
 }
 
+#[derive(Deserialize)]
+pub(super) struct FileChangeResponse {
+    #[serde(default)]
+    pub(super) kind: String,
+    #[serde(default)]
+    pub(super) files: Vec<FileDto>,
+    #[serde(default)]
+    pub(super) next_page_token: String,
+    #[serde(default)]
+    pub(super) sync_time: String,
+    #[serde(default)]
+    pub(super) version_outdated: bool,
+}
+
 /// 官方文件条目（目录列表与全盘搜索共用）。
 ///
 /// `pub(crate)`：`drive` / `search` / `tasks` 共用，不对外暴露 DTO。
@@ -184,6 +261,9 @@ pub(crate) struct FileDto {
     modified_time: Option<DateTime<Utc>>,
     #[serde(default, deserialize_with = "lenient_time")]
     delete_time: Option<DateTime<Utc>>,
+    /// 增量流里的删除墓碑。普通列表通常不带这个字段。
+    #[serde(default)]
+    trashed: bool,
     #[serde(default)]
     md5_checksum: String,
     #[serde(default)]
@@ -288,6 +368,15 @@ impl FileDto {
             } else {
                 String::new()
             },
+        }
+    }
+
+    /// 增量流专用：保留 `trashed`，普通列表的 [`FileEntry`] 不携带这个状态。
+    pub(crate) fn into_change(self) -> FileChange {
+        let trashed = self.trashed || self.delete_time.is_some();
+        FileChange {
+            entry: self.into_entry(),
+            trashed,
         }
     }
 

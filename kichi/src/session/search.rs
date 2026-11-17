@@ -143,6 +143,7 @@ impl Session {
         let mut page_token: Option<String> = None;
         let mut pages = 0usize;
         let mut last_revision: Option<u64> = None;
+        let mut sync_time: Option<String> = None;
         // 一轮扫描内时间窗口固定，避免翻页过程中边界抖动。
         let now = Utc::now().timestamp();
         index.begin_build_tracking();
@@ -162,13 +163,15 @@ impl Session {
                     "全盘列举页数超过上限，已停止建库（旧索引保留）".to_owned(),
                 ));
             }
-            let (entries, next) = match client.list_all_page(page_token.as_deref()) {
-                Ok(page) => page,
-                Err(err) => {
-                    let _ = index.finish_build_tracking(false);
-                    return Err(Failure::from(err));
-                }
-            };
+            let (entries, next, page_sync_time) =
+                match client.list_all_page_meta(page_token.as_deref()) {
+                    Ok(page) => (page.files, page.next_page_token, page.sync_time),
+                    Err(err) => {
+                        let _ = index.finish_build_tracking(false);
+                        return Err(Failure::from(err));
+                    }
+                };
+            sync_time = Some(page_sync_time);
             let page_start = scanned;
             scanned += entries.len();
             collected.extend(entries.iter().cloned());
@@ -205,7 +208,7 @@ impl Session {
             let Some(next) = next else {
                 let entries: Vec<FileEntry> =
                     collected.iter().map(|hit| hit.entry.clone()).collect();
-                let built = match index.replace_all(&entries) {
+                let built = match index.replace_all_with_cursor(&entries, sync_time.as_deref()) {
                     Ok(()) => {
                         if let Err(err) = index.finish_build_tracking(true) {
                             self.record_tree_index_error(format!(
