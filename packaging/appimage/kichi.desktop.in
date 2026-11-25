@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Kichi
-Name[zh_CN]=Kichi
+Name=kichi
+Name[zh_CN]=kichi
 GenericName=PikPak Client
 GenericName[zh_CN]=PikPak 客户端
 Comment=Third-party PikPak client
